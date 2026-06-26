@@ -1,6 +1,20 @@
 # WORKLOG
 
 ## 2026-06-26
+### 추가 개선 4
+- 첨부된 `2차 개선` 지시문 기준으로 `adaptive_params.py`의 `weak_flow` 분기를 제거해 저유동성 구간에서 `volume_spike_ratio` 문턱을 억지로 높이지 않도록 수정
+- `momentum_policy.py`의 `evaluate_entry_setup` 검사 순서를 `spread -> context -> RSI -> volume -> fast-track -> trend -> momentum -> extension -> breakout`으로 재정렬
+- 이에 따라 거래량 확장이 부족한 경우 `trend_filter_off`보다 먼저 `volume_not_expanded` 사유가 남고, `fast-track` 진입은 추세 필터를 우회할 수 있게 정리
+- `liquidity_lab` 해외 감시를 고정 풀 스캔에서 `벤치 풀 20개 + active pool 5개 + 4사이클마다 재선정` 구조로 전환
+- `POOL_ROTATION` heartbeat에 `cycle`, `bench_scanned`, `passed_filter`, `active_pool` 정보를 남겨 운영 중 풀 교체를 추적할 수 있게 함
+- `tests/test_pool_rotation.py`를 추가하고, 저장소 기본 스타일에 맞춰 `pytest-asyncio` 없이 `asyncio.run(...)` 기반 테스트로 구성
+- `README.md`에 active pool 로테이션과 새 해외 후보군 설명을 반영
+
+### 검증 결과
+- `PYTHONPATH=src pytest -q tests/test_adaptive_params.py tests/test_pool_rotation.py tests/test_liquidity_lab.py` 통과 목표로 갱신
+- 풀 로테이션 테스트가 더 이상 플러그인 부재로 skip되지 않도록 정리
+
+## 2026-06-26
 ### 추가 개선 3
 - 첨부 지시문 기준으로 `5분봉 기반 breakout`을 `1분봉 단타` 구조로 전환
 - `config/fixed_config.json`의 `auto_trade`를 1분봉, 10초 폴링, 5분 최대 보유 기준으로 조정

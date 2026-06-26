@@ -152,6 +152,11 @@ class LiquidityLabService:
         self.notifier = notifier
         self._domestic_excluded: list[ExcludedCandidate] = []
         self._overseas_excluded: list[ExcludedCandidate] = []
+        self._active_pool: list[OverseasCandidateConfig] = []
+        self._bench_pool: list[OverseasCandidateConfig] = []
+        self._cycle_count: int = 0
+        self._pool_initialized: bool = False
+        self._bench_scanned_this_cycle: bool = False
 
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
@@ -322,9 +327,31 @@ class LiquidityLabService:
         return sorted(results, key=lambda item: item.activity_score, reverse=True)
 
     async def scan_overseas(self) -> list[OverseasScanResult]:
+        config = self.config.liquidity_lab
+        self._cycle_count += 1
+        should_bench_scan = (
+            not self._pool_initialized
+            or self._cycle_count % config.overseas_bench_scan_every == 0
+        )
+        self._bench_scanned_this_cycle = should_bench_scan
+        if should_bench_scan:
+            await self._run_bench_scan()
+            self._pool_initialized = True
+
+        if not self._active_pool:
+            self._active_pool = list(
+                config.overseas_candidates[: config.overseas_active_pool_size]
+            )
+            active_symbols = {candidate.symbol.upper() for candidate in self._active_pool}
+            self._bench_pool = [
+                candidate
+                for candidate in config.overseas_candidates
+                if candidate.symbol.upper() not in active_symbols
+            ]
+
         results: list[OverseasScanResult] = []
         excluded: list[ExcludedCandidate] = []
-        for candidate in self.config.liquidity_lab.overseas_candidates:
+        for candidate in self._active_pool:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
             except Exception:
@@ -341,9 +368,53 @@ class LiquidityLabService:
                 )
             else:
                 results.append(scan_result)
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         self._overseas_excluded = excluded
         return sorted(results, key=lambda item: item.activity_score, reverse=True)
+
+    async def _run_bench_scan(self) -> None:
+        config = self.config.liquidity_lab
+        bench_results: list[OverseasScanResult] = []
+
+        for candidate in config.overseas_candidates:
+            try:
+                scan_result = await self._scan_single_overseas(candidate)
+            except Exception:
+                await asyncio.sleep(0.05)
+                continue
+            reasons = self._overseas_speculative_reasons(scan_result)
+            if not reasons:
+                bench_results.append(scan_result)
+            await asyncio.sleep(0.1)
+
+        if not bench_results:
+            return
+
+        bench_results.sort(key=lambda item: item.activity_score, reverse=True)
+        top_symbols = {
+            item.symbol.upper()
+            for item in bench_results[: config.overseas_active_pool_size]
+        }
+
+        new_active: list[OverseasCandidateConfig] = []
+        new_bench: list[OverseasCandidateConfig] = []
+        for candidate in config.overseas_candidates:
+            if candidate.symbol.upper() in top_symbols:
+                new_active.append(candidate)
+            else:
+                new_bench.append(candidate)
+
+        self._active_pool = new_active
+        self._bench_pool = new_bench
+        self.repository.save_heartbeat(
+            "POOL_ROTATION",
+            (
+                f"cycle={self._cycle_count} "
+                f"bench_scanned={len(config.overseas_candidates)} "
+                f"passed_filter={len(bench_results)} "
+                f"active_pool=[{','.join(candidate.symbol for candidate in new_active)}]"
+            ),
+        )
 
     async def _scan_single_domestic(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
@@ -1263,11 +1334,17 @@ class LiquidityLabService:
                 estimated_calls += self.config.liquidity_lab.domestic_paper_iterations * 2
                 estimated_calls += 1
         if us_open:
-            estimated_calls += len(self.config.liquidity_lab.overseas_candidates)
+            config = self.config.liquidity_lab
+            active_n = len(self._active_pool) if self._active_pool else config.overseas_active_pool_size
+            estimated_calls += active_n
             estimated_calls += overseas_watch_count * 2
-            estimated_calls += len(
-                {candidate.exchange_code.upper() for candidate in self.config.liquidity_lab.overseas_candidates}
-            )
+            if self._bench_scanned_this_cycle:
+                estimated_calls += len(config.overseas_candidates)
+            exchange_codes = {
+                candidate.exchange_code.upper()
+                for candidate in (self._active_pool or config.overseas_candidates)
+            }
+            estimated_calls += len(exchange_codes)
             if include_overseas_order:
                 estimated_calls += 1
         return estimated_calls

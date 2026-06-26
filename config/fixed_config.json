@@ -174,14 +174,72 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "SOXL",
-                "exchange_code": "AMEX"
+                "symbol": "AMD",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "META",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "TSLA",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MSFT",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AAPL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "PLTR",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SMCI",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "ARM",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MARA",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "RIVN",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "F",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "BAC",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "C",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "T",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "XOM",
+                "exchange_code": "NYSE"
             }
         ],
         "domestic_paper_iterations": 6,
         "domestic_paper_interval_sec": 5,
         "domestic_top_n": 3,
-        "overseas_top_n": 3,
+        "overseas_top_n": 5,
+        "overseas_active_pool_size": 5,
+        "overseas_bench_scan_every": 4,
         "domestic_test_order_qty": 1,
         "overseas_test_order_qty": 1,
         "domestic_min_price_krw": 5000,
@@ -189,7 +247,7 @@
         "domestic_min_volume_sum": 30000,
         "domestic_max_spread_pct": 0.003,
         "overseas_min_price_usd": 10.0,
-        "overseas_min_volume": 20000,
+        "overseas_min_volume": 10000,
         "overseas_max_spread_pct": 0.004,
         "overseas_take_profit_pct": 0.012,
         "overseas_stop_loss_pct": 0.008,

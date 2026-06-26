@@ -117,3 +117,16 @@ def test_apply_override_returns_replaced_dataclass() -> None:
     assert effective.take_profit_pct == snapshot.atr_pct * 1.5
     assert effective.volume_spike_ratio == config.volume_spike_ratio * 0.8
     assert effective is not config
+
+
+def test_weak_flow_does_not_raise_volume_spike_ratio() -> None:
+    config = _build_config()
+    snapshot = _snapshot(
+        atr_pct=config.stop_loss_pct,
+        volume_ratio=0.3,
+        intraday_momentum=config.min_intraday_momentum_pct,
+    )
+
+    override = compute_adaptive_override(config, snapshot)
+
+    assert override.volume_spike_ratio is None

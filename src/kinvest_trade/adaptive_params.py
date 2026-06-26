@@ -41,7 +41,6 @@ def compute_adaptive_override(
     high_vol = atr_pct > config.stop_loss_pct * 1.5
     low_vol = atr_pct < config.stop_loss_pct * 0.5
     strong_flow = volume_ratio >= 3.0
-    weak_flow = volume_ratio < 1.0
     strong_trend = momentum >= config.min_intraday_momentum_pct * 3.0
     reverse_trend = momentum <= 0.0
 
@@ -55,8 +54,6 @@ def compute_adaptive_override(
 
     if strong_flow:
         spike_ratio = config.volume_spike_ratio * 0.8
-    elif weak_flow:
-        spike_ratio = config.volume_spike_ratio * 1.3
 
     if strong_trend:
         max_hold = max(1, int(config.max_hold_cycles * 1.5))

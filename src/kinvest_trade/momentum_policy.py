@@ -32,30 +32,12 @@ def evaluate_entry_setup(
         return EntrySetup(False, "spread_too_wide", "SPREAD", "spread")
     if not snapshot.has_required_context:
         return EntrySetup(False, "building_signal_context", "WARMUP", "warmup")
-    if not trend_filter_ok(snapshot):
-        return EntrySetup(False, "trend_filter_off", "FILTER", _note(snapshot))
     if snapshot.rsi14 is not None and snapshot.rsi14 > config.max_entry_rsi14:
         return EntrySetup(False, "entry_rsi_too_high", "OVERHEAT", _note(snapshot))
 
     volume_ready = snapshot.volume_ratio >= config.volume_spike_ratio
-    momentum_ready = (
-        snapshot.intraday_momentum >= config.min_intraday_momentum_pct
-        or snapshot.intraday_bar_return >= config.min_bar_return_pct
-    )
-    breakout_ready = _breakout_ready(config, snapshot)
-    band_breakout_ready = _band_breakout_ready(config, snapshot)
-    extension_too_large = (
-        snapshot.breakout_distance_pct > config.max_breakout_extension_pct
-        if snapshot.breakout_distance_pct > 0
-        else False
-    )
-
-    if extension_too_large:
-        return EntrySetup(False, "breakout_too_extended", "CHASE", _note(snapshot))
     if not volume_ready:
         return EntrySetup(False, "volume_not_expanded", "SETUP", _note(snapshot))
-    if not momentum_ready:
-        return EntrySetup(False, "momentum_not_ready", "SETUP", _note(snapshot))
 
     fast_track = (
         snapshot.volume_ratio >= config.volume_spike_ratio * 2.0
@@ -75,9 +57,28 @@ def evaluate_entry_setup(
             urgent=True,
         )
 
+    if not trend_filter_ok(snapshot):
+        return EntrySetup(False, "trend_filter_off", "FILTER", _note(snapshot))
+
+    momentum_ready = (
+        snapshot.intraday_momentum >= config.min_intraday_momentum_pct
+        or snapshot.intraday_bar_return >= config.min_bar_return_pct
+    )
+    if not momentum_ready:
+        return EntrySetup(False, "momentum_not_ready", "SETUP", _note(snapshot))
+
+    extension_too_large = (
+        snapshot.breakout_distance_pct > config.max_breakout_extension_pct
+        if snapshot.breakout_distance_pct > 0
+        else False
+    )
+    if extension_too_large:
+        return EntrySetup(False, "breakout_too_extended", "CHASE", _note(snapshot))
+
+    breakout_ready = _breakout_ready(config, snapshot)
+    band_breakout_ready = _band_breakout_ready(config, snapshot)
     if not (breakout_ready or band_breakout_ready):
-        state = "SPIKE" if volume_ready else "SETUP"
-        return EntrySetup(False, "no_breakout_signal", state, _note(snapshot))
+        return EntrySetup(False, "no_breakout_signal", "SPIKE", _note(snapshot))
 
     score = (
         min(snapshot.volume_ratio, 4.0) * 25.0

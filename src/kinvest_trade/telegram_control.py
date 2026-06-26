@@ -271,6 +271,15 @@ class TelegramLiquidityLabController:
             self._accumulate_session_performance(report)
             self.last_completed_at = datetime.now(timezone.utc)
             self.last_error = None
+            if (
+                self.mode == "running"
+                and report.primary_selection_reason == "no_supported_market_open"
+            ):
+                self.mode = "stopped"
+                self.next_run_at = None
+                await self.notifier.send(
+                    self._finalize_session_summary(command="market_close_auto_stop")
+                )
         except asyncio.CancelledError:
             self.last_error = f"cycle_{cycle_no}_cancelled"
             raise

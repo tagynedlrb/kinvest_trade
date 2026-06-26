@@ -14,12 +14,18 @@ from .market_sessions import (
     is_us_orderable_session_for_env,
     is_us_regular_session,
 )
+from .momentum_policy import (
+    derive_watch_state,
+    evaluate_entry_setup,
+    evaluate_exit_setup,
+)
 from .notifier import TelegramNotifier
 from .paper import PaperTradingService, PaperRunState
 from .repository import SqliteRepository
 from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
+    extract_price_series,
     format_snapshot_indicator,
 )
 from .time_utils import format_kst
@@ -79,6 +85,7 @@ class WatchTargetStatus:
     exchange_code: str | None
     price: float
     activity_score: float
+    signal_score: float
     action_bias: str
     signal_state: str
     ma_summary: str
@@ -301,10 +308,10 @@ class LiquidityLabService:
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
-                        market="domestic",
-                        code=stock_code,
-                        reasons=reasons,
-                        snapshot=asdict(candidate),
+                market="domestic",
+                code=stock_code,
+                reasons=reasons,
+                snapshot=asdict(candidate),
                     )
                 )
             else:
@@ -611,6 +618,7 @@ class LiquidityLabService:
                 exchange_code=exchange_code,
                 price=price,
                 activity_score=activity_score,
+                signal_score=0.0,
                 action_bias="WAIT",
                 signal_state="WARMUP",
                 ma_summary="-",
@@ -619,18 +627,19 @@ class LiquidityLabService:
             )
 
         if held_position is not None:
-            should_exit, exit_reason = self._should_exit_position(signal_snapshot, held_position.pnl_pct)
-            if should_exit:
+            exit_setup = self._build_exit_setup(signal_snapshot, held_position.pnl_pct, holding_qty)
+            if exit_setup.action in {"sell", "sell_partial"}:
                 return WatchTargetStatus(
                     market=market,
                     code=code,
                     exchange_code=exchange_code,
                     price=price,
                     activity_score=activity_score,
+                    signal_score=0.0,
                     action_bias="SELL",
                     signal_state="SELL_READY",
                     ma_summary=self._ma_relation_summary(signal_snapshot),
-                    note=exit_reason,
+                    note=exit_setup.reason,
                     holding_qty=holding_qty,
                 )
             return WatchTargetStatus(
@@ -639,37 +648,41 @@ class LiquidityLabService:
                 exchange_code=exchange_code,
                 price=price,
                 activity_score=activity_score,
+                signal_score=0.0,
                 action_bias="WAIT",
                 signal_state="HOLD",
                 ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=signal_snapshot.regime,
+                note=exit_setup.note,
                 holding_qty=holding_qty,
             )
 
-        should_buy, buy_reason = self._should_buy_signal(signal_snapshot)
-        if should_buy:
+        entry_setup = evaluate_entry_setup(self.config.auto_trade, signal_snapshot)
+        if entry_setup.ready:
             return WatchTargetStatus(
                 market=market,
                 code=code,
                 exchange_code=exchange_code,
                 price=price,
                 activity_score=activity_score,
+                signal_score=entry_setup.score,
                 action_bias="BUY",
                 signal_state="BUY_READY",
                 ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=buy_reason,
+                note=entry_setup.reason,
                 holding_qty=holding_qty,
             )
+        signal_state, note = derive_watch_state(self.config.auto_trade, signal_snapshot)
         return WatchTargetStatus(
             market=market,
             code=code,
             exchange_code=exchange_code,
             price=price,
             activity_score=activity_score,
+            signal_score=entry_setup.score,
             action_bias="WAIT",
-            signal_state=self._wait_state(signal_snapshot),
+            signal_state=signal_state,
             ma_summary=self._ma_relation_summary(signal_snapshot),
-            note=signal_snapshot.regime,
+            note=note,
             holding_qty=holding_qty,
         )
 
@@ -679,10 +692,18 @@ class LiquidityLabService:
         watch_targets: list[WatchTargetStatus],
     ) -> DomesticScanResult | None:
         candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
-        for watch_target in watch_targets:
-            if watch_target.market == "domestic" and watch_target.action_bias == "BUY":
-                return candidate_map.get(watch_target.code)
-        return None
+        ready_targets = [
+            watch_target
+            for watch_target in watch_targets
+            if watch_target.market == "domestic" and watch_target.action_bias == "BUY"
+        ]
+        if not ready_targets:
+            return None
+        best_target = max(
+            ready_targets,
+            key=lambda item: (item.signal_score, item.activity_score),
+        )
+        return candidate_map.get(best_target.code)
 
     def _select_overseas_buy_target(
         self,
@@ -690,10 +711,18 @@ class LiquidityLabService:
         watch_targets: list[WatchTargetStatus],
     ) -> OverseasScanResult | None:
         candidate_map = {candidate.symbol: candidate for candidate in overseas_ranked}
-        for watch_target in watch_targets:
-            if watch_target.market == "overseas" and watch_target.action_bias == "BUY":
-                return candidate_map.get(watch_target.code)
-        return None
+        ready_targets = [
+            watch_target
+            for watch_target in watch_targets
+            if watch_target.market == "overseas" and watch_target.action_bias == "BUY"
+        ]
+        if not ready_targets:
+            return None
+        best_target = max(
+            ready_targets,
+            key=lambda item: (item.signal_score, item.activity_score),
+        )
+        return candidate_map.get(best_target.code)
 
     @staticmethod
     def _select_primary_target(
@@ -927,13 +956,27 @@ class LiquidityLabService:
                 candidate.exchange_code,
                 interval_minutes=self.config.auto_trade.intraday_bar_minutes,
                 include_previous_day=True,
-                record_count=max(self.config.auto_trade.intraday_slow_window + 8, 40),
+                record_count=max(
+                    self.config.auto_trade.intraday_slow_window + 8,
+                    self.config.auto_trade.breakout_lookback_bars + 6,
+                    self.config.auto_trade.bollinger_window + 4,
+                    self.config.auto_trade.atr_window + 4,
+                    40,
+                ),
             )
         except KisApiError:
             return None
 
-        daily_closes = self._extract_chart_closes(daily_rows, ("clos", "close", "last"))
-        minute_closes = self._extract_chart_closes(minute_rows, ("last", "clos", "close"))
+        daily_series = extract_price_series(daily_rows, close_fields=("clos", "close", "last"))
+        minute_series = extract_price_series(
+            minute_rows,
+            close_fields=("last", "clos", "close"),
+            high_fields=("high",),
+            low_fields=("low",),
+            volume_fields=("evol", "volume"),
+        )
+        daily_closes = daily_series.closes
+        minute_closes = minute_series.closes
         if (
             len(daily_closes) < self.config.auto_trade.daily_slow_window
             or len(minute_closes) < self.config.auto_trade.intraday_slow_window
@@ -946,12 +989,20 @@ class LiquidityLabService:
             ask=candidate.ask,
             daily_closes=daily_closes,
             minute_closes=minute_closes,
+            minute_highs=minute_series.highs,
+            minute_lows=minute_series.lows,
+            minute_volumes=minute_series.volumes,
             daily_fast_window=self.config.auto_trade.daily_fast_window,
             daily_slow_window=self.config.auto_trade.daily_slow_window,
             intraday_fast_window=self.config.auto_trade.intraday_fast_window,
             intraday_slow_window=self.config.auto_trade.intraday_slow_window,
             volatility_window=self.config.auto_trade.volatility_window,
             momentum_window=self.config.auto_trade.momentum_window,
+            volume_window=self.config.auto_trade.volume_window,
+            breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
+            bollinger_window=self.config.auto_trade.bollinger_window,
+            bollinger_stddev=self.config.auto_trade.bollinger_stddev,
+            atr_window=self.config.auto_trade.atr_window,
         )
 
     async def _load_domestic_signal(
@@ -976,8 +1027,19 @@ class LiquidityLabService:
         except KisApiError:
             return None
 
-        daily_closes = self._extract_chart_closes(daily_rows, ("stck_clpr", "stck_prpr"))
-        minute_closes = self._extract_chart_closes(minute_rows, ("stck_prpr",))
+        daily_series = extract_price_series(
+            daily_rows,
+            close_fields=("stck_clpr", "stck_prpr"),
+        )
+        minute_series = extract_price_series(
+            minute_rows,
+            close_fields=("stck_prpr",),
+            high_fields=("stck_hgpr",),
+            low_fields=("stck_lwpr",),
+            volume_fields=("cntg_vol",),
+        )
+        daily_closes = daily_series.closes
+        minute_closes = minute_series.closes
         if (
             len(daily_closes) < self.config.auto_trade.daily_slow_window
             or len(minute_closes) < self.config.auto_trade.intraday_slow_window
@@ -990,12 +1052,20 @@ class LiquidityLabService:
             ask=float(candidate.best_ask),
             daily_closes=daily_closes,
             minute_closes=minute_closes,
+            minute_highs=minute_series.highs,
+            minute_lows=minute_series.lows,
+            minute_volumes=minute_series.volumes,
             daily_fast_window=self.config.auto_trade.daily_fast_window,
             daily_slow_window=self.config.auto_trade.daily_slow_window,
             intraday_fast_window=self.config.auto_trade.intraday_fast_window,
             intraday_slow_window=self.config.auto_trade.intraday_slow_window,
             volatility_window=self.config.auto_trade.volatility_window,
             momentum_window=self.config.auto_trade.momentum_window,
+            volume_window=self.config.auto_trade.volume_window,
+            breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
+            bollinger_window=self.config.auto_trade.bollinger_window,
+            bollinger_stddev=self.config.auto_trade.bollinger_stddev,
+            atr_window=self.config.auto_trade.atr_window,
         )
 
     def _should_buy_overseas_candidate(
@@ -1008,28 +1078,8 @@ class LiquidityLabService:
         self,
         snapshot: MovingAverageSnapshot,
     ) -> tuple[bool, str]:
-        auto = self.config.auto_trade
-        if snapshot.spread_pct > auto.max_spread_pct:
-            return False, "wide_spread"
-        if not snapshot.has_required_context:
-            return False, "insufficient_ma_context"
-        if snapshot.rsi14 is not None and snapshot.rsi14 > auto.max_entry_rsi14 + 6:
-            return False, "overbought_entry_block"
-        if (
-            abs(snapshot.daily_gap_slow_pct) <= auto.ma60_entry_buffer_pct
-            and snapshot.crossed_up
-        ):
-            return True, "ma_slow_reclaim_entry"
-        if (
-            snapshot.daily_ma_fast is not None
-            and snapshot.daily_ma_slow is not None
-            and snapshot.daily_ma_fast >= snapshot.daily_ma_slow
-            and snapshot.price >= snapshot.daily_ma_fast
-            and snapshot.crossed_up
-            and snapshot.daily_gap_fast_pct <= auto.trend_chase_limit_pct
-        ):
-            return True, "ma_fast_reclaim_entry"
-        return False, "no_entry_signal"
+        entry_setup = evaluate_entry_setup(self.config.auto_trade, snapshot)
+        return entry_setup.ready, entry_setup.reason
 
     def _should_exit_overseas_position(
         self,
@@ -1043,34 +1093,8 @@ class LiquidityLabService:
         snapshot: MovingAverageSnapshot,
         pnl_pct: float,
     ) -> tuple[bool, str]:
-        auto = self.config.auto_trade
-        if not snapshot.has_required_context:
-            return False, "insufficient_ma_context"
-
-        hard_band = max(
-            auto.hard_stop_loss_pct,
-            auto.ma60_hard_stop_buffer_pct,
-            snapshot.intraday_volatility * auto.hard_stop_volatility_multiplier,
-        )
-        soft_band = max(
-            auto.stop_loss_pct,
-            auto.ma20_breakdown_buffer_pct,
-            snapshot.intraday_volatility * auto.soft_stop_volatility_multiplier,
-        )
-
-        if pnl_pct <= -hard_band or snapshot.daily_gap_slow_pct <= -hard_band:
-            return True, "ma_slow_failure_hard_stop"
-        if snapshot.daily_gap_fast_pct <= -soft_band and (
-            snapshot.crossed_down
-            or not snapshot.fast_above_slow
-            or (snapshot.rsi14 is not None and snapshot.rsi14 < 45)
-        ):
-            return True, "ma_fast_breakdown_loss_cut"
-        if pnl_pct > self.config.liquidity_lab.overseas_take_profit_pct and (
-            snapshot.crossed_down or (snapshot.rsi14 is not None and snapshot.rsi14 >= 70)
-        ):
-            return True, "trend_take_profit"
-        return False, "hold"
+        exit_setup = self._build_exit_setup(snapshot, pnl_pct, 1)
+        return exit_setup.action in {"sell", "sell_partial"}, exit_setup.reason
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:
         action = self._build_action_summary(report)
@@ -1182,9 +1206,11 @@ class LiquidityLabService:
     @staticmethod
     def _wait_state(snapshot: MovingAverageSnapshot) -> str:
         mapping = {
-            "trend_up": "UPTREND",
-            "ma_slow_reclaim": "SETUP",
+            "trend_up": "SETUP",
+            "momentum_breakout": "SPIKE",
+            "momentum_setup": "SETUP",
             "recovery": "SETUP",
+            "breakout_test": "BREAK",
             "pullback": "PULLBACK",
             "trend_down": "DOWNTREND",
             "breakdown": "DOWNTREND",
@@ -1229,14 +1255,18 @@ class LiquidityLabService:
             return 0.0
         return float(text)
 
-    @staticmethod
-    def _extract_chart_closes(rows: list[dict], field_names: tuple[str, ...]) -> list[float]:
-        closes: list[float] = []
-        for row in rows:
-            for field_name in field_names:
-                if field_name in row:
-                    value = LiquidityLabService._parse_float(row.get(field_name))
-                    if value > 0:
-                        closes.append(value)
-                    break
-        return closes
+    def _build_exit_setup(
+        self,
+        snapshot: MovingAverageSnapshot,
+        pnl_pct: float,
+        position_qty: int,
+    ):
+        return evaluate_exit_setup(
+            self.config.auto_trade,
+            snapshot,
+            pnl_pct,
+            drawdown_from_peak=0.0,
+            hold_cycles=0,
+            position_qty=position_qty,
+            partial_exit_done=False,
+        )

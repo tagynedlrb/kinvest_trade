@@ -15,11 +15,17 @@ from .auto_trade_math import (
 from .client import KisApiError, KisRestClient
 from .config import AppConfig
 from .market_sessions import is_us_orderable_session_for_env
+from .momentum_policy import (
+    evaluate_entry_setup,
+    evaluate_exit_setup,
+    evaluate_scale_in_setup,
+)
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
 from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
+    extract_price_series,
     format_snapshot_indicator,
 )
 from .time_utils import format_kst
@@ -80,7 +86,7 @@ class AutoTradeSummary:
 
 
 class SoxlAutoTrader:
-    """Moving-average based overseas auto trader."""
+    """Liquidity and momentum based overseas auto trader."""
 
     def __init__(
         self,
@@ -100,6 +106,9 @@ class SoxlAutoTrader:
         self.last_fx_rate_krw = config.auto_trade.usd_krw_fallback_rate
         self._daily_closes: list[float] = []
         self._minute_closes: list[float] = []
+        self._minute_highs: list[float] = []
+        self._minute_lows: list[float] = []
+        self._minute_volumes: list[float] = []
         self._daily_refreshed_at: datetime | None = None
         self._intraday_refreshed_at: datetime | None = None
 
@@ -116,9 +125,9 @@ class SoxlAutoTrader:
             exchange_code=auto.exchange_code,
             max_actions=auto.max_actions_per_run,
             notes=(
-                "moving-average trend pullback policy"
+                "volume breakout momentum policy"
                 if cleaned_runs <= 0
-                else f"moving-average trend pullback policy; stale_runs_aborted={cleaned_runs}"
+                else f"volume breakout momentum policy; stale_runs_aborted={cleaned_runs}"
             ),
         )
 
@@ -346,8 +355,11 @@ class SoxlAutoTrader:
                     "completion_reason": completion_reason,
                     "action_limit": action_limit,
                     "decision_limit": decision_limit,
-                    "strategy": f"daily_ma{auto.daily_fast_window}/{auto.daily_slow_window}"
-                    f"_intraday_ma{auto.intraday_fast_window}/{auto.intraday_slow_window}",
+                    "strategy": (
+                        f"daily_ma{auto.daily_fast_window}/{auto.daily_slow_window}"
+                        f"_volume_spike{auto.volume_spike_ratio}"
+                        f"_breakout{auto.breakout_lookback_bars}"
+                    ),
                 },
                 ensure_ascii=False,
             )
@@ -434,12 +446,20 @@ class SoxlAutoTrader:
             ask=ask,
             daily_closes=self._daily_closes,
             minute_closes=self._minute_closes,
+            minute_highs=self._minute_highs,
+            minute_lows=self._minute_lows,
+            minute_volumes=self._minute_volumes,
             daily_fast_window=self.config.auto_trade.daily_fast_window,
             daily_slow_window=self.config.auto_trade.daily_slow_window,
             intraday_fast_window=self.config.auto_trade.intraday_fast_window,
             intraday_slow_window=self.config.auto_trade.intraday_slow_window,
             volatility_window=self.config.auto_trade.volatility_window,
             momentum_window=self.config.auto_trade.momentum_window,
+            volume_window=self.config.auto_trade.volume_window,
+            breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
+            bollinger_window=self.config.auto_trade.bollinger_window,
+            bollinger_stddev=self.config.auto_trade.bollinger_stddev,
+            atr_window=self.config.auto_trade.atr_window,
         )
 
     async def _refresh_chart_context(self, captured_at: datetime) -> None:
@@ -465,9 +485,9 @@ class SoxlAutoTrader:
                     base_date="",
                     adjusted_price=True,
                 )
-                closes = self._extract_closes(rows, ("clos", "close", "last"))
-                if closes:
-                    self._daily_closes = closes
+                series = extract_price_series(rows, close_fields=("clos", "close", "last"))
+                if series.closes:
+                    self._daily_closes = series.closes
                     self._daily_refreshed_at = captured_at
             except KisApiError:
                 pass
@@ -479,11 +499,27 @@ class SoxlAutoTrader:
                     auto.exchange_code,
                     interval_minutes=auto.intraday_bar_minutes,
                     include_previous_day=True,
-                    record_count=max(auto.intraday_slow_window + 8, auto.min_history_points, 40),
+                    record_count=max(
+                        auto.intraday_slow_window + 8,
+                        auto.min_history_points,
+                        auto.breakout_lookback_bars + 6,
+                        auto.bollinger_window + 4,
+                        auto.atr_window + 4,
+                        40,
+                    ),
                 )
-                closes = self._extract_closes(rows, ("last", "clos", "close"))
-                if closes:
-                    self._minute_closes = closes
+                series = extract_price_series(
+                    rows,
+                    close_fields=("last", "clos", "close"),
+                    high_fields=("high",),
+                    low_fields=("low",),
+                    volume_fields=("evol", "volume"),
+                )
+                if series.closes:
+                    self._minute_closes = series.closes
+                    self._minute_highs = series.highs
+                    self._minute_lows = series.lows
+                    self._minute_volumes = series.volumes
                     self._intraday_refreshed_at = captured_at
             except KisApiError:
                 pass
@@ -494,57 +530,32 @@ class SoxlAutoTrader:
         if snapshot.spread_pct > auto.max_spread_pct:
             return TradeDecision(None, 0, "spread_too_wide")
         if not snapshot.has_required_context:
-            return TradeDecision(None, 0, "building_ma_context")
-
-        soft_break_band = self._soft_break_band_pct(snapshot)
-        hard_break_band = self._hard_break_band_pct(snapshot)
+            return TradeDecision(None, 0, "building_signal_context")
 
         if self.position.qty <= 0:
             self.flat_cycles += 1
+            entry_setup = evaluate_entry_setup(auto, snapshot)
             cooldown_block = (
                 self.last_exit_cycle > 0
                 and (self.loop_count - self.last_exit_cycle) < auto.force_reentry_after_cycles
-                and not snapshot.crossed_up
             )
-            if cooldown_block:
+            if cooldown_block and not entry_setup.ready:
                 return TradeDecision(None, 0, "reentry_cooldown")
+            if not entry_setup.ready:
+                return TradeDecision(None, 0, entry_setup.reason)
 
-            value_entry = (
-                abs(snapshot.daily_gap_slow_pct) <= auto.ma60_entry_buffer_pct
-                and snapshot.crossed_up
-                and (snapshot.rsi14 is None or snapshot.rsi14 <= auto.max_entry_rsi14)
+            qty = self._determine_buy_qty(
+                snapshot=snapshot,
+                scale_in=False,
+                urgent=entry_setup.urgent,
             )
-            trend_resume_entry = (
-                snapshot.daily_ma_fast is not None
-                and snapshot.daily_ma_slow is not None
-                and snapshot.daily_ma_fast >= snapshot.daily_ma_slow
-                and snapshot.price >= snapshot.daily_ma_fast
-                and snapshot.crossed_up
-                and snapshot.daily_gap_fast_pct <= auto.trend_chase_limit_pct
-                and (snapshot.rsi14 is None or snapshot.rsi14 <= auto.max_entry_rsi14 + 6)
-            )
-
-            if value_entry:
-                qty = self._determine_buy_qty(snapshot=snapshot, scale_in=False, urgent=True)
-                if not self._entry_has_sufficient_edge(
-                    snapshot=snapshot,
-                    qty=qty,
-                    target_reason="ma_slow_reclaim_entry",
-                ):
-                    return TradeDecision(None, 0, "value_entry_edge_too_small")
-                return TradeDecision("buy", qty, "ma_slow_reclaim_entry")
-
-            if trend_resume_entry:
-                qty = self._determine_buy_qty(snapshot=snapshot, scale_in=False, urgent=False)
-                if not self._entry_has_sufficient_edge(
-                    snapshot=snapshot,
-                    qty=qty,
-                    target_reason="ma_fast_reclaim_entry",
-                ):
-                    return TradeDecision(None, 0, "trend_resume_edge_too_small")
-                return TradeDecision("buy", qty, "ma_fast_reclaim_entry")
-
-            return TradeDecision(None, 0, "flat_wait")
+            if not self._entry_has_sufficient_edge(
+                snapshot=snapshot,
+                qty=qty,
+                target_reason=entry_setup.reason,
+            ):
+                return TradeDecision(None, 0, "entry_edge_too_small")
+            return TradeDecision("buy", qty, entry_setup.reason)
 
         self.position.hold_cycles += 1
         self.position.peak_price = max(self.position.peak_price, snapshot.price)
@@ -552,69 +563,46 @@ class SoxlAutoTrader:
         if self.position.avg_price > 0:
             pnl_pct = (snapshot.price - self.position.avg_price) / self.position.avg_price
         drawdown_from_peak = self._drawdown_from_peak(snapshot.price)
-
-        if snapshot.daily_gap_slow_pct <= -hard_break_band or pnl_pct <= -max(
-            auto.hard_stop_loss_pct,
-            hard_break_band,
-        ):
-            return TradeDecision("sell", self.position.qty, "ma_slow_failure_hard_stop")
-
-        if snapshot.daily_gap_fast_pct <= -soft_break_band:
-            if snapshot.crossed_down or not snapshot.fast_above_slow or (
-                snapshot.rsi14 is not None and snapshot.rsi14 < 45
-            ):
-                return TradeDecision("sell", self.position.qty, "ma_fast_breakdown_loss_cut")
-            return TradeDecision(None, 0, "ma_fast_noise_hold")
+        exit_setup = evaluate_exit_setup(
+            auto,
+            snapshot,
+            pnl_pct,
+            drawdown_from_peak=drawdown_from_peak,
+            hold_cycles=self.position.hold_cycles,
+            position_qty=self.position.qty,
+            partial_exit_done=self.position.partial_exit_count > 0,
+        )
+        if exit_setup.action == "sell":
+            return TradeDecision("sell", self.position.qty, exit_setup.reason)
+        if exit_setup.action == "sell_partial":
+            return TradeDecision(
+                "sell",
+                self._determine_sell_qty(full_exit=False),
+                exit_setup.reason,
+            )
 
         if (
             auto.allow_scale_in
             and self.position.qty < auto.max_position_qty
             and (self.loop_count - self.position.last_buy_cycle) >= auto.scale_in_cooldown_cycles
-            and abs(snapshot.daily_gap_slow_pct) <= auto.ma60_entry_buffer_pct
-            and snapshot.crossed_up
         ):
-            qty = self._determine_buy_qty(snapshot=snapshot, scale_in=True, urgent=False)
-            if not self._entry_has_sufficient_edge(
-                snapshot=snapshot,
-                qty=qty,
-                target_reason="ma_slow_scale_in",
-            ):
-                return TradeDecision(None, 0, "scale_in_edge_too_small")
-            return TradeDecision("buy", qty, "ma_slow_scale_in")
+            scale_in_setup = evaluate_scale_in_setup(
+                auto,
+                snapshot,
+                pnl_pct=pnl_pct,
+                position_qty=self.position.qty,
+                partial_exit_done=self.position.partial_exit_count > 0,
+            )
+            if scale_in_setup.ready:
+                qty = self._determine_buy_qty(snapshot=snapshot, scale_in=True, urgent=False)
+                if self._entry_has_sufficient_edge(
+                    snapshot=snapshot,
+                    qty=qty,
+                    target_reason=scale_in_setup.reason,
+                ):
+                    return TradeDecision("buy", qty, scale_in_setup.reason)
 
-        if (
-            auto.allow_partial_exit
-            and self.position.qty > 1
-            and self.position.partial_exit_count == 0
-            and abs(snapshot.daily_gap_fast_pct) <= auto.ma20_partial_exit_buffer_pct
-            and snapshot.price >= self.position.avg_price
-        ):
-            return TradeDecision("sell", self._determine_sell_qty(full_exit=False), "ma_fast_retest_scale_out")
-
-        trailing_stop = max(
-            auto.trailing_stop_pct,
-            snapshot.intraday_volatility * auto.trailing_volatility_multiplier,
-        )
-        if pnl_pct >= auto.full_take_profit_pct and (
-            snapshot.crossed_down or drawdown_from_peak <= -trailing_stop
-        ):
-            return TradeDecision("sell", self.position.qty, "trend_take_profit")
-
-        if pnl_pct >= auto.take_profit_pct:
-            overbought = snapshot.rsi14 is not None and snapshot.rsi14 >= 70
-            if overbought and self.position.qty > 1:
-                return TradeDecision("sell", self._determine_sell_qty(full_exit=False), "overbought_scale_out")
-            if drawdown_from_peak <= -trailing_stop:
-                return TradeDecision("sell", self.position.qty, "trailing_profit_lock")
-
-        if (
-            self.position.hold_cycles >= auto.max_hold_cycles
-            and snapshot.crossed_down
-            and pnl_pct > 0
-        ):
-            return TradeDecision("sell", self.position.qty, "time_exit")
-
-        return TradeDecision(None, 0, "hold_wait")
+        return TradeDecision(None, 0, exit_setup.reason)
 
     def _determine_buy_qty(
         self,
@@ -632,12 +620,12 @@ class SoxlAutoTrader:
             return max(1, min(remaining, math.ceil(max(self.position.qty, 1) / 2)))
 
         base_qty = auto.quantity
+        if snapshot.volume_ratio >= (auto.volume_spike_ratio * 1.5):
+            base_qty += 1
+        if snapshot.intraday_momentum >= (auto.min_intraday_momentum_pct * 2.0):
+            base_qty += 1
         if urgent:
-            base_qty = max(base_qty, math.ceil(auto.max_position_qty * 0.5))
-            if snapshot.rsi14 is not None and snapshot.rsi14 <= 42:
-                base_qty += 1
-        elif snapshot.regime == "trend_up":
-            base_qty = max(base_qty, min(auto.quantity + 1, auto.max_position_qty))
+            base_qty += 1
 
         return max(1, min(base_qty, remaining))
 
@@ -682,11 +670,11 @@ class SoxlAutoTrader:
         snapshot: StrategySnapshot,
     ) -> float:
         auto = self.config.auto_trade
-        reward_from_fast_ma = max(snapshot.daily_gap_fast_pct * -1, 0.0)
-        reward_from_slow_ma = max(snapshot.daily_gap_slow_pct * -1, 0.0)
-        if reason in {"ma_slow_reclaim_entry", "ma_slow_scale_in"}:
-            return max(auto.take_profit_pct, reward_from_fast_ma, reward_from_slow_ma * 0.5)
-        return max(auto.take_profit_pct, auto.full_take_profit_pct * 0.8)
+        reward_from_atr = snapshot.atr_pct * max(auto.atr_trailing_stop_multiplier, 1.0)
+        reward_from_breakout = max(snapshot.breakout_distance_pct, 0.0) * 0.5
+        if reason == "momentum_scale_in":
+            return max(auto.take_profit_pct * 0.8, reward_from_atr, reward_from_breakout)
+        return max(auto.take_profit_pct, reward_from_atr, reward_from_breakout)
 
     def _estimate_roundtrip_fees_usd(self, *, price: float, qty: int) -> float:
         auto = self.config.auto_trade
@@ -849,7 +837,10 @@ class SoxlAutoTrader:
                     f"run_id={run_id}",
                     f"symbol={auto.symbol}",
                     f"profile={self.config.credentials.profile_name}",
-                    f"strategy={auto.daily_fast_window}d/{auto.daily_slow_window}d + {auto.intraday_fast_window}/{auto.intraday_slow_window} on {auto.intraday_bar_minutes}m bars",
+                    (
+                        f"strategy=vol>{auto.volume_spike_ratio:.1f}x breakout({auto.breakout_lookback_bars}) "
+                        f"with {auto.daily_fast_window}d/{auto.daily_slow_window}d filter"
+                    ),
                     f"interval={auto.poll_interval_sec}s",
                     "until=manual_stop_or_market_close",
                 ]
@@ -909,16 +900,14 @@ class SoxlAutoTrader:
         auto = self.config.auto_trade
         return max(
             auto.stop_loss_pct,
-            auto.ma20_breakdown_buffer_pct,
-            snapshot.intraday_volatility * auto.soft_stop_volatility_multiplier,
+            snapshot.atr_pct * auto.atr_soft_stop_multiplier,
         )
 
     def _hard_break_band_pct(self, snapshot: StrategySnapshot) -> float:
         auto = self.config.auto_trade
         return max(
             auto.hard_stop_loss_pct,
-            auto.ma60_hard_stop_buffer_pct,
-            snapshot.intraday_volatility * auto.hard_stop_volatility_multiplier,
+            snapshot.atr_pct * auto.atr_hard_stop_multiplier,
         )
 
     def _drawdown_from_peak(self, price: float) -> float:
@@ -929,18 +918,6 @@ class SoxlAutoTrader:
     @staticmethod
     def _limit_label(limit: int | None) -> str:
         return "unbounded" if limit is None else str(limit)
-
-    @staticmethod
-    def _extract_closes(rows: list[dict], field_names: tuple[str, ...]) -> list[float]:
-        closes: list[float] = []
-        for row in rows:
-            for field_name in field_names:
-                if field_name in row:
-                    value = SoxlAutoTrader._parse_float(row.get(field_name))
-                    if value > 0:
-                        closes.append(value)
-                    break
-        return closes
 
     @staticmethod
     def _parse_float(value: object) -> float:

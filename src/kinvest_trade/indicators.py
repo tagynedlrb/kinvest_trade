@@ -81,6 +81,61 @@ def compute_volatility(values: list[float], window: int) -> float | None:
     return variance ** 0.5
 
 
+def compute_stddev(values: list[float]) -> float | None:
+    if not values:
+        return None
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return variance ** 0.5
+
+
+def compute_bollinger_bands(
+    values: list[float],
+    window: int,
+    num_stddev: float = 2.0,
+) -> tuple[float | None, float | None, float | None]:
+    if len(values) < window:
+        return None, None, None
+    sample = values[-window:]
+    basis = sum(sample) / len(sample)
+    stddev = compute_stddev(sample)
+    if stddev is None:
+        return basis, basis, basis
+    upper = basis + (stddev * num_stddev)
+    lower = basis - (stddev * num_stddev)
+    return basis, upper, lower
+
+
+def compute_atr(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    window: int,
+) -> float | None:
+    if len(highs) != len(lows) or len(lows) != len(closes):
+        return None
+    if len(closes) < window + 1:
+        return None
+
+    true_ranges: list[float] = []
+    for index in range(1, len(closes)):
+        high = highs[index]
+        low = lows[index]
+        prev_close = closes[index - 1]
+        true_ranges.append(
+            max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close),
+            )
+        )
+
+    if len(true_ranges) < window:
+        return None
+    sample = true_ranges[-window:]
+    return sum(sample) / len(sample)
+
+
 def compute_drawdown(current_price: float, peak_price: float) -> float:
     if peak_price <= 0:
         return 0.0

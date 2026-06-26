@@ -1,6 +1,23 @@
 # WORKLOG
 
 ## 2026-06-26
+### 추가 개선 2
+- 사용자 설계 검토를 반영해 `이평선 단독 트리거`를 폐기하고 `거래량 폭발 + 가격 돌파`를 메인 진입 신호로 재편
+- `technical_signals.py` 스냅샷에 `volume_ratio`, `breakout_level`, `ATR`, `Bollinger`, `intraday_bar_return`를 추가
+- KIS 실응답 확인 결과:
+  - 해외 5분봉 분봉 거래량 필드는 `evol`
+  - 국내 분봉 거래량 필드는 `cntg_vol`
+  - 해외 분봉 고가/저가 필드는 `high`, `low`
+- 새 공통 정책 모듈 `momentum_policy.py`를 추가해 `entry / scale-in / exit` 판단을 `auto_trader`, `liquidity_lab`가 함께 쓰도록 정리
+- `python3 main.py` 기본 자동매매를 `OVERSEAS_LIQUIDITY_MOMENTUM` 정책으로 변경
+- `liquidity-lab` 감시/주문 판단도 같은 정책으로 맞추고, `signal_score`가 가장 강한 감시 대상을 우선 주문 대상으로 선택하도록 보강
+- 텔레그램 감시 목록은 기존 이평 관계와 함께 `vr=...x`, `mom=...%` 식의 짧은 상태 메모를 표시하도록 변경
+
+### 검증 결과
+- `python3 -m compileall src` 통과
+- `PYTHONPATH=src pytest -q tests/test_auto_trader.py tests/test_liquidity_lab.py tests/test_telegram_control.py` 통과 (`13 passed`)
+
+## 2026-06-26
 ### 사용자 지시
 - 현재 주먹구구식 단기매매 대신 이동평균 기반 방식을 1순위 전략으로 적용
 - `python3 main.py` 기본 경로를 계속 감시/거래하는 방식으로 유지하되, `20회 체결 후 종료`는 제거

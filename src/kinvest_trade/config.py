@@ -111,6 +111,23 @@ class AutoTradeConfig:
     hard_stop_volatility_multiplier: float
     volatility_window: int
     momentum_window: int
+    volume_window: int
+    breakout_lookback_bars: int
+    volume_spike_ratio: float
+    scale_in_volume_ratio: float
+    volume_fade_ratio: float
+    min_intraday_momentum_pct: float
+    min_bar_return_pct: float
+    max_breakout_extension_pct: float
+    bollinger_window: int
+    bollinger_stddev: float
+    bollinger_breakout_buffer_pct: float
+    atr_window: int
+    atr_soft_stop_multiplier: float
+    atr_hard_stop_multiplier: float
+    atr_trailing_stop_multiplier: float
+    partial_exit_rsi14: float
+    scale_in_profit_trigger_pct: float
     volatility_high_threshold: float
     strong_rebound_pct: float
     max_spread_pct: float
@@ -516,6 +533,37 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ),
             volatility_window=int(auto_trade_raw.get("volatility_window", 8)),
             momentum_window=int(auto_trade_raw.get("momentum_window", 6)),
+            volume_window=int(auto_trade_raw.get("volume_window", 6)),
+            breakout_lookback_bars=int(auto_trade_raw.get("breakout_lookback_bars", 6)),
+            volume_spike_ratio=float(auto_trade_raw.get("volume_spike_ratio", 1.8)),
+            scale_in_volume_ratio=float(auto_trade_raw.get("scale_in_volume_ratio", 1.3)),
+            volume_fade_ratio=float(auto_trade_raw.get("volume_fade_ratio", 0.85)),
+            min_intraday_momentum_pct=float(
+                auto_trade_raw.get("min_intraday_momentum_pct", 0.003)
+            ),
+            min_bar_return_pct=float(auto_trade_raw.get("min_bar_return_pct", 0.0015)),
+            max_breakout_extension_pct=float(
+                auto_trade_raw.get("max_breakout_extension_pct", 0.01)
+            ),
+            bollinger_window=int(auto_trade_raw.get("bollinger_window", 20)),
+            bollinger_stddev=float(auto_trade_raw.get("bollinger_stddev", 2.0)),
+            bollinger_breakout_buffer_pct=float(
+                auto_trade_raw.get("bollinger_breakout_buffer_pct", 0.0)
+            ),
+            atr_window=int(auto_trade_raw.get("atr_window", 14)),
+            atr_soft_stop_multiplier=float(
+                auto_trade_raw.get("atr_soft_stop_multiplier", 1.2)
+            ),
+            atr_hard_stop_multiplier=float(
+                auto_trade_raw.get("atr_hard_stop_multiplier", 1.8)
+            ),
+            atr_trailing_stop_multiplier=float(
+                auto_trade_raw.get("atr_trailing_stop_multiplier", 1.4)
+            ),
+            partial_exit_rsi14=float(auto_trade_raw.get("partial_exit_rsi14", 70.0)),
+            scale_in_profit_trigger_pct=float(
+                auto_trade_raw.get("scale_in_profit_trigger_pct", 0.003)
+            ),
             volatility_high_threshold=float(
                 auto_trade_raw.get("volatility_high_threshold", 0.004)
             ),

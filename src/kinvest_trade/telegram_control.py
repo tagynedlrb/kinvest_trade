@@ -23,6 +23,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_stop - cancel current cycle and stop",
         "/lab_terminate - force stop current liquidity-lab run and stay idle",
         "/lab_status - current status",
+        "/lab_watchlist - current monitored symbols and MA state",
         "/lab_help - command list",
     ]
 )
@@ -197,6 +198,9 @@ class TelegramLiquidityLabController:
         if command == "status":
             await self.notifier.send(self._build_status_message())
             return
+        if command == "watchlist":
+            await self.notifier.send(self._build_watchlist_message())
+            return
         if command == "start":
             await self._handle_start_like_command("running", "started")
             return
@@ -316,7 +320,7 @@ class TelegramLiquidityLabController:
             "status": self.mode,
             "updated_at": format_kst(datetime.now(timezone.utc)),
             "linked_account": self.config.credentials.profile_name,
-            "watch_targets": [],
+            "watch_targets": (self.last_report_summary or {}).get("watch_targets", []),
             "last_error": self.last_error,
             "notes": [
                 "telegram-control daemon manages liquidity-lab loop state.",
@@ -361,10 +365,31 @@ class TelegramLiquidityLabController:
                 f"last_target={last_report.get('primary_target') or '-'}",
                 f"confirmed_pnl_krw={session.get('domestic_paper_realized_pnl_krw', 0)}",
                 f"estimated_exit_pnl_krw={session.get('estimated_overseas_realized_pnl_krw', 0)}",
+                f"watch_count={len(last_report.get('watch_targets') or [])}",
                 f"symbols={self._format_symbol_stats_inline(session.get('symbol_stats') or {})}",
                 f"last_error={snapshot.last_error}",
             ]
         )
+
+    def _build_watchlist_message(self) -> str:
+        last_report = self.last_report_summary or {}
+        watch_targets = last_report.get("watch_targets") or []
+        lines = [
+            "[KIS][TELEGRAM_CONTROL_WATCHLIST]",
+            f"time={format_kst(datetime.now(timezone.utc))}",
+            f"mode={self.mode}",
+            f"cycle={self.current_cycle_no}",
+            f"est_cycle_calls={last_report.get('estimated_api_calls_per_cycle', '-')}",
+        ]
+        if not watch_targets:
+            lines.append("targets=-")
+            return "\n".join(lines)
+
+        for watch_target in watch_targets:
+            lines.append(
+                self._format_watch_target_line(watch_target)
+            )
+        return "\n".join(lines)
 
     def _accumulate_session_performance(self, report: LiquidityLabReport) -> None:
         perf = self.session_performance
@@ -564,6 +589,8 @@ class TelegramLiquidityLabController:
             "paper_run": report.paper_run,
             "domestic_order": report.domestic_order,
             "overseas_order": report.overseas_order,
+            "watch_targets": report.to_dict().get("watch_targets", []),
+            "estimated_api_calls_per_cycle": report.estimated_api_calls_per_cycle,
             }
         )
 
@@ -577,11 +604,30 @@ class TelegramLiquidityLabController:
             "/lab_stop": "stop",
             "/lab_terminate": "terminate",
             "/lab_status": "status",
+            "/lab_watchlist": "watchlist",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",
         }
         return mapping.get(normalized)
+
+    @staticmethod
+    def _format_watch_target_line(watch_target: dict) -> str:
+        code = str(watch_target.get("code", "-"))
+        signal_state = str(watch_target.get("signal_state", "WAIT"))
+        ma_summary = str(watch_target.get("ma_summary", "-"))
+        note = str(watch_target.get("note", "-"))
+        price = watch_target.get("price", "-")
+        if isinstance(price, (int, float)):
+            if float(price) >= 1000:
+                price_text = f"{int(price)}"
+            else:
+                price_text = f"{float(price):.4f}"
+        else:
+            price_text = str(price)
+        holding_qty = int(watch_target.get("holding_qty", 0) or 0)
+        holding_text = f" hold={holding_qty}" if holding_qty > 0 else ""
+        return f"{code} {signal_state} {ma_summary} {note} px={price_text}{holding_text}"
 
     @staticmethod
     def _parse_float(value: object) -> float:

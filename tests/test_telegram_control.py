@@ -14,6 +14,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_stop") == "stop"
     assert TelegramLiquidityLabController.parse_command("/lab_terminate") == "terminate"
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
+    assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_help") == "help"
     assert TelegramLiquidityLabController.parse_command("/unknown") is None
 
@@ -41,3 +42,18 @@ def test_accumulate_session_performance_collects_realized_pnl_and_reasons() -> N
     assert perf.overseas_orders_submitted == 0
     assert perf.skip_reasons["mock_us_session_not_supported"] == 1
     assert perf.primary_targets["SOXL"] == 1
+
+
+def test_format_watch_target_line_is_compact() -> None:
+    line = TelegramLiquidityLabController._format_watch_target_line(
+        {
+            "code": "SOXL",
+            "signal_state": "BUY_READY",
+            "ma_summary": "20d>60d 5>20",
+            "note": "ma_fast_reclaim_entry",
+            "price": 218.03,
+            "holding_qty": 1,
+        }
+    )
+
+    assert line == "SOXL BUY_READY 20d>60d 5>20 ma_fast_reclaim_entry px=218.0300 hold=1"

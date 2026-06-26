@@ -36,6 +36,25 @@
   - `regime=trend_down`
   - `indicator=rsi=46.6, 20d=-8.00%, 60d=+31.68%`
 
+## 2026-06-26
+### 추가 개선
+- `liquidity-lab`가 더 이상 1개 종목만 기계적으로 기다리지 않도록, 현재 열린 시장의 `top N` 후보를 동시에 감시하고 그중 이동평균 신호가 뜬 종목만 주문 대상으로 선택하도록 보강
+- 텔레그램 `WAIT` 로그는 중단하고, 실제 `BUY/SELL 제출` 또는 `주문 오류` 때만 알림을 보내도록 축소
+- 텔레그램 명령 `/lab_watchlist` 추가
+- `/lab_watchlist`는 현재 감시중인 종목 목록을 `종목코드 / 상태 / 이평 관계 / 짧은 사유 / 가격` 한 줄 형식으로 보여주도록 구현
+- 컨트롤러 상태 파일과 최근 리포트에 `watch_targets`, `estimated_api_calls_per_cycle` 저장
+
+### 확인 메모
+- 공개 확인 가능한 한국투자증권 공식 자료 기준:
+  - 포털 공지에 `API 호출 유량 안내 (REST, 웹소켓) (2026.04.20 기준)` 존재
+  - 오류코드 `EGW00201`은 `초당 거래건수 초과`로 안내됨
+  - 다만 공개 fetch 가능한 페이지에서는 유량 숫자 표가 노출되지 않아, 현재 구현은 보수적으로 headroom을 남기는 방향으로 설계
+- 실제 현재 설정(`overseas_candidates=6`, `overseas_top_n=3`, `loop_interval_sec=30`) 기준 dry-run 리포트 확인:
+  - `watch_count=3`
+  - `estimated_api_calls_per_cycle=14`
+  - 평균 호출량은 약 `0.47회/초`
+  - 순차 호출과 짧은 sleep을 넣어 순간 burst도 낮게 유지
+
 ## 2026-06-25
 ### 사용자 지시
 - SOXL 자동매매 전략을 더 현실적으로 고도화

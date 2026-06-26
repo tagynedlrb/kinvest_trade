@@ -12,6 +12,7 @@
 - `src/kinvest_trade/cli.py`: `doctor`, `auth-check`, `balance-check`, `overseas-price-check`, `overseas-balance-check`, `overseas-orderable-check`, `overseas-order-test`, `indicator-check`, `orderable-check`, `order-test`, `paper-run`, `paper-report`, `telegram-test`
 - `src/kinvest_trade/cli.py`: `liquidity-lab` 명령으로 국내/해외 고유동성 후보를 스캔하고 국내 paper test + 모의주문 테스트까지 한 번에 수행할 수 있다.
 - `src/kinvest_trade/cli.py`: `telegram-control` 명령으로 텔레그램 봇 명령을 받아 `liquidity-lab` 루프를 시작/중지/재개/종료할 수 있다.
+- `liquidity-lab`는 현재 열린 시장의 상위 후보 여러 개를 동시에 감시하고, 그중 이동평균 신호가 뜬 종목만 주문 대상으로 승격한다.
 - `run_watch.py`: 옵션 없이 콘솔 감시 실행
 - `WORKLOG.md`: 작업 기록
 
@@ -193,6 +194,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_stop`: 현재 사이클 취소 요청 후 정지. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_terminate`: 현재 lab 실행을 강제 종료하고 대기 상태로 복귀. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_status`: 현재 상태 조회
+- `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, 한 단어 상태 요약 조회
 - `/lab_help`: 명령 목록 조회
 
 동작 메모:
@@ -204,6 +206,8 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - 현재 기본값은 `30초`이며, 다음 실행 시점은 `이전 사이클 종료 후 추가 대기`가 아니라 `이전 사이클 시작 시점 기준`으로 계산해 감시 간격이 불필요하게 늘어지지 않도록 했다.
 - 텔레그램 long polling 시간은 `notifications.telegram_command_poll_timeout_sec`으로 조절한다.
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
+- `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
+- 현재 기본 해외 감시는 `overseas_top_n=3` 기준이다. 실제 확인값 기준 한 사이클 예상 API 호출은 약 `14회`, `30초` 간격이므로 평균 약 `0.47회/초` 수준으로 보수적으로 유지한다.
 
 ### 1. 모의투자 모드로 전환
 `.env`에서 아래처럼 둔다.

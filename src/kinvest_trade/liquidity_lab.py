@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
@@ -73,6 +73,20 @@ class OverseasHeldPosition:
 
 
 @dataclass(slots=True)
+class WatchTargetStatus:
+    market: str
+    code: str
+    exchange_code: str | None
+    price: float
+    activity_score: float
+    action_bias: str
+    signal_state: str
+    ma_summary: str
+    note: str
+    holding_qty: int = 0
+
+
+@dataclass(slots=True)
 class LiquidityLabReport:
     scanned_at: str
     krx_market_open: bool
@@ -87,6 +101,8 @@ class LiquidityLabReport:
     domestic_excluded: list[ExcludedCandidate]
     overseas_excluded: list[ExcludedCandidate]
     overseas_positions: list[OverseasHeldPosition]
+    watch_targets: list[WatchTargetStatus]
+    estimated_api_calls_per_cycle: int
     paper_run: dict | None
     domestic_order: dict | None
     overseas_order: dict | None
@@ -106,6 +122,8 @@ class LiquidityLabReport:
             "domestic_excluded": [asdict(item) for item in self.domestic_excluded],
             "overseas_excluded": [asdict(item) for item in self.overseas_excluded],
             "overseas_positions": [asdict(item) for item in self.overseas_positions],
+            "watch_targets": [asdict(item) for item in self.watch_targets],
+            "estimated_api_calls_per_cycle": self.estimated_api_calls_per_cycle,
             "paper_run": self.paper_run,
             "domestic_order": self.domestic_order,
             "overseas_order": self.overseas_order,
@@ -140,11 +158,23 @@ class LiquidityLabService:
         domestic_ranked = await self.scan_domestic() if krx_open else []
         overseas_ranked = await self.scan_overseas() if us_open else []
         overseas_positions = await self._load_overseas_positions(overseas_ranked) if us_open else []
+        domestic_watch_targets = (
+            await self._build_domestic_watch_targets(domestic_ranked)
+            if krx_open
+            else []
+        )
+        overseas_watch_targets = (
+            await self._build_overseas_watch_targets(overseas_ranked, overseas_positions)
+            if us_open
+            else []
+        )
         overseas_exit_target = (
             await self._select_overseas_exit_target(overseas_ranked, overseas_positions)
             if us_orderable_in_profile
             else None
         )
+        domestic_buy_target = self._select_domestic_buy_target(domestic_ranked, domestic_watch_targets)
+        overseas_buy_target = self._select_overseas_buy_target(overseas_ranked, overseas_watch_targets)
         primary_market, primary_target, primary_reason = self._select_primary_target(
             krx_open=krx_open,
             us_open=us_open,
@@ -157,13 +187,29 @@ class LiquidityLabService:
             primary_market = "overseas"
             primary_target = exit_candidate.symbol
             primary_reason = f"existing_position_{exit_reason}"
+        elif domestic_buy_target is not None:
+            primary_market = "domestic"
+            primary_target = domestic_buy_target.stock_code
+            primary_reason = "watchlist_buy_signal"
+        elif overseas_buy_target is not None and us_orderable_in_profile:
+            primary_market = "overseas"
+            primary_target = overseas_buy_target.symbol
+            primary_reason = "watchlist_buy_signal"
+        elif krx_open and domestic_watch_targets:
+            primary_market = "domestic"
+            primary_target = domestic_watch_targets[0].code
+            primary_reason = "watchlist_wait"
+        elif us_open and overseas_watch_targets:
+            primary_market = "overseas"
+            primary_target = overseas_watch_targets[0].code
+            primary_reason = "watchlist_wait"
 
         paper_summary = None
         domestic_order = None
         overseas_order = None
 
-        if primary_market == "domestic" and domestic_ranked:
-            watchlist = [domestic_ranked[0].stock_code]
+        if primary_market == "domestic" and domestic_buy_target is not None:
+            watchlist = [domestic_buy_target.stock_code]
             paper_state = await self._run_domestic_paper_test(watchlist)
             paper_summary = {
                 "run_id": paper_state.run_id,
@@ -171,7 +217,7 @@ class LiquidityLabService:
                 "ending_cash_krw": paper_state.cash_krw,
                 "realized_pnl_krw": paper_state.realized_pnl_krw,
             }
-            domestic_order = await self._place_domestic_test_order(domestic_ranked[0])
+            domestic_order = await self._place_domestic_test_order(domestic_buy_target)
         else:
             paper_summary = {
                 "skipped": True,
@@ -198,9 +244,9 @@ class LiquidityLabService:
                 exit_reason,
                 signal_snapshot=exit_signal,
             )
-        elif primary_market == "overseas" and overseas_ranked:
+        elif primary_market == "overseas" and overseas_buy_target is not None:
             overseas_order = await self._manage_overseas_position(
-                candidate=overseas_ranked[0],
+                candidate=overseas_buy_target,
                 held_positions=overseas_positions,
             )
         else:
@@ -227,6 +273,15 @@ class LiquidityLabService:
             domestic_excluded=self._domestic_excluded,
             overseas_excluded=self._overseas_excluded,
             overseas_positions=overseas_positions,
+            watch_targets=domestic_watch_targets if krx_open else overseas_watch_targets,
+            estimated_api_calls_per_cycle=self._estimate_api_calls_per_cycle(
+                krx_open=krx_open,
+                us_open=us_open,
+                domestic_watch_count=len(domestic_watch_targets),
+                overseas_watch_count=len(overseas_watch_targets),
+                include_domestic_paper=domestic_buy_target is not None,
+                include_overseas_order=bool(overseas_exit_target or overseas_buy_target),
+            ),
             paper_run=paper_summary,
             domestic_order=domestic_order,
             overseas_order=overseas_order,
@@ -483,6 +538,162 @@ class LiquidityLabService:
         if candidate.spread_pct > config.overseas_max_spread_pct:
             reasons.append("wide_spread")
         return reasons
+
+    async def _build_domestic_watch_targets(
+        self,
+        domestic_ranked: list[DomesticScanResult],
+    ) -> list[WatchTargetStatus]:
+        watch_targets: list[WatchTargetStatus] = []
+        for candidate in domestic_ranked[: self.config.liquidity_lab.domestic_top_n]:
+            signal_snapshot = await self._load_domestic_signal(candidate)
+            watch_targets.append(
+                self._build_watch_target_status(
+                    market="domestic",
+                    code=candidate.stock_code,
+                    exchange_code=None,
+                    price=float(candidate.current_price),
+                    activity_score=candidate.activity_score,
+                    signal_snapshot=signal_snapshot,
+                    holding_qty=0,
+                )
+            )
+            await asyncio.sleep(0.1)
+        return watch_targets
+
+    async def _build_overseas_watch_targets(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+        held_positions: list[OverseasHeldPosition],
+    ) -> list[WatchTargetStatus]:
+        watch_targets: list[WatchTargetStatus] = []
+        held_map = {position.symbol.upper(): position for position in held_positions}
+        selected_candidates = list(overseas_ranked[: self.config.liquidity_lab.overseas_top_n])
+        selected_symbols = {candidate.symbol.upper() for candidate in selected_candidates}
+        for candidate in overseas_ranked:
+            if candidate.symbol.upper() in held_map and candidate.symbol.upper() not in selected_symbols:
+                selected_candidates.append(candidate)
+                selected_symbols.add(candidate.symbol.upper())
+
+        for candidate in selected_candidates:
+            signal_snapshot = await self._load_overseas_signal(candidate)
+            held = held_map.get(candidate.symbol.upper())
+            watch_targets.append(
+                self._build_watch_target_status(
+                    market="overseas",
+                    code=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    price=candidate.last_price,
+                    activity_score=candidate.activity_score,
+                    signal_snapshot=signal_snapshot,
+                    held_position=held,
+                    holding_qty=0 if held is None else held.quantity,
+                )
+            )
+            await asyncio.sleep(0.1)
+        return watch_targets
+
+    def _build_watch_target_status(
+        self,
+        *,
+        market: str,
+        code: str,
+        exchange_code: str | None,
+        price: float,
+        activity_score: float,
+        signal_snapshot: MovingAverageSnapshot | None,
+        held_position: OverseasHeldPosition | None = None,
+        holding_qty: int = 0,
+    ) -> WatchTargetStatus:
+        if signal_snapshot is None:
+            return WatchTargetStatus(
+                market=market,
+                code=code,
+                exchange_code=exchange_code,
+                price=price,
+                activity_score=activity_score,
+                action_bias="WAIT",
+                signal_state="WARMUP",
+                ma_summary="-",
+                note="signal_unavailable",
+                holding_qty=holding_qty,
+            )
+
+        if held_position is not None:
+            should_exit, exit_reason = self._should_exit_position(signal_snapshot, held_position.pnl_pct)
+            if should_exit:
+                return WatchTargetStatus(
+                    market=market,
+                    code=code,
+                    exchange_code=exchange_code,
+                    price=price,
+                    activity_score=activity_score,
+                    action_bias="SELL",
+                    signal_state="SELL_READY",
+                    ma_summary=self._ma_relation_summary(signal_snapshot),
+                    note=exit_reason,
+                    holding_qty=holding_qty,
+                )
+            return WatchTargetStatus(
+                market=market,
+                code=code,
+                exchange_code=exchange_code,
+                price=price,
+                activity_score=activity_score,
+                action_bias="WAIT",
+                signal_state="HOLD",
+                ma_summary=self._ma_relation_summary(signal_snapshot),
+                note=signal_snapshot.regime,
+                holding_qty=holding_qty,
+            )
+
+        should_buy, buy_reason = self._should_buy_signal(signal_snapshot)
+        if should_buy:
+            return WatchTargetStatus(
+                market=market,
+                code=code,
+                exchange_code=exchange_code,
+                price=price,
+                activity_score=activity_score,
+                action_bias="BUY",
+                signal_state="BUY_READY",
+                ma_summary=self._ma_relation_summary(signal_snapshot),
+                note=buy_reason,
+                holding_qty=holding_qty,
+            )
+        return WatchTargetStatus(
+            market=market,
+            code=code,
+            exchange_code=exchange_code,
+            price=price,
+            activity_score=activity_score,
+            action_bias="WAIT",
+            signal_state=self._wait_state(signal_snapshot),
+            ma_summary=self._ma_relation_summary(signal_snapshot),
+            note=signal_snapshot.regime,
+            holding_qty=holding_qty,
+        )
+
+    def _select_domestic_buy_target(
+        self,
+        domestic_ranked: list[DomesticScanResult],
+        watch_targets: list[WatchTargetStatus],
+    ) -> DomesticScanResult | None:
+        candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
+        for watch_target in watch_targets:
+            if watch_target.market == "domestic" and watch_target.action_bias == "BUY":
+                return candidate_map.get(watch_target.code)
+        return None
+
+    def _select_overseas_buy_target(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+        watch_targets: list[WatchTargetStatus],
+    ) -> OverseasScanResult | None:
+        candidate_map = {candidate.symbol: candidate for candidate in overseas_ranked}
+        for watch_target in watch_targets:
+            if watch_target.market == "overseas" and watch_target.action_bias == "BUY":
+                return candidate_map.get(watch_target.code)
+        return None
 
     @staticmethod
     def _select_primary_target(
@@ -743,7 +954,57 @@ class LiquidityLabService:
             momentum_window=self.config.auto_trade.momentum_window,
         )
 
+    async def _load_domestic_signal(
+        self,
+        candidate: DomesticScanResult,
+    ) -> MovingAverageSnapshot | None:
+        now_kst = datetime.now(timezone.utc).astimezone(KST)
+        target_date = now_kst.strftime("%Y%m%d")
+        start_date = (now_kst - timedelta(days=200)).strftime("%Y%m%d")
+        try:
+            daily_rows = await self.client.get_daily_chart(
+                stock_code=candidate.stock_code,
+                start_date=start_date,
+                end_date=target_date,
+                market_code=self.config.trading.market_code,
+            )
+            minute_rows = await self.client.get_time_daily_chart(
+                stock_code=candidate.stock_code,
+                target_date=target_date,
+                market_code=self.config.trading.market_code,
+            )
+        except KisApiError:
+            return None
+
+        daily_closes = self._extract_chart_closes(daily_rows, ("stck_clpr", "stck_prpr"))
+        minute_closes = self._extract_chart_closes(minute_rows, ("stck_prpr",))
+        if (
+            len(daily_closes) < self.config.auto_trade.daily_slow_window
+            or len(minute_closes) < self.config.auto_trade.intraday_slow_window
+        ):
+            return None
+
+        return build_moving_average_snapshot(
+            price=float(candidate.current_price),
+            bid=float(candidate.best_bid),
+            ask=float(candidate.best_ask),
+            daily_closes=daily_closes,
+            minute_closes=minute_closes,
+            daily_fast_window=self.config.auto_trade.daily_fast_window,
+            daily_slow_window=self.config.auto_trade.daily_slow_window,
+            intraday_fast_window=self.config.auto_trade.intraday_fast_window,
+            intraday_slow_window=self.config.auto_trade.intraday_slow_window,
+            volatility_window=self.config.auto_trade.volatility_window,
+            momentum_window=self.config.auto_trade.momentum_window,
+        )
+
     def _should_buy_overseas_candidate(
+        self,
+        snapshot: MovingAverageSnapshot,
+    ) -> tuple[bool, str]:
+        return self._should_buy_signal(snapshot)
+
+    def _should_buy_signal(
         self,
         snapshot: MovingAverageSnapshot,
     ) -> tuple[bool, str]:
@@ -775,6 +1036,13 @@ class LiquidityLabService:
         snapshot: MovingAverageSnapshot,
         held: OverseasHeldPosition,
     ) -> tuple[bool, str]:
+        return self._should_exit_position(snapshot, held.pnl_pct)
+
+    def _should_exit_position(
+        self,
+        snapshot: MovingAverageSnapshot,
+        pnl_pct: float,
+    ) -> tuple[bool, str]:
         auto = self.config.auto_trade
         if not snapshot.has_required_context:
             return False, "insufficient_ma_context"
@@ -790,7 +1058,7 @@ class LiquidityLabService:
             snapshot.intraday_volatility * auto.soft_stop_volatility_multiplier,
         )
 
-        if held.pnl_pct <= -hard_band or snapshot.daily_gap_slow_pct <= -hard_band:
+        if pnl_pct <= -hard_band or snapshot.daily_gap_slow_pct <= -hard_band:
             return True, "ma_slow_failure_hard_stop"
         if snapshot.daily_gap_fast_pct <= -soft_band and (
             snapshot.crossed_down
@@ -798,16 +1066,16 @@ class LiquidityLabService:
             or (snapshot.rsi14 is not None and snapshot.rsi14 < 45)
         ):
             return True, "ma_fast_breakdown_loss_cut"
-        if held.pnl_pct > self.config.liquidity_lab.overseas_take_profit_pct and (
+        if pnl_pct > self.config.liquidity_lab.overseas_take_profit_pct and (
             snapshot.crossed_down or (snapshot.rsi14 is not None and snapshot.rsi14 >= 70)
         ):
             return True, "trend_take_profit"
         return False, "hold"
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:
-        domestic = report.domestic_ranked[0] if report.domestic_ranked else None
-        overseas = report.overseas_ranked[0] if report.overseas_ranked else None
         action = self._build_action_summary(report)
+        if action["action"] == "WAIT":
+            return
         lines = [
             "[KIS][LIQUIDITY_LAB]",
             f"time={report.scanned_at}",
@@ -818,13 +1086,10 @@ class LiquidityLabService:
             f"qty={action['qty']}",
             f"indicator={action['indicator']}",
             f"reason={action['reason']}",
+            f"watching={len(report.watch_targets)}",
         ]
         if report.overseas_positions:
             lines.append(f"held_positions={len(report.overseas_positions)}")
-        elif domestic is not None and report.primary_market == "domestic":
-            lines.append(f"indicator_detail=chg={domestic.minute_change_pct * 100:.2f}% spread={domestic.spread_pct * 100:.2f}%")
-        elif overseas is not None and report.primary_market == "overseas":
-            lines.append(f"indicator_detail=chg={overseas.change_rate_pct:.2f}% spread={overseas.spread_pct * 100:.2f}%")
         await self.notifier.send("\n".join(lines))
 
     def _build_action_summary(self, report: LiquidityLabReport) -> dict[str, str]:
@@ -902,6 +1167,58 @@ class LiquidityLabService:
                 or "watching"
             ),
         }
+
+    def _ma_relation_summary(self, snapshot: MovingAverageSnapshot) -> str:
+        auto = self.config.auto_trade
+        if not snapshot.has_required_context:
+            return "-"
+        daily_relation = ">" if (snapshot.daily_ma_fast or 0) >= (snapshot.daily_ma_slow or 0) else "<"
+        minute_relation = ">" if (snapshot.minute_ma_fast or 0) >= (snapshot.minute_ma_slow or 0) else "<"
+        return (
+            f"{auto.daily_fast_window}d{daily_relation}{auto.daily_slow_window}d "
+            f"{auto.intraday_fast_window}{minute_relation}{auto.intraday_slow_window}"
+        )
+
+    @staticmethod
+    def _wait_state(snapshot: MovingAverageSnapshot) -> str:
+        mapping = {
+            "trend_up": "UPTREND",
+            "ma_slow_reclaim": "SETUP",
+            "recovery": "SETUP",
+            "pullback": "PULLBACK",
+            "trend_down": "DOWNTREND",
+            "breakdown": "DOWNTREND",
+            "range": "RANGE",
+            "warmup": "WARMUP",
+        }
+        return mapping.get(snapshot.regime, "WAIT")
+
+    def _estimate_api_calls_per_cycle(
+        self,
+        *,
+        krx_open: bool,
+        us_open: bool,
+        domestic_watch_count: int,
+        overseas_watch_count: int,
+        include_domestic_paper: bool,
+        include_overseas_order: bool,
+    ) -> int:
+        estimated_calls = 0
+        if krx_open:
+            estimated_calls += len(self.config.liquidity_lab.domestic_candidates) * 3
+            estimated_calls += domestic_watch_count * 2
+            if include_domestic_paper:
+                estimated_calls += self.config.liquidity_lab.domestic_paper_iterations * 2
+                estimated_calls += 1
+        if us_open:
+            estimated_calls += len(self.config.liquidity_lab.overseas_candidates)
+            estimated_calls += overseas_watch_count * 2
+            estimated_calls += len(
+                {candidate.exchange_code.upper() for candidate in self.config.liquidity_lab.overseas_candidates}
+            )
+            if include_overseas_order:
+                estimated_calls += 1
+        return estimated_calls
 
     @staticmethod
     def _parse_float(value: object) -> float:

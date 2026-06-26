@@ -24,6 +24,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_terminate - force stop current liquidity-lab run and stay idle",
         "/lab_status - current status",
         "/lab_watchlist - current monitored symbols and MA state",
+        "/lab_positions - current held positions and unrealized P&L",
         "/lab_help - command list",
     ]
 )
@@ -201,6 +202,9 @@ class TelegramLiquidityLabController:
         if command == "watchlist":
             await self.notifier.send(self._build_watchlist_message())
             return
+        if command == "positions":
+            await self._send_positions_message()
+            return
         if command == "start":
             await self._handle_start_like_command("running", "started")
             return
@@ -374,6 +378,11 @@ class TelegramLiquidityLabController:
     def _build_watchlist_message(self) -> str:
         last_report = self.last_report_summary or {}
         watch_targets = last_report.get("watch_targets") or []
+        positions = last_report.get("overseas_positions") or []
+        pnl_map: dict[str, float] = {
+            str(pos.get("symbol", "")).upper(): float(pos.get("pnl_pct", 0) or 0)
+            for pos in positions
+        }
         lines = [
             "[KIS][TELEGRAM_CONTROL_WATCHLIST]",
             f"time={format_kst(datetime.now(timezone.utc))}",
@@ -383,13 +392,53 @@ class TelegramLiquidityLabController:
         ]
         if not watch_targets:
             lines.append("targets=-")
+            if positions:
+                lines.append(self._build_positions_message())
             return "\n".join(lines)
 
         for watch_target in watch_targets:
-            lines.append(
-                self._format_watch_target_line(watch_target)
-            )
+            symbol = str(watch_target.get("code", "")).upper()
+            lines.append(self._format_watch_target_line(watch_target, pnl_pct=pnl_map.get(symbol)))
         return "\n".join(lines)
+
+    def _build_positions_message(self) -> str:
+        last_report = self.last_report_summary or {}
+        positions = last_report.get("overseas_positions") or []
+
+        lines = [
+            "[KIS][TELEGRAM_CONTROL_POSITIONS]",
+            f"time={format_kst(datetime.now(timezone.utc))}",
+            f"cycle={self.current_cycle_no}",
+        ]
+
+        if not positions:
+            lines.append("held=none")
+            return "\n".join(lines)
+
+        total_pnl_pct_sum = 0.0
+        for pos in positions:
+            symbol = str(pos.get("symbol", "-"))
+            qty = int(pos.get("quantity", 0) or 0)
+            avg_price = float(pos.get("avg_price", 0) or 0)
+            current_price = float(pos.get("current_price", 0) or 0)
+            pnl_pct = float(pos.get("pnl_pct", 0) or 0)
+            total_pnl_pct_sum += pnl_pct
+
+            pnl_sign = "+" if pnl_pct >= 0 else ""
+            pnl_text = f"{pnl_sign}{pnl_pct * 100:.2f}%"
+            price_text = f"{int(current_price)}" if current_price >= 1000 else f"{current_price:.4f}"
+            avg_text = f"{int(avg_price)}" if avg_price >= 1000 else f"{avg_price:.4f}"
+            lines.append(
+                f"{symbol} qty={qty} avg={avg_text} px={price_text} pnl={pnl_text}"
+            )
+
+        avg_pnl = total_pnl_pct_sum / len(positions)
+        avg_sign = "+" if avg_pnl >= 0 else ""
+        lines.append(f"avg_pnl={avg_sign}{avg_pnl * 100:.2f}%")
+        return "\n".join(lines)
+
+    async def _send_positions_message(self) -> None:
+        await self.notifier.send(self._build_positions_message())
 
     def _accumulate_session_performance(self, report: LiquidityLabReport) -> None:
         perf = self.session_performance
@@ -590,6 +639,17 @@ class TelegramLiquidityLabController:
             "domestic_order": report.domestic_order,
             "overseas_order": report.overseas_order,
             "watch_targets": report.to_dict().get("watch_targets", []),
+            "overseas_positions": [
+                {
+                    "symbol": pos.symbol,
+                    "quantity": pos.quantity,
+                    "avg_price": pos.avg_price,
+                    "current_price": pos.current_price,
+                    "pnl_pct": pos.pnl_pct,
+                    "exchange_code": pos.exchange_code,
+                }
+                for pos in report.overseas_positions
+            ],
             "estimated_api_calls_per_cycle": report.estimated_api_calls_per_cycle,
             }
         )
@@ -605,6 +665,7 @@ class TelegramLiquidityLabController:
             "/lab_terminate": "terminate",
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
+            "/lab_positions": "positions",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",
@@ -612,7 +673,7 @@ class TelegramLiquidityLabController:
         return mapping.get(normalized)
 
     @staticmethod
-    def _format_watch_target_line(watch_target: dict) -> str:
+    def _format_watch_target_line(watch_target: dict, pnl_pct: float | None = None) -> str:
         code = str(watch_target.get("code", "-"))
         signal_state = str(watch_target.get("signal_state", "WAIT"))
         ma_summary = str(watch_target.get("ma_summary", "-"))
@@ -627,7 +688,11 @@ class TelegramLiquidityLabController:
             price_text = str(price)
         holding_qty = int(watch_target.get("holding_qty", 0) or 0)
         holding_text = f" hold={holding_qty}" if holding_qty > 0 else ""
-        return f"{code} {signal_state} {ma_summary} {note} px={price_text}{holding_text}"
+        pnl_text = ""
+        if holding_qty > 0 and pnl_pct is not None:
+            sign = "+" if pnl_pct >= 0 else ""
+            pnl_text = f" pnl={sign}{pnl_pct * 100:.2f}%"
+        return f"{code} {signal_state} {ma_summary} {note} px={price_text}{holding_text}{pnl_text}"
 
     @staticmethod
     def _parse_float(value: object) -> float:

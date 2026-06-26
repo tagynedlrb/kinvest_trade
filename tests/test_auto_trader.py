@@ -73,6 +73,7 @@ def _build_trader() -> SoxlAutoTrader:
     trader.loop_count = 10
     trader.flat_cycles = 0
     trader.last_exit_cycle = 0
+    trader.last_available_usd = 0.0
     trader._last_adaptive_override = SimpleNamespace()
     trader.repository = DummyRepository()
     return trader
@@ -221,3 +222,43 @@ def test_decide_action_sells_on_momentum_loss_cut() -> None:
     assert decision.side == "sell"
     assert decision.qty == 3
     assert decision.reason == "momentum_loss_cut"
+
+
+def test_determine_buy_qty_uses_slot_sizing_when_available_balance_exists() -> None:
+    trader = _build_trader()
+    trader.last_available_usd = 10_000.0
+    trader.config.auto_trade.use_slot_sizing = True
+    trader.config.auto_trade.slot_entry_pct = 0.10
+    trader.config.auto_trade.slot_scale_in_pct = 0.05
+    trader.config.auto_trade.slot_max_pct = 0.20
+    trader.config.auto_trade.max_position_qty = 20
+
+    qty = trader._determine_buy_qty(
+        auto=trader.config.auto_trade,
+        snapshot=_snapshot(price=18.0, volume_ratio=1.2, intraday_momentum=0.001),
+        scale_in=False,
+        urgent=False,
+    )
+
+    assert qty == 11
+
+
+def test_determine_buy_qty_falls_back_to_fixed_quantity_when_slot_balance_missing() -> None:
+    trader = _build_trader()
+    trader.last_available_usd = 0.0
+    trader.config.auto_trade.use_slot_sizing = True
+    trader.config.auto_trade.quantity = 2
+    trader.config.auto_trade.max_position_qty = 6
+
+    qty = trader._determine_buy_qty(
+        auto=trader.config.auto_trade,
+        snapshot=_snapshot(
+            price=225.0,
+            volume_ratio=trader.config.auto_trade.volume_spike_ratio * 1.6,
+            intraday_momentum=trader.config.auto_trade.min_intraday_momentum_pct * 2.2,
+        ),
+        scale_in=False,
+        urgent=True,
+    )
+
+    assert qty == 5

@@ -133,8 +133,10 @@ python3 main.py
 - 손절은 고정 퍼센트만 쓰지 않고, `ATR * 배수`와 `모멘텀 붕괴`를 함께 본다.
 - 익절은 `부분 익절`, `트레일링`, `볼륨 감소`, `과열 RSI`를 함께 써서 한 번에 전량 정리하지 않도록 설계했다.
 - `max_position_qty`, `allow_scale_in`, `allow_partial_exit`로 보유 수량을 고정하지 않고 가변적으로 조절한다.
+- 기본값은 `slot sizing` 기반이다. `last_available_usd × slot_max_pct`를 슬롯 예산으로 잡고, 진입/추가매수 수량을 달러 금액 기준으로 역산한다.
 - `poll_interval_sec=10`으로 시세는 자주 감시하되, 무거운 차트 컨텍스트는 `1분봉 기준`으로 캐시해 호출 수를 억제한다.
 - `adaptive_params.py`가 매 사이클마다 ATR, 거래량 강도, 모멘텀을 다시 계산해 `take_profit_pct`, `stop_loss_pct`, `volume_spike_ratio`, `max_hold_cycles`를 동적으로 덮어쓴다.
+- 보유 시간이 길어졌을 때는 수익 포지션뿐 아니라 손실 포지션에도 `time_exit_loss`, `time_exit_forced`가 작동해 손실 방치를 줄인다.
 
 ### 손익 계산 기준
 - 실현 손익은 `gross_pnl_usd`, `net_pnl_usd`, `net_pnl_krw`로 나눠 저장한다.
@@ -201,6 +203,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_terminate`: 현재 lab 실행을 강제 종료하고 대기 상태로 복귀. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_status`: 현재 상태 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
+- `/lab_positions`: 현재 보유 포지션과 미실현 손익 조회
 - `/lab_help`: 명령 목록 조회
 
 동작 메모:
@@ -214,6 +217,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
 - 현재 기본 해외 감시는 `overseas_top_n=5`, `active_pool=5`, `bench_scan_every=4` 기준이다. 평소에는 active pool만 짧게 스캔하고, 4사이클마다만 20개 전체를 다시 훑는 구조라 평균 호출량을 낮추면서도 타겟 교체는 유지한다.
+- `/lab_watchlist`에서 보유 종목은 `hold=N`과 함께 `pnl=+X.XX%` 형식의 미실현 손익이 함께 표시된다.
 
 ### 1. 모의투자 모드로 전환
 `.env`에서 아래처럼 둔다.

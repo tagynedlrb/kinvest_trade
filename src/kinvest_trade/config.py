@@ -86,6 +86,10 @@ class AutoTradeConfig:
     exchange_code: str
     currency_code: str
     quantity: int
+    use_slot_sizing: bool
+    slot_entry_pct: float
+    slot_scale_in_pct: float
+    slot_max_pct: float
     max_position_qty: int
     poll_interval_sec: int
     max_actions_per_run: int
@@ -498,6 +502,10 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             exchange_code=str(auto_trade_raw.get("exchange_code", "AMEX")),
             currency_code=str(auto_trade_raw.get("currency_code", "USD")),
             quantity=int(auto_trade_raw.get("quantity", 1)),
+            use_slot_sizing=bool(auto_trade_raw.get("use_slot_sizing", False)),
+            slot_entry_pct=float(auto_trade_raw.get("slot_entry_pct", 0.10)),
+            slot_scale_in_pct=float(auto_trade_raw.get("slot_scale_in_pct", 0.05)),
+            slot_max_pct=float(auto_trade_raw.get("slot_max_pct", 0.20)),
             max_position_qty=int(auto_trade_raw.get("max_position_qty", 4)),
             poll_interval_sec=int(auto_trade_raw.get("poll_interval_sec", 3)),
             max_actions_per_run=int(auto_trade_raw.get("max_actions_per_run", 0)),

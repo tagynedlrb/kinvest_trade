@@ -187,8 +187,13 @@ def evaluate_exit_setup(
     ):
         return ExitSetup("sell", "breakout_exhaustion_exit", "SELL_READY", note)
 
-    if hold_cycles >= config.max_hold_cycles and pnl_pct > 0 and snapshot.intraday_momentum <= 0:
-        return ExitSetup("sell", "time_exit", "SELL_READY", note)
+    if hold_cycles >= config.max_hold_cycles:
+        if pnl_pct >= 0 and snapshot.intraday_momentum <= 0:
+            return ExitSetup("sell", "time_exit_profit", "SELL_READY", note)
+        if pnl_pct < 0 and not trend_filter_ok(snapshot):
+            return ExitSetup("sell", "time_exit_loss", "SELL_READY", note)
+        if pnl_pct < 0 and hold_cycles >= int(config.max_hold_cycles * 1.5):
+            return ExitSetup("sell", "time_exit_forced", "SELL_READY", note)
 
     if snapshot.volume_ratio >= config.volume_spike_ratio and trend_filter_ok(snapshot):
         return ExitSetup("hold", "trend_holding", "HOLD", note)

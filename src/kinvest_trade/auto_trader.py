@@ -105,6 +105,7 @@ class SoxlAutoTrader:
         self.loop_count = 0
         self.last_exit_cycle = 0
         self.last_fx_rate_krw = config.auto_trade.usd_krw_fallback_rate
+        self.last_available_usd: float = 0.0
         self._daily_closes: list[float] = []
         self._minute_closes: list[float] = []
         self._minute_highs: list[float] = []
@@ -644,6 +645,19 @@ class SoxlAutoTrader:
         if remaining <= 0:
             return 0
 
+        if auto.use_slot_sizing and snapshot.price > 0:
+            available_usd = self.last_available_usd
+            if available_usd > 0:
+                slot_budget = available_usd * auto.slot_max_pct
+                size_pct = auto.slot_scale_in_pct if scale_in else auto.slot_entry_pct
+                if not scale_in:
+                    if snapshot.volume_ratio >= auto.volume_spike_ratio * 1.5:
+                        size_pct = min(size_pct * 1.5, auto.slot_max_pct * 0.5)
+                    if urgent:
+                        size_pct = min(size_pct * 2.0, auto.slot_max_pct * 0.5)
+                slot_qty = max(1, int(slot_budget * size_pct / snapshot.price))
+                return max(1, min(slot_qty, remaining))
+
         if scale_in:
             return max(1, min(remaining, math.ceil(max(self.position.qty, 1) / 2)))
 
@@ -751,6 +765,7 @@ class SoxlAutoTrader:
         auto = self.config.auto_trade
         fx_rate = self.last_fx_rate_krw or auto.usd_krw_fallback_rate
         max_buy_qty = auto.max_position_qty
+        self.last_available_usd = 0.0
 
         try:
             possible = await self.client.get_overseas_possible_order(
@@ -772,6 +787,14 @@ class SoxlAutoTrader:
         )
         if parsed_max_qty > 0:
             max_buy_qty = parsed_max_qty
+
+        parsed_available = self._parse_float(
+            raw.get("ord_psbl_frcr_amt_wcrc") or raw.get("frcr_ord_psbl_amt1")
+        )
+        if parsed_available > 0 and fx_rate > 0:
+            self.last_available_usd = parsed_available / fx_rate
+        elif parsed_max_qty > 0 and last_price > 0:
+            self.last_available_usd = parsed_max_qty * last_price
 
         return fx_rate, max_buy_qty
 

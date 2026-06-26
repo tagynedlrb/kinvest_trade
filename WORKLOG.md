@@ -1,6 +1,21 @@
 # WORKLOG
 
 ## 2026-06-26
+### 추가 개선 6
+- 첨부된 `4차 개선` 지시문 기준으로 `momentum_policy.py`의 `time_exit`를 손실 포지션에도 적용되도록 재설계
+- 최대 보유 시간 도달 시 수익 포지션은 `time_exit_profit`, 손실 포지션은 추세 이탈 시 `time_exit_loss`, 장기 방치 시 `time_exit_forced`로 정리하도록 보강
+- `auto_trade`에 `use_slot_sizing`, `slot_entry_pct`, `slot_scale_in_pct`, `slot_max_pct`를 추가하고, 수량을 고정 주식 수가 아닌 가용 달러 기준으로 역산하는 슬롯 기반 금액 운용을 도입
+- `auto_trader.py`에 `last_available_usd` 캐시를 추가하고, 주문가능조회 응답에서 가용 외화 금액을 읽어 슬롯 기반 수량 계산에 연결
+- 가용 금액을 읽지 못하는 경우에는 `last_available_usd=0`으로 두고 기존 고정 수량 로직으로 자동 폴백하도록 유지
+- `telegram_control.py`에 `/lab_positions` 명령을 추가해 현재 보유 포지션과 미실현 손익을 조회할 수 있게 함
+- `watchlist` 출력에도 보유 종목의 `pnl=+X.XX%`를 함께 표기하도록 확장
+- `tests/test_momentum_policy.py`를 새로 추가하고, `tests/test_auto_trader.py`, `tests/test_telegram_control.py`를 새 슬롯/포지션 조회 동작에 맞춰 확장
+
+### 검증 결과
+- `python -m pytest tests/ -v` 전체 통과 목표로 반영
+- 슬롯 기반 수량 계산과 손실 time-exit, 텔레그램 positions 출력 테스트 추가
+
+## 2026-06-26
 ### 추가 개선 5
 - 첨부된 `3차 개선` 지시문 기준으로 `auto_trade`의 손익/진입 문턱을 현실화
 - `take_profit_pct=0.006`, `full_take_profit_pct=0.012`, `stop_loss_pct=0.004`, `hard_stop_loss_pct=0.008`로 조정

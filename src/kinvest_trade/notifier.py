@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import httpx
+
+from .config import NotificationConfig
+
+
+class TelegramNotifier:
+    def __init__(self, config: NotificationConfig) -> None:
+        self.config = config
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self.config.telegram_enabled
+            and bool(self.config.telegram_bot_token)
+            and bool(self.config.telegram_chat_id)
+        )
+
+    async def send(self, message: str) -> bool:
+        if not self.enabled:
+            return False
+
+        url = self._api_url("sendMessage")
+        payload = {
+            "chat_id": self.config.telegram_chat_id,
+            "text": message,
+        }
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+        return True
+
+    async def get_updates(
+        self,
+        *,
+        offset: int | None = None,
+        timeout_sec: int | None = None,
+    ) -> list[dict]:
+        if not self.enabled:
+            return []
+
+        params: dict[str, int] = {
+            "timeout": timeout_sec
+            if timeout_sec is not None
+            else self.config.telegram_command_poll_timeout_sec,
+        }
+        if offset is not None:
+            params["offset"] = offset
+
+        async with httpx.AsyncClient(timeout=max(params["timeout"] + 5, 10)) as client:
+            response = await client.get(self._api_url("getUpdates"), params=params)
+            response.raise_for_status()
+            payload = response.json()
+
+        if not payload.get("ok"):
+            return []
+        result = payload.get("result", [])
+        return result if isinstance(result, list) else []
+
+    def is_authorized_chat(self, chat_id: str | int | None) -> bool:
+        if chat_id is None:
+            return False
+        return str(chat_id).strip() == self.config.telegram_chat_id.strip()
+
+    def _api_url(self, method: str) -> str:
+        return f"https://api.telegram.org/bot{self.config.telegram_bot_token}/{method}"

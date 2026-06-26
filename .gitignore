@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.coverage
+.mypy_cache/
+.ruff_cache/
+.venv/
+.python-version
+.env
+keys/
+data/
+logs/
+state/
+*.sqlite3
+*.db
+*.log
+https:/

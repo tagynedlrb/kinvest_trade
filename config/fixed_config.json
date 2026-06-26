@@ -1,0 +1,181 @@
+{
+    "trading": {
+        "market": "KRX",
+        "market_code": "J",
+        "watchlist": [
+            "005930"
+        ],
+        "signal_interval_sec": 60,
+        "initial_entry_fraction": 0.5,
+        "scale_in_fraction": 0.3,
+        "max_positions": 3,
+        "max_position_value_krw": 300000,
+        "total_capital_limit_krw": 1000000,
+        "allow_scale_in": false,
+        "no_new_buy_after": "14:40"
+    },
+    "watch": {
+        "poll_interval_sec": 15,
+        "chart_timeframe": "minute",
+        "chart_bar_limit": 30,
+        "clear_screen": true,
+        "max_cycles": 0,
+        "telegram_summary_every": 4
+    },
+    "paper": {
+        "starting_cash_krw": 1000000,
+        "poll_interval_sec": 15,
+        "history_window": 5,
+        "entry_trigger_pct": 0.003,
+        "take_profit_pct": 0.008,
+        "stop_loss_pct": 0.007,
+        "min_bid_ask_ratio": 1.05,
+        "max_iterations": 20
+    },
+    "auto_trade": {
+        "enabled": true,
+        "mode": "OVERSEAS_MA_BAND",
+        "symbol": "SOXL",
+        "exchange_code": "AMEX",
+        "currency_code": "USD",
+        "quantity": 1,
+        "max_position_qty": 4,
+        "poll_interval_sec": 20,
+        "max_actions_per_run": 0,
+        "max_decision_cycles_per_run": 0,
+        "min_history_points": 20,
+        "daily_fast_window": 20,
+        "daily_slow_window": 60,
+        "intraday_fast_window": 5,
+        "intraday_slow_window": 20,
+        "intraday_bar_minutes": 5,
+        "intraday_chart_refresh_sec": 60,
+        "daily_chart_refresh_sec": 900,
+        "entry_pullback_pct": 0.0,
+        "add_on_pullback_pct": 0.0,
+        "breakout_entry_pct": 0.0,
+        "take_profit_pct": 0.007,
+        "full_take_profit_pct": 0.015,
+        "stop_loss_pct": 0.004,
+        "hard_stop_loss_pct": 0.009,
+        "trailing_stop_pct": 0.004,
+        "trailing_volatility_multiplier": 1.5,
+        "soft_stop_volatility_multiplier": 1.25,
+        "hard_stop_volatility_multiplier": 2.2,
+        "volatility_window": 8,
+        "momentum_window": 6,
+        "volatility_high_threshold": 0.0035,
+        "strong_rebound_pct": 0.002,
+        "max_spread_pct": 0.003,
+        "ma60_entry_buffer_pct": 0.012,
+        "ma20_breakdown_buffer_pct": 0.004,
+        "ma60_hard_stop_buffer_pct": 0.01,
+        "ma20_partial_exit_buffer_pct": 0.0025,
+        "trend_chase_limit_pct": 0.02,
+        "max_entry_rsi14": 62.0,
+        "max_hold_cycles": 180,
+        "force_reentry_after_cycles": 6,
+        "startup_buy_if_flat": false,
+        "allow_time_reentry": false,
+        "allow_scale_in": true,
+        "allow_partial_exit": true,
+        "scale_in_cooldown_cycles": 4,
+        "telegram_notify_each_fill": true,
+        "commission_rate": 0.0025,
+        "sec_fee_rate": 2.06e-05,
+        "fx_fee_rate": 0.0,
+        "min_expected_reward_cost_ratio": 1.3,
+        "min_expected_reward_risk_ratio": 1.2,
+        "annual_tax_free_allowance_krw": 2500000,
+        "capital_gains_tax_rate": 0.22,
+        "usd_krw_fallback_rate": 1350.0,
+        "stale_run_grace_minutes": 180
+    },
+    "strategy": {
+        "rsi_min": 45.0,
+        "rsi_max": 68.0,
+        "min_volume_ratio": 1.5,
+        "max_spread_pct": 0.002,
+        "min_recent_turnover_krw": 1000000000,
+        "max_ret_1m": 0.02,
+        "max_ret_3m": 0.04
+    },
+    "risk": {
+        "daily_loss_limit_pct": 0.01,
+        "per_trade_risk_pct": 0.002,
+        "stop_loss_pct": 0.007,
+        "take_profit_1_pct": 0.008,
+        "take_profit_2_pct": 0.013,
+        "trailing_stop_pct": 0.005,
+        "block_buy_if_1m_move_abs_gt": 0.02,
+        "block_buy_if_3m_rise_gt": 0.04,
+        "emergency_exit_if_position_loss_gt": 0.012,
+        "max_spread_pct": 0.002,
+        "min_recent_turnover_krw": 1000000000,
+        "max_consecutive_losses": 3
+    },
+    "storage": {
+        "db_path": "data/trading.db",
+        "log_dir": "logs",
+        "runtime_state_path": "state/runtime_state.json"
+    },
+    "notifications": {
+        "telegram_enabled": true,
+        "telegram_command_poll_timeout_sec": 20
+    },
+    "liquidity_lab": {
+        "enabled": true,
+        "loop_interval_sec": 30,
+        "domestic_candidates": [
+            "005930",
+            "000660",
+            "035420",
+            "419050",
+            "023410",
+            "010170",
+            "034940"
+        ],
+        "overseas_candidates": [
+            {
+                "symbol": "NVDA",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AAL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "INTC",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AMZN",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MU",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SOXL",
+                "exchange_code": "AMEX"
+            }
+        ],
+        "domestic_paper_iterations": 6,
+        "domestic_paper_interval_sec": 5,
+        "domestic_top_n": 3,
+        "overseas_top_n": 3,
+        "domestic_test_order_qty": 1,
+        "overseas_test_order_qty": 1,
+        "domestic_min_price_krw": 5000,
+        "domestic_min_intraday_turnover_krw": 50000000000,
+        "domestic_min_volume_sum": 30000,
+        "domestic_max_spread_pct": 0.003,
+        "overseas_min_price_usd": 10.0,
+        "overseas_min_volume": 50000,
+        "overseas_max_spread_pct": 0.004,
+        "overseas_take_profit_pct": 0.012,
+        "overseas_stop_loss_pct": 0.008,
+        "overseas_max_position_qty": 1
+    }
+}

@@ -1,0 +1,15 @@
+{
+  "trading": {
+    "market": "KRX",
+    "market_code": "J",
+    "watchlist": ["005930"]
+  },
+  "watch": {
+    "poll_interval_sec": 15,
+    "chart_timeframe": "minute",
+    "chart_bar_limit": 30
+  },
+  "notifications": {
+    "telegram_enabled": true
+  }
+}

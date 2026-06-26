@@ -1,0 +1,55 @@
+[
+  {
+    "stock_code": "005930",
+    "current_price": 70100,
+    "reference_price": 70000,
+    "vwap": 69920.0,
+    "rsi14": 54.2,
+    "ret_1m": 0.004,
+    "ret_3m": 0.011,
+    "spread_pct": 0.0009,
+    "recent_turnover_krw": 1800000000,
+    "volume_ratio_1m": 1.9,
+    "high_breakout": true
+  },
+  {
+    "stock_code": "005930",
+    "current_price": 70750,
+    "reference_price": 70500,
+    "vwap": 70230.0,
+    "rsi14": 63.0,
+    "ret_1m": 0.005,
+    "ret_3m": 0.015,
+    "spread_pct": 0.0008,
+    "recent_turnover_krw": 1950000000,
+    "volume_ratio_1m": 1.6,
+    "high_breakout": true
+  },
+  {
+    "stock_code": "000660",
+    "current_price": 241000,
+    "reference_price": 240500,
+    "vwap": 240800.0,
+    "rsi14": 72.0,
+    "ret_1m": 0.024,
+    "ret_3m": 0.052,
+    "spread_pct": 0.0025,
+    "recent_turnover_krw": 2400000000,
+    "volume_ratio_1m": 2.3,
+    "high_breakout": true
+  },
+  {
+    "stock_code": "005930",
+    "current_price": 69500,
+    "reference_price": 70000,
+    "vwap": 70150.0,
+    "rsi14": 41.0,
+    "ret_1m": -0.009,
+    "ret_3m": -0.015,
+    "spread_pct": 0.0011,
+    "recent_turnover_krw": 2100000000,
+    "volume_ratio_1m": 1.2,
+    "high_breakout": false
+  }
+]
+

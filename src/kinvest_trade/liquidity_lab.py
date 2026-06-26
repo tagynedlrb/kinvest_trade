@@ -1,0 +1,925 @@
+from __future__ import annotations
+
+import asyncio
+import math
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+
+from .client import KisApiError, KisRestClient, parse_kis_number
+from .config import AppConfig, OverseasCandidateConfig
+from .market_sessions import (
+    KST,
+    get_us_trading_session,
+    is_krx_regular_session,
+    is_us_orderable_session_for_env,
+    is_us_regular_session,
+)
+from .notifier import TelegramNotifier
+from .paper import PaperTradingService, PaperRunState
+from .repository import SqliteRepository
+from .technical_signals import (
+    MovingAverageSnapshot,
+    build_moving_average_snapshot,
+    format_snapshot_indicator,
+)
+from .time_utils import format_kst
+
+
+@dataclass(slots=True)
+class DomesticScanResult:
+    stock_code: str
+    current_price: int
+    best_ask: int
+    best_bid: int
+    spread_pct: float
+    minute_change_pct: float
+    intraday_turnover_krw: int
+    volume_sum: int
+    activity_score: float
+
+
+@dataclass(slots=True)
+class OverseasScanResult:
+    symbol: str
+    exchange_code: str
+    last_price: float
+    bid: float
+    ask: float
+    spread_pct: float
+    change_rate_pct: float
+    volume: int
+    orderable_qty: int
+    fx_rate_krw: float
+    activity_score: float
+
+
+@dataclass(slots=True)
+class ExcludedCandidate:
+    market: str
+    code: str
+    reasons: list[str]
+    snapshot: dict
+
+
+@dataclass(slots=True)
+class OverseasHeldPosition:
+    symbol: str
+    exchange_code: str
+    quantity: int
+    orderable_qty: int
+    avg_price: float
+    current_price: float
+    pnl_pct: float
+
+
+@dataclass(slots=True)
+class LiquidityLabReport:
+    scanned_at: str
+    krx_market_open: bool
+    us_market_open: bool
+    us_market_session: str
+    us_orderable_in_profile: bool
+    primary_market: str
+    primary_target: str | None
+    primary_selection_reason: str
+    domestic_ranked: list[DomesticScanResult]
+    overseas_ranked: list[OverseasScanResult]
+    domestic_excluded: list[ExcludedCandidate]
+    overseas_excluded: list[ExcludedCandidate]
+    overseas_positions: list[OverseasHeldPosition]
+    paper_run: dict | None
+    domestic_order: dict | None
+    overseas_order: dict | None
+
+    def to_dict(self) -> dict:
+        return {
+            "scanned_at": self.scanned_at,
+            "krx_market_open": self.krx_market_open,
+            "us_market_open": self.us_market_open,
+            "us_market_session": self.us_market_session,
+            "us_orderable_in_profile": self.us_orderable_in_profile,
+            "primary_market": self.primary_market,
+            "primary_target": self.primary_target,
+            "primary_selection_reason": self.primary_selection_reason,
+            "domestic_ranked": [asdict(item) for item in self.domestic_ranked],
+            "overseas_ranked": [asdict(item) for item in self.overseas_ranked],
+            "domestic_excluded": [asdict(item) for item in self.domestic_excluded],
+            "overseas_excluded": [asdict(item) for item in self.overseas_excluded],
+            "overseas_positions": [asdict(item) for item in self.overseas_positions],
+            "paper_run": self.paper_run,
+            "domestic_order": self.domestic_order,
+            "overseas_order": self.overseas_order,
+        }
+
+
+class LiquidityLabService:
+    def __init__(
+        self,
+        config: AppConfig,
+        client: KisRestClient,
+        repository: SqliteRepository,
+        notifier: TelegramNotifier,
+    ) -> None:
+        self.config = config
+        self.client = client
+        self.repository = repository
+        self.notifier = notifier
+        self._domestic_excluded: list[ExcludedCandidate] = []
+        self._overseas_excluded: list[ExcludedCandidate] = []
+
+    async def run(self) -> LiquidityLabReport:
+        now = datetime.now(timezone.utc)
+        krx_open = is_krx_regular_session(now)
+        us_open = is_us_regular_session(now)
+        us_session = get_us_trading_session(now)
+        us_orderable_in_profile = is_us_orderable_session_for_env(
+            now,
+            self.config.credentials.env,
+        )
+
+        domestic_ranked = await self.scan_domestic() if krx_open else []
+        overseas_ranked = await self.scan_overseas() if us_open else []
+        overseas_positions = await self._load_overseas_positions(overseas_ranked) if us_open else []
+        overseas_exit_target = (
+            await self._select_overseas_exit_target(overseas_ranked, overseas_positions)
+            if us_orderable_in_profile
+            else None
+        )
+        primary_market, primary_target, primary_reason = self._select_primary_target(
+            krx_open=krx_open,
+            us_open=us_open,
+            us_orderable_in_profile=us_orderable_in_profile,
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+        )
+        if overseas_exit_target is not None:
+            exit_candidate, _, exit_reason, _ = overseas_exit_target
+            primary_market = "overseas"
+            primary_target = exit_candidate.symbol
+            primary_reason = f"existing_position_{exit_reason}"
+
+        paper_summary = None
+        domestic_order = None
+        overseas_order = None
+
+        if primary_market == "domestic" and domestic_ranked:
+            watchlist = [domestic_ranked[0].stock_code]
+            paper_state = await self._run_domestic_paper_test(watchlist)
+            paper_summary = {
+                "run_id": paper_state.run_id,
+                "watchlist": watchlist,
+                "ending_cash_krw": paper_state.cash_krw,
+                "realized_pnl_krw": paper_state.realized_pnl_krw,
+            }
+            domestic_order = await self._place_domestic_test_order(domestic_ranked[0])
+        else:
+            paper_summary = {
+                "skipped": True,
+                "reason": (
+                    primary_reason
+                    if primary_market != "domestic"
+                    else "no_domestic_candidate"
+                ),
+            }
+            domestic_order = {
+                "skipped": True,
+                "reason": (
+                    primary_reason
+                    if primary_market != "domestic"
+                    else "no_domestic_candidate"
+                ),
+            }
+
+        if primary_market == "overseas" and overseas_exit_target is not None:
+            exit_candidate, exit_position, exit_reason, exit_signal = overseas_exit_target
+            overseas_order = await self._place_overseas_sell_order(
+                exit_candidate,
+                exit_position,
+                exit_reason,
+                signal_snapshot=exit_signal,
+            )
+        elif primary_market == "overseas" and overseas_ranked:
+            overseas_order = await self._manage_overseas_position(
+                candidate=overseas_ranked[0],
+                held_positions=overseas_positions,
+            )
+        else:
+            overseas_order = {
+                "skipped": True,
+                "reason": (
+                    primary_reason
+                    if primary_market != "overseas"
+                    else "no_overseas_candidate"
+                ),
+            }
+
+        report = LiquidityLabReport(
+            scanned_at=format_kst(now) or "",
+            krx_market_open=krx_open,
+            us_market_open=us_open,
+            us_market_session=us_session,
+            us_orderable_in_profile=us_orderable_in_profile,
+            primary_market=primary_market,
+            primary_target=primary_target,
+            primary_selection_reason=primary_reason,
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+            domestic_excluded=self._domestic_excluded,
+            overseas_excluded=self._overseas_excluded,
+            overseas_positions=overseas_positions,
+            paper_run=paper_summary,
+            domestic_order=domestic_order,
+            overseas_order=overseas_order,
+        )
+        await self._send_summary(report)
+        return report
+
+    async def scan_domestic(self) -> list[DomesticScanResult]:
+        results: list[DomesticScanResult] = []
+        excluded: list[ExcludedCandidate] = []
+        for stock_code in self.config.liquidity_lab.domestic_candidates:
+            try:
+                candidate = await self._scan_single_domestic(stock_code)
+            except Exception:
+                continue
+            reasons = self._domestic_speculative_reasons(candidate)
+            if reasons:
+                excluded.append(
+                    ExcludedCandidate(
+                        market="domestic",
+                        code=stock_code,
+                        reasons=reasons,
+                        snapshot=asdict(candidate),
+                    )
+                )
+            else:
+                results.append(candidate)
+            await asyncio.sleep(0.2)
+        self._domestic_excluded = excluded
+        return sorted(results, key=lambda item: item.activity_score, reverse=True)
+
+    async def scan_overseas(self) -> list[OverseasScanResult]:
+        results: list[OverseasScanResult] = []
+        excluded: list[ExcludedCandidate] = []
+        for candidate in self.config.liquidity_lab.overseas_candidates:
+            try:
+                scan_result = await self._scan_single_overseas(candidate)
+            except Exception:
+                continue
+            reasons = self._overseas_speculative_reasons(scan_result)
+            if reasons:
+                excluded.append(
+                    ExcludedCandidate(
+                        market="overseas",
+                        code=candidate.symbol,
+                        reasons=reasons,
+                        snapshot=asdict(scan_result),
+                    )
+                )
+            else:
+                results.append(scan_result)
+            await asyncio.sleep(0.2)
+        self._overseas_excluded = excluded
+        return sorted(results, key=lambda item: item.activity_score, reverse=True)
+
+    async def _scan_single_domestic(self, stock_code: str) -> DomesticScanResult:
+        current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
+        orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
+        target_date = datetime.now(timezone.utc).astimezone(KST).strftime("%Y%m%d")
+        bars = await self.client.get_time_daily_chart(
+            stock_code=stock_code,
+            target_date=target_date,
+            market_code=self.config.trading.market_code,
+        )
+        limited_bars = bars[: min(8, len(bars))]
+        closes = [parse_kis_number(row.get("stck_prpr")) for row in limited_bars]
+        volumes = [parse_kis_number(row.get("cntg_vol")) for row in limited_bars]
+        earliest = closes[-1] if closes else 0
+        latest = closes[0] if closes else current["current_price"]
+        minute_change_pct = 0.0 if earliest <= 0 else (latest - earliest) / earliest
+        intraday_turnover = int(current.get("turnover_krw", 0) or 0)
+        volume_sum = sum(volumes)
+        spread_pct = float(orderbook.get("spread_pct", 0.0) or 0.0)
+        liquidity_score = math.log10(max(intraday_turnover, 1)) * 8.0
+        volume_score = math.log10(max(volume_sum, 1)) * 4.0
+        momentum_score = minute_change_pct * 300.0
+        spread_penalty = spread_pct * 3000.0
+        activity_score = liquidity_score + volume_score + momentum_score - spread_penalty
+        return DomesticScanResult(
+            stock_code=stock_code,
+            current_price=int(current["current_price"]),
+            best_ask=int(orderbook["best_ask"]),
+            best_bid=int(orderbook["best_bid"]),
+            spread_pct=spread_pct,
+            minute_change_pct=minute_change_pct,
+            intraday_turnover_krw=intraday_turnover,
+            volume_sum=volume_sum,
+            activity_score=round(activity_score, 4),
+        )
+
+    async def _scan_single_overseas(
+        self,
+        candidate: OverseasCandidateConfig,
+    ) -> OverseasScanResult:
+        quote = await self.client.get_overseas_price(candidate.symbol, candidate.exchange_code)
+        last_price = self._parse_float(quote.get("last_price"))
+        bid = self._parse_float(quote.get("bid"))
+        ask = self._parse_float(quote.get("ask"))
+        volume = parse_kis_number(quote.get("volume"))
+        change_rate = self._parse_float(quote.get("change_rate"))
+        mid_price = (bid + ask) / 2 if bid > 0 and ask > 0 else float(last_price)
+        spread_pct = 0.0
+        if bid > 0 and ask > 0 and mid_price > 0:
+            spread_pct = (ask - bid) / mid_price
+        liquidity_score = math.log10(max(volume, 1)) * 6.0
+        momentum_score = change_rate * 2.5
+        spread_penalty = spread_pct * 2500.0
+        activity_score = liquidity_score + momentum_score - spread_penalty
+        return OverseasScanResult(
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            last_price=last_price,
+            bid=bid,
+            ask=ask,
+            spread_pct=spread_pct,
+            change_rate_pct=change_rate,
+            volume=volume,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=round(activity_score, 4),
+        )
+
+    async def _load_overseas_positions(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+    ) -> list[OverseasHeldPosition]:
+        if not overseas_ranked:
+            return []
+
+        quote_map = {item.symbol.upper(): item for item in overseas_ranked}
+        candidate_symbols = set(quote_map.keys())
+        exchange_codes = {item.exchange_code.upper() for item in overseas_ranked}
+        positions_by_key: dict[tuple[str, str], OverseasHeldPosition] = {}
+
+        for exchange_code in sorted(exchange_codes):
+            try:
+                balance = await self.client.get_overseas_balance(
+                    exchange_code=exchange_code,
+                    currency_code="USD",
+                )
+            except Exception:
+                continue
+
+            for row in balance.get("positions", []):
+                symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                if symbol not in candidate_symbols:
+                    continue
+                row_exchange_code = str(row.get("ovrs_excg_cd", "")).strip().upper() or exchange_code
+                quantity = parse_kis_number(row.get("ovrs_cblc_qty"))
+                if quantity <= 0:
+                    continue
+                orderable_qty = parse_kis_number(row.get("ord_psbl_qty"))
+                avg_price = self._parse_float(row.get("pchs_avg_pric"))
+                quote = quote_map.get(symbol)
+                if quote is None or avg_price <= 0:
+                    continue
+                current_price = quote.last_price
+                pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0.0
+                positions_by_key[(symbol, row_exchange_code)] = OverseasHeldPosition(
+                    symbol=symbol,
+                    exchange_code=row_exchange_code,
+                    quantity=quantity,
+                    orderable_qty=orderable_qty,
+                    avg_price=avg_price,
+                    current_price=current_price,
+                    pnl_pct=pnl_pct,
+                )
+
+        return list(positions_by_key.values())
+
+    async def _select_overseas_exit_target(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+        held_positions: list[OverseasHeldPosition],
+    ) -> tuple[OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot | None] | None:
+        if not overseas_ranked or not held_positions:
+            return None
+
+        config = self.config.liquidity_lab
+        quote_map = {item.symbol.upper(): item for item in overseas_ranked}
+        selected: tuple[
+            tuple[int, float],
+            OverseasScanResult,
+            OverseasHeldPosition,
+            str,
+            MovingAverageSnapshot | None,
+        ] | None = None
+
+        for held in held_positions:
+            quote = quote_map.get(held.symbol.upper())
+            if quote is None:
+                continue
+            if held.orderable_qty <= 0:
+                continue
+
+            exit_reason: str | None = None
+            priority: tuple[int, float] | None = None
+            if held.pnl_pct <= -config.overseas_stop_loss_pct:
+                exit_reason = "stop_loss"
+                priority = (0, held.pnl_pct)
+            elif held.pnl_pct >= config.overseas_take_profit_pct:
+                exit_reason = "take_profit"
+                priority = (1, -held.pnl_pct)
+
+            if exit_reason is None or priority is None:
+                continue
+            if selected is None or priority < selected[0]:
+                selected = (priority, quote, held, exit_reason, None)
+
+        if selected is not None:
+            _, quote, held, exit_reason, signal_snapshot = selected
+            return quote, held, exit_reason, signal_snapshot
+
+        signal_candidates: list[tuple[float, OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot]] = []
+        for held in held_positions:
+            quote = quote_map.get(held.symbol.upper())
+            if quote is None or held.orderable_qty <= 0:
+                continue
+            signal_snapshot = await self._load_overseas_signal(quote)
+            if signal_snapshot is None:
+                continue
+            should_exit, exit_reason = self._should_exit_overseas_position(signal_snapshot, held)
+            if not should_exit:
+                continue
+            signal_candidates.append((held.pnl_pct, quote, held, exit_reason, signal_snapshot))
+
+        if not signal_candidates:
+            return None
+
+        signal_candidates.sort(key=lambda item: item[0])
+        _, quote, held, exit_reason, signal_snapshot = signal_candidates[0]
+        return quote, held, exit_reason, signal_snapshot
+
+    def _domestic_speculative_reasons(self, candidate: DomesticScanResult) -> list[str]:
+        config = self.config.liquidity_lab
+        reasons: list[str] = []
+        if candidate.current_price < config.domestic_min_price_krw:
+            reasons.append("low_price_krw")
+        if candidate.intraday_turnover_krw < config.domestic_min_intraday_turnover_krw:
+            reasons.append("thin_intraday_turnover")
+        if candidate.volume_sum < config.domestic_min_volume_sum:
+            reasons.append("thin_recent_volume")
+        if candidate.spread_pct > config.domestic_max_spread_pct:
+            reasons.append("wide_spread")
+        return reasons
+
+    def _overseas_speculative_reasons(self, candidate: OverseasScanResult) -> list[str]:
+        config = self.config.liquidity_lab
+        reasons: list[str] = []
+        if candidate.last_price < config.overseas_min_price_usd:
+            reasons.append("low_price_usd")
+        if candidate.volume < config.overseas_min_volume:
+            reasons.append("thin_volume")
+        if candidate.spread_pct > config.overseas_max_spread_pct:
+            reasons.append("wide_spread")
+        return reasons
+
+    @staticmethod
+    def _select_primary_target(
+        *,
+        krx_open: bool,
+        us_open: bool,
+        us_orderable_in_profile: bool,
+        domestic_ranked: list[DomesticScanResult],
+        overseas_ranked: list[OverseasScanResult],
+    ) -> tuple[str, str | None, str]:
+        if krx_open and domestic_ranked:
+            return "domestic", domestic_ranked[0].stock_code, "highest_current_activity_in_open_market"
+        if us_orderable_in_profile and overseas_ranked:
+            return "overseas", overseas_ranked[0].symbol, "highest_current_activity_in_open_market"
+        if krx_open:
+            return "domestic", None, "krx_open_but_no_candidate"
+        if us_orderable_in_profile:
+            return "overseas", None, "us_open_but_no_candidate"
+        if us_open:
+            return "none", None, "us_open_but_mock_session_not_supported"
+        return "none", None, "no_supported_market_open"
+
+    async def _run_domestic_paper_test(self, watchlist: list[str]) -> PaperRunState:
+        service = PaperTradingService(self.config, self.client, self.repository, self.notifier)
+        return await service.run(
+            iterations=self.config.liquidity_lab.domestic_paper_iterations,
+            interval_sec=self.config.liquidity_lab.domestic_paper_interval_sec,
+            watchlist_override=watchlist,
+        )
+
+    async def _place_domestic_test_order(self, candidate: DomesticScanResult) -> dict:
+        qty = self.config.liquidity_lab.domestic_test_order_qty
+        if qty <= 0:
+            return {"skipped": True, "reason": "domestic_test_order_qty_zero"}
+        if self.config.credentials.dry_run:
+            return {
+                "skipped": True,
+                "reason": "dry_run_enabled",
+                "candidate": asdict(candidate),
+            }
+        response = await self.client.place_cash_order(
+            side="buy",
+            stock_code=candidate.stock_code,
+            qty=qty,
+            price=candidate.best_ask or candidate.current_price,
+            order_division="00",
+        )
+        return {
+            "submitted": True,
+            "market": "domestic",
+            "side": "buy",
+            "candidate": asdict(candidate),
+            "qty": qty,
+            "response": response,
+        }
+
+    async def _place_overseas_test_order(self, candidate: OverseasScanResult) -> dict:
+        signal_snapshot = await self._load_overseas_signal(candidate)
+        if signal_snapshot is None:
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "wait",
+                "candidate": asdict(candidate),
+                "reason": "signal_snapshot_unavailable",
+            }
+
+        should_buy, buy_reason = self._should_buy_overseas_candidate(signal_snapshot)
+        if not should_buy:
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "wait",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+                "reason": buy_reason,
+            }
+
+        qty = self.config.liquidity_lab.overseas_test_order_qty
+        if qty <= 0:
+            return {"skipped": True, "reason": "overseas_test_order_qty_zero"}
+        if self.config.credentials.dry_run:
+            return {
+                "skipped": True,
+                "side": "buy",
+                "reason": "dry_run_enabled",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+            }
+        try:
+            response = await self.client.place_overseas_order_for_current_session(
+                side="buy",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                qty=qty,
+                price=f"{candidate.last_price:.4f}",
+                order_division="00",
+            )
+        except KisApiError as exc:
+            if (
+                "미국주식 주간거래는 제공하지 않습니다" in str(exc)
+                or "KIS mock currently supports US order tests only during the US regular session" in str(exc)
+            ):
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "signal_snapshot": asdict(signal_snapshot),
+                    "qty": qty,
+                    "reason": "mock_us_session_not_supported",
+                    "error": str(exc),
+                }
+            return {
+                "submitted": False,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+                "qty": qty,
+                "error": str(exc),
+            }
+        return {
+            "submitted": True,
+            "market": "overseas",
+            "side": "buy",
+            "candidate": asdict(candidate),
+            "signal_snapshot": asdict(signal_snapshot),
+            "qty": qty,
+            "reason": buy_reason,
+            "response": response,
+        }
+
+    async def _manage_overseas_position(
+        self,
+        *,
+        candidate: OverseasScanResult,
+        held_positions: list[OverseasHeldPosition],
+    ) -> dict:
+        config = self.config.liquidity_lab
+        held_map = {item.symbol.upper(): item for item in held_positions}
+        held = held_map.get(candidate.symbol.upper())
+
+        if held is not None:
+            if held.orderable_qty <= 0:
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "hold",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "reason": "pending_exit_order",
+                }
+            if held.quantity >= config.overseas_max_position_qty:
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "hold",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "reason": "already_holding_max_qty_waiting_for_exit",
+                }
+
+        return await self._place_overseas_test_order(candidate)
+
+    async def _place_overseas_sell_order(
+        self,
+        candidate: OverseasScanResult,
+        held: OverseasHeldPosition,
+        exit_reason: str,
+        signal_snapshot: MovingAverageSnapshot | None = None,
+    ) -> dict:
+        if self.config.credentials.dry_run:
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                "reason": "dry_run_enabled",
+                "exit_reason": exit_reason,
+            }
+
+        try:
+            sell_qty = min(held.quantity, max(held.orderable_qty, 0))
+            response = await self.client.place_overseas_order_for_current_session(
+                side="sell",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                qty=sell_qty,
+                price=f"{candidate.last_price:.4f}",
+                order_division="00",
+            )
+        except KisApiError as exc:
+            return {
+                "submitted": False,
+                "market": "overseas",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                "exit_reason": exit_reason,
+                "error": str(exc),
+            }
+
+        return {
+            "submitted": True,
+            "market": "overseas",
+            "side": "sell",
+            "candidate": asdict(candidate),
+            "held_position": asdict(held),
+            "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+            "qty": sell_qty,
+            "exit_reason": exit_reason,
+            "response": response,
+        }
+
+    async def _load_overseas_signal(
+        self,
+        candidate: OverseasScanResult,
+    ) -> MovingAverageSnapshot | None:
+        try:
+            daily_rows = await self.client.get_overseas_daily_prices(
+                candidate.symbol,
+                candidate.exchange_code,
+                adjusted_price=True,
+            )
+            minute_rows = await self.client.get_overseas_minute_chart(
+                candidate.symbol,
+                candidate.exchange_code,
+                interval_minutes=self.config.auto_trade.intraday_bar_minutes,
+                include_previous_day=True,
+                record_count=max(self.config.auto_trade.intraday_slow_window + 8, 40),
+            )
+        except KisApiError:
+            return None
+
+        daily_closes = self._extract_chart_closes(daily_rows, ("clos", "close", "last"))
+        minute_closes = self._extract_chart_closes(minute_rows, ("last", "clos", "close"))
+        if (
+            len(daily_closes) < self.config.auto_trade.daily_slow_window
+            or len(minute_closes) < self.config.auto_trade.intraday_slow_window
+        ):
+            return None
+
+        return build_moving_average_snapshot(
+            price=candidate.last_price,
+            bid=candidate.bid,
+            ask=candidate.ask,
+            daily_closes=daily_closes,
+            minute_closes=minute_closes,
+            daily_fast_window=self.config.auto_trade.daily_fast_window,
+            daily_slow_window=self.config.auto_trade.daily_slow_window,
+            intraday_fast_window=self.config.auto_trade.intraday_fast_window,
+            intraday_slow_window=self.config.auto_trade.intraday_slow_window,
+            volatility_window=self.config.auto_trade.volatility_window,
+            momentum_window=self.config.auto_trade.momentum_window,
+        )
+
+    def _should_buy_overseas_candidate(
+        self,
+        snapshot: MovingAverageSnapshot,
+    ) -> tuple[bool, str]:
+        auto = self.config.auto_trade
+        if snapshot.spread_pct > auto.max_spread_pct:
+            return False, "wide_spread"
+        if not snapshot.has_required_context:
+            return False, "insufficient_ma_context"
+        if snapshot.rsi14 is not None and snapshot.rsi14 > auto.max_entry_rsi14 + 6:
+            return False, "overbought_entry_block"
+        if (
+            abs(snapshot.daily_gap_slow_pct) <= auto.ma60_entry_buffer_pct
+            and snapshot.crossed_up
+        ):
+            return True, "ma_slow_reclaim_entry"
+        if (
+            snapshot.daily_ma_fast is not None
+            and snapshot.daily_ma_slow is not None
+            and snapshot.daily_ma_fast >= snapshot.daily_ma_slow
+            and snapshot.price >= snapshot.daily_ma_fast
+            and snapshot.crossed_up
+            and snapshot.daily_gap_fast_pct <= auto.trend_chase_limit_pct
+        ):
+            return True, "ma_fast_reclaim_entry"
+        return False, "no_entry_signal"
+
+    def _should_exit_overseas_position(
+        self,
+        snapshot: MovingAverageSnapshot,
+        held: OverseasHeldPosition,
+    ) -> tuple[bool, str]:
+        auto = self.config.auto_trade
+        if not snapshot.has_required_context:
+            return False, "insufficient_ma_context"
+
+        hard_band = max(
+            auto.hard_stop_loss_pct,
+            auto.ma60_hard_stop_buffer_pct,
+            snapshot.intraday_volatility * auto.hard_stop_volatility_multiplier,
+        )
+        soft_band = max(
+            auto.stop_loss_pct,
+            auto.ma20_breakdown_buffer_pct,
+            snapshot.intraday_volatility * auto.soft_stop_volatility_multiplier,
+        )
+
+        if held.pnl_pct <= -hard_band or snapshot.daily_gap_slow_pct <= -hard_band:
+            return True, "ma_slow_failure_hard_stop"
+        if snapshot.daily_gap_fast_pct <= -soft_band and (
+            snapshot.crossed_down
+            or not snapshot.fast_above_slow
+            or (snapshot.rsi14 is not None and snapshot.rsi14 < 45)
+        ):
+            return True, "ma_fast_breakdown_loss_cut"
+        if held.pnl_pct > self.config.liquidity_lab.overseas_take_profit_pct and (
+            snapshot.crossed_down or (snapshot.rsi14 is not None and snapshot.rsi14 >= 70)
+        ):
+            return True, "trend_take_profit"
+        return False, "hold"
+
+    async def _send_summary(self, report: LiquidityLabReport) -> None:
+        domestic = report.domestic_ranked[0] if report.domestic_ranked else None
+        overseas = report.overseas_ranked[0] if report.overseas_ranked else None
+        action = self._build_action_summary(report)
+        lines = [
+            "[KIS][LIQUIDITY_LAB]",
+            f"time={report.scanned_at}",
+            f"market={report.primary_market}",
+            f"target={report.primary_target or '-'}",
+            f"action={action['action']}",
+            f"price={action['price']}",
+            f"qty={action['qty']}",
+            f"indicator={action['indicator']}",
+            f"reason={action['reason']}",
+        ]
+        if report.overseas_positions:
+            lines.append(f"held_positions={len(report.overseas_positions)}")
+        elif domestic is not None and report.primary_market == "domestic":
+            lines.append(f"indicator_detail=chg={domestic.minute_change_pct * 100:.2f}% spread={domestic.spread_pct * 100:.2f}%")
+        elif overseas is not None and report.primary_market == "overseas":
+            lines.append(f"indicator_detail=chg={overseas.change_rate_pct:.2f}% spread={overseas.spread_pct * 100:.2f}%")
+        await self.notifier.send("\n".join(lines))
+
+    def _build_action_summary(self, report: LiquidityLabReport) -> dict[str, str]:
+        overseas_order = report.overseas_order or {}
+        domestic_order = report.domestic_order or {}
+        if overseas_order.get("submitted"):
+            return self._format_order_summary(overseas_order, currency="USD")
+        if domestic_order.get("submitted"):
+            return self._format_order_summary(domestic_order, currency="KRW")
+        if report.primary_market == "overseas" and (
+            overseas_order.get("skipped") or overseas_order.get("error")
+        ):
+            return self._format_order_summary(overseas_order, currency="USD")
+        if report.primary_market == "domestic" and (
+            domestic_order.get("skipped") or domestic_order.get("error")
+        ):
+            return self._format_order_summary(domestic_order, currency="KRW")
+        return {
+            "action": "WAIT",
+            "price": "-",
+            "qty": "-",
+            "indicator": "-",
+            "reason": report.primary_selection_reason,
+        }
+
+    def _format_order_summary(self, order: dict, *, currency: str) -> dict[str, str]:
+        candidate = order.get("candidate") or {}
+        held = order.get("held_position") or {}
+        signal_snapshot = order.get("signal_snapshot") or {}
+        side = str(order.get("side", "wait")).upper()
+        action = side if side not in {"HOLD", "WAIT"} else "WAIT"
+        if order.get("skipped"):
+            action = "WAIT"
+            if side == "BUY" and str(order.get("reason")) == "dry_run_enabled":
+                action = "BUY_SETUP"
+            elif side == "SELL" and str(order.get("reason")) == "dry_run_enabled":
+                action = "SELL_SETUP"
+        price_value = candidate.get("last_price") or candidate.get("current_price") or held.get("current_price")
+        qty_value = order.get("qty") or held.get("quantity") or "-"
+
+        indicator_parts: list[str] = []
+        if signal_snapshot:
+            indicator_parts.append(
+                format_snapshot_indicator(
+                    MovingAverageSnapshot(**signal_snapshot),
+                    daily_fast_label=f"{self.config.auto_trade.daily_fast_window}d",
+                    daily_slow_label=f"{self.config.auto_trade.daily_slow_window}d",
+                )
+            )
+        elif "pnl_pct" in held:
+            indicator_parts.append(f"pnl={float(held['pnl_pct']) * 100:.2f}%")
+        elif "change_rate_pct" in candidate:
+            indicator_parts.append(f"chg={float(candidate['change_rate_pct']):.2f}%")
+        elif "minute_change_pct" in candidate:
+            indicator_parts.append(f"chg={float(candidate['minute_change_pct']) * 100:.2f}%")
+        if "spread_pct" in candidate:
+            indicator_parts.append(f"spread={float(candidate['spread_pct']) * 100:.2f}%")
+
+        if price_value in (None, "", "-"):
+            price = "-"
+        elif currency == "USD":
+            price = f"{float(price_value):.4f} USD"
+        else:
+            price = f"{int(price_value)} KRW"
+
+        return {
+            "action": action,
+            "price": price,
+            "qty": str(qty_value),
+            "indicator": ", ".join(indicator_parts) if indicator_parts else "-",
+            "reason": str(
+                order.get("exit_reason")
+                or order.get("reason")
+                or order.get("error")
+                or "watching"
+            ),
+        }
+
+    @staticmethod
+    def _parse_float(value: object) -> float:
+        if value is None:
+            return 0.0
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return 0.0
+        return float(text)
+
+    @staticmethod
+    def _extract_chart_closes(rows: list[dict], field_names: tuple[str, ...]) -> list[float]:
+        closes: list[float] = []
+        for row in rows:
+            for field_name in field_names:
+                if field_name in row:
+                    value = LiquidityLabService._parse_float(row.get(field_name))
+                    if value > 0:
+                        closes.append(value)
+                    break
+        return closes

@@ -1,0 +1,15 @@
+[Unit]
+Description=KInvest Telegram Control Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/kinvest_trade
+ExecStart=/usr/bin/python3 /home/ubuntu/kinvest_trade/main.py --settings /home/ubuntu/kinvest_trade/config/fixed_config.json telegram-control
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

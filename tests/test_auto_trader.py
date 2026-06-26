@@ -1,0 +1,145 @@
+from types import SimpleNamespace
+
+from kinvest_trade.auto_trader import SoxlAutoTrader, StrategySnapshot
+
+
+def _build_trader() -> SoxlAutoTrader:
+    trader = SoxlAutoTrader.__new__(SoxlAutoTrader)
+    trader.config = SimpleNamespace(
+        auto_trade=SimpleNamespace(
+            quantity=1,
+            max_position_qty=4,
+            commission_rate=0.0025,
+            sec_fee_rate=0.0000206,
+            stop_loss_pct=0.004,
+            hard_stop_loss_pct=0.009,
+            soft_stop_volatility_multiplier=1.25,
+            hard_stop_volatility_multiplier=2.2,
+            take_profit_pct=0.007,
+            full_take_profit_pct=0.015,
+            trailing_stop_pct=0.004,
+            trailing_volatility_multiplier=1.5,
+            min_expected_reward_cost_ratio=1.3,
+            min_expected_reward_risk_ratio=1.2,
+            allow_partial_exit=True,
+            max_spread_pct=0.003,
+            ma60_entry_buffer_pct=0.012,
+            ma20_breakdown_buffer_pct=0.004,
+            ma60_hard_stop_buffer_pct=0.01,
+            ma20_partial_exit_buffer_pct=0.0025,
+            trend_chase_limit_pct=0.02,
+            max_entry_rsi14=62.0,
+            allow_scale_in=True,
+            scale_in_cooldown_cycles=4,
+            max_hold_cycles=180,
+            force_reentry_after_cycles=6,
+        )
+    )
+    trader.position = SimpleNamespace(
+        qty=0,
+        avg_price=0.0,
+        peak_price=0.0,
+        hold_cycles=0,
+        partial_exit_count=0,
+        last_buy_cycle=0,
+    )
+    trader.loop_count = 10
+    trader.flat_cycles = 0
+    trader.last_exit_cycle = 0
+    return trader
+
+
+def _snapshot(**overrides) -> StrategySnapshot:
+    payload = dict(
+        price=220.0,
+        spread_pct=0.001,
+        daily_ma_fast=224.0,
+        daily_ma_slow=220.5,
+        minute_ma_fast=221.0,
+        minute_ma_slow=220.0,
+        prev_minute_ma_fast=219.8,
+        prev_minute_ma_slow=220.1,
+        rsi14=49.0,
+        intraday_volatility=0.001,
+        intraday_momentum=0.002,
+        daily_gap_fast_pct=-0.017857,
+        daily_gap_slow_pct=-0.002268,
+        minute_gap_slow_pct=0.0,
+        fast_above_slow=True,
+        crossed_up=True,
+        crossed_down=False,
+        regime="ma_slow_reclaim",
+    )
+    payload.update(overrides)
+    return StrategySnapshot(**payload)
+
+
+def test_entry_edge_filter_blocks_trade_when_roundtrip_cost_is_too_large() -> None:
+    trader = _build_trader()
+    trader.config.auto_trade.commission_rate = 0.0065
+
+    allowed = trader._entry_has_sufficient_edge(
+        snapshot=_snapshot(
+            price=220.0,
+            daily_ma_fast=220.6,
+            daily_ma_slow=220.2,
+            daily_gap_fast_pct=-0.0027,
+            daily_gap_slow_pct=-0.0009,
+        ),
+        qty=1,
+        target_reason="ma_fast_reclaim_entry",
+    )
+
+    assert not allowed
+
+
+def test_entry_edge_filter_allows_ma_slow_reclaim_trade_when_reward_is_large_enough() -> None:
+    trader = _build_trader()
+    trader.config.auto_trade.commission_rate = 0.0005
+
+    allowed = trader._entry_has_sufficient_edge(
+        snapshot=_snapshot(daily_gap_fast_pct=-0.026, daily_gap_slow_pct=-0.009),
+        qty=2,
+        target_reason="ma_slow_reclaim_entry",
+    )
+
+    assert allowed
+
+
+def test_decide_action_buys_on_ma_slow_reclaim_cross_up() -> None:
+    trader = _build_trader()
+
+    decision = trader._decide_action(_snapshot())
+
+    assert decision.side == "buy"
+    assert decision.reason == "ma_slow_reclaim_entry"
+    assert decision.qty >= 1
+
+
+def test_decide_action_sells_on_ma_fast_breakdown() -> None:
+    trader = _build_trader()
+    trader.position = SimpleNamespace(
+        qty=3,
+        avg_price=217.4,
+        peak_price=225.0,
+        hold_cycles=12,
+        partial_exit_count=0,
+        last_buy_cycle=1,
+    )
+
+    decision = trader._decide_action(
+        _snapshot(
+            price=217.0,
+            daily_gap_fast_pct=-0.012,
+            daily_gap_slow_pct=-0.003,
+            fast_above_slow=False,
+            crossed_up=False,
+            crossed_down=True,
+            rsi14=41.0,
+            regime="trend_down",
+        )
+    )
+
+    assert decision.side == "sell"
+    assert decision.qty == 3
+    assert decision.reason == "ma_fast_breakdown_loss_cut"

@@ -6,6 +6,14 @@ from kinvest_trade.auto_trader import SoxlAutoTrader, StrategySnapshot
 from kinvest_trade.config import load_app_config
 
 
+class DummyRepository:
+    def __init__(self) -> None:
+        self.heartbeats: list[tuple[str, str]] = []
+
+    def save_heartbeat(self, status: str, message: str) -> None:
+        self.heartbeats.append((status, message))
+
+
 def _build_trader() -> SoxlAutoTrader:
     project_root = Path(__file__).resolve().parents[1]
     base_auto = load_app_config(project_root / "config" / "fixed_config.json").auto_trade
@@ -28,7 +36,7 @@ def _build_trader() -> SoxlAutoTrader:
             full_take_profit_pct=0.008,
             trailing_stop_pct=0.002,
             trailing_volatility_multiplier=1.5,
-            min_expected_reward_cost_ratio=1.3,
+            min_expected_reward_cost_ratio=0.5,
             min_expected_reward_risk_ratio=1.2,
             allow_partial_exit=True,
             max_spread_pct=0.003,
@@ -66,6 +74,7 @@ def _build_trader() -> SoxlAutoTrader:
     trader.flat_cycles = 0
     trader.last_exit_cycle = 0
     trader._last_adaptive_override = SimpleNamespace()
+    trader.repository = DummyRepository()
     return trader
 
 
@@ -109,6 +118,7 @@ def _snapshot(**overrides) -> StrategySnapshot:
 def test_entry_edge_filter_blocks_trade_when_roundtrip_cost_is_too_large() -> None:
     trader = _build_trader()
     trader.config.auto_trade.commission_rate = 0.0065
+    trader.config.auto_trade.min_expected_reward_cost_ratio = 0.5
 
     allowed = trader._entry_has_sufficient_edge(
         auto=trader.config.auto_trade,
@@ -126,11 +136,13 @@ def test_entry_edge_filter_blocks_trade_when_roundtrip_cost_is_too_large() -> No
     )
 
     assert not allowed
+    assert trader.repository.heartbeats[-1][0] == "EDGE_FAIL_COST"
 
 
 def test_entry_edge_filter_allows_ma_slow_reclaim_trade_when_reward_is_large_enough() -> None:
     trader = _build_trader()
     trader.config.auto_trade.commission_rate = 0.0005
+    trader.config.auto_trade.min_expected_reward_cost_ratio = 0.5
 
     allowed = trader._entry_has_sufficient_edge(
         auto=trader.config.auto_trade,
@@ -145,6 +157,26 @@ def test_entry_edge_filter_allows_ma_slow_reclaim_trade_when_reward_is_large_eno
     )
 
     assert allowed
+
+
+def test_entry_edge_filter_blocks_trade_when_reward_risk_is_too_small() -> None:
+    trader = _build_trader()
+    trader.config.auto_trade.commission_rate = 0.0005
+    trader.config.auto_trade.min_expected_reward_cost_ratio = 0.5
+    trader.config.auto_trade.min_expected_reward_risk_ratio = 2.0
+
+    allowed = trader._entry_has_sufficient_edge(
+        auto=trader.config.auto_trade,
+        snapshot=_snapshot(
+            atr_pct=0.0045,
+            breakout_distance_pct=0.0002,
+        ),
+        qty=1,
+        target_reason="volume_breakout_entry",
+    )
+
+    assert not allowed
+    assert trader.repository.heartbeats[-1][0] == "EDGE_FAIL_RISK"
 
 
 def test_decide_action_buys_on_volume_breakout() -> None:

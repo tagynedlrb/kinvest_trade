@@ -1,6 +1,22 @@
 # WORKLOG
 
 ## 2026-06-26
+### 추가 개선 5
+- 첨부된 `3차 개선` 지시문 기준으로 `auto_trade`의 손익/진입 문턱을 현실화
+- `take_profit_pct=0.006`, `full_take_profit_pct=0.012`, `stop_loss_pct=0.004`, `hard_stop_loss_pct=0.008`로 조정
+- `min_expected_reward_cost_ratio`를 `0.5`로 낮춰 왕복 비용 대비 기대수익 필터가 수학적으로 항상 실패하던 문제를 해소
+- `volume_spike_ratio=1.2`, `breakout_lookback_bars=3`, `scale_in_volume_ratio=1.0`, `min_intraday_momentum_pct=0.0008`, `min_bar_return_pct=0.0003`, `max_breakout_extension_pct=0.008`으로 완화
+- `auto_trader.py`의 `_entry_has_sufficient_edge`에 `EDGE_FAIL_COST`, `EDGE_FAIL_RISK` heartbeat를 추가해 진입 차단 원인을 로그로 남기도록 보강
+- `liquidity_lab.py`에 `_last_held_symbols` 캐시와 `_get_held_symbols()`를 추가하고, active pool에서 밀린 보유 종목도 다음 사이클 스캔 대상에 강제로 포함하도록 수정
+- API 호출량 추정에 `held_check + position_load` 2회 balance 조회를 반영
+- 해외 후보군에서 `MARA`, `RIVN`을 제거하고 `COIN`, `NFLX`로 교체
+- `tests/test_auto_trader.py`, `tests/test_pool_rotation.py`를 새 edge 로그와 held-symbol 보호 경로에 맞춰 확장
+
+### 검증 결과
+- `python -m pytest tests/ -v` 전체 통과 목표로 반영
+- held 종목 캐시 fallback과 active pool 밖 보유 종목 강제 스캔 테스트 추가
+
+## 2026-06-26
 ### 추가 개선 4
 - 첨부된 `2차 개선` 지시문 기준으로 `adaptive_params.py`의 `weak_flow` 분기를 제거해 저유동성 구간에서 `volume_spike_ratio` 문턱을 억지로 높이지 않도록 수정
 - `momentum_policy.py`의 `evaluate_entry_setup` 검사 순서를 `spread -> context -> RSI -> volume -> fast-track -> trend -> momentum -> extension -> breakout`으로 재정렬

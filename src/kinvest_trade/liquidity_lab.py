@@ -157,6 +157,7 @@ class LiquidityLabService:
         self._cycle_count: int = 0
         self._pool_initialized: bool = False
         self._bench_scanned_this_cycle: bool = False
+        self._last_held_symbols: set[str] = set()
 
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
@@ -349,9 +350,21 @@ class LiquidityLabService:
                 if candidate.symbol.upper() not in active_symbols
             ]
 
+        # Keep held symbols in scan targets even when they fall out of the active pool.
+        held_symbols = await self._get_held_symbols()
+        scan_targets = list(self._active_pool)
+        if held_symbols:
+            active_syms = {candidate.symbol.upper() for candidate in scan_targets}
+            for candidate in config.overseas_candidates:
+                if (
+                    candidate.symbol.upper() in held_symbols
+                    and candidate.symbol.upper() not in active_syms
+                ):
+                    scan_targets.append(candidate)
+
         results: list[OverseasScanResult] = []
         excluded: list[ExcludedCandidate] = []
-        for candidate in self._active_pool:
+        for candidate in scan_targets:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
             except Exception:
@@ -371,6 +384,36 @@ class LiquidityLabService:
             await asyncio.sleep(0.1)
         self._overseas_excluded = excluded
         return sorted(results, key=lambda item: item.activity_score, reverse=True)
+
+    async def _get_held_symbols(self) -> set[str]:
+        """
+        Return overseas symbols currently held.
+
+        On API failure, fall back to the previous cycle cache so exit scans still include
+        existing positions.
+        """
+        try:
+            exchange_codes = {
+                candidate.exchange_code.upper()
+                for candidate in self.config.liquidity_lab.overseas_candidates
+            }
+            held: set[str] = set()
+            for exchange_code in sorted(exchange_codes):
+                balance = await self.client.get_overseas_balance(
+                    exchange_code=exchange_code,
+                    currency_code="USD",
+                )
+                for row in balance.get("positions", []):
+                    qty = int(float(str(row.get("ovrs_cblc_qty", 0) or 0)))
+                    if qty <= 0:
+                        continue
+                    symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                    if symbol:
+                        held.add(symbol)
+            self._last_held_symbols = held
+            return held
+        except Exception:
+            return self._last_held_symbols
 
     async def _run_bench_scan(self) -> None:
         config = self.config.liquidity_lab
@@ -1342,9 +1385,9 @@ class LiquidityLabService:
                 estimated_calls += len(config.overseas_candidates)
             exchange_codes = {
                 candidate.exchange_code.upper()
-                for candidate in (self._active_pool or config.overseas_candidates)
+                for candidate in config.overseas_candidates
             }
-            estimated_calls += len(exchange_codes)
+            estimated_calls += len(exchange_codes) * 2
             if include_overseas_order:
                 estimated_calls += 1
         return estimated_calls

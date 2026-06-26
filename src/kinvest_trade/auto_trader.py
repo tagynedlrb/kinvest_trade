@@ -674,21 +674,45 @@ class SoxlAutoTrader:
         if qty <= 0 or snapshot.price <= 0:
             return False
 
-        gross_reward_usd = snapshot.price * qty * self._target_profit_pct_for_reason(
+        target_pct = self._target_profit_pct_for_reason(
             auto=auto,
             reason=target_reason,
             snapshot=snapshot,
         )
+        gross_reward_usd = snapshot.price * qty * target_pct
         roundtrip_fees_usd = self._estimate_roundtrip_fees_usd(price=snapshot.price, qty=qty)
         gross_risk_usd = snapshot.price * qty * self._soft_break_band_pct(snapshot, auto=auto)
 
         if gross_reward_usd <= 0 or gross_risk_usd <= 0:
             return False
-        if roundtrip_fees_usd > 0 and gross_reward_usd < (
-            roundtrip_fees_usd * auto.min_expected_reward_cost_ratio
-        ):
+
+        reward_cost_ratio = (
+            gross_reward_usd / roundtrip_fees_usd if roundtrip_fees_usd > 0 else 999.0
+        )
+        reward_risk_ratio = gross_reward_usd / gross_risk_usd
+
+        if reward_cost_ratio < auto.min_expected_reward_cost_ratio:
+            self.repository.save_heartbeat(
+                "EDGE_FAIL_COST",
+                (
+                    f"symbol={auto.symbol} price={snapshot.price:.4f} qty={qty} "
+                    f"tp_pct={target_pct:.4f} fee={roundtrip_fees_usd:.4f} "
+                    f"reward/cost={reward_cost_ratio:.3f} "
+                    f"required={auto.min_expected_reward_cost_ratio} reason={target_reason}"
+                ),
+            )
             return False
-        if gross_reward_usd / gross_risk_usd < auto.min_expected_reward_risk_ratio:
+
+        if reward_risk_ratio < auto.min_expected_reward_risk_ratio:
+            self.repository.save_heartbeat(
+                "EDGE_FAIL_RISK",
+                (
+                    f"symbol={auto.symbol} price={snapshot.price:.4f} qty={qty} "
+                    f"tp_pct={target_pct:.4f} risk={gross_risk_usd:.4f} "
+                    f"reward/risk={reward_risk_ratio:.3f} "
+                    f"required={auto.min_expected_reward_risk_ratio} reason={target_reason}"
+                ),
+            )
             return False
         return True
 

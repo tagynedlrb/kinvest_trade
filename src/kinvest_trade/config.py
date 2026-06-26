@@ -599,7 +599,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             sec_fee_rate=float(auto_trade_raw.get("sec_fee_rate", 0.0000206)),
             fx_fee_rate=float(auto_trade_raw.get("fx_fee_rate", 0.0)),
             min_expected_reward_cost_ratio=float(
-                auto_trade_raw.get("min_expected_reward_cost_ratio", 1.3)
+                auto_trade_raw.get("min_expected_reward_cost_ratio", 0.5)
             ),
             min_expected_reward_risk_ratio=float(
                 auto_trade_raw.get("min_expected_reward_risk_ratio", 1.2)

@@ -19,6 +19,19 @@ class DummyRepository:
         self.heartbeats.append((status, message))
 
 
+class DummyClient:
+    def __init__(self) -> None:
+        self.balance_calls: list[tuple[str, str]] = []
+        self.positions_by_exchange: dict[str, list[dict[str, str]]] = {}
+        self.raise_balance_error = False
+
+    async def get_overseas_balance(self, exchange_code: str, currency_code: str):
+        self.balance_calls.append((exchange_code, currency_code))
+        if self.raise_balance_error:
+            raise RuntimeError("balance lookup failed")
+        return {"positions": list(self.positions_by_exchange.get(exchange_code, []))}
+
+
 def _build_service() -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     candidates = [
@@ -41,7 +54,7 @@ def _build_service() -> LiquidityLabService:
     )
     service.repository = DummyRepository()
     service.notifier = None
-    service.client = None
+    service.client = DummyClient()
     service._domestic_excluded = []
     service._overseas_excluded = []
     service._active_pool = []
@@ -49,6 +62,7 @@ def _build_service() -> LiquidityLabService:
     service._cycle_count = 0
     service._pool_initialized = False
     service._bench_scanned_this_cycle = False
+    service._last_held_symbols = set()
     return service
 
 
@@ -151,3 +165,43 @@ def test_active_pool_size_is_never_exceeded() -> None:
     asyncio.run(service.scan_overseas())
 
     assert len(service._active_pool) <= service.config.liquidity_lab.overseas_active_pool_size
+
+
+def test_held_symbol_is_always_included_in_scan_targets() -> None:
+    service = _build_service()
+    service._pool_initialized = True
+    service._active_pool = [DummyCandidate("AAA", "NASD"), DummyCandidate("BBB", "NASD")]
+    service.client.positions_by_exchange = {
+        "NYSE": [{"ovrs_cblc_qty": "3", "ovrs_pdno": "EEE"}],
+    }
+    scan_calls: list[str] = []
+
+    async def fake_scan(candidate):
+        scan_calls.append(candidate.symbol)
+        scores = {"AAA": 10.0, "BBB": 9.0, "EEE": 8.0}
+        return _result(candidate.symbol, scores.get(candidate.symbol, 1.0))
+
+    service._scan_single_overseas = fake_scan
+
+    ranked = asyncio.run(service.scan_overseas())
+
+    assert "EEE" in scan_calls
+    assert "EEE" in [item.symbol for item in ranked]
+    assert service._last_held_symbols == {"EEE"}
+
+
+def test_held_symbol_fallback_uses_cache_on_api_failure() -> None:
+    service = _build_service()
+    service.client.positions_by_exchange = {
+        "NYSE": [{"ovrs_cblc_qty": "2", "ovrs_pdno": "DDD"}],
+    }
+
+    held = asyncio.run(service._get_held_symbols())
+    assert held == {"DDD"}
+    assert service._last_held_symbols == {"DDD"}
+
+    service.client.raise_balance_error = True
+
+    cached = asyncio.run(service._get_held_symbols())
+
+    assert cached == {"DDD"}

@@ -160,6 +160,7 @@ python3 main.py liquidity-lab
 - 해외 후보군은 고정 1종목만 보는 대신, 넓은 벤치 후보군을 두고 `active_pool`만 짧은 주기로 감시한다.
 - 기본값은 `해외 후보 20개`, `active_pool 5개`, `4사이클마다 전체 벤치 재스캔`이다.
 - 벤치 재스캔 때는 `activity_score` 상위 종목으로 `active_pool`을 교체하고, `POOL_ROTATION` heartbeat를 남긴다.
+- 보유 중인 해외 종목은 `active_pool` 밖으로 밀려도 다음 사이클 스캔 대상에 강제로 다시 포함해 청산 신호가 끊기지 않게 한다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 `거래량 스파이크 + 돌파 + 추세 필터`를 동시에 만족할 때만 진행한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
@@ -168,7 +169,7 @@ python3 main.py liquidity-lab
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
 - 국내: `005930`, `000660`, `035420`, `419050`, `023410`, `010170`, `034940`
-- 해외: `NVDA`, `AAL`, `INTC`, `AMZN`, `MU`, `AMD`, `META`, `TSLA`, `MSFT`, `AAPL`, `PLTR`, `SMCI`, `ARM`, `MARA`, `RIVN`, `F`, `BAC`, `C`, `T`, `XOM`
+- 해외: `NVDA`, `AAL`, `INTC`, `AMZN`, `MU`, `AMD`, `META`, `TSLA`, `MSFT`, `AAPL`, `PLTR`, `SMCI`, `ARM`, `COIN`, `NFLX`, `F`, `BAC`, `C`, `T`, `XOM`
 
 운영 메모:
 - `liquidity-lab` 테스트에서 작은 호가 차익만으로는 국내 mock 왕복 주문 순손익이 음수가 될 수 있었다.
@@ -208,7 +209,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `stop`/`terminate` 요약은 `telegram_control_sessions` 테이블에도 저장되어 다음 전략 개선 때 누적 성과를 되짚는 데 사용한다.
 - `stop`/`terminate` 요약은 `종목별 buy/sell 횟수`, `domestic paper 실현손익`, `해외 청산 추정손익`까지 함께 묶어 짧게 보여준다.
 - 다음 자동 실행 간격은 `config/fixed_config.json`의 `liquidity_lab.loop_interval_sec`으로 조절한다.
-- 현재 기본값은 `30초`이며, 다음 실행 시점은 `이전 사이클 종료 후 추가 대기`가 아니라 `이전 사이클 시작 시점 기준`으로 계산해 감시 간격이 불필요하게 늘어지지 않도록 했다.
+- 현재 기본값은 `15초`이며, 다음 실행 시점은 `이전 사이클 종료 후 추가 대기`가 아니라 `이전 사이클 시작 시점 기준`으로 계산해 감시 간격이 불필요하게 늘어지지 않도록 했다.
 - 텔레그램 long polling 시간은 `notifications.telegram_command_poll_timeout_sec`으로 조절한다.
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.

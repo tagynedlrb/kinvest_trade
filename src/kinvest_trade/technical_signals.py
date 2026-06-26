@@ -57,7 +57,6 @@ class MovingAverageSnapshot:
     def has_required_context(self) -> bool:
         return (
             self.daily_ma_fast is not None
-            and self.daily_ma_slow is not None
             and self.minute_ma_fast is not None
             and self.minute_ma_slow is not None
         )

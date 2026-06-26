@@ -14,6 +14,7 @@ from .market_sessions import (
     is_us_orderable_session_for_env,
     is_us_regular_session,
 )
+from .adaptive_params import apply_override, compute_adaptive_override
 from .momentum_policy import (
     derive_watch_state,
     evaluate_entry_setup,
@@ -366,7 +367,18 @@ class LiquidityLabService:
         volume_score = math.log10(max(volume_sum, 1)) * 4.0
         momentum_score = minute_change_pct * 300.0
         spread_penalty = spread_pct * 3000.0
-        activity_score = liquidity_score + volume_score + momentum_score - spread_penalty
+        turnover_surge_bonus = 0.0
+        if intraday_turnover >= self.config.liquidity_lab.domestic_min_intraday_turnover_krw * 3:
+            turnover_surge_bonus = 4.0
+        elif intraday_turnover >= self.config.liquidity_lab.domestic_min_intraday_turnover_krw * 1.5:
+            turnover_surge_bonus = 2.0
+        activity_score = (
+            liquidity_score
+            + volume_score
+            + momentum_score
+            + turnover_surge_bonus
+            - spread_penalty
+        )
         return DomesticScanResult(
             stock_code=stock_code,
             current_price=int(current["current_price"]),
@@ -396,7 +408,19 @@ class LiquidityLabService:
         liquidity_score = math.log10(max(volume, 1)) * 6.0
         momentum_score = change_rate * 2.5
         spread_penalty = spread_pct * 2500.0
-        activity_score = liquidity_score + momentum_score - spread_penalty
+        volume_surge_bonus = 0.0
+        if volume >= self.config.liquidity_lab.overseas_min_volume * 5:
+            volume_surge_bonus = 3.0
+        elif volume >= self.config.liquidity_lab.overseas_min_volume * 2:
+            volume_surge_bonus = 1.5
+        tight_spread_bonus = 1.0 if spread_pct < 0.001 else 0.0
+        activity_score = (
+            liquidity_score
+            + momentum_score
+            + volume_surge_bonus
+            + tight_spread_bonus
+            - spread_penalty
+        )
         return OverseasScanResult(
             symbol=candidate.symbol,
             exchange_code=candidate.exchange_code,
@@ -1078,7 +1102,9 @@ class LiquidityLabService:
         self,
         snapshot: MovingAverageSnapshot,
     ) -> tuple[bool, str]:
-        entry_setup = evaluate_entry_setup(self.config.auto_trade, snapshot)
+        _override = compute_adaptive_override(self.config.auto_trade, snapshot)
+        effective_config = apply_override(self.config.auto_trade, _override)
+        entry_setup = evaluate_entry_setup(effective_config, snapshot)
         return entry_setup.ready, entry_setup.reason
 
     def _should_exit_overseas_position(

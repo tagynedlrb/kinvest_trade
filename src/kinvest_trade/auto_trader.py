@@ -12,6 +12,7 @@ from .auto_trade_math import (
     estimate_fx_fee_krw,
     estimate_trade_fees,
 )
+from .adaptive_params import AdaptiveOverride, apply_override, compute_adaptive_override
 from .client import KisApiError, KisRestClient
 from .config import AppConfig
 from .market_sessions import is_us_orderable_session_for_env
@@ -111,6 +112,7 @@ class SoxlAutoTrader:
         self._minute_volumes: list[float] = []
         self._daily_refreshed_at: datetime | None = None
         self._intraday_refreshed_at: datetime | None = None
+        self._last_adaptive_override = AdaptiveOverride()
 
     async def run(self) -> AutoTradeSummary:
         auto = self.config.auto_trade
@@ -182,6 +184,22 @@ class SoxlAutoTrader:
 
                 if decision.side is None or decision.qty <= 0:
                     skip_count += 1
+                    if (
+                        self._last_adaptive_override.take_profit_pct is not None
+                        or self._last_adaptive_override.volume_spike_ratio is not None
+                    ):
+                        self.repository.save_heartbeat(
+                            "ADAPTIVE_OVERRIDE",
+                            (
+                                f"run_id={run_id} "
+                                f"tp={self._last_adaptive_override.take_profit_pct} "
+                                f"sl={self._last_adaptive_override.stop_loss_pct} "
+                                f"vspike={self._last_adaptive_override.volume_spike_ratio} "
+                                f"hold={self._last_adaptive_override.max_hold_cycles} "
+                                f"atr={snapshot.atr_pct:.4f} "
+                                f"vr={snapshot.volume_ratio:.2f}"
+                            ),
+                        )
                     self.repository.save_heartbeat(
                         "AUTO_TRADE_SKIP",
                         (
@@ -525,7 +543,9 @@ class SoxlAutoTrader:
                 pass
 
     def _decide_action(self, snapshot: StrategySnapshot) -> TradeDecision:
-        auto = self.config.auto_trade
+        _override = compute_adaptive_override(self.config.auto_trade, snapshot)
+        self._last_adaptive_override = _override
+        auto = apply_override(self.config.auto_trade, _override)
 
         if snapshot.spread_pct > auto.max_spread_pct:
             return TradeDecision(None, 0, "spread_too_wide")
@@ -545,11 +565,13 @@ class SoxlAutoTrader:
                 return TradeDecision(None, 0, entry_setup.reason)
 
             qty = self._determine_buy_qty(
+                auto=auto,
                 snapshot=snapshot,
                 scale_in=False,
                 urgent=entry_setup.urgent,
             )
             if not self._entry_has_sufficient_edge(
+                auto=auto,
                 snapshot=snapshot,
                 qty=qty,
                 target_reason=entry_setup.reason,
@@ -594,8 +616,14 @@ class SoxlAutoTrader:
                 partial_exit_done=self.position.partial_exit_count > 0,
             )
             if scale_in_setup.ready:
-                qty = self._determine_buy_qty(snapshot=snapshot, scale_in=True, urgent=False)
+                qty = self._determine_buy_qty(
+                    auto=auto,
+                    snapshot=snapshot,
+                    scale_in=True,
+                    urgent=False,
+                )
                 if self._entry_has_sufficient_edge(
+                    auto=auto,
                     snapshot=snapshot,
                     qty=qty,
                     target_reason=scale_in_setup.reason,
@@ -607,11 +635,11 @@ class SoxlAutoTrader:
     def _determine_buy_qty(
         self,
         *,
+        auto,
         snapshot: StrategySnapshot,
         scale_in: bool,
         urgent: bool,
     ) -> int:
-        auto = self.config.auto_trade
         remaining = max(auto.max_position_qty - self.position.qty, 0)
         if remaining <= 0:
             return 0
@@ -638,20 +666,21 @@ class SoxlAutoTrader:
     def _entry_has_sufficient_edge(
         self,
         *,
+        auto,
         snapshot: StrategySnapshot,
         qty: int,
         target_reason: str,
     ) -> bool:
-        auto = self.config.auto_trade
         if qty <= 0 or snapshot.price <= 0:
             return False
 
         gross_reward_usd = snapshot.price * qty * self._target_profit_pct_for_reason(
+            auto=auto,
             reason=target_reason,
             snapshot=snapshot,
         )
         roundtrip_fees_usd = self._estimate_roundtrip_fees_usd(price=snapshot.price, qty=qty)
-        gross_risk_usd = snapshot.price * qty * self._soft_break_band_pct(snapshot)
+        gross_risk_usd = snapshot.price * qty * self._soft_break_band_pct(snapshot, auto=auto)
 
         if gross_reward_usd <= 0 or gross_risk_usd <= 0:
             return False
@@ -666,10 +695,10 @@ class SoxlAutoTrader:
     def _target_profit_pct_for_reason(
         self,
         *,
+        auto,
         reason: str,
         snapshot: StrategySnapshot,
     ) -> float:
-        auto = self.config.auto_trade
         reward_from_atr = snapshot.atr_pct * max(auto.atr_trailing_stop_multiplier, 1.0)
         reward_from_breakout = max(snapshot.breakout_distance_pct, 0.0) * 0.5
         if reason == "momentum_scale_in":
@@ -896,15 +925,15 @@ class SoxlAutoTrader:
             )
         )
 
-    def _soft_break_band_pct(self, snapshot: StrategySnapshot) -> float:
-        auto = self.config.auto_trade
+    def _soft_break_band_pct(self, snapshot: StrategySnapshot, *, auto=None) -> float:
+        auto = auto or self.config.auto_trade
         return max(
             auto.stop_loss_pct,
             snapshot.atr_pct * auto.atr_soft_stop_multiplier,
         )
 
-    def _hard_break_band_pct(self, snapshot: StrategySnapshot) -> float:
-        auto = self.config.auto_trade
+    def _hard_break_band_pct(self, snapshot: StrategySnapshot, *, auto=None) -> float:
+        auto = auto or self.config.auto_trade
         return max(
             auto.hard_stop_loss_pct,
             snapshot.atr_pct * auto.atr_hard_stop_multiplier,

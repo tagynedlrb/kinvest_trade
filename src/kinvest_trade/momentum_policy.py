@@ -56,6 +56,25 @@ def evaluate_entry_setup(
         return EntrySetup(False, "volume_not_expanded", "SETUP", _note(snapshot))
     if not momentum_ready:
         return EntrySetup(False, "momentum_not_ready", "SETUP", _note(snapshot))
+
+    fast_track = (
+        snapshot.volume_ratio >= config.volume_spike_ratio * 2.0
+        and snapshot.intraday_bar_return >= config.min_bar_return_pct * 2.0
+    )
+    if fast_track:
+        score = (
+            min(snapshot.volume_ratio, 5.0) * 30.0
+            + max(snapshot.intraday_bar_return, 0.0) * 5000.0
+        )
+        return EntrySetup(
+            True,
+            "volume_momentum_fast_entry",
+            "BUY_READY",
+            _note(snapshot),
+            score=round(score, 2),
+            urgent=True,
+        )
+
     if not (breakout_ready or band_breakout_ready):
         state = "SPIKE" if volume_ready else "SETUP"
         return EntrySetup(False, "no_breakout_signal", state, _note(snapshot))

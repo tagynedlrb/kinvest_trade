@@ -1,26 +1,32 @@
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from kinvest_trade.auto_trader import SoxlAutoTrader, StrategySnapshot
+from kinvest_trade.config import load_app_config
 
 
 def _build_trader() -> SoxlAutoTrader:
+    project_root = Path(__file__).resolve().parents[1]
+    base_auto = load_app_config(project_root / "config" / "fixed_config.json").auto_trade
     trader = SoxlAutoTrader.__new__(SoxlAutoTrader)
     trader.config = SimpleNamespace(
-        auto_trade=SimpleNamespace(
+        auto_trade=replace(
+            base_auto,
             quantity=1,
             max_position_qty=4,
-            commission_rate=0.0025,
+            commission_rate=0.0005,
             sec_fee_rate=0.0000206,
-            stop_loss_pct=0.004,
-            hard_stop_loss_pct=0.009,
+            stop_loss_pct=0.003,
+            hard_stop_loss_pct=0.006,
             atr_soft_stop_multiplier=1.2,
             atr_hard_stop_multiplier=1.8,
             atr_trailing_stop_multiplier=1.4,
             soft_stop_volatility_multiplier=1.25,
             hard_stop_volatility_multiplier=2.2,
-            take_profit_pct=0.007,
-            full_take_profit_pct=0.015,
-            trailing_stop_pct=0.004,
+            take_profit_pct=0.004,
+            full_take_profit_pct=0.008,
+            trailing_stop_pct=0.002,
             trailing_volatility_multiplier=1.5,
             min_expected_reward_cost_ratio=1.3,
             min_expected_reward_risk_ratio=1.2,
@@ -28,12 +34,12 @@ def _build_trader() -> SoxlAutoTrader:
             max_spread_pct=0.003,
             breakout_entry_pct=0.0,
             bollinger_breakout_buffer_pct=0.0,
-            volume_spike_ratio=1.8,
+            volume_spike_ratio=1.5,
             scale_in_volume_ratio=1.3,
             volume_fade_ratio=0.85,
-            min_intraday_momentum_pct=0.003,
-            min_bar_return_pct=0.0015,
-            max_breakout_extension_pct=0.01,
+            min_intraday_momentum_pct=0.001,
+            min_bar_return_pct=0.0005,
+            max_breakout_extension_pct=0.005,
             partial_exit_rsi14=70.0,
             scale_in_profit_trigger_pct=0.003,
             ma60_entry_buffer_pct=0.012,
@@ -41,11 +47,11 @@ def _build_trader() -> SoxlAutoTrader:
             ma60_hard_stop_buffer_pct=0.01,
             ma20_partial_exit_buffer_pct=0.0025,
             trend_chase_limit_pct=0.02,
-            max_entry_rsi14=62.0,
+            max_entry_rsi14=68.0,
             allow_scale_in=True,
             scale_in_cooldown_cycles=4,
-            max_hold_cycles=180,
-            force_reentry_after_cycles=6,
+            max_hold_cycles=30,
+            force_reentry_after_cycles=3,
         )
     )
     trader.position = SimpleNamespace(
@@ -59,6 +65,7 @@ def _build_trader() -> SoxlAutoTrader:
     trader.loop_count = 10
     trader.flat_cycles = 0
     trader.last_exit_cycle = 0
+    trader._last_adaptive_override = SimpleNamespace()
     return trader
 
 
@@ -82,8 +89,8 @@ def _snapshot(**overrides) -> StrategySnapshot:
         breakout_level=224.5,
         breakdown_level=223.2,
         breakout_distance_pct=0.0022,
-        atr=0.79,
-        atr_pct=0.0035,
+        atr=0.45,
+        atr_pct=0.002,
         bollinger_basis=223.8,
         bollinger_upper=224.7,
         bollinger_lower=222.9,
@@ -104,6 +111,7 @@ def test_entry_edge_filter_blocks_trade_when_roundtrip_cost_is_too_large() -> No
     trader.config.auto_trade.commission_rate = 0.0065
 
     allowed = trader._entry_has_sufficient_edge(
+        auto=trader.config.auto_trade,
         snapshot=_snapshot(
             price=220.0,
             daily_ma_fast=220.6,
@@ -125,10 +133,11 @@ def test_entry_edge_filter_allows_ma_slow_reclaim_trade_when_reward_is_large_eno
     trader.config.auto_trade.commission_rate = 0.0005
 
     allowed = trader._entry_has_sufficient_edge(
+        auto=trader.config.auto_trade,
         snapshot=_snapshot(
             daily_gap_fast_pct=0.006,
             daily_gap_slow_pct=0.021,
-            atr_pct=0.003,
+            atr_pct=0.002,
             breakout_distance_pct=0.004,
         ),
         qty=2,

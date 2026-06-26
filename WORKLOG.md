@@ -1,6 +1,22 @@
 # WORKLOG
 
 ## 2026-06-26
+### 추가 개선 3
+- 첨부 지시문 기준으로 `5분봉 기반 breakout`을 `1분봉 단타` 구조로 전환
+- `config/fixed_config.json`의 `auto_trade`를 1분봉, 10초 폴링, 5분 최대 보유 기준으로 조정
+- `liquidity_lab` 스크리닝 주기를 `15초`로 줄이고, 해외 최소 거래량/국내 최소 거래대금 문턱을 완화
+- `adaptive_params.py`를 새로 추가해 ATR, 거래량 강도, 모멘텀 기반 동적 손익/진입 기준 override를 구현
+- `auto_trader.py`에 adaptive override를 연결하고 `ADAPTIVE_OVERRIDE` heartbeat 저장 경로를 추가
+- `momentum_policy.py`에 `volume_momentum_fast_entry` fast-track 진입 경로를 추가
+- `liquidity_lab.py`의 국내/해외 `activity_score`에 거래대금 급증/거래량 급증/타이트 스프레드 보너스를 반영
+- `technical_signals.py`의 `has_required_context`를 완화해 1분봉 warmup 대기 시간을 줄임
+- `tests/test_adaptive_params.py`를 새로 추가하고 관련 전략 테스트를 1분봉 기준으로 갱신
+
+### 검증 결과
+- `python3 -m compileall src` 통과
+- `PYTHONPATH=src pytest -q tests` 통과 예정 확인용 부분 테스트 선행
+
+## 2026-06-26
 ### 추가 개선 2
 - 사용자 설계 검토를 반영해 `이평선 단독 트리거`를 폐기하고 `거래량 폭발 + 가격 돌파`를 메인 진입 신호로 재편
 - `technical_signals.py` 스냅샷에 `volume_ratio`, `breakout_level`, `ATR`, `Bollinger`, `intraday_bar_return`를 추가

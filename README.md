@@ -162,9 +162,10 @@ python3 main.py liquidity-lab
 - 국내 기본 제외 기준은 `5,000원 미만`, `당일 거래대금 500억 원 미만`, `최근 체결량 합계 3만 미만`, `스프레드 0.3% 초과`다.
 - 해외 기본 제외 기준은 `10달러 미만`, `거래량 1만 미만`, `스프레드 0.4% 초과`다.
 - 현재 장이 열린 시장에서 `activity_score`가 높은 후보군을 먼저 뽑고, 그 안에서 `signal_score`가 가장 강한 종목을 우선 주문 대상으로 선택한다.
-- 해외 후보군은 고정 1종목만 보는 대신, 현재는 `69개` 전체 후보를 `15초`마다 전부 quote 스캔한다.
-- chart 기반 signal 계산은 `overseas_scan_top_n` 기준으로 우선 로드하며, 기본값은 `69`라 사실상 전체 후보에 signal을 붙인다.
+- 해외 후보군은 고정 1종목만 보는 대신, 현재는 `69개` 전체 후보를 `20초`마다 전부 quote 스캔한다.
+- chart 기반 signal 계산은 `overseas_scan_top_n` 기준으로 우선 로드하며, 기본값은 `15`라 상위 15개와 보유 종목에만 signal 캐시를 붙인다.
 - 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
+- `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 `거래량 스파이크 + 돌파 + 추세 필터`를 동시에 만족할 때만 진행한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
@@ -214,11 +215,11 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `stop`/`terminate` 요약은 `telegram_control_sessions` 테이블에도 저장되어 다음 전략 개선 때 누적 성과를 되짚는 데 사용한다.
 - `stop`/`terminate` 요약은 `종목별 buy/sell 횟수`, `domestic paper 실현손익`, `해외 청산 추정손익`까지 함께 묶어 짧게 보여준다.
 - 다음 자동 실행 간격은 `config/fixed_config.json`의 `liquidity_lab.loop_interval_sec`으로 조절한다.
-- 현재 기본값은 `15초`이며, 다음 실행 시점은 `이전 사이클 종료 후 추가 대기`가 아니라 `이전 사이클 시작 시점 기준`으로 계산해 감시 간격이 불필요하게 늘어지지 않도록 했다.
+- 현재 기본값은 `20초`이며, 다음 실행 시점은 `이전 사이클 종료 후 추가 대기`가 아니라 `이전 사이클 시작 시점 기준`으로 계산해 감시 간격이 불필요하게 늘어지지 않도록 했다.
 - 텔레그램 long polling 시간은 `notifications.telegram_command_poll_timeout_sec`으로 조절한다.
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
-- 현재 기본 해외 감시는 `overseas_candidates=69`, `overseas_scan_top_n=69`, `loop_interval_sec=15` 기준이다. 매 사이클 전체 후보를 quote 스캔하고, signal도 사실상 전 종목에 대해 계산한다.
+- 현재 기본 해외 감시는 `overseas_candidates=69`, `overseas_scan_top_n=15`, `loop_interval_sec=20` 기준이다. 매 사이클 전체 후보를 quote 스캔하고, signal은 상위 15개와 보유 종목에만 계산한다.
 - 자동매매 SELL 알림은 `buy_price`, `pnl_usd`, `pnl_pct`, `pnl_krw`, `cum_pnl`, `hold`를 함께 보내도록 확장돼, 청산 품질을 텔레그램에서 바로 확인할 수 있다.
 - `/lab_watchlist`에서 보유 종목은 `hold=N`과 함께 `pnl=+X.XX%` 형식의 미실현 손익이 함께 표시된다.
 

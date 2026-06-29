@@ -153,6 +153,7 @@ class LiquidityLabService:
         self._domestic_excluded: list[ExcludedCandidate] = []
         self._overseas_excluded: list[ExcludedCandidate] = []
         self._last_held_symbols: set[str] = set()
+        self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
 
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
@@ -165,8 +166,15 @@ class LiquidityLabService:
         )
 
         domestic_ranked = await self.scan_domestic() if krx_open else []
-        overseas_ranked = await self.scan_overseas() if us_open else []
-        overseas_positions = await self._load_overseas_positions(overseas_ranked) if us_open else []
+        if us_open:
+            overseas_ranked, held_symbols_cache = await self.scan_overseas()
+            overseas_positions = await self._load_overseas_positions(
+                overseas_ranked,
+                held_symbols_cache=held_symbols_cache,
+            )
+        else:
+            overseas_ranked = []
+            overseas_positions = []
         domestic_watch_targets = (
             await self._build_domestic_watch_targets(domestic_ranked)
             if krx_open
@@ -322,12 +330,13 @@ class LiquidityLabService:
         self._domestic_excluded = excluded
         return sorted(results, key=lambda item: item.activity_score, reverse=True)
 
-    async def scan_overseas(self) -> list[OverseasScanResult]:
+    async def scan_overseas(self) -> tuple[list[OverseasScanResult], set[str]]:
         """
-        Scan the entire overseas candidate list every cycle.
+        Scan the overseas universe in a single pass per cycle.
 
-        Quote data is collected for all candidates, then chart/signal loading is
-        prioritized for the top activity names plus any currently held symbol.
+        Step 1: fetch quotes for all candidates and compute activity score.
+        Step 2: select top-N activity symbols plus any held symbol for signal loading.
+        Step 3: load chart-based signals only for that reduced set and cache them.
         """
         config = self.config.liquidity_lab
         quote_results: list[OverseasScanResult] = []
@@ -351,32 +360,45 @@ class LiquidityLabService:
                 )
             else:
                 quote_results.append(scan_result)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         self._overseas_excluded = excluded
         if not quote_results:
-            return []
+            self._signal_cache.clear()
+            return [], set()
 
         quote_results.sort(key=lambda item: item.activity_score, reverse=True)
         held_symbols = await self._get_held_symbols()
-        top_n = max(0, config.overseas_scan_top_n)
+        top_n = max(1, config.overseas_scan_top_n)
 
-        signal_targets: list[OverseasScanResult] = []
-        non_signal: list[OverseasScanResult] = []
-        signal_count = 0
+        signal_symbols: set[str] = set()
+        for result in quote_results:
+            symbol = result.symbol.upper()
+            if symbol in held_symbols:
+                signal_symbols.add(symbol)
+
+        remaining_slots = max(0, top_n - len(signal_symbols))
+        for result in quote_results:
+            if remaining_slots <= 0:
+                break
+            symbol = result.symbol.upper()
+            if symbol in signal_symbols:
+                continue
+            signal_symbols.add(symbol)
+            remaining_slots -= 1
 
         for result in quote_results:
             symbol = result.symbol.upper()
-            is_held = symbol in held_symbols
-            in_top_n = signal_count < top_n
-            if is_held or in_top_n:
-                signal_targets.append(result)
-                if not is_held:
-                    signal_count += 1
-            else:
-                non_signal.append(result)
+            if symbol not in signal_symbols:
+                continue
+            self._signal_cache[symbol] = await self._load_overseas_signal(result)
+            await asyncio.sleep(0.05)
 
-        return signal_targets + non_signal
+        for symbol in list(self._signal_cache.keys()):
+            if symbol not in signal_symbols:
+                del self._signal_cache[symbol]
+
+        return quote_results, held_symbols
 
     async def _get_held_symbols(self) -> set[str]:
         """
@@ -501,6 +523,7 @@ class LiquidityLabService:
     async def _load_overseas_positions(
         self,
         overseas_ranked: list[OverseasScanResult],
+        held_symbols_cache: set[str] | None = None,
     ) -> list[OverseasHeldPosition]:
         if not overseas_ranked:
             return []
@@ -594,7 +617,7 @@ class LiquidityLabService:
             quote = quote_map.get(held.symbol.upper())
             if quote is None or held.orderable_qty <= 0:
                 continue
-            signal_snapshot = await self._load_overseas_signal(quote)
+            signal_snapshot = self._signal_cache.get(held.symbol.upper())
             if signal_snapshot is None:
                 continue
             should_exit, exit_reason = self._should_exit_overseas_position(signal_snapshot, held)
@@ -661,17 +684,12 @@ class LiquidityLabService:
     ) -> list[WatchTargetStatus]:
         watch_targets: list[WatchTargetStatus] = []
         held_map = {position.symbol.upper(): position for position in held_positions}
-        selected_candidates = list(
-            overseas_ranked[: self.config.liquidity_lab.overseas_scan_top_n]
-        )
-        selected_symbols = {candidate.symbol.upper() for candidate in selected_candidates}
-        for candidate in overseas_ranked:
-            if candidate.symbol.upper() in held_map and candidate.symbol.upper() not in selected_symbols:
-                selected_candidates.append(candidate)
-                selected_symbols.add(candidate.symbol.upper())
+        cached_symbols = set(self._signal_cache.keys())
 
-        for candidate in selected_candidates:
-            signal_snapshot = await self._load_overseas_signal(candidate)
+        for candidate in overseas_ranked:
+            if candidate.symbol.upper() not in cached_symbols:
+                continue
+            signal_snapshot = self._signal_cache.get(candidate.symbol.upper())
             held = held_map.get(candidate.symbol.upper())
             watch_targets.append(
                 self._build_watch_target_status(
@@ -685,7 +703,6 @@ class LiquidityLabService:
                     holding_qty=0 if held is None else held.quantity,
                 )
             )
-            await asyncio.sleep(0.1)
         return watch_targets
 
     def _build_watch_target_status(
@@ -869,7 +886,10 @@ class LiquidityLabService:
         }
 
     async def _place_overseas_test_order(self, candidate: OverseasScanResult) -> dict:
-        signal_snapshot = await self._load_overseas_signal(candidate)
+        signal_snapshot = self._signal_cache.get(candidate.symbol.upper())
+        if signal_snapshot is None:
+            signal_snapshot = await self._load_overseas_signal(candidate)
+            self._signal_cache[candidate.symbol.upper()] = signal_snapshot
         if signal_snapshot is None:
             return {
                 "skipped": True,
@@ -1333,13 +1353,13 @@ class LiquidityLabService:
             top_n = config.overseas_scan_top_n
             held_n = len(self._last_held_symbols)
             estimated_calls += n_candidates
-            signal_n = min(top_n, n_candidates) + max(0, held_n - top_n)
-            estimated_calls += signal_n * 2
+            signal_n = top_n + max(0, held_n - top_n)
+            estimated_calls += min(signal_n, n_candidates) * 2
             exchange_codes = {
                 candidate.exchange_code.upper()
                 for candidate in config.overseas_candidates
             }
-            estimated_calls += len(exchange_codes) * 2
+            estimated_calls += len(exchange_codes)
             if include_overseas_order:
                 estimated_calls += 1
         return estimated_calls

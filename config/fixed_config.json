@@ -53,7 +53,7 @@
         "intraday_fast_window": 3,
         "intraday_slow_window": 10,
         "intraday_bar_minutes": 1,
-        "intraday_chart_refresh_sec": 30,
+        "intraday_chart_refresh_sec": 20,
         "daily_chart_refresh_sec": 600,
         "entry_pullback_pct": 0.0,
         "add_on_pullback_pct": 0.0,
@@ -148,7 +148,7 @@
     },
     "liquidity_lab": {
         "enabled": true,
-        "loop_interval_sec": 15,
+        "loop_interval_sec": 20,
         "domestic_candidates": [
             "005930",
             "000660",
@@ -439,7 +439,7 @@
         "domestic_paper_iterations": 6,
         "domestic_paper_interval_sec": 5,
         "domestic_top_n": 3,
-        "overseas_scan_top_n": 69,
+        "overseas_scan_top_n": 15,
         "domestic_test_order_qty": 1,
         "overseas_test_order_qty": 1,
         "domestic_min_price_krw": 5000,

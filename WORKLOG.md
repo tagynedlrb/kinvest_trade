@@ -1,6 +1,22 @@
 # WORKLOG
 
 ## 2026-06-29
+### 추가 개선 10
+- 첨부된 `8차 개선` 지시문 기준으로 `liquidity_lab` 해외 루프를 `69개 전체 quote + 상위 15개/보유 종목 signal 캐시` 구조로 재조정
+- `scan_overseas()` 반환을 `(ranked_results, held_symbols)`로 바꾸고, quote sleep과 signal sleep을 각각 `0.05초`로 축소
+- `__init__`에 `_signal_cache`를 추가하고, 같은 사이클의 `_build_overseas_watch_targets`와 보유 종목 청산 판단이 이 캐시를 재사용하도록 변경
+- `_build_overseas_watch_targets()`에서 chart API 재호출과 `asyncio.sleep(0.1)`을 제거해 감시 목록 빌드 비용을 줄임
+- `_place_overseas_test_order()`도 캐시 우선 조회 후 누락 시에만 fallback 로드하도록 보강
+- `config/fixed_config.json`의 `overseas_scan_top_n=15`, `loop_interval_sec=20`, `intraday_chart_refresh_sec=20`으로 운영값을 조정
+- `_estimate_api_calls_per_cycle()`를 새 구조 기준으로 갱신해 기본 미국장 추정 호출량이 `101 / cycle` 수준이 되도록 정리
+- `tests/test_overseas_scan.py`를 반환 타입 변경과 signal cache 검증 케이스 중심으로 확장
+
+### 검증 결과
+- `python3 -m pytest tests/ -q` 통과 (`83 passed`)
+- `python3 -m pytest tests/test_overseas_scan.py -q` 통과 (`9 passed`)
+- `python3 -m compileall src` 통과
+
+## 2026-06-29
 ### 추가 개선 9
 - 첨부된 `7차 개선` 지시문 기준으로 `liquidity_lab` 해외 감시 구조에서 `active_pool / bench_scan / pool_rotation` 2단계 구조를 완전히 제거
 - `scan_overseas()`를 `69개 전체 quote 스캔 -> activity_score 정렬 -> held 포함 signal 우선순위 부여` 단일 패스로 재작성

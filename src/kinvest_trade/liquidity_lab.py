@@ -165,6 +165,28 @@ class LiquidityLabService:
             self.config.credentials.env,
         )
 
+        if not krx_open and not us_open:
+            return LiquidityLabReport(
+                scanned_at=format_kst(now) or "",
+                krx_market_open=False,
+                us_market_open=False,
+                us_market_session=us_session,
+                us_orderable_in_profile=False,
+                primary_market="none",
+                primary_target=None,
+                primary_selection_reason="no_supported_market_open",
+                domestic_ranked=[],
+                overseas_ranked=[],
+                domestic_excluded=[],
+                overseas_excluded=[],
+                overseas_positions=[],
+                watch_targets=[],
+                estimated_api_calls_per_cycle=0,
+                paper_run={"skipped": True, "reason": "market_closed"},
+                domestic_order={"skipped": True, "reason": "market_closed"},
+                overseas_order={"skipped": True, "reason": "market_closed"},
+            )
+
         domestic_ranked = await self.scan_domestic() if krx_open else []
         if us_open:
             overseas_ranked, held_symbols_cache = await self.scan_overseas()

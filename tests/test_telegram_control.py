@@ -1,6 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
+import kinvest_trade.telegram_control as telegram_control_module
 from kinvest_trade.telegram_control import (
     SessionPerformance,
     TelegramLiquidityLabController,
@@ -129,3 +132,157 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
     )
 
     assert "pnl=" not in line
+
+
+class DummyNotifier:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.enabled = True
+
+    async def send(self, message: str) -> None:
+        self.messages.append(message)
+
+
+class DummyRepository:
+    def save_telegram_control_session(self, **kwargs) -> int:
+        return 1
+
+    def save_heartbeat(self, status: str, message: str) -> None:
+        return None
+
+    def save_risk_event(self, **kwargs) -> None:
+        return None
+
+
+class DummyAsyncClient:
+    def __init__(self, credentials) -> None:
+        self.credentials = credentials
+
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class DummyHeldPosition:
+    def __init__(self, symbol: str = "SOXL") -> None:
+        self.symbol = symbol
+        self.quantity = 0
+        self.avg_price = 0.0
+        self.current_price = 0.0
+        self.pnl_pct = 0.0
+        self.exchange_code = "NASD"
+
+
+class DummyReport:
+    def __init__(self, reason: str = "no_supported_market_open") -> None:
+        self.scanned_at = "2026-06-30 09:00:00 KST"
+        self.primary_market = "none"
+        self.primary_target = None
+        self.primary_selection_reason = reason
+        self.paper_run = {"skipped": True, "reason": "market_closed"}
+        self.domestic_order = {"skipped": True, "reason": "market_closed"}
+        self.overseas_order = {"skipped": True, "reason": "market_closed"}
+        self.overseas_positions: list[DummyHeldPosition] = []
+        self.estimated_api_calls_per_cycle = 0
+        self.krx_market_open = False
+        self.us_market_open = False
+        self.watch_targets: list[dict] = []
+
+    def to_dict(self) -> dict:
+        return {"watch_targets": [], "overseas_positions": []}
+
+
+def _build_async_controller() -> TelegramLiquidityLabController:
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(
+                profile_name="paper",
+                env="vps",
+            ),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=Path("/tmp/kinvest_trade_test_runtime_state.json")),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=DummyRepository(),
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "running"
+    controller.current_task_started_at = datetime.now(timezone.utc)
+    return controller
+
+
+def test_run_cycle_does_not_stop_on_market_closed() -> None:
+    controller = _build_async_controller()
+
+    class FakeLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            pass
+
+        async def run(self):
+            return DummyReport("no_supported_market_open")
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = FakeLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(1))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert controller.mode == "running"
+    assert controller.last_report_summary is not None
+    assert controller.last_report_summary["market_closed"] is True
+
+
+def test_run_cycle_increments_consecutive_errors_on_exception() -> None:
+    controller = _build_async_controller()
+
+    class FailingLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            pass
+
+        async def run(self):
+            raise RuntimeError("boom")
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = FailingLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(2))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert controller._consecutive_errors == 1
+    assert controller.last_error == "boom"
+    assert any("TELEGRAM_CONTROL_ERROR" in message for message in controller.notifier.messages)
+
+
+def test_run_cycle_resets_consecutive_errors_on_success() -> None:
+    controller = _build_async_controller()
+    controller._consecutive_errors = 3
+
+    class SuccessfulLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            pass
+
+        async def run(self):
+            return DummyReport("watchlist_wait")
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = SuccessfulLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(3))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert controller._consecutive_errors == 0
+    assert controller.last_error is None

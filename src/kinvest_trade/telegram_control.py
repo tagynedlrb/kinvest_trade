@@ -9,6 +9,13 @@ from datetime import datetime, timedelta, timezone
 from .client import KisRestClient
 from .config import AppConfig
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService
+from .market_sessions import (
+    determine_loop_interval_sec,
+    get_us_trading_session,
+    is_krx_regular_session,
+    is_us_orderable_session_for_env,
+    minutes_until_next_tradeable_session,
+)
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
 from .time_utils import format_display_times, format_kst
@@ -120,6 +127,8 @@ class TelegramLiquidityLabController:
         self.session_performance = SessionPerformance()
         self.last_error: str | None = None
         self.update_offset: int | None = None
+        self._consecutive_errors: int = 0
+        self._last_market_state: str = ""
 
     async def run(self) -> None:
         if not self.notifier.enabled:
@@ -226,6 +235,7 @@ class TelegramLiquidityLabController:
         self.mode = target_mode
         self.next_run_at = datetime.now(timezone.utc)
         self.last_error = None
+        self._consecutive_errors = 0
         self._write_runtime_state()
         await self.notifier.send(
             f"[KIS][TELEGRAM_CONTROL]\nmode={self.mode}\ncommand={verb}\nnext_run=immediate"
@@ -271,6 +281,9 @@ class TelegramLiquidityLabController:
         )
 
     async def _run_cycle(self, cycle_no: int) -> None:
+        """
+        Execute a single liquidity-lab cycle without auto-stopping on market close.
+        """
         try:
             async with KisRestClient(self.config.credentials) as client:
                 service = LiquidityLabService(self.config, client, self.repository, self.notifier)
@@ -279,27 +292,50 @@ class TelegramLiquidityLabController:
             self._accumulate_session_performance(report)
             self.last_completed_at = datetime.now(timezone.utc)
             self.last_error = None
-            if (
-                self.mode == "running"
-                and report.primary_selection_reason == "no_supported_market_open"
-            ):
-                self.mode = "stopped"
-                self.next_run_at = None
+            self._consecutive_errors = 0
+
+            now_for_state = datetime.now(timezone.utc)
+            krx_open = is_krx_regular_session(now_for_state)
+            us_open = is_us_orderable_session_for_env(now_for_state, self.config.credentials.env)
+            if krx_open:
+                current_market_state = "krx_open"
+            elif us_open:
+                current_market_state = f"us_{get_us_trading_session(now_for_state)}"
+            else:
+                current_market_state = "both_closed"
+
+            if self._last_market_state and self._last_market_state != current_market_state:
                 await self.notifier.send(
-                    self._finalize_session_summary(command="market_close_auto_stop")
+                    f"[KIS][MARKET_STATE_CHANGE]\n"
+                    f"from={self._last_market_state}\n"
+                    f"to={current_market_state}\n"
+                    f"time={format_kst(now_for_state)}"
                 )
+            self._last_market_state = current_market_state
         except asyncio.CancelledError:
             self.last_error = f"cycle_{cycle_no}_cancelled"
             raise
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
+            self._consecutive_errors += 1
             await self.notifier.send(
                 f"[KIS][TELEGRAM_CONTROL_ERROR]\ncycle={cycle_no}\nerror={exc}"
             )
+            if self._consecutive_errors == 5:
+                await self.notifier.send(
+                    "[KIS][TELEGRAM_CONTROL_WARNING]\n"
+                    f"consecutive_errors={self._consecutive_errors}\n"
+                    "루프는 계속 실행 중. 수동 확인 권장."
+                )
         finally:
             now = datetime.now(timezone.utc)
+            interval_sec = determine_loop_interval_sec(
+                now_utc=now,
+                env=self.config.credentials.env,
+                consecutive_errors=self._consecutive_errors,
+            )
             base_time = self.current_task_started_at or now
-            scheduled = base_time + timedelta(seconds=self.config.liquidity_lab.loop_interval_sec)
+            scheduled = base_time + timedelta(seconds=interval_sec)
             self.next_run_at = scheduled if scheduled > now else now
             self._write_runtime_state()
 
@@ -356,14 +392,37 @@ class TelegramLiquidityLabController:
         snapshot = self._snapshot()
         session = snapshot.session_performance or {}
         last_report = snapshot.last_report_summary or {}
+        now = datetime.now(timezone.utc)
+        krx_open = is_krx_regular_session(now)
+        us_session = get_us_trading_session(now)
+        us_tradeable = is_us_orderable_session_for_env(now, self.config.credentials.env)
+        if krx_open:
+            market_status = "KRX 정규장 ✓"
+        elif us_tradeable:
+            market_status = f"US {us_session} ✓"
+        elif us_session in {"premarket", "aftermarket"}:
+            market_status = f"US {us_session} (감시중)"
+        else:
+            mins = minutes_until_next_tradeable_session(now, self.config.credentials.env)
+            hours, minutes = divmod(mins, 60)
+            market_status = f"양쪽 장 닫힘 — 다음 개장까지 {hours}h{minutes:02d}m"
+
+        next_interval = determine_loop_interval_sec(
+            now,
+            self.config.credentials.env,
+            self._consecutive_errors,
+        )
         return "\n".join(
             [
                 "[KIS][TELEGRAM_CONTROL_STATUS]",
-                f"time={format_kst(datetime.now(timezone.utc))}",
+                f"time={format_kst(now)}",
                 f"mode={snapshot.mode}",
                 f"cycle={snapshot.current_cycle_no}",
                 f"active_since={snapshot.active_cycle_started_at}",
                 f"next_run={snapshot.next_run_at}",
+                f"market={market_status}",
+                f"next_loop_interval={next_interval}s",
+                f"consecutive_errors={self._consecutive_errors}",
                 f"last_command={snapshot.last_command}",
                 f"last_completed={snapshot.last_completed_at}",
                 f"last_target={last_report.get('primary_target') or '-'}",
@@ -651,6 +710,9 @@ class TelegramLiquidityLabController:
                 for pos in report.overseas_positions
             ],
             "estimated_api_calls_per_cycle": report.estimated_api_calls_per_cycle,
+            "market_closed": (
+                not report.krx_market_open and not report.us_market_open
+            ),
             }
         )
 

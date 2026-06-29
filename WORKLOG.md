@@ -1,6 +1,22 @@
 # WORKLOG
 
 ## 2026-06-29
+### 추가 개선 11
+- 첨부된 `9차 개선` 지시문 기준으로 `market_sessions.py`에 `minutes_until_next_tradeable_session()`와 `determine_loop_interval_sec()`를 추가해 장 상태 기반 동적 루프 간격 계산을 도입
+- `telegram_control.py`에서 `no_supported_market_open` 시 auto-stop을 제거하고, 장이 닫혀도 `running` 상태를 유지한 채 다음 장까지 대기하도록 변경
+- `TelegramLiquidityLabController`에 `_consecutive_errors`, `_last_market_state`를 추가하고, 연속 오류 누적/복구 및 장 상태 변화 텔레그램 알림을 반영
+- `/lab_status` 메시지에 현재 장 상태, 다음 루프 간격, 연속 오류 횟수를 추가
+- `liquidity_lab.py`는 양쪽 장이 모두 닫힌 경우 API 호출 없이 즉시 `market_closed` 리포트를 반환하도록 조정
+- `tests/test_market_sessions.py`에 다음 세션까지 남은 시간과 동적 간격 계산 테스트를 추가
+- `tests/test_telegram_control.py`에 market-closed 시 running 유지, 오류 누적, 성공 시 오류 카운터 초기화 테스트를 추가
+
+### 검증 결과
+- `python3 -m pytest tests/ -q` 통과 (`93 passed`)
+- `python3 -m pytest tests/test_market_sessions.py -q` 통과 (`17 passed`)
+- `python3 -m pytest tests/test_telegram_control.py -q` 통과 (`10 passed`)
+- `python3 -m compileall src` 통과
+
+## 2026-06-29
 ### 추가 개선 10
 - 첨부된 `8차 개선` 지시문 기준으로 `liquidity_lab` 해외 루프를 `69개 전체 quote + 상위 15개/보유 종목 signal 캐시` 구조로 재조정
 - `scan_overseas()` 반환을 `(ranked_results, held_symbols)`로 바꾸고, quote sleep과 signal sleep을 각각 `0.05초`로 축소

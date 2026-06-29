@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 
@@ -76,3 +76,92 @@ def is_us_orderable_session_for_env(now_utc: datetime | None, env: str) -> bool:
     if env == "prod":
         return session in {"daytime", "premarket", "regular", "aftermarket"}
     return session == "regular"
+
+
+def minutes_until_next_tradeable_session(
+    now_utc: datetime,
+    env: str = "prod",
+) -> int:
+    """
+    Return minutes until the next KRX or env-tradeable US session.
+
+    Returns 0 when trading is already available in either market.
+    """
+    if is_krx_regular_session(now_utc):
+        return 0
+    if is_us_orderable_session_for_env(now_utc, env):
+        return 0
+
+    kst_now = now_utc.astimezone(KST)
+    today_kst = kst_now.date()
+
+    krx_candidates: list[datetime] = []
+    for delta in range(0, 8):
+        candidate_date = today_kst + timedelta(days=delta)
+        candidate_dt = datetime(
+            candidate_date.year,
+            candidate_date.month,
+            candidate_date.day,
+            9,
+            0,
+            0,
+            tzinfo=KST,
+        )
+        candidate_utc = candidate_dt.astimezone(timezone.utc)
+        if candidate_utc > now_utc and candidate_date.weekday() < 5:
+            krx_candidates.append(candidate_utc)
+            break
+
+    is_dst = _is_new_york_dst(now_utc)
+    premarket_hour = 22 if is_dst else 23
+    premarket_minute = 30
+    us_candidates: list[datetime] = []
+    for delta in range(0, 4):
+        candidate_date = today_kst + timedelta(days=delta)
+        candidate_dt = datetime(
+            candidate_date.year,
+            candidate_date.month,
+            candidate_date.day,
+            premarket_hour,
+            premarket_minute,
+            0,
+            tzinfo=KST,
+        )
+        candidate_utc = candidate_dt.astimezone(timezone.utc)
+        if candidate_utc > now_utc and candidate_date.weekday() < 5:
+            us_candidates.append(candidate_utc)
+            break
+
+    all_candidates = krx_candidates + us_candidates
+    if not all_candidates:
+        return 120
+
+    nearest = min(all_candidates)
+    delta_seconds = (nearest - now_utc).total_seconds()
+    return max(0, int(delta_seconds / 60))
+
+
+def determine_loop_interval_sec(
+    now_utc: datetime,
+    env: str = "prod",
+    consecutive_errors: int = 0,
+) -> int:
+    """
+    Determine the loop interval from market state and recent error streak.
+    """
+    if consecutive_errors >= 5:
+        return 120
+
+    if is_krx_regular_session(now_utc):
+        return 20
+    if is_us_orderable_session_for_env(now_utc, env):
+        return 20
+
+    session = get_us_trading_session(now_utc)
+    if session in {"premarket", "aftermarket"}:
+        return 30
+
+    mins = minutes_until_next_tradeable_session(now_utc, env)
+    if mins <= 30:
+        return 30
+    return 120

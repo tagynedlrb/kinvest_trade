@@ -804,7 +804,7 @@ class LiquidityLabService:
                 activity_score=activity_score,
                 signal_score=entry_setup.score,
                 action_bias="BUY",
-                signal_state="BUY_READY",
+                signal_state=entry_setup.state,
                 ma_summary=self._ma_relation_summary(signal_snapshot),
                 note=entry_setup.reason,
                 holding_qty=holding_qty,

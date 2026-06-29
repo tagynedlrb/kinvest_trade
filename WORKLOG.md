@@ -1,5 +1,21 @@
 # WORKLOG
 
+## 2026-06-29
+### 추가 개선 7
+- 첨부된 `5차 개선` 지시문 기준으로 `RSI 68 상단 차단`을 완화하고, `max_entry_rsi14=85.0`까지 급등 구간 진입을 허용
+- `volume_spike_ratio=1.1`, `breakout_proximity_pct=0.98`를 적용해 직전 고점 98% 근접 구간의 선제 진입을 허용
+- `trend_require_price_above_slow=false` 기본값을 추가해 `price < slow_ma`라도 `fast_ma >= slow_ma`면 반등 초입 진입을 볼 수 있게 조정
+- `momentum_policy.py`의 `evaluate_entry_setup`을 개편해 `fast_track` 기준을 `volume_spike_ratio × 1.6`으로 완화하고, `near_breakout` 대기 상태와 `breakout_proximity_entry` 진입 경로를 추가
+- `technical_signals.py`의 `has_required_context`를 `daily_ma_fast + minute_ma_fast`만으로도 True가 되도록 완화해 장 시작 직후 10분 WARMUP 구간을 줄임
+- `derive_watch_state`와 `liquidity_lab`의 watch target 상태를 새 state 체계(`BUY/READY/WAIT/SKIP/WARMUP`)에 맞게 반영
+- `tests/test_momentum_policy.py`에 RSI, proximity, adaptive trend filter, fast-track, reduced warmup 관련 케이스를 추가
+
+### 검증 결과
+- `python -m pytest tests/ -v` 통과 (`79 passed`)
+- 샘플 스냅샷 검증:
+  - 기본 설정에서 `trend_down`이면 `WAIT`
+  - `trend_require_price_above_slow=false`에서는 같은 흐름이 `breakout_proximity_entry`로 `BUY` 전환됨
+
 ## 2026-06-26
 ### 추가 개선 6
 - 첨부된 `4차 개선` 지시문 기준으로 `momentum_policy.py`의 `time_exit`를 손실 포지션에도 적용되도록 재설계

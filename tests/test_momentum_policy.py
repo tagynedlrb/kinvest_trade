@@ -2,7 +2,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from kinvest_trade.config import load_app_config
-from kinvest_trade.momentum_policy import evaluate_exit_setup
+from kinvest_trade.momentum_policy import evaluate_entry_setup, evaluate_exit_setup
 from kinvest_trade.technical_signals import MovingAverageSnapshot
 
 
@@ -129,3 +129,110 @@ def test_time_exit_profit_still_works() -> None:
 
     assert result.action == "sell"
     assert result.reason == "time_exit_profit"
+
+
+def test_rsi_85_blocks_entry() -> None:
+    result = evaluate_entry_setup(
+        _build_config(),
+        _snapshot(
+            rsi14=86.0,
+            volume_ratio=2.0,
+            intraday_momentum=0.002,
+            intraday_bar_return=0.001,
+            price=100.3,
+            breakout_level=100.1,
+        ),
+    )
+
+    assert result.ready is False
+    assert result.reason == "entry_rsi_too_high"
+
+
+def test_rsi_71_does_not_block_entry_with_new_threshold() -> None:
+    config = replace(_build_config(), max_entry_rsi14=85.0)
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            rsi14=71.0,
+            volume_ratio=1.3,
+            intraday_momentum=0.002,
+            intraday_bar_return=0.0009,
+            price=100.2,
+            breakout_level=100.1,
+        ),
+    )
+
+    assert result.ready is True
+
+
+def test_trend_filter_adaptive_allows_entry_below_slow_ma() -> None:
+    config = replace(
+        _build_config(),
+        trend_require_price_above_slow=False,
+        volume_spike_ratio=1.1,
+    )
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            price=99.9,
+            daily_ma_fast=101.0,
+            daily_ma_slow=99.0,
+            minute_ma_fast=100.3,
+            minute_ma_slow=100.1,
+            volume_ratio=1.2,
+            intraday_momentum=0.001,
+            intraday_bar_return=0.0004,
+            breakout_level=101.0,
+            breakout_distance_pct=-0.0109,
+            rsi14=60.0,
+        ),
+    )
+
+    assert result.ready is True
+    assert result.reason == "breakout_proximity_entry"
+
+
+def test_breakout_proximity_entry() -> None:
+    config = replace(_build_config(), breakout_proximity_pct=0.98, volume_spike_ratio=1.1)
+    breakout_level = 100.0
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            price=breakout_level * 0.99,
+            breakout_level=breakout_level,
+            breakout_distance_pct=-0.01,
+            volume_ratio=1.2,
+            intraday_momentum=0.001,
+            intraday_bar_return=0.0005,
+            rsi14=62.0,
+        ),
+    )
+
+    assert result.ready is True
+    assert result.reason == "breakout_proximity_entry"
+
+
+def test_fast_track_vr_1_6_multiplier() -> None:
+    config = replace(
+        _build_config(),
+        volume_spike_ratio=1.1,
+        min_bar_return_pct=0.0003,
+    )
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            volume_ratio=1.77,
+            intraday_bar_return=0.0006,
+            intraday_momentum=0.001,
+            rsi14=60.0,
+        ),
+    )
+
+    assert result.ready is True
+    assert result.reason == "volume_momentum_fast_entry"
+
+
+def test_has_required_context_without_slow_ma() -> None:
+    snapshot = _snapshot(minute_ma_slow=None)
+
+    assert snapshot.has_required_context is True

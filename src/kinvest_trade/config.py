@@ -117,6 +117,7 @@ class AutoTradeConfig:
     momentum_window: int
     volume_window: int
     breakout_lookback_bars: int
+    breakout_proximity_pct: float
     volume_spike_ratio: float
     scale_in_volume_ratio: float
     volume_fade_ratio: float
@@ -141,6 +142,7 @@ class AutoTradeConfig:
     ma20_partial_exit_buffer_pct: float
     trend_chase_limit_pct: float
     max_entry_rsi14: float
+    trend_require_price_above_slow: bool
     max_hold_cycles: int
     force_reentry_after_cycles: int
     startup_buy_if_flat: bool
@@ -545,6 +547,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             momentum_window=int(auto_trade_raw.get("momentum_window", 6)),
             volume_window=int(auto_trade_raw.get("volume_window", 6)),
             breakout_lookback_bars=int(auto_trade_raw.get("breakout_lookback_bars", 6)),
+            breakout_proximity_pct=float(
+                auto_trade_raw.get("breakout_proximity_pct", 0.98)
+            ),
             volume_spike_ratio=float(auto_trade_raw.get("volume_spike_ratio", 1.8)),
             scale_in_volume_ratio=float(auto_trade_raw.get("scale_in_volume_ratio", 1.3)),
             volume_fade_ratio=float(auto_trade_raw.get("volume_fade_ratio", 0.85)),
@@ -593,6 +598,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("trend_chase_limit_pct", 0.02)
             ),
             max_entry_rsi14=float(auto_trade_raw.get("max_entry_rsi14", 62.0)),
+            trend_require_price_above_slow=bool(
+                auto_trade_raw.get("trend_require_price_above_slow", True)
+            ),
             max_hold_cycles=int(auto_trade_raw.get("max_hold_cycles", 1)),
             force_reentry_after_cycles=int(auto_trade_raw.get("force_reentry_after_cycles", 1)),
             startup_buy_if_flat=bool(auto_trade_raw.get("startup_buy_if_flat", True)),

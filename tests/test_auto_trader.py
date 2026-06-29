@@ -183,7 +183,12 @@ def test_entry_edge_filter_blocks_trade_when_reward_risk_is_too_small() -> None:
 def test_decide_action_buys_on_volume_breakout() -> None:
     trader = _build_trader()
 
-    decision = trader._decide_action(_snapshot())
+    decision = trader._decide_action(
+        _snapshot(
+            volume_ratio=2.2,
+            intraday_bar_return=0.0008,
+        )
+    )
 
     assert decision.side == "buy"
     assert decision.reason == "volume_breakout_entry"

@@ -551,7 +551,7 @@ class SoxlAutoTrader:
         if snapshot.spread_pct > auto.max_spread_pct:
             return TradeDecision(None, 0, "spread_too_wide")
         if not snapshot.has_required_context:
-            return TradeDecision(None, 0, "building_signal_context")
+            return TradeDecision(None, 0, "warmup_context")
 
         if self.position.qty <= 0:
             self.flat_cycles += 1

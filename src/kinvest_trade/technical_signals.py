@@ -58,7 +58,6 @@ class MovingAverageSnapshot:
         return (
             self.daily_ma_fast is not None
             and self.minute_ma_fast is not None
-            and self.minute_ma_slow is not None
         )
 
     @property

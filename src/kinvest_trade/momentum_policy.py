@@ -29,18 +29,18 @@ def evaluate_entry_setup(
     snapshot: MovingAverageSnapshot,
 ) -> EntrySetup:
     if snapshot.spread_pct > config.max_spread_pct:
-        return EntrySetup(False, "spread_too_wide", "SPREAD", "spread")
+        return EntrySetup(False, "spread_too_wide", "SKIP", "spread")
     if not snapshot.has_required_context:
-        return EntrySetup(False, "building_signal_context", "WARMUP", "warmup")
+        return EntrySetup(False, "warmup_context", "WARMUP", "warmup")
     if snapshot.rsi14 is not None and snapshot.rsi14 > config.max_entry_rsi14:
-        return EntrySetup(False, "entry_rsi_too_high", "OVERHEAT", _note(snapshot))
+        return EntrySetup(False, "entry_rsi_too_high", "SKIP", _note(snapshot))
 
     volume_ready = snapshot.volume_ratio >= config.volume_spike_ratio
     if not volume_ready:
-        return EntrySetup(False, "volume_not_expanded", "SETUP", _note(snapshot))
+        return EntrySetup(False, "volume_low", "WAIT", _note(snapshot))
 
     fast_track = (
-        snapshot.volume_ratio >= config.volume_spike_ratio * 2.0
+        snapshot.volume_ratio >= config.volume_spike_ratio * 1.6
         and snapshot.intraday_bar_return >= config.min_bar_return_pct * 2.0
     )
     if fast_track:
@@ -51,21 +51,21 @@ def evaluate_entry_setup(
         return EntrySetup(
             True,
             "volume_momentum_fast_entry",
-            "BUY_READY",
+            "BUY",
             _note(snapshot),
             score=round(score, 2),
             urgent=True,
         )
 
-    if not trend_filter_ok(snapshot):
-        return EntrySetup(False, "trend_filter_off", "FILTER", _note(snapshot))
+    if not _trend_filter_ok_adaptive(config, snapshot):
+        return EntrySetup(False, "trend_down", "WAIT", _note(snapshot))
 
     momentum_ready = (
         snapshot.intraday_momentum >= config.min_intraday_momentum_pct
         or snapshot.intraday_bar_return >= config.min_bar_return_pct
     )
     if not momentum_ready:
-        return EntrySetup(False, "momentum_not_ready", "SETUP", _note(snapshot))
+        return EntrySetup(False, "momentum_weak", "WAIT", _note(snapshot))
 
     extension_too_large = (
         snapshot.breakout_distance_pct > config.max_breakout_extension_pct
@@ -73,12 +73,13 @@ def evaluate_entry_setup(
         else False
     )
     if extension_too_large:
-        return EntrySetup(False, "breakout_too_extended", "CHASE", _note(snapshot))
+        return EntrySetup(False, "chasing", "SKIP", _note(snapshot))
 
     breakout_ready = _breakout_ready(config, snapshot)
     band_breakout_ready = _band_breakout_ready(config, snapshot)
-    if not (breakout_ready or band_breakout_ready):
-        return EntrySetup(False, "no_breakout_signal", "SPIKE", _note(snapshot))
+    proximity_ready = _breakout_proximity_ready(config, snapshot)
+    if not (breakout_ready or band_breakout_ready or proximity_ready):
+        return EntrySetup(False, "near_breakout", "READY", _note(snapshot))
 
     score = (
         min(snapshot.volume_ratio, 4.0) * 25.0
@@ -90,8 +91,13 @@ def evaluate_entry_setup(
         snapshot.volume_ratio >= (config.volume_spike_ratio * 1.5)
         or snapshot.intraday_bar_return >= (config.min_bar_return_pct * 2.0)
     )
-    reason = "volume_breakout_entry" if breakout_ready else "band_breakout_entry"
-    return EntrySetup(True, reason, "BUY_READY", _note(snapshot), score=round(score, 2), urgent=urgent)
+    if breakout_ready:
+        reason = "volume_breakout_entry"
+    elif band_breakout_ready:
+        reason = "band_breakout_entry"
+    else:
+        reason = "breakout_proximity_entry"
+    return EntrySetup(True, reason, "BUY", _note(snapshot), score=round(score, 2), urgent=urgent)
 
 
 def evaluate_scale_in_setup(
@@ -207,11 +213,31 @@ def derive_watch_state(
     entry = evaluate_entry_setup(config, snapshot)
     if entry.ready:
         return entry.state, entry.reason
-    return entry.state, entry.note if entry.reason == "trend_filter_off" else entry.reason
+    return entry.state, entry.reason
 
 
 def trend_filter_ok(snapshot: MovingAverageSnapshot) -> bool:
     return snapshot.daily_trend_up and snapshot.intraday_trend_up
+
+
+def _trend_filter_ok_adaptive(
+    config: AutoTradeConfig,
+    snapshot: MovingAverageSnapshot,
+) -> bool:
+    if config.trend_require_price_above_slow:
+        return trend_filter_ok(snapshot)
+
+    daily_ok = bool(
+        snapshot.daily_ma_fast is not None
+        and snapshot.daily_ma_slow is not None
+        and snapshot.daily_ma_fast >= snapshot.daily_ma_slow
+    )
+    intraday_ok = bool(
+        snapshot.minute_ma_fast is not None
+        and snapshot.minute_ma_slow is not None
+        and snapshot.minute_ma_fast >= snapshot.minute_ma_slow
+    )
+    return daily_ok and intraday_ok
 
 
 def _breakout_ready(config: AutoTradeConfig, snapshot: MovingAverageSnapshot) -> bool:
@@ -226,6 +252,16 @@ def _band_breakout_ready(config: AutoTradeConfig, snapshot: MovingAverageSnapsho
         return False
     threshold = snapshot.bollinger_upper * (1.0 + config.bollinger_breakout_buffer_pct)
     return snapshot.price >= threshold
+
+
+def _breakout_proximity_ready(
+    config: AutoTradeConfig,
+    snapshot: MovingAverageSnapshot,
+) -> bool:
+    if snapshot.breakout_level is None or snapshot.breakout_level <= 0:
+        return False
+    proximity_threshold = snapshot.breakout_level * config.breakout_proximity_pct
+    return snapshot.price >= proximity_threshold
 
 
 def _note(snapshot: MovingAverageSnapshot) -> str:

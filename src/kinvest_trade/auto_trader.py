@@ -286,6 +286,8 @@ class SoxlAutoTrader:
                 action_count += 1
                 realized = RealizedBreakdown()
                 estimated_tax_before = estimated_tax_krw
+                avg_price_before_fill = 0.0
+                hold_cycles_before_fill = 0
                 if decision.side == "buy":
                     buy_count += 1
                     self._apply_buy_fill(
@@ -297,6 +299,8 @@ class SoxlAutoTrader:
                     self.flat_cycles = 0
                 else:
                     sell_count += 1
+                    avg_price_before_fill = self.position.avg_price
+                    hold_cycles_before_fill = self.position.hold_cycles
                     realized = self._apply_sell_fill(
                         qty=executed_qty,
                         price=last_price,
@@ -359,6 +363,8 @@ class SoxlAutoTrader:
                         cumulative_pnl_net_krw=realized_pnl_net_krw,
                         snapshot=snapshot,
                         captured_at=now,
+                        avg_price_before_fill=avg_price_before_fill,
+                        hold_cycles_before_fill=hold_cycles_before_fill,
                     )
 
                 await asyncio.sleep(auto.poll_interval_sec)
@@ -936,6 +942,8 @@ class SoxlAutoTrader:
         cumulative_pnl_net_krw: float,
         snapshot: StrategySnapshot,
         captured_at: datetime,
+        avg_price_before_fill: float = 0.0,
+        hold_cycles_before_fill: int = 0,
     ) -> None:
         auto = self.config.auto_trade
         lines = [
@@ -951,8 +959,21 @@ class SoxlAutoTrader:
             f"signal={reason}",
         ]
         if side == "SELL":
-            lines.append(f"pnl={realized.net_pnl_krw:.0f} KRW")
+            avg_price = avg_price_before_fill
+            pnl_pct = ((price - avg_price) / avg_price) if avg_price > 0 else 0.0
+            pnl_sign = "+" if realized.net_pnl_usd >= 0 else ""
+            pct_sign = "+" if pnl_pct >= 0 else ""
+            hold_sec = hold_cycles_before_fill * auto.poll_interval_sec
+            hold_min = hold_sec // 60
+            hold_rem = hold_sec % 60
+            hold_str = f"{hold_min}m{hold_rem:02d}s"
+
+            lines.append(f"buy_price={avg_price:.4f} USD")
+            lines.append(f"pnl_usd={pnl_sign}{realized.net_pnl_usd:.2f} USD")
+            lines.append(f"pnl_pct={pct_sign}{pnl_pct * 100:.2f}%")
+            lines.append(f"pnl_krw={realized.net_pnl_krw:.0f} KRW")
             lines.append(f"cum_pnl={cumulative_pnl_net_krw:.0f} KRW")
+            lines.append(f"hold={hold_str}")
         await self.notifier.send("\n".join(lines))
 
     async def _send_final_message(self, summary: AutoTradeSummary) -> None:

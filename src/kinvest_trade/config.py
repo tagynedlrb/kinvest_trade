@@ -224,6 +224,7 @@ class LiquidityLabConfig:
     overseas_top_n: int
     overseas_active_pool_size: int
     overseas_bench_scan_every: int
+    overseas_min_active_pool_size: int
     domestic_test_order_qty: int
     overseas_test_order_qty: int
     domestic_min_price_krw: int
@@ -697,6 +698,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ),
             overseas_bench_scan_every=int(
                 liquidity_lab_raw.get("overseas_bench_scan_every", 4)
+            ),
+            overseas_min_active_pool_size=int(
+                liquidity_lab_raw.get("overseas_min_active_pool_size", 0)
             ),
             domestic_test_order_qty=int(liquidity_lab_raw.get("domestic_test_order_qty", 1)),
             overseas_test_order_qty=int(liquidity_lab_raw.get("overseas_test_order_qty", 1)),

@@ -330,6 +330,7 @@ class LiquidityLabService:
     async def scan_overseas(self) -> list[OverseasScanResult]:
         config = self.config.liquidity_lab
         self._cycle_count += 1
+        held_symbols = await self._get_held_symbols()
         should_bench_scan = (
             not self._pool_initialized
             or self._cycle_count % config.overseas_bench_scan_every == 0
@@ -339,7 +340,7 @@ class LiquidityLabService:
             await self._run_bench_scan()
             self._pool_initialized = True
 
-        if not self._active_pool:
+        if not self._active_pool and config.overseas_min_active_pool_size > 0:
             self._active_pool = list(
                 config.overseas_candidates[: config.overseas_active_pool_size]
             )
@@ -351,7 +352,6 @@ class LiquidityLabService:
             ]
 
         # Keep held symbols in scan targets even when they fall out of the active pool.
-        held_symbols = await self._get_held_symbols()
         scan_targets = list(self._active_pool)
         if held_symbols:
             active_syms = {candidate.symbol.upper() for candidate in scan_targets}
@@ -430,14 +430,15 @@ class LiquidityLabService:
                 bench_results.append(scan_result)
             await asyncio.sleep(0.1)
 
-        if not bench_results:
-            return
-
+        held = self._last_held_symbols
         bench_results.sort(key=lambda item: item.activity_score, reverse=True)
-        top_symbols = {
+        remaining_slots = config.overseas_active_pool_size - len(held)
+        top_by_score = [
             item.symbol.upper()
-            for item in bench_results[: config.overseas_active_pool_size]
-        }
+            for item in bench_results
+            if item.symbol.upper() not in held
+        ][: max(0, remaining_slots)]
+        top_symbols = held | set(top_by_score)
 
         new_active: list[OverseasCandidateConfig] = []
         new_bench: list[OverseasCandidateConfig] = []
@@ -455,6 +456,7 @@ class LiquidityLabService:
                 f"cycle={self._cycle_count} "
                 f"bench_scanned={len(config.overseas_candidates)} "
                 f"passed_filter={len(bench_results)} "
+                f"held_pinned={sorted(held)} "
                 f"active_pool=[{','.join(candidate.symbol for candidate in new_active)}]"
             ),
         )
@@ -1378,10 +1380,15 @@ class LiquidityLabService:
                 estimated_calls += 1
         if us_open:
             config = self.config.liquidity_lab
-            active_n = len(self._active_pool) if self._active_pool else config.overseas_active_pool_size
-            estimated_calls += active_n
+            active_symbols = {candidate.symbol.upper() for candidate in self._active_pool}
+            actual_active = len(active_symbols | self._last_held_symbols)
+            estimated_calls += actual_active
             estimated_calls += overseas_watch_count * 2
-            if self._bench_scanned_this_cycle:
+            is_bench_cycle = self._bench_scanned_this_cycle or (
+                self._cycle_count > 0
+                and self._cycle_count % config.overseas_bench_scan_every == 0
+            )
+            if self._cycle_count > 0 and is_bench_cycle:
                 estimated_calls += len(config.overseas_candidates)
             exchange_codes = {
                 candidate.exchange_code.upper()

@@ -164,23 +164,7 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "AAL",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "INTC",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "AMZN",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "MU",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "AMD",
+                "symbol": "TSLA",
                 "exchange_code": "NASD"
             },
             {
@@ -188,7 +172,11 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "TSLA",
+                "symbol": "AAPL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AMZN",
                 "exchange_code": "NASD"
             },
             {
@@ -196,7 +184,11 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "AAPL",
+                "symbol": "AMD",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "GOOGL",
                 "exchange_code": "NASD"
             },
             {
@@ -204,7 +196,15 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "SMCI",
+                "symbol": "AVGO",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MU",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "INTC",
                 "exchange_code": "NASD"
             },
             {
@@ -212,7 +212,7 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "COIN",
+                "symbol": "SMCI",
                 "exchange_code": "NASD"
             },
             {
@@ -220,7 +220,47 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "F",
+                "symbol": "COIN",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MSTR",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SOFI",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SNAP",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "HOOD",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "DKNG",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "RBLX",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "UBER",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "LYFT",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AAL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "JPM",
                 "exchange_code": "NYSE"
             },
             {
@@ -232,20 +272,101 @@
                 "exchange_code": "NYSE"
             },
             {
-                "symbol": "T",
+                "symbol": "WFC",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "GS",
                 "exchange_code": "NYSE"
             },
             {
                 "symbol": "XOM",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "CVX",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "F",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "GM",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "GE",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "BA",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "DIS",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "NKE",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "T",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "VZ",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "PFE",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "JNJ",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "WMT",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "HD",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "V",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "MA",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "UNH",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "ABBV",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "KO",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "PEP",
                 "exchange_code": "NYSE"
             }
         ],
         "domestic_paper_iterations": 6,
         "domestic_paper_interval_sec": 5,
         "domestic_top_n": 3,
-        "overseas_top_n": 5,
-        "overseas_active_pool_size": 5,
+        "overseas_top_n": 8,
+        "overseas_active_pool_size": 8,
         "overseas_bench_scan_every": 4,
+        "overseas_min_active_pool_size": 0,
         "domestic_test_order_qty": 1,
         "overseas_test_order_qty": 1,
         "domestic_min_price_krw": 5000,

@@ -47,6 +47,7 @@ def _build_service() -> LiquidityLabService:
             overseas_candidates=candidates,
             overseas_active_pool_size=2,
             overseas_bench_scan_every=4,
+            overseas_min_active_pool_size=1,
             overseas_min_price_usd=10.0,
             overseas_min_volume=100,
             overseas_max_spread_pct=0.01,
@@ -205,3 +206,69 @@ def test_held_symbol_fallback_uses_cache_on_api_failure() -> None:
     cached = asyncio.run(service._get_held_symbols())
 
     assert cached == {"DDD"}
+
+
+def test_min_active_pool_size_zero_allows_empty_pool() -> None:
+    service = _build_service()
+    service._pool_initialized = True
+    service._active_pool = []
+    service._bench_pool = []
+    service.config.liquidity_lab.overseas_min_active_pool_size = 0
+
+    async def fake_scan(candidate):
+        raise AssertionError("scan should not be called when pool is empty")
+
+    service._scan_single_overseas = fake_scan
+
+    ranked = asyncio.run(service.scan_overseas())
+
+    assert ranked == []
+    assert service._active_pool == []
+
+
+def test_held_symbols_always_included_regardless_of_score() -> None:
+    service = _build_service()
+    service._last_held_symbols = {"FFF"}
+    score_map = {"AAA": 10.0, "BBB": 9.0, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 1.0}
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    service._scan_single_overseas = fake_scan
+
+    asyncio.run(service._run_bench_scan())
+
+    assert "FFF" in [candidate.symbol for candidate in service._active_pool]
+
+
+def test_active_pool_does_not_include_filtered_candidates() -> None:
+    service = _build_service()
+    service._last_held_symbols = set()
+    score_map = {"AAA": 10.0, "BBB": 9.0, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 5.0}
+
+    async def fake_scan(candidate):
+        volume = 10 if candidate.symbol == "AAA" else 1000
+        return _result(candidate.symbol, score_map[candidate.symbol], volume=volume)
+
+    service._scan_single_overseas = fake_scan
+
+    asyncio.run(service._run_bench_scan())
+
+    assert "AAA" not in [candidate.symbol for candidate in service._active_pool]
+
+
+def test_pool_rotation_heartbeat_includes_held_pinned() -> None:
+    service = _build_service()
+    service._last_held_symbols = {"FFF"}
+    score_map = {"AAA": 10.0, "BBB": 9.0, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 1.0}
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    service._scan_single_overseas = fake_scan
+
+    asyncio.run(service._run_bench_scan())
+
+    status, message = service.repository.heartbeats[-1]
+    assert status == "POOL_ROTATION"
+    assert "held_pinned=['FFF']" in message

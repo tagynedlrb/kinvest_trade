@@ -1,8 +1,10 @@
+import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from kinvest_trade.auto_trader import SoxlAutoTrader, StrategySnapshot
+from kinvest_trade.auto_trader import RealizedBreakdown, SoxlAutoTrader, StrategySnapshot
 from kinvest_trade.config import load_app_config
 
 
@@ -12,6 +14,14 @@ class DummyRepository:
 
     def save_heartbeat(self, status: str, message: str) -> None:
         self.heartbeats.append((status, message))
+
+
+class DummyNotifier:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def send(self, message: str) -> None:
+        self.messages.append(message)
 
 
 def _build_trader() -> SoxlAutoTrader:
@@ -76,6 +86,7 @@ def _build_trader() -> SoxlAutoTrader:
     trader.last_available_usd = 0.0
     trader._last_adaptive_override = SimpleNamespace()
     trader.repository = DummyRepository()
+    trader.notifier = DummyNotifier()
     return trader
 
 
@@ -267,3 +278,56 @@ def test_determine_buy_qty_falls_back_to_fixed_quantity_when_slot_balance_missin
     )
 
     assert qty == 5
+
+
+def test_sell_fill_message_includes_pnl_usd_and_pct() -> None:
+    trader = _build_trader()
+    trader.position = SimpleNamespace(avg_price=280.12, hold_cycles=20)
+    trader.config.auto_trade.poll_interval_sec = 10
+
+    asyncio.run(
+        trader._send_fill_message(
+            run_id=42,
+            action_count=3,
+            side="SELL",
+            qty=4,
+            price=282.45,
+            reason="time_exit_profit",
+            realized=RealizedBreakdown(net_pnl_usd=9.32, net_pnl_krw=12850.0),
+            cumulative_pnl_net_krw=18200.0,
+            snapshot=_snapshot(price=282.45),
+            captured_at=datetime(2026, 6, 27, 13, 35, 12, tzinfo=timezone.utc),
+            avg_price_before_fill=280.12,
+            hold_cycles_before_fill=20,
+        )
+    )
+
+    message = trader.notifier.messages[-1]
+    assert "buy_price=280.1200 USD" in message
+    assert "pnl_usd=+9.32 USD" in message
+    assert "pnl_pct=+0.83%" in message
+    assert "hold=3m20s" in message
+
+
+def test_sell_fill_message_includes_hold_time() -> None:
+    trader = _build_trader()
+    trader.config.auto_trade.poll_interval_sec = 10
+
+    asyncio.run(
+        trader._send_fill_message(
+            run_id=1,
+            action_count=1,
+            side="SELL",
+            qty=1,
+            price=100.0,
+            reason="time_exit_profit",
+            realized=RealizedBreakdown(net_pnl_usd=1.0, net_pnl_krw=1000.0),
+            cumulative_pnl_net_krw=1000.0,
+            snapshot=_snapshot(price=100.0),
+            captured_at=datetime(2026, 6, 27, 13, 35, 12, tzinfo=timezone.utc),
+            avg_price_before_fill=99.0,
+            hold_cycles_before_fill=20,
+        )
+    )
+
+    assert "hold=3m20s" in trader.notifier.messages[-1]

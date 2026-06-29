@@ -1,6 +1,22 @@
 # WORKLOG
 
 ## 2026-06-29
+### 추가 개선 8
+- 첨부된 `6차 개선` 지시문 기준으로 `liquidity_lab` 해외 후보군을 20개에서 50개로 확장하고, `active_pool=8`, `watchlist=8` 기준으로 재조정
+- `overseas_min_active_pool_size=0`을 도입해 조건 미달 종목으로 active pool을 억지로 채우지 않도록 변경
+- `scan_overseas()`가 cycle 시작 시 `_get_held_symbols()`를 먼저 갱신하고, `_run_bench_scan()`에서는 `_last_held_symbols`를 `held_pinned`로 active pool에 우선 포함하도록 보강
+- `POOL_ROTATION` heartbeat에 `held_pinned=[...]` 필드를 추가해 보유 종목 pinning 여부를 바로 추적할 수 있게 함
+- `_estimate_api_calls_per_cycle()`를 50개 bench scan + held 추가 감시 구조에 맞춰 갱신
+- `auto_trader.py`의 SELL 텔레그램 알림에 `buy_price`, `pnl_usd`, `pnl_pct`, `pnl_krw`, `cum_pnl`, `hold`를 추가
+- SELL 알림 정확도를 위해 `_apply_sell_fill` 전 `avg_price_before_fill`, `hold_cycles_before_fill`을 캡처해 `_send_fill_message()`에 전달
+- `tests/test_pool_rotation.py`에 empty pool 허용, held pinning, filtered exclusion, heartbeat 검증 케이스를 추가
+- `tests/test_auto_trader.py`에 SELL 메시지의 USD 손익/수익률/보유시간 검증 케이스를 추가
+
+### 검증 결과
+- `python -m pytest tests/ -v` 통과 목표로 반영
+- 영향 범위 부분 테스트 통과 후 전체 스위트로 확장 예정
+
+## 2026-06-29
 ### 추가 개선 7
 - 첨부된 `5차 개선` 지시문 기준으로 `RSI 68 상단 차단`을 완화하고, `max_entry_rsi14=85.0`까지 급등 구간 진입을 허용
 - `volume_spike_ratio=1.1`, `breakout_proximity_pct=0.98`를 적용해 직전 고점 98% 근접 구간의 선제 진입을 허용

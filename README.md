@@ -162,11 +162,9 @@ python3 main.py liquidity-lab
 - 국내 기본 제외 기준은 `5,000원 미만`, `당일 거래대금 500억 원 미만`, `최근 체결량 합계 3만 미만`, `스프레드 0.3% 초과`다.
 - 해외 기본 제외 기준은 `10달러 미만`, `거래량 1만 미만`, `스프레드 0.4% 초과`다.
 - 현재 장이 열린 시장에서 `activity_score`가 높은 후보군을 먼저 뽑고, 그 안에서 `signal_score`가 가장 강한 종목을 우선 주문 대상으로 선택한다.
-- 해외 후보군은 고정 1종목만 보는 대신, 넓은 벤치 후보군을 두고 `active_pool`만 짧은 주기로 감시한다.
-- 기본값은 `해외 후보 50개`, `active_pool 8개`, `4사이클마다 전체 벤치 재스캔`이다.
-- 벤치 재스캔 때는 `activity_score` 상위 종목으로 `active_pool`을 교체하고, `POOL_ROTATION` heartbeat를 남긴다.
-- 보유 중인 해외 종목은 `active_pool` 밖으로 밀려도 다음 사이클 스캔 대상에 강제로 다시 포함하고, bench 재정렬 때도 `held_pinned=[...]`로 active pool에 우선 고정한다.
-- `overseas_min_active_pool_size=0` 기본값으로, 조건을 통과한 종목이 없으면 active pool을 억지로 채우지 않고 빈 풀을 허용한다.
+- 해외 후보군은 고정 1종목만 보는 대신, 현재는 `69개` 전체 후보를 `15초`마다 전부 quote 스캔한다.
+- chart 기반 signal 계산은 `overseas_scan_top_n` 기준으로 우선 로드하며, 기본값은 `69`라 사실상 전체 후보에 signal을 붙인다.
+- 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 `거래량 스파이크 + 돌파 + 추세 필터`를 동시에 만족할 때만 진행한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
@@ -175,7 +173,7 @@ python3 main.py liquidity-lab
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
 - 국내: `005930`, `000660`, `035420`, `419050`, `023410`, `010170`, `034940`
-- 해외: `NVDA`, `TSLA`, `META`, `AAPL`, `AMZN`, `MSFT`, `AMD`, `GOOGL`, `PLTR`, `AVGO`, `MU`, `INTC`, `ARM`, `SMCI`, `NFLX`, `COIN`, `MSTR`, `SOFI`, `SNAP`, `HOOD`, `DKNG`, `RBLX`, `UBER`, `LYFT`, `AAL`, `JPM`, `BAC`, `C`, `WFC`, `GS`, `XOM`, `CVX`, `F`, `GM`, `GE`, `BA`, `DIS`, `NKE`, `T`, `VZ`, `PFE`, `JNJ`, `WMT`, `HD`, `V`, `MA`, `UNH`, `ABBV`, `KO`, `PEP`
+- 해외: `NVDA`, `AMD`, `INTC`, `MU`, `AVGO`, `ARM`, `SMCI`, `QCOM`, `TXN`, `AAPL`, `MSFT`, `AMZN`, `META`, `GOOGL`, `TSLA`, `NFLX`, `ORCL`, `CRM`, `ADBE`, `PLTR`, `COIN`, `MSTR`, `PYPL`, `HOOD`, `SOFI`, `AFRM`, `SNAP`, `RBLX`, `DKNG`, `UBER`, `LYFT`, `SPOT`, `ROKU`, `SHOP`, `MELI`, `AAL`, `JPM`, `BAC`, `C`, `WFC`, `GS`, `XOM`, `CVX`, `NEE`, `F`, `GM`, `GE`, `BA`, `CAT`, `DE`, `UPS`, `FDX`, `NKE`, `DIS`, `WMT`, `HD`, `T`, `VZ`, `PFE`, `JNJ`, `LLY`, `MRNA`, `ABBV`, `UNH`, `V`, `MA`, `KO`, `PEP`, `SQ`
 
 운영 메모:
 - `liquidity-lab` 테스트에서 작은 호가 차익만으로는 국내 mock 왕복 주문 순손익이 음수가 될 수 있었다.
@@ -220,7 +218,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - 텔레그램 long polling 시간은 `notifications.telegram_command_poll_timeout_sec`으로 조절한다.
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
-- 현재 기본 해외 감시는 `overseas_top_n=8`, `active_pool=8`, `bench_scan_every=4` 기준이다. 평소에는 active pool만 짧게 스캔하고, 4사이클마다만 50개 전체를 다시 훑는 구조라 API headroom을 남기면서 감시 폭을 넓힌다.
+- 현재 기본 해외 감시는 `overseas_candidates=69`, `overseas_scan_top_n=69`, `loop_interval_sec=15` 기준이다. 매 사이클 전체 후보를 quote 스캔하고, signal도 사실상 전 종목에 대해 계산한다.
 - 자동매매 SELL 알림은 `buy_price`, `pnl_usd`, `pnl_pct`, `pnl_krw`, `cum_pnl`, `hold`를 함께 보내도록 확장돼, 청산 품질을 텔레그램에서 바로 확인할 수 있다.
 - `/lab_watchlist`에서 보유 종목은 `hold=N`과 함께 `pnl=+X.XX%` 형식의 미실현 손익이 함께 표시된다.
 

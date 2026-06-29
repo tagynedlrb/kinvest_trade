@@ -164,39 +164,11 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "TSLA",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "META",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "AAPL",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "AMZN",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "MSFT",
-                "exchange_code": "NASD"
-            },
-            {
                 "symbol": "AMD",
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "GOOGL",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "PLTR",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "AVGO",
+                "symbol": "INTC",
                 "exchange_code": "NASD"
             },
             {
@@ -204,7 +176,7 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "INTC",
+                "symbol": "AVGO",
                 "exchange_code": "NASD"
             },
             {
@@ -216,7 +188,55 @@
                 "exchange_code": "NASD"
             },
             {
+                "symbol": "QCOM",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "TXN",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AAPL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MSFT",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AMZN",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "META",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "GOOGL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "TSLA",
+                "exchange_code": "NASD"
+            },
+            {
                 "symbol": "NFLX",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "ORCL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "CRM",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "ADBE",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "PLTR",
                 "exchange_code": "NASD"
             },
             {
@@ -228,11 +248,7 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "SOFI",
-                "exchange_code": "NASD"
-            },
-            {
-                "symbol": "SNAP",
+                "symbol": "PYPL",
                 "exchange_code": "NASD"
             },
             {
@@ -240,11 +256,23 @@
                 "exchange_code": "NASD"
             },
             {
-                "symbol": "DKNG",
+                "symbol": "SOFI",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "AFRM",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SNAP",
                 "exchange_code": "NASD"
             },
             {
                 "symbol": "RBLX",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "DKNG",
                 "exchange_code": "NASD"
             },
             {
@@ -253,6 +281,22 @@
             },
             {
                 "symbol": "LYFT",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SPOT",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "ROKU",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SHOP",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "MELI",
                 "exchange_code": "NASD"
             },
             {
@@ -288,6 +332,10 @@
                 "exchange_code": "NYSE"
             },
             {
+                "symbol": "NEE",
+                "exchange_code": "NYSE"
+            },
+            {
                 "symbol": "F",
                 "exchange_code": "NYSE"
             },
@@ -304,11 +352,35 @@
                 "exchange_code": "NYSE"
             },
             {
-                "symbol": "DIS",
+                "symbol": "CAT",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "DE",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "UPS",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "FDX",
                 "exchange_code": "NYSE"
             },
             {
                 "symbol": "NKE",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "DIS",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "WMT",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "HD",
                 "exchange_code": "NYSE"
             },
             {
@@ -328,11 +400,19 @@
                 "exchange_code": "NYSE"
             },
             {
-                "symbol": "WMT",
+                "symbol": "LLY",
                 "exchange_code": "NYSE"
             },
             {
-                "symbol": "HD",
+                "symbol": "MRNA",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "ABBV",
+                "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "UNH",
                 "exchange_code": "NYSE"
             },
             {
@@ -344,29 +424,22 @@
                 "exchange_code": "NYSE"
             },
             {
-                "symbol": "UNH",
-                "exchange_code": "NYSE"
-            },
-            {
-                "symbol": "ABBV",
-                "exchange_code": "NYSE"
-            },
-            {
                 "symbol": "KO",
                 "exchange_code": "NYSE"
             },
             {
                 "symbol": "PEP",
                 "exchange_code": "NYSE"
+            },
+            {
+                "symbol": "SQ",
+                "exchange_code": "NYSE"
             }
         ],
         "domestic_paper_iterations": 6,
         "domestic_paper_interval_sec": 5,
         "domestic_top_n": 3,
-        "overseas_top_n": 8,
-        "overseas_active_pool_size": 8,
-        "overseas_bench_scan_every": 4,
-        "overseas_min_active_pool_size": 0,
+        "overseas_scan_top_n": 69,
         "domestic_test_order_qty": 1,
         "overseas_test_order_qty": 1,
         "domestic_min_price_krw": 5000,

@@ -152,11 +152,6 @@ class LiquidityLabService:
         self.notifier = notifier
         self._domestic_excluded: list[ExcludedCandidate] = []
         self._overseas_excluded: list[ExcludedCandidate] = []
-        self._active_pool: list[OverseasCandidateConfig] = []
-        self._bench_pool: list[OverseasCandidateConfig] = []
-        self._cycle_count: int = 0
-        self._pool_initialized: bool = False
-        self._bench_scanned_this_cycle: bool = False
         self._last_held_symbols: set[str] = set()
 
     async def run(self) -> LiquidityLabReport:
@@ -328,46 +323,21 @@ class LiquidityLabService:
         return sorted(results, key=lambda item: item.activity_score, reverse=True)
 
     async def scan_overseas(self) -> list[OverseasScanResult]:
+        """
+        Scan the entire overseas candidate list every cycle.
+
+        Quote data is collected for all candidates, then chart/signal loading is
+        prioritized for the top activity names plus any currently held symbol.
+        """
         config = self.config.liquidity_lab
-        self._cycle_count += 1
-        held_symbols = await self._get_held_symbols()
-        should_bench_scan = (
-            not self._pool_initialized
-            or self._cycle_count % config.overseas_bench_scan_every == 0
-        )
-        self._bench_scanned_this_cycle = should_bench_scan
-        if should_bench_scan:
-            await self._run_bench_scan()
-            self._pool_initialized = True
-
-        if not self._active_pool and config.overseas_min_active_pool_size > 0:
-            self._active_pool = list(
-                config.overseas_candidates[: config.overseas_active_pool_size]
-            )
-            active_symbols = {candidate.symbol.upper() for candidate in self._active_pool}
-            self._bench_pool = [
-                candidate
-                for candidate in config.overseas_candidates
-                if candidate.symbol.upper() not in active_symbols
-            ]
-
-        # Keep held symbols in scan targets even when they fall out of the active pool.
-        scan_targets = list(self._active_pool)
-        if held_symbols:
-            active_syms = {candidate.symbol.upper() for candidate in scan_targets}
-            for candidate in config.overseas_candidates:
-                if (
-                    candidate.symbol.upper() in held_symbols
-                    and candidate.symbol.upper() not in active_syms
-                ):
-                    scan_targets.append(candidate)
-
-        results: list[OverseasScanResult] = []
+        quote_results: list[OverseasScanResult] = []
         excluded: list[ExcludedCandidate] = []
-        for candidate in scan_targets:
+
+        for candidate in config.overseas_candidates:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
             except Exception:
+                await asyncio.sleep(0.05)
                 continue
             reasons = self._overseas_speculative_reasons(scan_result)
             if reasons:
@@ -380,10 +350,33 @@ class LiquidityLabService:
                     )
                 )
             else:
-                results.append(scan_result)
+                quote_results.append(scan_result)
             await asyncio.sleep(0.1)
+
         self._overseas_excluded = excluded
-        return sorted(results, key=lambda item: item.activity_score, reverse=True)
+        if not quote_results:
+            return []
+
+        quote_results.sort(key=lambda item: item.activity_score, reverse=True)
+        held_symbols = await self._get_held_symbols()
+        top_n = max(0, config.overseas_scan_top_n)
+
+        signal_targets: list[OverseasScanResult] = []
+        non_signal: list[OverseasScanResult] = []
+        signal_count = 0
+
+        for result in quote_results:
+            symbol = result.symbol.upper()
+            is_held = symbol in held_symbols
+            in_top_n = signal_count < top_n
+            if is_held or in_top_n:
+                signal_targets.append(result)
+                if not is_held:
+                    signal_count += 1
+            else:
+                non_signal.append(result)
+
+        return signal_targets + non_signal
 
     async def _get_held_symbols(self) -> set[str]:
         """
@@ -414,52 +407,6 @@ class LiquidityLabService:
             return held
         except Exception:
             return self._last_held_symbols
-
-    async def _run_bench_scan(self) -> None:
-        config = self.config.liquidity_lab
-        bench_results: list[OverseasScanResult] = []
-
-        for candidate in config.overseas_candidates:
-            try:
-                scan_result = await self._scan_single_overseas(candidate)
-            except Exception:
-                await asyncio.sleep(0.05)
-                continue
-            reasons = self._overseas_speculative_reasons(scan_result)
-            if not reasons:
-                bench_results.append(scan_result)
-            await asyncio.sleep(0.1)
-
-        held = self._last_held_symbols
-        bench_results.sort(key=lambda item: item.activity_score, reverse=True)
-        remaining_slots = config.overseas_active_pool_size - len(held)
-        top_by_score = [
-            item.symbol.upper()
-            for item in bench_results
-            if item.symbol.upper() not in held
-        ][: max(0, remaining_slots)]
-        top_symbols = held | set(top_by_score)
-
-        new_active: list[OverseasCandidateConfig] = []
-        new_bench: list[OverseasCandidateConfig] = []
-        for candidate in config.overseas_candidates:
-            if candidate.symbol.upper() in top_symbols:
-                new_active.append(candidate)
-            else:
-                new_bench.append(candidate)
-
-        self._active_pool = new_active
-        self._bench_pool = new_bench
-        self.repository.save_heartbeat(
-            "POOL_ROTATION",
-            (
-                f"cycle={self._cycle_count} "
-                f"bench_scanned={len(config.overseas_candidates)} "
-                f"passed_filter={len(bench_results)} "
-                f"held_pinned={sorted(held)} "
-                f"active_pool=[{','.join(candidate.symbol for candidate in new_active)}]"
-            ),
-        )
 
     async def _scan_single_domestic(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
@@ -714,7 +661,9 @@ class LiquidityLabService:
     ) -> list[WatchTargetStatus]:
         watch_targets: list[WatchTargetStatus] = []
         held_map = {position.symbol.upper(): position for position in held_positions}
-        selected_candidates = list(overseas_ranked[: self.config.liquidity_lab.overseas_top_n])
+        selected_candidates = list(
+            overseas_ranked[: self.config.liquidity_lab.overseas_scan_top_n]
+        )
         selected_symbols = {candidate.symbol.upper() for candidate in selected_candidates}
         for candidate in overseas_ranked:
             if candidate.symbol.upper() in held_map and candidate.symbol.upper() not in selected_symbols:
@@ -1380,16 +1329,12 @@ class LiquidityLabService:
                 estimated_calls += 1
         if us_open:
             config = self.config.liquidity_lab
-            active_symbols = {candidate.symbol.upper() for candidate in self._active_pool}
-            actual_active = len(active_symbols | self._last_held_symbols)
-            estimated_calls += actual_active
-            estimated_calls += overseas_watch_count * 2
-            is_bench_cycle = self._bench_scanned_this_cycle or (
-                self._cycle_count > 0
-                and self._cycle_count % config.overseas_bench_scan_every == 0
-            )
-            if self._cycle_count > 0 and is_bench_cycle:
-                estimated_calls += len(config.overseas_candidates)
+            n_candidates = len(config.overseas_candidates)
+            top_n = config.overseas_scan_top_n
+            held_n = len(self._last_held_symbols)
+            estimated_calls += n_candidates
+            signal_n = min(top_n, n_candidates) + max(0, held_n - top_n)
+            estimated_calls += signal_n * 2
             exchange_codes = {
                 candidate.exchange_code.upper()
                 for candidate in config.overseas_candidates

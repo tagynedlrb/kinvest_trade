@@ -1,6 +1,20 @@
 # WORKLOG
 
 ## 2026-06-29
+### 추가 개선 9
+- 첨부된 `7차 개선` 지시문 기준으로 `liquidity_lab` 해외 감시 구조에서 `active_pool / bench_scan / pool_rotation` 2단계 구조를 완전히 제거
+- `scan_overseas()`를 `69개 전체 quote 스캔 -> activity_score 정렬 -> held 포함 signal 우선순위 부여` 단일 패스로 재작성
+- 설정 스키마에서 `overseas_top_n`, `overseas_active_pool_size`, `overseas_bench_scan_every`, `overseas_min_active_pool_size`를 제거하고 `overseas_scan_top_n`을 추가
+- `config/fixed_config.json`의 해외 후보군을 대형 고유동성 69종목으로 교체하고, `overseas_scan_top_n=69`로 기본 설정
+- `_estimate_api_calls_per_cycle()`를 새 구조 기준으로 갱신해 미국장 기본 추정 호출량이 `211 / 15s`로 계산되도록 정리
+- `tests/test_pool_rotation.py`를 `tests/test_overseas_scan.py`로 전환하고, 전체 스캔/held 우선 포함/제외 후보/API 호출량 검증 케이스로 재작성
+- `README.md`의 해외 감시 설명을 새 단일 스캔 구조 기준으로 갱신
+
+### 검증 결과
+- `python3 -m pytest tests/ -v` 전체 통과 목표로 반영
+- `POOL_ROTATION` heartbeat와 관련 상태 변수가 코드에서 완전히 사라졌는지 함께 점검 예정
+
+## 2026-06-29
 ### 추가 개선 8
 - 첨부된 `6차 개선` 지시문 기준으로 `liquidity_lab` 해외 후보군을 20개에서 50개로 확장하고, `active_pool=8`, `watchlist=8` 기준으로 재조정
 - `overseas_min_active_pool_size=0`을 도입해 조건 미달 종목으로 active pool을 억지로 채우지 않도록 변경

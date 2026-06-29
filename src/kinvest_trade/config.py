@@ -221,10 +221,7 @@ class LiquidityLabConfig:
     domestic_paper_iterations: int
     domestic_paper_interval_sec: int
     domestic_top_n: int
-    overseas_top_n: int
-    overseas_active_pool_size: int
-    overseas_bench_scan_every: int
-    overseas_min_active_pool_size: int
+    overseas_scan_top_n: int
     domestic_test_order_qty: int
     overseas_test_order_qty: int
     domestic_min_price_krw: int
@@ -692,16 +689,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 liquidity_lab_raw.get("domestic_paper_interval_sec", 5)
             ),
             domestic_top_n=int(liquidity_lab_raw.get("domestic_top_n", 3)),
-            overseas_top_n=int(liquidity_lab_raw.get("overseas_top_n", 3)),
-            overseas_active_pool_size=int(
-                liquidity_lab_raw.get("overseas_active_pool_size", 5)
-            ),
-            overseas_bench_scan_every=int(
-                liquidity_lab_raw.get("overseas_bench_scan_every", 4)
-            ),
-            overseas_min_active_pool_size=int(
-                liquidity_lab_raw.get("overseas_min_active_pool_size", 0)
-            ),
+            overseas_scan_top_n=int(liquidity_lab_raw.get("overseas_scan_top_n", 69)),
             domestic_test_order_qty=int(liquidity_lab_raw.get("domestic_test_order_qty", 1)),
             overseas_test_order_qty=int(liquidity_lab_raw.get("overseas_test_order_qty", 1)),
             domestic_min_price_krw=int(liquidity_lab_raw.get("domestic_min_price_krw", 5000)),

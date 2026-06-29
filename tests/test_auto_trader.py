@@ -84,6 +84,7 @@ def _build_trader() -> SoxlAutoTrader:
     trader.flat_cycles = 0
     trader.last_exit_cycle = 0
     trader.last_available_usd = 0.0
+    trader.last_fx_rate_krw = trader.config.auto_trade.usd_krw_fallback_rate
     trader._last_adaptive_override = SimpleNamespace()
     trader.repository = DummyRepository()
     trader.notifier = DummyNotifier()
@@ -293,7 +294,7 @@ def test_sell_fill_message_includes_pnl_usd_and_pct() -> None:
             qty=4,
             price=282.45,
             reason="time_exit_profit",
-            realized=RealizedBreakdown(net_pnl_usd=9.32, net_pnl_krw=12850.0),
+            realized=RealizedBreakdown(gross_pnl_usd=9.32, net_pnl_usd=9.32, net_pnl_krw=12850.0),
             cumulative_pnl_net_krw=18200.0,
             snapshot=_snapshot(price=282.45),
             captured_at=datetime(2026, 6, 27, 13, 35, 12, tzinfo=timezone.utc),
@@ -305,6 +306,7 @@ def test_sell_fill_message_includes_pnl_usd_and_pct() -> None:
     message = trader.notifier.messages[-1]
     assert "buy_price=280.1200 USD" in message
     assert "pnl_usd=+9.32 USD" in message
+    assert "gross_usd=+9.32 USD" in message
     assert "pnl_pct=+0.83%" in message
     assert "hold=3m20s" in message
 
@@ -321,7 +323,7 @@ def test_sell_fill_message_includes_hold_time() -> None:
             qty=1,
             price=100.0,
             reason="time_exit_profit",
-            realized=RealizedBreakdown(net_pnl_usd=1.0, net_pnl_krw=1000.0),
+            realized=RealizedBreakdown(gross_pnl_usd=1.0, net_pnl_usd=1.0, net_pnl_krw=1000.0),
             cumulative_pnl_net_krw=1000.0,
             snapshot=_snapshot(price=100.0),
             captured_at=datetime(2026, 6, 27, 13, 35, 12, tzinfo=timezone.utc),
@@ -331,3 +333,87 @@ def test_sell_fill_message_includes_hold_time() -> None:
     )
 
     assert "hold=3m20s" in trader.notifier.messages[-1]
+
+
+def test_sell_fill_message_avg_price_unknown_when_zero() -> None:
+    trader = _build_trader()
+    trader.config.auto_trade.poll_interval_sec = 10
+
+    asyncio.run(
+        trader._send_fill_message(
+            run_id=7,
+            action_count=2,
+            side="SELL",
+            qty=2,
+            price=282.45,
+            reason="atr_hard_stop",
+            realized=RealizedBreakdown(gross_pnl_usd=9.32, net_pnl_usd=8.91, net_pnl_krw=12000.0),
+            cumulative_pnl_net_krw=18000.0,
+            snapshot=_snapshot(price=282.45),
+            captured_at=datetime(2026, 6, 27, 13, 35, 12, tzinfo=timezone.utc),
+            avg_price_before_fill=0.0,
+            hold_cycles_before_fill=20,
+        )
+    )
+
+    message = trader.notifier.messages[-1]
+    assert "buy_price=unknown" in message
+    assert "pnl_pct=unknown" in message
+    assert "pnl_usd=+8.91 USD" in message
+
+
+def test_sell_fill_message_normal_all_fields() -> None:
+    trader = _build_trader()
+    trader.config.auto_trade.poll_interval_sec = 10
+
+    asyncio.run(
+        trader._send_fill_message(
+            run_id=42,
+            action_count=3,
+            side="SELL",
+            qty=4,
+            price=282.45,
+            reason="trend_filter_lost",
+            realized=RealizedBreakdown(gross_pnl_usd=9.32, net_pnl_usd=9.32, net_pnl_krw=12850.0),
+            cumulative_pnl_net_krw=18200.0,
+            snapshot=_snapshot(price=282.45),
+            captured_at=datetime(2026, 6, 27, 14, 41, 22, tzinfo=timezone.utc),
+            avg_price_before_fill=280.12,
+            hold_cycles_before_fill=20,
+        )
+    )
+
+    message = trader.notifier.messages[-1]
+    assert "buy_price=280.1200 USD" in message
+    assert "pnl_pct=+0.83%" in message
+    assert "pnl_usd=+9.32 USD" in message
+    assert "gross_usd=+9.32 USD" in message
+    assert "pnl_krw=12850 KRW" in message
+    assert "cum_pnl=18200 KRW" in message
+    assert "hold=3m20s" in message
+
+
+def test_sync_startup_position_records_avg_price_fallback_heartbeat() -> None:
+    trader = _build_trader()
+    trader.client = SimpleNamespace(
+        get_overseas_balance=lambda **kwargs: _async_return(
+            {
+                "positions": [
+                    {
+                        "ovrs_pdno": trader.config.auto_trade.symbol,
+                        "ovrs_cblc_qty": "3",
+                        "pchs_avg_pric": "0",
+                    }
+                ]
+            }
+        )
+    )
+
+    asyncio.run(trader._sync_startup_position())
+
+    assert trader.position.avg_price == 0.0
+    assert trader.repository.heartbeats[-1][0] == "POSITION_AVG_PRICE_FALLBACK"
+
+
+async def _async_return(value):
+    return value

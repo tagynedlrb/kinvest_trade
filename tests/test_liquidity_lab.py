@@ -3,6 +3,7 @@ from kinvest_trade.liquidity_lab import (
     OverseasHeldPosition,
     OverseasScanResult,
 )
+from kinvest_trade.client import KisApiError
 
 
 def test_select_primary_target_reports_mock_daytime_limit() -> None:
@@ -287,3 +288,154 @@ def test_manage_overseas_position_waits_when_exit_order_already_pending() -> Non
 
     assert result["skipped"] is True
     assert result["reason"] == "pending_exit_order"
+
+
+class DummyNotifier:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def send(self, message: str) -> None:
+        self.messages.append(message)
+
+
+class DummySellClient:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+
+    async def place_overseas_order_for_current_session(
+        self,
+        *,
+        side: str,
+        symbol: str,
+        exchange_code: str,
+        qty: int,
+        price: str,
+        order_division: str,
+    ):
+        if self.error is not None:
+            raise self.error
+        return {
+            "side": side,
+            "symbol": symbol,
+            "exchange_code": exchange_code,
+            "qty": qty,
+            "price": price,
+            "order_division": order_division,
+        }
+
+
+def _build_sell_service(*, dry_run: bool = False, error: Exception | None = None) -> LiquidityLabService:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "credentials": type("Creds", (), {"dry_run": dry_run})(),
+        },
+    )()
+    service.client = DummySellClient(error=error)
+    service.notifier = DummyNotifier()
+    return service
+
+
+def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
+    service = _build_sell_service()
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=282.0,
+        bid=281.9,
+        ask=282.1,
+        spread_pct=0.0007,
+        change_rate_pct=1.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=282.0,
+        pnl_pct=0.0071,
+    )
+
+    import asyncio
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is True
+    assert len(service.notifier.messages) == 1
+    message = service.notifier.messages[0]
+    assert "[KIS][LAB_SELL]" in message
+    assert "gross_pnl=+4.00 USD" in message
+    assert "pnl_pct=+0.71%" in message
+
+
+def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
+    service = _build_sell_service(error=KisApiError("failed"))
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=282.0,
+        bid=281.9,
+        ask=282.1,
+        spread_pct=0.0007,
+        change_rate_pct=1.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=282.0,
+        pnl_pct=0.0071,
+    )
+
+    import asyncio
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is False
+    assert service.notifier.messages == []
+
+
+def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
+    service = _build_sell_service()
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=282.0,
+        bid=281.9,
+        ask=282.1,
+        spread_pct=0.0007,
+        change_rate_pct=1.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=0.0,
+        current_price=282.0,
+        pnl_pct=0.0,
+    )
+
+    import asyncio
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is True
+    assert "buy_price=unknown" in service.notifier.messages[0]

@@ -449,11 +449,21 @@ class SoxlAutoTrader:
             avg_price = self._parse_float(row.get("pchs_avg_pric"))
             if qty > 0:
                 self.position.qty = qty
-                self.position.avg_price = avg_price
+                if avg_price > 0:
+                    self.position.avg_price = avg_price
+                else:
+                    self.position.avg_price = 0.0
+                    self.repository.save_heartbeat(
+                        "POSITION_AVG_PRICE_FALLBACK",
+                        (
+                            f"symbol={auto.symbol.upper()} "
+                            "avg_price_from_broker=0 fallback_unavailable"
+                        ),
+                    )
                 self.position.avg_fx_rate_krw = self.last_fx_rate_krw
                 self.position.opened_at = datetime.now(timezone.utc)
                 self.position.hold_cycles = 0
-                self.position.peak_price = avg_price
+                self.position.peak_price = avg_price if avg_price > 0 else 0.0
             return
 
     async def _build_strategy_snapshot(
@@ -960,17 +970,24 @@ class SoxlAutoTrader:
         ]
         if side == "SELL":
             avg_price = avg_price_before_fill
-            pnl_pct = ((price - avg_price) / avg_price) if avg_price > 0 else 0.0
-            pnl_sign = "+" if realized.net_pnl_usd >= 0 else ""
-            pct_sign = "+" if pnl_pct >= 0 else ""
             hold_sec = hold_cycles_before_fill * auto.poll_interval_sec
             hold_min = hold_sec // 60
             hold_rem = hold_sec % 60
             hold_str = f"{hold_min}m{hold_rem:02d}s"
 
-            lines.append(f"buy_price={avg_price:.4f} USD")
+            if avg_price > 0:
+                pnl_pct = (price - avg_price) / avg_price
+                pct_sign = "+" if pnl_pct >= 0 else ""
+                lines.append(f"buy_price={avg_price:.4f} USD")
+                lines.append(f"pnl_pct={pct_sign}{pnl_pct * 100:.2f}%")
+            else:
+                lines.append("buy_price=unknown")
+                lines.append("pnl_pct=unknown")
+
+            pnl_sign = "+" if realized.net_pnl_usd >= 0 else ""
+            gross_sign = "+" if realized.gross_pnl_usd >= 0 else ""
             lines.append(f"pnl_usd={pnl_sign}{realized.net_pnl_usd:.2f} USD")
-            lines.append(f"pnl_pct={pct_sign}{pnl_pct * 100:.2f}%")
+            lines.append(f"gross_usd={gross_sign}{realized.gross_pnl_usd:.2f} USD")
             lines.append(f"pnl_krw={realized.net_pnl_krw:.0f} KRW")
             lines.append(f"cum_pnl={cumulative_pnl_net_krw:.0f} KRW")
             lines.append(f"hold={hold_str}")

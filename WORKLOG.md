@@ -1,6 +1,21 @@
 # WORKLOG
 
 ## 2026-06-29
+### 추가 개선 12
+- 첨부된 `10차 개선` 지시문 기준으로 `auto_trader.py`의 SELL 알림 포맷을 보강해 `avg_price=0` 복구 실패 시 `buy_price=unknown`, `pnl_pct=unknown`으로 명확히 표기하도록 수정
+- 같은 SELL 알림에 `gross_usd`를 추가해 수수료 차감 전 손익과 순손익을 함께 비교할 수 있게 조정
+- `_sync_startup_position()`에서 브로커 평균매입가가 0으로 들어오면 `POSITION_AVG_PRICE_FALLBACK` heartbeat를 기록하도록 방어 로직 추가
+- `liquidity_lab.py`의 `_place_overseas_sell_order()` 성공 경로에 `[KIS][LAB_SELL]` 텔레그램 알림을 추가해 lab 직접 매도도 즉시 추적 가능하게 변경
+- `tests/test_auto_trader.py`에 unknown avg_price, gross_usd, 정상 SELL 필드, avg_price fallback heartbeat 케이스를 추가
+- `tests/test_liquidity_lab.py`에 LAB_SELL 성공/실패/avg_price 미상 케이스를 추가
+
+### 검증 결과
+- `python3 -m pytest tests/ -q` 통과 (`99 passed`)
+- `python3 -m pytest tests/test_auto_trader.py -q` 통과 (`12 passed`)
+- `python3 -m pytest tests/test_liquidity_lab.py -q` 통과 (`9 passed`)
+- `python3 -m compileall src` 통과
+
+## 2026-06-29
 ### 추가 개선 11
 - 첨부된 `9차 개선` 지시문 기준으로 `market_sessions.py`에 `minutes_until_next_tradeable_session()`와 `determine_loop_interval_sec()`를 추가해 장 상태 기반 동적 루프 간격 계산을 도입
 - `telegram_control.py`에서 `no_supported_market_open` 시 auto-stop을 제거하고, 장이 닫혀도 `running` 상태를 유지한 채 다음 장까지 대기하도록 변경

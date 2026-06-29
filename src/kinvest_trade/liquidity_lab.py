@@ -1060,6 +1060,29 @@ class LiquidityLabService:
                 "error": str(exc),
             }
 
+        lines = [
+            "[KIS][LAB_SELL]",
+            f"time={format_kst(datetime.now(timezone.utc))}",
+            f"symbol={candidate.symbol}",
+            "action=SELL",
+            f"price={candidate.last_price:.4f} USD",
+            f"qty={sell_qty}",
+            f"reason={exit_reason}",
+        ]
+        if held.avg_price > 0:
+            gross_pnl = (candidate.last_price - held.avg_price) * sell_qty
+            pnl_pct = (candidate.last_price - held.avg_price) / held.avg_price
+            gross_sign = "+" if gross_pnl >= 0 else ""
+            pct_sign = "+" if pnl_pct >= 0 else ""
+            lines.append(f"buy_price={held.avg_price:.4f} USD")
+            lines.append(f"gross_pnl={gross_sign}{gross_pnl:.2f} USD")
+            lines.append(f"pnl_pct={pct_sign}{pnl_pct * 100:.2f}%")
+        else:
+            lines.append("buy_price=unknown")
+            lines.append("gross_pnl=unknown")
+            lines.append("pnl_pct=unknown")
+        await self.notifier.send("\n".join(lines))
+
         return {
             "submitted": True,
             "market": "overseas",

@@ -224,7 +224,9 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_status`에는 현재 장 상태, 다음 루프 간격, 연속 오류 횟수가 함께 표시된다.
 - 장 상태가 `krx_open`, `us_regular`, `both_closed` 등으로 바뀌면 텔레그램에 자동 알림을 보낸다.
 - 현재 기본 해외 감시는 `overseas_candidates=69`, `overseas_scan_top_n=15`, `loop_interval_sec=20` 기준이다. 매 사이클 전체 후보를 quote 스캔하고, signal은 상위 15개와 보유 종목에만 계산한다.
-- 자동매매 SELL 알림은 `buy_price`, `pnl_usd`, `pnl_pct`, `pnl_krw`, `cum_pnl`, `hold`를 함께 보내도록 확장돼, 청산 품질을 텔레그램에서 바로 확인할 수 있다.
+- 자동매매 SELL 알림은 `buy_price`, `pnl_pct`, `pnl_usd`, `gross_usd`, `pnl_krw`, `cum_pnl`, `hold`를 함께 보내도록 확장돼, 청산 품질을 텔레그램에서 바로 확인할 수 있다.
+- 재시작 후 평균매입가 복구가 실패하면 `buy_price=unknown`, `pnl_pct=unknown`으로 명확히 표기하고, 대신 `pnl_usd`와 `gross_usd`는 계속 보여준다.
+- `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.
 - `/lab_watchlist`에서 보유 종목은 `hold=N`과 함께 `pnl=+X.XX%` 형식의 미실현 손익이 함께 표시된다.
 
 ### 1. 모의투자 모드로 전환

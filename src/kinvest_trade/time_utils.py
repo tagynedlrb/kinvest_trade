@@ -40,6 +40,13 @@ def format_kst(value: datetime | None) -> str | None:
     return local_dt.strftime("%Y-%m-%d %H:%M:%S KST")
 
 
+def format_kst_korean(value: datetime | None) -> str:
+    local_dt = to_kst(value)
+    if local_dt is None:
+        return "-"
+    return f"{local_dt.month}월 {local_dt.day}일 {local_dt.hour:02d}:{local_dt.minute:02d}"
+
+
 def parse_datetime(value: str | datetime | None) -> datetime | None:
     if value is None:
         return None

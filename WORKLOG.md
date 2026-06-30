@@ -1,5 +1,19 @@
 # WORKLOG
 
+## 2026-06-30
+### 추가 개선 13
+- 첨부된 `11차 개선`, `12차 개선` 지시문을 기준으로 `liquidity_lab.py`에 `DomesticHeldPosition`, `_load_domestic_positions()`, `_select_domestic_exit_target()`, `_place_domestic_sell_order()`를 추가해 국내 보유 포지션 추적과 실제 국내 매도 경로를 연결
+- 국내 `watch_targets`가 이제 보유 포지션을 인식하고, `domestic_top_n` 밖의 보유 종목도 강제로 감시에 포함하도록 수정
+- `LiquidityLabReport`와 텔레그램 컨트롤러 요약에 `domestic_positions`를 추가하고 `/lab_positions`가 국내·해외 보유분을 함께 보여주도록 확장
+- `scan_domestic()`를 `quote-only 1차 스캔 + 상위 후보 chart 정밀 스캔` 2단계 구조로 바꾸고, 남아 있던 `asyncio.sleep(0.1/0.2)`를 `0.05` 기준으로 정리
+- 자동 사이클에서 국내 `paper-run` 25초 검증을 제거하고, 수동 검증용 텔레그램 명령 `/lab_paper_test <종목코드>`를 추가
+- `message_format.py`와 `format_kst_korean()`을 도입해 `liquidity_lab`, `auto_trader`, `telegram_control` 알림을 한국어/KST 중심의 짧은 형식으로 단순화
+- `tests/test_message_format.py`를 새로 추가하고, 국내 매도/국내 잔고/새 텔레그램 메시지 포맷에 맞춰 관련 테스트를 확장
+
+### 검증 결과
+- `pytest -q tests/test_message_format.py tests/test_time_utils.py tests/test_liquidity_lab.py tests/test_telegram_control.py tests/test_auto_trader.py` 통과 (`43 passed`)
+- `python3 -m compileall src` 통과
+
 ## 2026-06-29
 ### 추가 개선 12
 - 첨부된 `10차 개선` 지시문 기준으로 `auto_trader.py`의 SELL 알림 포맷을 보강해 `avg_price=0` 복구 실패 시 `buy_price=unknown`, `pnl_pct=unknown`으로 명확히 표기하도록 수정

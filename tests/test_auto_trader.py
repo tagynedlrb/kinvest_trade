@@ -304,11 +304,11 @@ def test_sell_fill_message_includes_pnl_usd_and_pct() -> None:
     )
 
     message = trader.notifier.messages[-1]
-    assert "buy_price=280.1200 USD" in message
-    assert "pnl_usd=+9.32 USD" in message
-    assert "gross_usd=+9.32 USD" in message
-    assert "pnl_pct=+0.83%" in message
-    assert "hold=3m20s" in message
+    assert "매입가=$280.1200" in message
+    assert "손익=+$9.32" in message
+    assert "총손익=+$9.32" in message
+    assert "수익률=+0.83%" in message
+    assert "보유시간=3m20s" in message
 
 
 def test_sell_fill_message_includes_hold_time() -> None:
@@ -332,7 +332,7 @@ def test_sell_fill_message_includes_hold_time() -> None:
         )
     )
 
-    assert "hold=3m20s" in trader.notifier.messages[-1]
+    assert "보유시간=3m20s" in trader.notifier.messages[-1]
 
 
 def test_sell_fill_message_avg_price_unknown_when_zero() -> None:
@@ -357,9 +357,9 @@ def test_sell_fill_message_avg_price_unknown_when_zero() -> None:
     )
 
     message = trader.notifier.messages[-1]
-    assert "buy_price=unknown" in message
-    assert "pnl_pct=unknown" in message
-    assert "pnl_usd=+8.91 USD" in message
+    assert "매입가=알수없음" in message
+    assert "수익률=알수없음" in message
+    assert "손익=+$8.91" in message
 
 
 def test_sell_fill_message_normal_all_fields() -> None:
@@ -384,13 +384,13 @@ def test_sell_fill_message_normal_all_fields() -> None:
     )
 
     message = trader.notifier.messages[-1]
-    assert "buy_price=280.1200 USD" in message
-    assert "pnl_pct=+0.83%" in message
-    assert "pnl_usd=+9.32 USD" in message
-    assert "gross_usd=+9.32 USD" in message
-    assert "pnl_krw=12850 KRW" in message
-    assert "cum_pnl=18200 KRW" in message
-    assert "hold=3m20s" in message
+    assert "매입가=$280.1200" in message
+    assert "수익률=+0.83%" in message
+    assert "손익=+$9.32" in message
+    assert "총손익=+$9.32" in message
+    assert "원화손익=12850원" in message
+    assert "누적손익=18200원" in message
+    assert "보유시간=3m20s" in message
 
 
 def test_sync_startup_position_records_avg_price_fallback_heartbeat() -> None:

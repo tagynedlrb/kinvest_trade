@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 
-from kinvest_trade.time_utils import format_any_datetime_to_kst, format_display_times, format_kst
+from kinvest_trade.time_utils import (
+    format_any_datetime_to_kst,
+    format_display_times,
+    format_kst,
+    format_kst_korean,
+)
 
 
 def test_format_kst_from_aware_datetime() -> None:
@@ -20,6 +25,11 @@ def test_format_any_datetime_to_kst_from_sqlite_timestamp() -> None:
         format_any_datetime_to_kst("2026-06-25 08:30:45")
         == "2026-06-25 17:30:45 KST"
     )
+
+
+def test_format_kst_korean_from_aware_datetime() -> None:
+    value = datetime(2026, 6, 25, 8, 30, 45, tzinfo=timezone.utc)
+    assert format_kst_korean(value) == "6월 25일 17:30"
 
 
 def test_format_display_times_recursively_formats_known_fields() -> None:

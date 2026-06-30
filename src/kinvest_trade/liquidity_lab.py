@@ -14,6 +14,14 @@ from .market_sessions import (
     is_us_orderable_session_for_env,
     is_us_regular_session,
 )
+from .message_format import (
+    format_krw,
+    format_side_korean,
+    format_market_korean,
+    format_pct,
+    format_reason_korean,
+    format_usd,
+)
 from .adaptive_params import apply_override, compute_adaptive_override
 from .momentum_policy import (
     derive_watch_state,
@@ -27,9 +35,8 @@ from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
     extract_price_series,
-    format_snapshot_indicator,
 )
-from .time_utils import format_kst
+from .time_utils import format_kst, format_kst_korean
 
 
 @dataclass(slots=True)
@@ -80,6 +87,16 @@ class OverseasHeldPosition:
 
 
 @dataclass(slots=True)
+class DomesticHeldPosition:
+    stock_code: str
+    quantity: int
+    orderable_qty: int
+    avg_price: float
+    current_price: float
+    pnl_pct: float
+
+
+@dataclass(slots=True)
 class WatchTargetStatus:
     market: str
     code: str
@@ -108,6 +125,7 @@ class LiquidityLabReport:
     overseas_ranked: list[OverseasScanResult]
     domestic_excluded: list[ExcludedCandidate]
     overseas_excluded: list[ExcludedCandidate]
+    domestic_positions: list[DomesticHeldPosition]
     overseas_positions: list[OverseasHeldPosition]
     watch_targets: list[WatchTargetStatus]
     estimated_api_calls_per_cycle: int
@@ -129,6 +147,7 @@ class LiquidityLabReport:
             "overseas_ranked": [asdict(item) for item in self.overseas_ranked],
             "domestic_excluded": [asdict(item) for item in self.domestic_excluded],
             "overseas_excluded": [asdict(item) for item in self.overseas_excluded],
+            "domestic_positions": [asdict(item) for item in self.domestic_positions],
             "overseas_positions": [asdict(item) for item in self.overseas_positions],
             "watch_targets": [asdict(item) for item in self.watch_targets],
             "estimated_api_calls_per_cycle": self.estimated_api_calls_per_cycle,
@@ -179,6 +198,7 @@ class LiquidityLabService:
                 overseas_ranked=[],
                 domestic_excluded=[],
                 overseas_excluded=[],
+                domestic_positions=[],
                 overseas_positions=[],
                 watch_targets=[],
                 estimated_api_calls_per_cycle=0,
@@ -188,6 +208,11 @@ class LiquidityLabService:
             )
 
         domestic_ranked = await self.scan_domestic() if krx_open else []
+        domestic_positions = (
+            await self._load_domestic_positions(domestic_ranked)
+            if krx_open
+            else []
+        )
         if us_open:
             overseas_ranked, held_symbols_cache = await self.scan_overseas()
             overseas_positions = await self._load_overseas_positions(
@@ -198,7 +223,7 @@ class LiquidityLabService:
             overseas_ranked = []
             overseas_positions = []
         domestic_watch_targets = (
-            await self._build_domestic_watch_targets(domestic_ranked)
+            await self._build_domestic_watch_targets(domestic_ranked, domestic_positions)
             if krx_open
             else []
         )
@@ -212,6 +237,15 @@ class LiquidityLabService:
             if us_orderable_in_profile
             else None
         )
+        domestic_exit_target = (
+            self._select_domestic_exit_target(
+                domestic_ranked,
+                domestic_watch_targets,
+                domestic_positions,
+            )
+            if krx_open
+            else None
+        )
         domestic_buy_target = self._select_domestic_buy_target(domestic_ranked, domestic_watch_targets)
         overseas_buy_target = self._select_overseas_buy_target(overseas_ranked, overseas_watch_targets)
         primary_market, primary_target, primary_reason = self._select_primary_target(
@@ -221,7 +255,12 @@ class LiquidityLabService:
             domestic_ranked=domestic_ranked,
             overseas_ranked=overseas_ranked,
         )
-        if overseas_exit_target is not None:
+        if domestic_exit_target is not None:
+            exit_candidate, _, exit_reason, _ = domestic_exit_target
+            primary_market = "domestic"
+            primary_target = exit_candidate.stock_code
+            primary_reason = f"existing_position_{exit_reason}"
+        elif overseas_exit_target is not None:
             exit_candidate, _, exit_reason, _ = overseas_exit_target
             primary_market = "overseas"
             primary_target = exit_candidate.symbol
@@ -247,15 +286,17 @@ class LiquidityLabService:
         domestic_order = None
         overseas_order = None
 
-        if primary_market == "domestic" and domestic_buy_target is not None:
-            watchlist = [domestic_buy_target.stock_code]
-            paper_state = await self._run_domestic_paper_test(watchlist)
-            paper_summary = {
-                "run_id": paper_state.run_id,
-                "watchlist": watchlist,
-                "ending_cash_krw": paper_state.cash_krw,
-                "realized_pnl_krw": paper_state.realized_pnl_krw,
-            }
+        if primary_market == "domestic" and domestic_exit_target is not None:
+            exit_candidate, held, exit_reason, exit_signal = domestic_exit_target
+            paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
+            domestic_order = await self._place_domestic_sell_order(
+                exit_candidate,
+                held,
+                exit_reason,
+                exit_signal,
+            )
+        elif primary_market == "domestic" and domestic_buy_target is not None:
+            paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
             domestic_order = await self._place_domestic_test_order(domestic_buy_target)
         else:
             paper_summary = {
@@ -311,6 +352,7 @@ class LiquidityLabService:
             overseas_ranked=overseas_ranked,
             domestic_excluded=self._domestic_excluded,
             overseas_excluded=self._overseas_excluded,
+            domestic_positions=domestic_positions,
             overseas_positions=overseas_positions,
             watch_targets=domestic_watch_targets if krx_open else overseas_watch_targets,
             estimated_api_calls_per_cycle=self._estimate_api_calls_per_cycle(
@@ -318,7 +360,7 @@ class LiquidityLabService:
                 us_open=us_open,
                 domestic_watch_count=len(domestic_watch_targets),
                 overseas_watch_count=len(overseas_watch_targets),
-                include_domestic_paper=domestic_buy_target is not None,
+                include_domestic_order=bool(domestic_exit_target or domestic_buy_target),
                 include_overseas_order=bool(overseas_exit_target or overseas_buy_target),
             ),
             paper_run=paper_summary,
@@ -329,28 +371,85 @@ class LiquidityLabService:
         return report
 
     async def scan_domestic(self) -> list[DomesticScanResult]:
-        results: list[DomesticScanResult] = []
+        config = self.config.liquidity_lab
+        quote_results: list[DomesticScanResult] = []
         excluded: list[ExcludedCandidate] = []
-        for stock_code in self.config.liquidity_lab.domestic_candidates:
+        for stock_code in config.domestic_candidates:
             try:
-                candidate = await self._scan_single_domestic(stock_code)
+                candidate = await self._scan_single_domestic_quote(stock_code)
             except Exception:
+                await asyncio.sleep(0.05)
                 continue
-            reasons = self._domestic_speculative_reasons(candidate)
+            reasons = self._domestic_quote_speculative_reasons(candidate)
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
-                market="domestic",
-                code=stock_code,
-                reasons=reasons,
-                snapshot=asdict(candidate),
+                        market="domestic",
+                        code=stock_code,
+                        reasons=reasons,
+                        snapshot=asdict(candidate),
                     )
                 )
             else:
-                results.append(candidate)
-            await asyncio.sleep(0.2)
+                quote_results.append(candidate)
+            await asyncio.sleep(0.05)
         self._domestic_excluded = excluded
-        return sorted(results, key=lambda item: item.activity_score, reverse=True)
+        if not quote_results:
+            return []
+
+        quote_results.sort(key=lambda item: item.activity_score, reverse=True)
+        refine_n = min(len(quote_results), max(config.domestic_top_n * 2, 3))
+        refined: list[DomesticScanResult] = []
+        for candidate in quote_results[:refine_n]:
+            try:
+                full_candidate = await self._scan_single_domestic(candidate.stock_code)
+            except Exception:
+                refined.append(candidate)
+                await asyncio.sleep(0.05)
+                continue
+            reasons = self._domestic_speculative_reasons(full_candidate)
+            if reasons:
+                excluded.append(
+                    ExcludedCandidate(
+                        market="domestic",
+                        code=full_candidate.stock_code,
+                        reasons=reasons,
+                        snapshot=asdict(full_candidate),
+                    )
+                )
+            else:
+                refined.append(full_candidate)
+            await asyncio.sleep(0.05)
+
+        self._domestic_excluded = excluded
+        remaining = quote_results[refine_n:]
+        return sorted(refined + remaining, key=lambda item: item.activity_score, reverse=True)
+
+    async def _scan_single_domestic_quote(self, stock_code: str) -> DomesticScanResult:
+        current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
+        orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
+        intraday_turnover = int(current.get("turnover_krw", 0) or 0)
+        spread_pct = float(orderbook.get("spread_pct", 0.0) or 0.0)
+        liquidity_score = math.log10(max(intraday_turnover, 1)) * 8.0
+        spread_penalty = spread_pct * 3000.0
+        turnover_surge_bonus = 0.0
+        if intraday_turnover >= self.config.liquidity_lab.domestic_min_intraday_turnover_krw * 3:
+            turnover_surge_bonus = 4.0
+        elif intraday_turnover >= self.config.liquidity_lab.domestic_min_intraday_turnover_krw * 1.5:
+            turnover_surge_bonus = 2.0
+
+        activity_score = liquidity_score + turnover_surge_bonus - spread_penalty
+        return DomesticScanResult(
+            stock_code=stock_code,
+            current_price=int(current["current_price"]),
+            best_ask=int(orderbook["best_ask"]),
+            best_bid=int(orderbook["best_bid"]),
+            spread_pct=spread_pct,
+            minute_change_pct=0.0,
+            intraday_turnover_krw=intraday_turnover,
+            volume_sum=0,
+            activity_score=round(activity_score, 4),
+        )
 
     async def scan_overseas(self) -> tuple[list[OverseasScanResult], set[str]]:
         """
@@ -591,6 +690,49 @@ class LiquidityLabService:
 
         return list(positions_by_key.values())
 
+    async def _load_domestic_positions(
+        self,
+        domestic_ranked: list[DomesticScanResult],
+    ) -> list[DomesticHeldPosition]:
+        if not domestic_ranked:
+            return []
+
+        quote_map = {item.stock_code: item for item in domestic_ranked}
+        try:
+            balance = await self.client.get_balance()
+        except Exception:
+            return []
+
+        positions: list[DomesticHeldPosition] = []
+        rows = balance.get("positions", []) or balance.get("output1", [])
+        for row in rows:
+            qty = int(float(str(row.get("hldg_qty", 0) or 0)))
+            if qty <= 0:
+                continue
+            stock_code = str(row.get("pdno", "")).strip()
+            if not stock_code:
+                continue
+            avg_price = self._parse_float(row.get("pchs_avg_pric"))
+            orderable_qty = int(float(str(row.get("ord_psbl_qty", qty) or qty)))
+            quote = quote_map.get(stock_code)
+            current_price = quote.current_price if quote is not None else avg_price
+            pnl_pct = (
+                (current_price - avg_price) / avg_price
+                if avg_price > 0
+                else 0.0
+            )
+            positions.append(
+                DomesticHeldPosition(
+                    stock_code=stock_code,
+                    quantity=qty,
+                    orderable_qty=orderable_qty,
+                    avg_price=avg_price,
+                    current_price=current_price,
+                    pnl_pct=pnl_pct,
+                )
+            )
+        return positions
+
     async def _select_overseas_exit_target(
         self,
         overseas_ranked: list[OverseasScanResult],
@@ -667,6 +809,17 @@ class LiquidityLabService:
             reasons.append("wide_spread")
         return reasons
 
+    def _domestic_quote_speculative_reasons(self, candidate: DomesticScanResult) -> list[str]:
+        config = self.config.liquidity_lab
+        reasons: list[str] = []
+        if candidate.current_price < config.domestic_min_price_krw:
+            reasons.append("low_price_krw")
+        if candidate.intraday_turnover_krw < config.domestic_min_intraday_turnover_krw:
+            reasons.append("thin_intraday_turnover")
+        if candidate.spread_pct > config.domestic_max_spread_pct:
+            reasons.append("wide_spread")
+        return reasons
+
     def _overseas_speculative_reasons(self, candidate: OverseasScanResult) -> list[str]:
         config = self.config.liquidity_lab
         reasons: list[str] = []
@@ -681,9 +834,37 @@ class LiquidityLabService:
     async def _build_domestic_watch_targets(
         self,
         domestic_ranked: list[DomesticScanResult],
+        held_positions: list[DomesticHeldPosition],
     ) -> list[WatchTargetStatus]:
         watch_targets: list[WatchTargetStatus] = []
+        held_map = {position.stock_code: position for position in held_positions}
         for candidate in domestic_ranked[: self.config.liquidity_lab.domestic_top_n]:
+            signal_snapshot = await self._load_domestic_signal(candidate)
+            held = held_map.get(candidate.stock_code)
+            watch_targets.append(
+                self._build_watch_target_status(
+                    market="domestic",
+                    code=candidate.stock_code,
+                    exchange_code=None,
+                    price=float(candidate.current_price),
+                    activity_score=candidate.activity_score,
+                    signal_snapshot=signal_snapshot,
+                    held_position=held,
+                    holding_qty=0 if held is None else held.quantity,
+                )
+            )
+            await asyncio.sleep(0.05)
+
+        watched_codes = {watch_target.code for watch_target in watch_targets}
+        for held in held_positions:
+            if held.stock_code in watched_codes:
+                continue
+            candidate = next(
+                (item for item in domestic_ranked if item.stock_code == held.stock_code),
+                None,
+            )
+            if candidate is None:
+                continue
             signal_snapshot = await self._load_domestic_signal(candidate)
             watch_targets.append(
                 self._build_watch_target_status(
@@ -693,10 +874,11 @@ class LiquidityLabService:
                     price=float(candidate.current_price),
                     activity_score=candidate.activity_score,
                     signal_snapshot=signal_snapshot,
-                    holding_qty=0,
+                    held_position=held,
+                    holding_qty=held.quantity,
                 )
             )
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
         return watch_targets
 
     async def _build_overseas_watch_targets(
@@ -736,7 +918,7 @@ class LiquidityLabService:
         price: float,
         activity_score: float,
         signal_snapshot: MovingAverageSnapshot | None,
-        held_position: OverseasHeldPosition | None = None,
+        held_position: OverseasHeldPosition | DomesticHeldPosition | None = None,
         holding_qty: int = 0,
     ) -> WatchTargetStatus:
         if signal_snapshot is None:
@@ -833,6 +1015,31 @@ class LiquidityLabService:
         )
         return candidate_map.get(best_target.code)
 
+    def _select_domestic_exit_target(
+        self,
+        domestic_ranked: list[DomesticScanResult],
+        watch_targets: list[WatchTargetStatus],
+        held_positions: list[DomesticHeldPosition],
+    ) -> tuple[DomesticScanResult, DomesticHeldPosition, str, MovingAverageSnapshot | None] | None:
+        candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
+        held_map = {position.stock_code: position for position in held_positions}
+        ready_targets = [
+            watch_target
+            for watch_target in watch_targets
+            if watch_target.market == "domestic" and watch_target.action_bias == "SELL"
+        ]
+        if not ready_targets:
+            return None
+        best_target = min(
+            ready_targets,
+            key=lambda item: held_map.get(item.code).pnl_pct if item.code in held_map else 0.0,
+        )
+        candidate = candidate_map.get(best_target.code)
+        held = held_map.get(best_target.code)
+        if candidate is None or held is None:
+            return None
+        return candidate, held, best_target.note, None
+
     def _select_overseas_buy_target(
         self,
         overseas_ranked: list[OverseasScanResult],
@@ -898,12 +1105,99 @@ class LiquidityLabService:
             price=candidate.best_ask or candidate.current_price,
             order_division="00",
         )
+        await self.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][LIQUIDITY_LAB]",
+                    f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                    f"시장={format_market_korean('domestic')}",
+                    f"종목={candidate.stock_code}",
+                    f"동작={format_side_korean('buy')}",
+                    f"가격={int(candidate.best_ask or candidate.current_price):,}원",
+                    f"수량={qty}주",
+                    "지표=RSI -, 거래량 -",
+                    "사유=거래량 돌파 진입",
+                ]
+            )
+        )
         return {
             "submitted": True,
             "market": "domestic",
             "side": "buy",
             "candidate": asdict(candidate),
             "qty": qty,
+            "response": response,
+        }
+
+    async def _place_domestic_sell_order(
+        self,
+        candidate: DomesticScanResult,
+        held: DomesticHeldPosition,
+        exit_reason: str,
+        signal_snapshot: MovingAverageSnapshot | None = None,
+    ) -> dict:
+        if self.config.credentials.dry_run:
+            return {
+                "skipped": True,
+                "market": "domestic",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "reason": "dry_run_enabled",
+                "exit_reason": exit_reason,
+            }
+
+        try:
+            sell_qty = min(held.quantity, max(held.orderable_qty, 0))
+            response = await self.client.place_cash_order(
+                side="sell",
+                stock_code=candidate.stock_code,
+                qty=sell_qty,
+                price=candidate.best_bid or candidate.current_price,
+                order_division="00",
+            )
+        except KisApiError as exc:
+            return {
+                "submitted": False,
+                "market": "domestic",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                "exit_reason": exit_reason,
+                "error": str(exc),
+            }
+
+        lines = [
+            "[KIS][LAB_SELL]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"시장={format_market_korean('domestic')}",
+            f"종목={candidate.stock_code}",
+            "구분=매도",
+            f"가격={format_krw(candidate.current_price)}",
+            f"수량={sell_qty}주",
+            f"사유={format_reason_korean(exit_reason)}",
+        ]
+        if held.avg_price > 0:
+            gross_pnl = (candidate.current_price - held.avg_price) * sell_qty
+            pnl_pct = (candidate.current_price - held.avg_price) / held.avg_price
+            lines.append(f"매입가={format_krw(held.avg_price)}")
+            lines.append(f"손익={format_krw(gross_pnl)}")
+            lines.append(f"수익률={format_pct(pnl_pct)}")
+        else:
+            lines.append("매입가=알수없음")
+            lines.append("손익=알수없음")
+        await self.notifier.send("\n".join(lines))
+
+        return {
+            "submitted": True,
+            "market": "domestic",
+            "side": "sell",
+            "candidate": asdict(candidate),
+            "held_position": asdict(held),
+            "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+            "qty": sell_qty,
+            "exit_reason": exit_reason,
             "response": response,
         }
 
@@ -1062,25 +1356,24 @@ class LiquidityLabService:
 
         lines = [
             "[KIS][LAB_SELL]",
-            f"time={format_kst(datetime.now(timezone.utc))}",
-            f"symbol={candidate.symbol}",
-            "action=SELL",
-            f"price={candidate.last_price:.4f} USD",
-            f"qty={sell_qty}",
-            f"reason={exit_reason}",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"시장={format_market_korean('overseas')}",
+            f"종목={candidate.symbol}",
+            "구분=매도",
+            f"가격={format_usd(candidate.last_price)}",
+            f"수량={sell_qty}주",
+            f"사유={format_reason_korean(exit_reason)}",
         ]
         if held.avg_price > 0:
             gross_pnl = (candidate.last_price - held.avg_price) * sell_qty
             pnl_pct = (candidate.last_price - held.avg_price) / held.avg_price
-            gross_sign = "+" if gross_pnl >= 0 else ""
-            pct_sign = "+" if pnl_pct >= 0 else ""
-            lines.append(f"buy_price={held.avg_price:.4f} USD")
-            lines.append(f"gross_pnl={gross_sign}{gross_pnl:.2f} USD")
-            lines.append(f"pnl_pct={pct_sign}{pnl_pct * 100:.2f}%")
+            lines.append(f"매입가={format_usd(held.avg_price)}")
+            lines.append(f"손익={format_usd(gross_pnl)}")
+            lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
-            lines.append("buy_price=unknown")
-            lines.append("gross_pnl=unknown")
-            lines.append("pnl_pct=unknown")
+            lines.append("매입가=알수없음")
+            lines.append("손익=알수없음")
+            lines.append("수익률=알수없음")
         await self.notifier.send("\n".join(lines))
 
         return {
@@ -1258,18 +1551,15 @@ class LiquidityLabService:
             return
         lines = [
             "[KIS][LIQUIDITY_LAB]",
-            f"time={report.scanned_at}",
-            f"market={report.primary_market}",
-            f"target={report.primary_target or '-'}",
-            f"action={action['action']}",
-            f"price={action['price']}",
-            f"qty={action['qty']}",
-            f"indicator={action['indicator']}",
-            f"reason={action['reason']}",
-            f"watching={len(report.watch_targets)}",
+            f"시각={self._format_report_time(report.scanned_at)}",
+            f"시장={format_market_korean(report.primary_market)}",
+            f"종목={report.primary_target or '-'}",
+            f"동작={action['action']}",
+            f"가격={action['price']}",
+            f"수량={action['qty']}",
+            f"지표={action['indicator']}",
+            f"사유={action['reason']}",
         ]
-        if report.overseas_positions:
-            lines.append(f"held_positions={len(report.overseas_positions)}")
         await self.notifier.send("\n".join(lines))
 
     def _build_action_summary(self, report: LiquidityLabReport) -> dict[str, str]:
@@ -1312,39 +1602,40 @@ class LiquidityLabService:
 
         indicator_parts: list[str] = []
         if signal_snapshot:
-            indicator_parts.append(
-                format_snapshot_indicator(
-                    MovingAverageSnapshot(**signal_snapshot),
-                    daily_fast_label=f"{self.config.auto_trade.daily_fast_window}d",
-                    daily_slow_label=f"{self.config.auto_trade.daily_slow_window}d",
-                )
-            )
+            snapshot = MovingAverageSnapshot(**signal_snapshot)
+            if snapshot.rsi14 is not None:
+                indicator_parts.append(f"RSI {snapshot.rsi14:.1f}")
+            if snapshot.volume_ratio > 0:
+                indicator_parts.append(f"거래량 {snapshot.volume_ratio:.1f}x")
+            if snapshot.minute_ma_fast and snapshot.minute_ma_slow:
+                relation = "상방" if snapshot.minute_ma_fast >= snapshot.minute_ma_slow else "하방"
+                indicator_parts.append(f"분봉 {relation}")
         elif "pnl_pct" in held:
-            indicator_parts.append(f"pnl={float(held['pnl_pct']) * 100:.2f}%")
+            indicator_parts.append(f"손익 {float(held['pnl_pct']) * 100:+.2f}%")
         elif "change_rate_pct" in candidate:
-            indicator_parts.append(f"chg={float(candidate['change_rate_pct']):.2f}%")
+            indicator_parts.append(f"등락 {float(candidate['change_rate_pct']):+.2f}%")
         elif "minute_change_pct" in candidate:
-            indicator_parts.append(f"chg={float(candidate['minute_change_pct']) * 100:.2f}%")
-        if "spread_pct" in candidate:
-            indicator_parts.append(f"spread={float(candidate['spread_pct']) * 100:.2f}%")
+            indicator_parts.append(f"등락 {float(candidate['minute_change_pct']) * 100:+.2f}%")
 
         if price_value in (None, "", "-"):
             price = "-"
         elif currency == "USD":
-            price = f"{float(price_value):.4f} USD"
+            price = f"${float(price_value):.4f}"
         else:
-            price = f"{int(price_value)} KRW"
+            price = f"{int(float(price_value)):,}원"
 
         return {
-            "action": action,
+            "action": format_side_korean(action),
             "price": price,
             "qty": str(qty_value),
             "indicator": ", ".join(indicator_parts) if indicator_parts else "-",
-            "reason": str(
-                order.get("exit_reason")
-                or order.get("reason")
-                or order.get("error")
-                or "watching"
+            "reason": format_reason_korean(
+                str(
+                    order.get("exit_reason")
+                    or order.get("reason")
+                    or order.get("error")
+                    or "watching"
+                )
             ),
         }
 
@@ -1382,15 +1673,24 @@ class LiquidityLabService:
         us_open: bool,
         domestic_watch_count: int,
         overseas_watch_count: int,
-        include_domestic_paper: bool,
+        include_domestic_order: bool | None = None,
+        include_domestic_paper: bool | None = None,
         include_overseas_order: bool,
     ) -> int:
+        if include_domestic_order is None:
+            include_domestic_order = bool(include_domestic_paper)
         estimated_calls = 0
         if krx_open:
-            estimated_calls += len(self.config.liquidity_lab.domestic_candidates) * 3
+            domestic_candidates = len(self.config.liquidity_lab.domestic_candidates)
+            refine_n = min(
+                domestic_candidates,
+                max(self.config.liquidity_lab.domestic_top_n * 2, 3),
+            )
+            estimated_calls += domestic_candidates * 2
+            estimated_calls += refine_n
             estimated_calls += domestic_watch_count * 2
-            if include_domestic_paper:
-                estimated_calls += self.config.liquidity_lab.domestic_paper_iterations * 2
+            estimated_calls += 1
+            if include_domestic_order:
                 estimated_calls += 1
         if us_open:
             config = self.config.liquidity_lab
@@ -1408,6 +1708,22 @@ class LiquidityLabService:
             if include_overseas_order:
                 estimated_calls += 1
         return estimated_calls
+
+    @staticmethod
+    def _format_report_time(value: str) -> str:
+        if not value:
+            return "-"
+        parts = value.split()
+        if len(parts) >= 2:
+            date_part = parts[0]
+            time_part = parts[1]
+            try:
+                year, month, day = [int(chunk) for chunk in date_part.split("-")]
+                hour, minute, _ = [int(chunk) for chunk in time_part.split(":")]
+            except ValueError:
+                return value
+            return f"{month}월 {day}일 {hour:02d}:{minute:02d}"
+        return value
 
     @staticmethod
     def _parse_float(value: object) -> float:

@@ -5,6 +5,7 @@ import contextlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import TypeAlias
 
 from .client import KisRestClient
 from .config import AppConfig
@@ -16,25 +17,29 @@ from .market_sessions import (
     is_us_orderable_session_for_env,
     minutes_until_next_tradeable_session,
 )
+from .message_format import format_market_korean, format_pct, format_reason_korean
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
-from .time_utils import format_display_times, format_kst
+from .time_utils import format_display_times, format_kst, format_kst_korean
 
 
 HELP_MESSAGE = "\n".join(
     [
         "[KIS][TELEGRAM_CONTROL_HELP]",
-        "/lab_start - liquidity-lab loop start",
-        "/lab_pause - finish current cycle, then pause",
-        "/lab_resume - resume paused loop",
-        "/lab_stop - cancel current cycle and stop",
-        "/lab_terminate - force stop current liquidity-lab run and stay idle",
-        "/lab_status - current status",
-        "/lab_watchlist - current monitored symbols and MA state",
-        "/lab_positions - current held positions and unrealized P&L",
-        "/lab_help - command list",
+        "/lab_start - 거래 루프 시작",
+        "/lab_pause - 현재 사이클 종료 후 일시정지",
+        "/lab_resume - 일시정지 해제",
+        "/lab_stop - 즉시 중지 후 세션 요약",
+        "/lab_terminate - 강제 종료 후 대기",
+        "/lab_status - 현재 상태",
+        "/lab_watchlist - 감시 종목 요약",
+        "/lab_positions - 보유 종목 요약",
+        "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
+        "/lab_help - 명령 목록",
     ]
 )
+
+ParsedCommand: TypeAlias = str | tuple[str, str | None]
 
 
 @dataclass(slots=True)
@@ -195,39 +200,84 @@ class TelegramLiquidityLabController:
         if not self.notifier.is_authorized_chat(chat_id):
             return
 
-        command = self.parse_command(text)
-        if command is None:
+        parsed_command = self.parse_command(text)
+        if parsed_command is None:
             return
 
-        self.last_command = command
+        command_name = parsed_command if isinstance(parsed_command, str) else parsed_command[0]
+        self.last_command = command_name
         self.last_command_at = datetime.now(timezone.utc)
 
-        if command == "help":
+        if command_name == "help":
             await self.notifier.send(HELP_MESSAGE)
             return
-        if command == "status":
+        if command_name == "status":
             await self.notifier.send(self._build_status_message())
             return
-        if command == "watchlist":
+        if command_name == "watchlist":
             await self.notifier.send(self._build_watchlist_message())
             return
-        if command == "positions":
+        if command_name == "positions":
             await self._send_positions_message()
             return
-        if command == "start":
+        if command_name == "paper_test":
+            stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
+            await self._handle_paper_test(stock_code)
+            return
+        if command_name == "start":
             await self._handle_start_like_command("running", "started")
             return
-        if command == "resume":
+        if command_name == "resume":
             await self._handle_start_like_command("running", "resumed")
             return
-        if command == "pause":
+        if command_name == "pause":
             await self._handle_pause()
             return
-        if command == "stop":
+        if command_name == "stop":
             await self._handle_stop()
             return
-        if command == "terminate":
+        if command_name == "terminate":
             await self._handle_terminate()
+
+    async def _handle_paper_test(self, stock_code: str | None) -> None:
+        if not stock_code:
+            await self.notifier.send(
+                "[KIS][PAPER_TEST]\n실행실패=종목코드를 함께 보내주세요\n예시=/lab_paper_test 005930"
+            )
+            return
+
+        code = stock_code.strip().upper()
+        try:
+            async with KisRestClient(self.config.credentials) as client:
+                service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+                state = await service._run_domestic_paper_test([code])
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][PAPER_TEST]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        f"종목={code}",
+                        f"상태=실패",
+                        f"사유={exc}",
+                    ]
+                )
+            )
+            return
+
+        await self.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][PAPER_TEST]",
+                    f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                    f"종목={code}",
+                    "상태=완료",
+                    f"반복={self.config.liquidity_lab.domestic_paper_iterations}회",
+                    f"실현손익={int(state.realized_pnl_krw):,}원",
+                    f"현금={int(state.cash_krw):,}원",
+                ]
+            )
+        )
 
     async def _handle_start_like_command(self, target_mode: str, verb: str) -> None:
         if self.mode == "stopped":
@@ -415,42 +465,41 @@ class TelegramLiquidityLabController:
         return "\n".join(
             [
                 "[KIS][TELEGRAM_CONTROL_STATUS]",
-                f"time={format_kst(now)}",
-                f"mode={snapshot.mode}",
-                f"cycle={snapshot.current_cycle_no}",
-                f"active_since={snapshot.active_cycle_started_at}",
-                f"next_run={snapshot.next_run_at}",
-                f"market={market_status}",
-                f"next_loop_interval={next_interval}s",
-                f"consecutive_errors={self._consecutive_errors}",
-                f"last_command={snapshot.last_command}",
-                f"last_completed={snapshot.last_completed_at}",
-                f"last_target={last_report.get('primary_target') or '-'}",
-                f"confirmed_pnl_krw={session.get('domestic_paper_realized_pnl_krw', 0)}",
-                f"estimated_exit_pnl_krw={session.get('estimated_overseas_realized_pnl_krw', 0)}",
-                f"watch_count={len(last_report.get('watch_targets') or [])}",
-                f"symbols={self._format_symbol_stats_inline(session.get('symbol_stats') or {})}",
-                f"last_error={snapshot.last_error}",
+                f"시각={format_kst_korean(now)}",
+                f"모드={snapshot.mode}",
+                f"사이클={snapshot.current_cycle_no}",
+                f"시장상태={market_status}",
+                f"다음실행={self._short_time(snapshot.next_run_at)}",
+                f"다음간격={next_interval}초",
+                f"최근명령={snapshot.last_command or '-'}",
+                f"최근완료={self._short_time(snapshot.last_completed_at)}",
+                f"최근타겟={last_report.get('primary_target') or '-'}",
+                f"확정손익={int(session.get('domestic_paper_realized_pnl_krw', 0) or 0):,}원",
+                f"추정청산손익={int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원",
+                f"감시수={len(last_report.get('watch_targets') or [])}",
+                f"오류연속={self._consecutive_errors}",
+                f"최근오류={snapshot.last_error or '-'}",
             ]
         )
 
     def _build_watchlist_message(self) -> str:
         last_report = self.last_report_summary or {}
         watch_targets = last_report.get("watch_targets") or []
-        positions = last_report.get("overseas_positions") or []
-        pnl_map: dict[str, float] = {
-            str(pos.get("symbol", "")).upper(): float(pos.get("pnl_pct", 0) or 0)
-            for pos in positions
-        }
+        positions = self._combined_positions(last_report)
+        pnl_map: dict[str, float] = {}
+        for pos in positions:
+            code = str(pos.get("symbol") or pos.get("stock_code") or "").upper()
+            if code:
+                pnl_map[code] = float(pos.get("pnl_pct", 0) or 0)
         lines = [
             "[KIS][TELEGRAM_CONTROL_WATCHLIST]",
-            f"time={format_kst(datetime.now(timezone.utc))}",
-            f"mode={self.mode}",
-            f"cycle={self.current_cycle_no}",
-            f"est_cycle_calls={last_report.get('estimated_api_calls_per_cycle', '-')}",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"모드={self.mode}",
+            f"사이클={self.current_cycle_no}",
+            f"예상호출={last_report.get('estimated_api_calls_per_cycle', '-')}",
         ]
         if not watch_targets:
-            lines.append("targets=-")
+            lines.append("감시종목=없음")
             if positions:
                 lines.append(self._build_positions_message())
             return "\n".join(lines)
@@ -462,38 +511,37 @@ class TelegramLiquidityLabController:
 
     def _build_positions_message(self) -> str:
         last_report = self.last_report_summary or {}
-        positions = last_report.get("overseas_positions") or []
+        positions = self._combined_positions(last_report)
 
         lines = [
             "[KIS][TELEGRAM_CONTROL_POSITIONS]",
-            f"time={format_kst(datetime.now(timezone.utc))}",
-            f"cycle={self.current_cycle_no}",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"사이클={self.current_cycle_no}",
         ]
 
         if not positions:
-            lines.append("held=none")
+            lines.append("보유종목=없음")
             return "\n".join(lines)
 
         total_pnl_pct_sum = 0.0
         for pos in positions:
-            symbol = str(pos.get("symbol", "-"))
+            symbol = str(pos.get("symbol") or pos.get("stock_code") or "-")
+            market = format_market_korean(str(pos.get("market", "overseas")))
             qty = int(pos.get("quantity", 0) or 0)
             avg_price = float(pos.get("avg_price", 0) or 0)
             current_price = float(pos.get("current_price", 0) or 0)
             pnl_pct = float(pos.get("pnl_pct", 0) or 0)
             total_pnl_pct_sum += pnl_pct
-
-            pnl_sign = "+" if pnl_pct >= 0 else ""
-            pnl_text = f"{pnl_sign}{pnl_pct * 100:.2f}%"
-            price_text = f"{int(current_price)}" if current_price >= 1000 else f"{current_price:.4f}"
-            avg_text = f"{int(avg_price)}" if avg_price >= 1000 else f"{avg_price:.4f}"
+            currency = str(pos.get("currency", "USD"))
+            pnl_text = format_pct(pnl_pct)
+            price_text = self._format_price(current_price, currency)
+            avg_text = self._format_price(avg_price, currency)
             lines.append(
-                f"{symbol} qty={qty} avg={avg_text} px={price_text} pnl={pnl_text}"
+                f"{market} {symbol} 수량={qty} 매입={avg_text} 현재={price_text} 손익={pnl_text}"
             )
 
         avg_pnl = total_pnl_pct_sum / len(positions)
-        avg_sign = "+" if avg_pnl >= 0 else ""
-        lines.append(f"avg_pnl={avg_sign}{avg_pnl * 100:.2f}%")
+        lines.append(f"평균손익={format_pct(avg_pnl)}")
         return "\n".join(lines)
 
     async def _send_positions_message(self) -> None:
@@ -671,54 +719,80 @@ class TelegramLiquidityLabController:
         self.session_performance = SessionPerformance()
         lines = [
             "[KIS][TELEGRAM_CONTROL_SESSION_SUMMARY]",
-                f"record_id={record_id}",
-                f"mode=stopped",
-                f"command={command}",
-                f"started_at={summary['started_at']}",
-                f"ended_at={summary['ended_at']}",
-                f"cycles={summary['cycles_completed']}",
-                f"confirmed_pnl_krw={summary['domestic_paper_realized_pnl_krw']}",
-                f"estimated_exit_pnl_krw={summary['estimated_overseas_realized_pnl_krw']}",
-                f"orders=domestic {summary['domestic_orders_submitted']}/{summary['domestic_orders_failed']}, overseas {summary['overseas_orders_submitted']}/{summary['overseas_orders_failed']}",
-                f"symbols={self._format_symbol_stats_inline(summary.get('symbol_stats') or {})}",
-                f"last_error={summary['last_error']}",
-            ]
+            f"기록={record_id}",
+            "모드=stopped",
+            f"명령={command}",
+            f"시작={summary['started_at']}",
+            f"종료={summary['ended_at']}",
+            f"사이클={summary['cycles_completed']}",
+            f"확정손익={int(summary['domestic_paper_realized_pnl_krw']):,}원",
+            f"추정청산손익={int(summary['estimated_overseas_realized_pnl_krw']):,}원",
+            (
+                "주문=국내 "
+                f"{summary['domestic_orders_submitted']}/{summary['domestic_orders_failed']}, "
+                "해외 "
+                f"{summary['overseas_orders_submitted']}/{summary['overseas_orders_failed']}"
+            ),
+            f"종목통계={self._format_symbol_stats_inline(summary.get('symbol_stats') or {})}",
+            f"최근오류={summary['last_error'] or '-'}",
+        ]
         return "\n".join(lines)
 
     @staticmethod
     def _summarize_report(report: LiquidityLabReport, cycle_no: int) -> dict:
         return format_display_times(
             {
-            "cycle_no": cycle_no,
-            "scanned_at": report.scanned_at,
-            "primary_market": report.primary_market,
-            "primary_target": report.primary_target,
-            "primary_selection_reason": report.primary_selection_reason,
-            "paper_run": report.paper_run,
-            "domestic_order": report.domestic_order,
-            "overseas_order": report.overseas_order,
-            "watch_targets": report.to_dict().get("watch_targets", []),
-            "overseas_positions": [
-                {
-                    "symbol": pos.symbol,
-                    "quantity": pos.quantity,
-                    "avg_price": pos.avg_price,
-                    "current_price": pos.current_price,
-                    "pnl_pct": pos.pnl_pct,
-                    "exchange_code": pos.exchange_code,
-                }
-                for pos in report.overseas_positions
-            ],
-            "estimated_api_calls_per_cycle": report.estimated_api_calls_per_cycle,
-            "market_closed": (
-                not report.krx_market_open and not report.us_market_open
-            ),
+                "cycle_no": cycle_no,
+                "scanned_at": report.scanned_at,
+                "primary_market": report.primary_market,
+                "primary_target": report.primary_target,
+                "primary_selection_reason": report.primary_selection_reason,
+                "paper_run": report.paper_run,
+                "domestic_order": report.domestic_order,
+                "overseas_order": report.overseas_order,
+                "watch_targets": report.to_dict().get("watch_targets", []),
+                "domestic_positions": [
+                    {
+                        "market": "domestic",
+                        "stock_code": pos.stock_code,
+                        "quantity": pos.quantity,
+                        "avg_price": pos.avg_price,
+                        "current_price": pos.current_price,
+                        "pnl_pct": pos.pnl_pct,
+                        "currency": "KRW",
+                    }
+                    for pos in report.domestic_positions
+                ],
+                "overseas_positions": [
+                    {
+                        "market": "overseas",
+                        "symbol": pos.symbol,
+                        "quantity": pos.quantity,
+                        "avg_price": pos.avg_price,
+                        "current_price": pos.current_price,
+                        "pnl_pct": pos.pnl_pct,
+                        "exchange_code": pos.exchange_code,
+                        "currency": "USD",
+                    }
+                    for pos in report.overseas_positions
+                ],
+                "estimated_api_calls_per_cycle": report.estimated_api_calls_per_cycle,
+                "market_closed": (
+                    not report.krx_market_open and not report.us_market_open
+                ),
             }
         )
 
     @staticmethod
-    def parse_command(text: str) -> str | None:
-        normalized = text.strip().split()[0].lower()
+    def parse_command(text: str) -> ParsedCommand | None:
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if stripped.lower().startswith("/lab_paper_test"):
+            parts = stripped.split(maxsplit=1)
+            return ("paper_test", parts[1].strip() if len(parts) > 1 else None)
+
+        normalized = stripped.split()[0].lower()
         mapping = {
             "/lab_start": "start",
             "/lab_pause": "pause",
@@ -736,25 +810,54 @@ class TelegramLiquidityLabController:
 
     @staticmethod
     def _format_watch_target_line(watch_target: dict, pnl_pct: float | None = None) -> str:
+        market = format_market_korean(str(watch_target.get("market", "overseas")))
         code = str(watch_target.get("code", "-"))
         signal_state = str(watch_target.get("signal_state", "WAIT"))
         ma_summary = str(watch_target.get("ma_summary", "-"))
-        note = str(watch_target.get("note", "-"))
+        note = format_reason_korean(str(watch_target.get("note", "-")))
         price = watch_target.get("price", "-")
         if isinstance(price, (int, float)):
             if float(price) >= 1000:
-                price_text = f"{int(price)}"
+                price_text = f"{int(price):,}원"
             else:
-                price_text = f"{float(price):.4f}"
+                price_text = f"${float(price):.4f}"
         else:
             price_text = str(price)
         holding_qty = int(watch_target.get("holding_qty", 0) or 0)
-        holding_text = f" hold={holding_qty}" if holding_qty > 0 else ""
+        holding_text = f" 보유={holding_qty}주" if holding_qty > 0 else ""
         pnl_text = ""
         if holding_qty > 0 and pnl_pct is not None:
-            sign = "+" if pnl_pct >= 0 else ""
-            pnl_text = f" pnl={sign}{pnl_pct * 100:.2f}%"
-        return f"{code} {signal_state} {ma_summary} {note} px={price_text}{holding_text}{pnl_text}"
+            pnl_text = f" 손익={format_pct(pnl_pct)}"
+        return f"{market} {code} 상태={signal_state} 이평={ma_summary} 메모={note} 가격={price_text}{holding_text}{pnl_text}"
+
+    @staticmethod
+    def _format_price(value: float, currency: str) -> str:
+        if currency == "KRW":
+            return f"{int(round(value)):,}원"
+        return f"${value:.4f}"
+
+    @staticmethod
+    def _short_time(value: str | None) -> str:
+        if not value:
+            return "-"
+        parts = value.split()
+        if len(parts) < 2:
+            return value
+        date_part = parts[0]
+        time_part = parts[1]
+        try:
+            _, month, day = [int(chunk) for chunk in date_part.split("-")]
+            hour, minute, _ = [int(chunk) for chunk in time_part.split(":")]
+        except ValueError:
+            return value
+        return f"{month}월 {day}일 {hour:02d}:{minute:02d}"
+
+    @staticmethod
+    def _combined_positions(last_report: dict) -> list[dict]:
+        return [
+            *(last_report.get("domestic_positions") or []),
+            *(last_report.get("overseas_positions") or []),
+        ]
 
     @staticmethod
     def _parse_float(value: object) -> float:

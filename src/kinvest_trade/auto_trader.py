@@ -16,6 +16,7 @@ from .adaptive_params import AdaptiveOverride, apply_override, compute_adaptive_
 from .client import KisApiError, KisRestClient
 from .config import AppConfig
 from .market_sessions import is_us_orderable_session_for_env
+from .message_format import format_pct, format_reason_korean, format_side_korean, format_usd
 from .momentum_policy import (
     evaluate_entry_setup,
     evaluate_exit_setup,
@@ -27,9 +28,8 @@ from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
     extract_price_series,
-    format_snapshot_indicator,
 )
-from .time_utils import format_kst
+from .time_utils import format_kst, format_kst_korean
 
 StrategySnapshot = MovingAverageSnapshot
 
@@ -958,15 +958,13 @@ class SoxlAutoTrader:
         auto = self.config.auto_trade
         lines = [
             "[KIS][AUTO_TRADE]",
-            f"time={format_kst(captured_at)}",
-            f"run_id={run_id}",
-            f"action_no={action_count}",
-            f"symbol={auto.symbol}",
-            f"action={side}",
-            f"price={price:.4f} USD",
-            f"qty={qty}",
-            f"indicator={format_snapshot_indicator(snapshot, daily_fast_label=f'{auto.daily_fast_window}d', daily_slow_label=f'{auto.daily_slow_window}d')}",
-            f"signal={reason}",
+            f"시각={format_kst_korean(captured_at)}",
+            f"종목={auto.symbol}",
+            f"동작={format_side_korean(side)}",
+            f"가격=${price:.4f}",
+            f"수량={qty}주",
+            f"지표=RSI {snapshot.rsi14:.1f}, 거래량 {snapshot.volume_ratio:.1f}x",
+            f"사유={format_reason_korean(reason)}",
         ]
         if side == "SELL":
             avg_price = avg_price_before_fill
@@ -977,20 +975,17 @@ class SoxlAutoTrader:
 
             if avg_price > 0:
                 pnl_pct = (price - avg_price) / avg_price
-                pct_sign = "+" if pnl_pct >= 0 else ""
-                lines.append(f"buy_price={avg_price:.4f} USD")
-                lines.append(f"pnl_pct={pct_sign}{pnl_pct * 100:.2f}%")
+                lines.append(f"매입가=${avg_price:.4f}")
+                lines.append(f"수익률={format_pct(pnl_pct)}")
             else:
-                lines.append("buy_price=unknown")
-                lines.append("pnl_pct=unknown")
+                lines.append("매입가=알수없음")
+                lines.append("수익률=알수없음")
 
-            pnl_sign = "+" if realized.net_pnl_usd >= 0 else ""
-            gross_sign = "+" if realized.gross_pnl_usd >= 0 else ""
-            lines.append(f"pnl_usd={pnl_sign}{realized.net_pnl_usd:.2f} USD")
-            lines.append(f"gross_usd={gross_sign}{realized.gross_pnl_usd:.2f} USD")
-            lines.append(f"pnl_krw={realized.net_pnl_krw:.0f} KRW")
-            lines.append(f"cum_pnl={cumulative_pnl_net_krw:.0f} KRW")
-            lines.append(f"hold={hold_str}")
+            lines.append(f"손익={format_usd(realized.net_pnl_usd)}")
+            lines.append(f"총손익={format_usd(realized.gross_pnl_usd)}")
+            lines.append(f"원화손익={realized.net_pnl_krw:.0f}원")
+            lines.append(f"누적손익={cumulative_pnl_net_krw:.0f}원")
+            lines.append(f"보유시간={hold_str}")
         await self.notifier.send("\n".join(lines))
 
     async def _send_final_message(self, summary: AutoTradeSummary) -> None:

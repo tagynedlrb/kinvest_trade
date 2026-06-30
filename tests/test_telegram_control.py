@@ -19,6 +19,8 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_positions") == "positions"
+    assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
+    assert TelegramLiquidityLabController.parse_command("/lab_paper_test") == ("paper_test", None)
     assert TelegramLiquidityLabController.parse_command("/lab_help") == "help"
     assert TelegramLiquidityLabController.parse_command("/unknown") is None
 
@@ -51,6 +53,7 @@ def test_accumulate_session_performance_collects_realized_pnl_and_reasons() -> N
 def test_format_watch_target_line_is_compact() -> None:
     line = TelegramLiquidityLabController._format_watch_target_line(
         {
+            "market": "overseas",
             "code": "SOXL",
             "signal_state": "BUY_READY",
             "ma_summary": "20d>60d 5>20",
@@ -60,26 +63,41 @@ def test_format_watch_target_line_is_compact() -> None:
         }
     )
 
-    assert line == "SOXL BUY_READY 20d>60d 5>20 ma_fast_reclaim_entry px=218.0300 hold=1"
+    assert line == "해외 SOXL 상태=BUY_READY 이평=20d>60d 5>20 메모=ma_fast_reclaim_entry 가격=$218.0300 보유=1주"
 
 
 def test_build_positions_message_formats_held_positions() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
     controller.last_report_summary = {
+        "domestic_positions": [
+            {
+                "market": "domestic",
+                "stock_code": "005930",
+                "quantity": 3,
+                "avg_price": 80000.0,
+                "current_price": 82400.0,
+                "pnl_pct": 0.03,
+                "currency": "KRW",
+            }
+        ],
         "overseas_positions": [
             {
+                "market": "overseas",
                 "symbol": "SOXL",
                 "quantity": 2,
                 "avg_price": 19.25,
                 "current_price": 19.75,
                 "pnl_pct": 0.025974,
+                "currency": "USD",
             },
             {
+                "market": "overseas",
                 "symbol": "AAPL",
                 "quantity": 1,
                 "avg_price": 201.0,
                 "current_price": 199.5,
                 "pnl_pct": -0.007463,
+                "currency": "USD",
             },
         ]
     }
@@ -87,24 +105,26 @@ def test_build_positions_message_formats_held_positions() -> None:
 
     message = controller._build_positions_message()
 
-    assert "SOXL qty=2 avg=19.2500 px=19.7500 pnl=+2.60%" in message
-    assert "AAPL qty=1 avg=201.0000 px=199.5000 pnl=-0.75%" in message
-    assert "avg_pnl=+0.93%" in message
+    assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
+    assert "해외 SOXL 수량=2 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
+    assert "해외 AAPL 수량=1 매입=$201.0000 현재=$199.5000 손익=-0.75%" in message
+    assert "평균손익=+1.62%" in message
 
 
 def test_build_positions_message_returns_none_when_no_positions() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
-    controller.last_report_summary = {"overseas_positions": []}
+    controller.last_report_summary = {"domestic_positions": [], "overseas_positions": []}
     controller.current_cycle_no = 3
 
     message = controller._build_positions_message()
 
-    assert "held=none" in message
+    assert "보유종목=없음" in message
 
 
 def test_format_watch_target_line_includes_pnl_when_holding() -> None:
     line = TelegramLiquidityLabController._format_watch_target_line(
         {
+            "market": "overseas",
             "code": "SOXL",
             "signal_state": "HOLD",
             "ma_summary": "20d>60d 5>20",
@@ -115,12 +135,13 @@ def test_format_watch_target_line_includes_pnl_when_holding() -> None:
         pnl_pct=0.012,
     )
 
-    assert "pnl=+1.20%" in line
+    assert "손익=+1.20%" in line
 
 
 def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
     line = TelegramLiquidityLabController._format_watch_target_line(
         {
+            "market": "overseas",
             "code": "SOXL",
             "signal_state": "WAIT",
             "ma_summary": "20d>60d 5>20",
@@ -131,7 +152,7 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
         pnl_pct=0.012,
     )
 
-    assert "pnl=" not in line
+    assert "손익=" not in line
 
 
 class DummyNotifier:
@@ -184,6 +205,7 @@ class DummyReport:
         self.paper_run = {"skipped": True, "reason": "market_closed"}
         self.domestic_order = {"skipped": True, "reason": "market_closed"}
         self.overseas_order = {"skipped": True, "reason": "market_closed"}
+        self.domestic_positions: list[SimpleNamespace] = []
         self.overseas_positions: list[DummyHeldPosition] = []
         self.estimated_api_calls_per_cycle = 0
         self.krx_market_open = False
@@ -191,7 +213,7 @@ class DummyReport:
         self.watch_targets: list[dict] = []
 
     def to_dict(self) -> dict:
-        return {"watch_targets": [], "overseas_positions": []}
+        return {"watch_targets": [], "domestic_positions": [], "overseas_positions": []}
 
 
 def _build_async_controller() -> TelegramLiquidityLabController:

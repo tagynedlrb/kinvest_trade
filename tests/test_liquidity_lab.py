@@ -1,4 +1,6 @@
 from kinvest_trade.liquidity_lab import (
+    DomesticHeldPosition,
+    DomesticScanResult,
     LiquidityLabService,
     OverseasHeldPosition,
     OverseasScanResult,
@@ -371,8 +373,8 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
     assert "[KIS][LAB_SELL]" in message
-    assert "gross_pnl=+4.00 USD" in message
-    assert "pnl_pct=+0.71%" in message
+    assert "손익=+$4.00" in message
+    assert "수익률=+0.71%" in message
 
 
 def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
@@ -438,4 +440,171 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
 
     assert result["submitted"] is True
-    assert "buy_price=unknown" in service.notifier.messages[0]
+    assert "매입가=알수없음" in service.notifier.messages[0]
+
+
+class DummyDomesticBalanceClient:
+    async def get_balance(self):
+        return {
+            "positions": [
+                {
+                    "pdno": "005930",
+                    "hldg_qty": "2",
+                    "ord_psbl_qty": "1",
+                    "pchs_avg_pric": "80000",
+                }
+            ]
+        }
+
+
+def test_load_domestic_positions_reads_balance() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.client = DummyDomesticBalanceClient()
+    ranked = [
+        DomesticScanResult(
+            stock_code="005930",
+            current_price=82000,
+            best_ask=82050,
+            best_bid=81950,
+            spread_pct=0.0012,
+            minute_change_pct=0.01,
+            intraday_turnover_krw=100_000_000_000,
+            volume_sum=500_000,
+            activity_score=12.0,
+        )
+    ]
+
+    import asyncio
+
+    positions = asyncio.run(service._load_domestic_positions(ranked))
+
+    assert positions == [
+        DomesticHeldPosition(
+            stock_code="005930",
+            quantity=2,
+            orderable_qty=1,
+            avg_price=80000.0,
+            current_price=82000,
+            pnl_pct=0.025,
+        )
+    ]
+
+
+class DummyDomesticSellClient:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+
+    async def place_cash_order(
+        self,
+        *,
+        side: str,
+        stock_code: str,
+        qty: int,
+        price: int,
+        order_division: str,
+    ):
+        if self.error is not None:
+            raise self.error
+        return {
+            "side": side,
+            "stock_code": stock_code,
+            "qty": qty,
+            "price": price,
+            "order_division": order_division,
+        }
+
+
+def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | None = None) -> LiquidityLabService:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "credentials": type("Creds", (), {"dry_run": dry_run})(),
+        },
+    )()
+    service.client = DummyDomesticSellClient(error=error)
+    service.notifier = DummyNotifier()
+    return service
+
+
+def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
+    service = _build_domestic_sell_service()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=-0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+    held = DomesticHeldPosition(
+        stock_code="005930",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=80000.0,
+        current_price=82000.0,
+        pnl_pct=0.025,
+    )
+
+    import asyncio
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "stop_loss"))
+
+    assert result["submitted"] is True
+    message = service.notifier.messages[0]
+    assert "[KIS][LAB_SELL]" in message
+    assert "시장=국내" in message
+    assert "손익=+4,000원" in message
+    assert "수익률=+2.50%" in message
+
+
+def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    ranked = [
+        DomesticScanResult(
+            stock_code="005930",
+            current_price=82000,
+            best_ask=82050,
+            best_bid=81950,
+            spread_pct=0.0012,
+            minute_change_pct=-0.003,
+            intraday_turnover_krw=100_000_000_000,
+            volume_sum=500_000,
+            activity_score=11.0,
+        )
+    ]
+    watch_targets = [
+        type(
+            "WatchTarget",
+            (),
+            {
+                "market": "domestic",
+                "code": "005930",
+                "action_bias": "SELL",
+                "note": "stop_loss",
+            },
+        )()
+    ]
+    held_positions = [
+        DomesticHeldPosition(
+            stock_code="005930",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=80000.0,
+            current_price=82000.0,
+            pnl_pct=-0.01,
+        )
+    ]
+
+    result = service._select_domestic_exit_target(ranked, watch_targets, held_positions)
+
+    assert result is not None
+    candidate, held, reason, signal_snapshot = result
+    assert candidate.stock_code == "005930"
+    assert held.stock_code == "005930"
+    assert reason == "stop_loss"
+    assert signal_snapshot is None

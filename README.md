@@ -10,7 +10,7 @@
 - `state/runtime_state.json`: 최신 실행 상태
 - `src/kinvest_trade/client.py`: KIS OAuth, 시세, 잔고, 매수가능조회, 주문
 - `src/kinvest_trade/cli.py`: `doctor`, `auth-check`, `balance-check`, `overseas-price-check`, `overseas-balance-check`, `overseas-orderable-check`, `overseas-order-test`, `indicator-check`, `orderable-check`, `order-test`, `paper-run`, `paper-report`, `telegram-test`
-- `src/kinvest_trade/cli.py`: `liquidity-lab` 명령으로 국내/해외 고유동성 후보를 스캔하고 국내 paper test + 모의주문 테스트까지 한 번에 수행할 수 있다.
+- `src/kinvest_trade/cli.py`: `liquidity-lab` 명령으로 국내/해외 고유동성 후보를 스캔하고 조건 충족 시 즉시 주문 테스트까지 수행할 수 있다.
 - `src/kinvest_trade/cli.py`: `telegram-control` 명령으로 텔레그램 봇 명령을 받아 `liquidity-lab` 루프를 시작/중지/재개/종료할 수 있다.
 - `liquidity-lab`는 현재 열린 시장의 상위 후보 여러 개를 동시에 감시하고, 그중 `볼륨 스파이크 + 돌파` 신호가 뜬 종목만 주문 대상으로 승격한다.
 - `run_watch.py`: 옵션 없이 콘솔 감시 실행
@@ -169,8 +169,9 @@ python3 main.py liquidity-lab
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 `거래량 스파이크 + 돌파 + 추세 필터`를 동시에 만족할 때만 진행한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
-- 국내 장이 열려 있고 `primary_target`이 국내 종목이면 그 1개 종목만 짧은 `paper-run`과 mock 주문 테스트 대상으로 사용한다.
+- 국내 장이 열려 있고 `primary_target`이 국내 종목이면 보유 포지션 청산 신호를 먼저 확인하고, 없으면 신규 mock 주문 테스트를 즉시 진행한다.
 - 미국장이 열려 있고 `primary_target`이 해외 종목이면 그 1개 종목만 mock 주문 테스트 대상으로 사용한다.
+- 자동 사이클에서는 더 이상 국내 `paper-run` 25초 검증을 끼워 넣지 않는다. 수동 검증이 필요하면 텔레그램 `/lab_paper_test <종목코드>`를 사용한다.
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
 - 국내: `005930`, `000660`, `035420`, `419050`, `023410`, `010170`, `034940`
@@ -207,6 +208,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_status`: 현재 상태 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
 - `/lab_positions`: 현재 보유 포지션과 미실현 손익 조회
+- `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
 
 동작 메모:
@@ -224,10 +226,11 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_status`에는 현재 장 상태, 다음 루프 간격, 연속 오류 횟수가 함께 표시된다.
 - 장 상태가 `krx_open`, `us_regular`, `both_closed` 등으로 바뀌면 텔레그램에 자동 알림을 보낸다.
 - 현재 기본 해외 감시는 `overseas_candidates=69`, `overseas_scan_top_n=15`, `loop_interval_sec=20` 기준이다. 매 사이클 전체 후보를 quote 스캔하고, signal은 상위 15개와 보유 종목에만 계산한다.
-- 자동매매 SELL 알림은 `buy_price`, `pnl_pct`, `pnl_usd`, `gross_usd`, `pnl_krw`, `cum_pnl`, `hold`를 함께 보내도록 확장돼, 청산 품질을 텔레그램에서 바로 확인할 수 있다.
-- 재시작 후 평균매입가 복구가 실패하면 `buy_price=unknown`, `pnl_pct=unknown`으로 명확히 표기하고, 대신 `pnl_usd`와 `gross_usd`는 계속 보여준다.
+- 자동매매 SELL 알림은 `종목 / 매수·매도 / 가격 / 수량 / RSI·거래량 / 손익 / 보유시간` 위주로 짧게 보낸다.
+- 재시작 후 평균매입가 복구가 실패하면 `매입가=알수없음`, `수익률=알수없음`으로 명확히 표기한다.
 - `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.
-- `/lab_watchlist`에서 보유 종목은 `hold=N`과 함께 `pnl=+X.XX%` 형식의 미실현 손익이 함께 표시된다.
+- `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
+- `/lab_positions`는 국내/해외 보유 종목을 함께 보여주고, `/lab_watchlist`는 시장·상태·이평·메모·가격 한 줄 형식으로 요약한다.
 
 ### 1. 모의투자 모드로 전환
 `.env`에서 아래처럼 둔다.

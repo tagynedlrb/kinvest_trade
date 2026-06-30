@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -309,6 +310,28 @@ def test_run_cycle_resets_consecutive_errors_on_success() -> None:
 
     assert controller._consecutive_errors == 0
     assert controller.last_error is None
+
+
+def test_restore_runtime_state_recovers_update_offset() -> None:
+    controller = _build_async_controller()
+    controller.config.storage.runtime_state_path.write_text(
+        '{"telegram_update_offset": 4321}',
+        encoding="utf-8",
+    )
+
+    controller._restore_runtime_state()
+
+    assert controller.update_offset == 4321
+
+
+def test_write_runtime_state_persists_update_offset() -> None:
+    controller = _build_async_controller()
+    controller.update_offset = 9876
+
+    controller._write_runtime_state()
+
+    payload = json.loads(controller.config.storage.runtime_state_path.read_text(encoding="utf-8"))
+    assert payload["telegram_update_offset"] == 9876
 
 
 def test_handle_service_restart_rejects_when_service_missing() -> None:

@@ -8,6 +8,8 @@
 - `scan_domestic()`를 `quote-only 1차 스캔 + 상위 후보 chart 정밀 스캔` 2단계 구조로 바꾸고, 남아 있던 `asyncio.sleep(0.1/0.2)`를 `0.05` 기준으로 정리
 - 자동 사이클에서 국내 `paper-run` 25초 검증을 제거하고, 수동 검증용 텔레그램 명령 `/lab_paper_test <종목코드>`를 추가
 - 텔레그램 명령 `/lab_service_restart`를 추가해 `kinvest-telegram-control.service`를 봇에서 직접 재시작할 수 있게 연결
+- 재시작 후 `telegram getUpdates offset`가 초기화되며 같은 `/lab_service_restart` 명령을 다시 읽어 무한 재시작 루프에 들어가는 문제를 수정
+- `state/runtime_state.json`에 `telegram_update_offset`를 저장하고, 서비스 시작 시 복구하도록 변경
 - `message_format.py`와 `format_kst_korean()`을 도입해 `liquidity_lab`, `auto_trader`, `telegram_control` 알림을 한국어/KST 중심의 짧은 형식으로 단순화
 - `tests/test_message_format.py`를 새로 추가하고, 국내 매도/국내 잔고/새 텔레그램 메시지 포맷에 맞춰 관련 테스트를 확장
 

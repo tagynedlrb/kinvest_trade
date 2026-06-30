@@ -141,6 +141,7 @@ class TelegramLiquidityLabController:
     async def run(self) -> None:
         if not self.notifier.enabled:
             raise RuntimeError("Telegram bot token/chat id are required for telegram-control.")
+        self._restore_runtime_state()
         self._write_runtime_state()
         await self.notifier.send(
             "\n".join(
@@ -191,6 +192,7 @@ class TelegramLiquidityLabController:
                 if isinstance(update_id, int):
                     self.update_offset = update_id + 1
                 await self._handle_update(update)
+                self._write_runtime_state()
             await asyncio.sleep(0.2)
 
     async def _handle_update(self, update: dict) -> None:
@@ -311,6 +313,7 @@ class TelegramLiquidityLabController:
                 ]
             )
         )
+        self._write_runtime_state()
         asyncio.create_task(self._restart_service_soon())
 
     async def _restart_service_soon(self) -> None:
@@ -463,6 +466,7 @@ class TelegramLiquidityLabController:
             "status": self.mode,
             "updated_at": format_kst(datetime.now(timezone.utc)),
             "linked_account": self.config.credentials.profile_name,
+            "telegram_update_offset": self.update_offset,
             "watch_targets": (self.last_report_summary or {}).get("watch_targets", []),
             "last_error": self.last_error,
             "notes": [
@@ -472,6 +476,18 @@ class TelegramLiquidityLabController:
             "telegram_control": self._snapshot().to_dict(),
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _restore_runtime_state(self) -> None:
+        path = self.config.storage.runtime_state_path
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        stored_offset = payload.get("telegram_update_offset")
+        if isinstance(stored_offset, int) and stored_offset >= 0:
+            self.update_offset = stored_offset
 
     def _snapshot(self) -> ControllerSnapshot:
         return ControllerSnapshot(

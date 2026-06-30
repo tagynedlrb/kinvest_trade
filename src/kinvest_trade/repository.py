@@ -4,8 +4,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import OrderIntent, PositionState
-
 
 class SqliteRepository:
     def __init__(self, db_path: Path) -> None:
@@ -22,35 +20,6 @@ class SqliteRepository:
         with self._connect() as conn:
             conn.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS order_intents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    stock_code TEXT NOT NULL,
-                    side TEXT NOT NULL,
-                    qty INTEGER NOT NULL,
-                    price INTEGER,
-                    strategy_name TEXT NOT NULL,
-                    reason TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS orders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    order_intent_id INTEGER NOT NULL,
-                    broker_order_no TEXT,
-                    status TEXT NOT NULL,
-                    raw_payload TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS positions (
-                    stock_code TEXT PRIMARY KEY,
-                    qty INTEGER NOT NULL,
-                    avg_price INTEGER NOT NULL,
-                    scaled_in_steps INTEGER NOT NULL,
-                    opened_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-
                 CREATE TABLE IF NOT EXISTS risk_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_type TEXT NOT NULL,
@@ -254,73 +223,6 @@ class SqliteRepository:
         if column_name in existing_columns:
             return
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-
-    def save_order_intent(self, intent: OrderIntent) -> int:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO order_intents (
-                    created_at, stock_code, side, qty, price, strategy_name, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    intent.created_at.isoformat(),
-                    intent.stock_code,
-                    intent.side,
-                    intent.qty,
-                    intent.price,
-                    intent.strategy_name,
-                    intent.reason,
-                ),
-            )
-            return int(cursor.lastrowid)
-
-    def save_order_result(
-        self,
-        order_intent_id: int,
-        broker_order_no: str | None,
-        status: str,
-        raw_payload: dict,
-    ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO orders (order_intent_id, broker_order_no, status, raw_payload)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    order_intent_id,
-                    broker_order_no,
-                    status,
-                    json.dumps(raw_payload, ensure_ascii=False, default=str),
-                ),
-            )
-
-    def upsert_position(self, position: PositionState) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO positions (stock_code, qty, avg_price, scaled_in_steps, opened_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(stock_code) DO UPDATE SET
-                    qty = excluded.qty,
-                    avg_price = excluded.avg_price,
-                    scaled_in_steps = excluded.scaled_in_steps,
-                    opened_at = excluded.opened_at,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    position.stock_code,
-                    position.qty,
-                    position.avg_price,
-                    position.scaled_in_steps,
-                    position.opened_at.isoformat(),
-                ),
-            )
-
-    def delete_position(self, stock_code: str) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM positions WHERE stock_code = ?", (stock_code,))
 
     def save_risk_event(
         self,

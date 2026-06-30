@@ -1,6 +1,14 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 19
+- `liquidity_lab` 설정에 `use_slot_sizing`, `slot_entry_pct`, `slot_max_pct`를 추가하고, 국내/해외 실주문 및 해외 가상매수 경로가 고정 1주 대신 주문가능 금액 기반 슬롯 수량을 우선 계산하도록 확장
+- 주문가능 금액 조회 실패 시에는 기존 고정 수량으로 자동 폴백하고, 조회는 성공했지만 슬롯 예산으로 1주도 담지 못하는 경우에는 `slot_budget_insufficient`로 안전하게 건너뛰도록 처리
+- `config/fixed_config.json` 기본 운영값을 `loop_interval_sec=25`, `overseas_scan_top_n=12`, `liquidity_lab.use_slot_sizing=true`로 조정
+- 더 이상 사용되지 않는 `strategy.py`, `risk.py`, `models.py`와 저장소의 `order_intents/orders/positions` 초기 스키마 및 관련 dead method를 제거
+- `client.py.environment_division`, `auto_trader.py._hard_break_band_pct`, `technical_signals.py.format_snapshot_indicator`, `liquidity_lab.py._wait_state`를 정리해 남은 로직만 유지
+- `tests/test_liquidity_lab.py`에 국내/해외 슬롯 수량 계산과 해외 가상매수 슬롯 적용 테스트를 추가하고, `tests/test_config.py`에 새 설정 필드 검증을 반영
+
 ### 추가 개선 18
 - `config/fixed_config.json`의 해외 감시 후보군에 `SQQQ`, `TQQQ`, `SOXL`, `SOXS`, `UVXY`를 추가해 인버스/레버리지 ETF도 같은 모멘텀 로직으로 스캔되도록 확장
 - `repository.py`에 `virtual_sell_pending` 테이블과 CRUD를 추가해 거래불가 세션에서 실제 보유분을 가상 매도로 먼저 처리한 뒤 정산 대기 상태를 별도로 보존하도록 변경

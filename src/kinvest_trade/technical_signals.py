@@ -241,25 +241,6 @@ def build_moving_average_snapshot(
         regime=regime,
     )
 
-
-def format_snapshot_indicator(
-    snapshot: MovingAverageSnapshot,
-    *,
-    daily_fast_label: str,
-    daily_slow_label: str,
-) -> str:
-    parts = [
-        "rsi=-" if snapshot.rsi14 is None else f"rsi={snapshot.rsi14:.1f}",
-        f"vol={snapshot.volume_ratio:.2f}x" if snapshot.volume_avg > 0 else "vol=-",
-        f"mom={snapshot.intraday_momentum * 100:+.2f}%",
-        f"atr={snapshot.atr_pct * 100:.2f}%",
-        daily_fast_label + "=-"
-        if snapshot.daily_ma_fast is None
-        else f"{daily_fast_label}={snapshot.daily_gap_fast_pct * 100:+.2f}%",
-    ]
-    return ", ".join(parts)
-
-
 def extract_price_series(
     rows: list[dict],
     *,

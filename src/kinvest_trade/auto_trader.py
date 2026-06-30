@@ -1012,13 +1012,6 @@ class SoxlAutoTrader:
             snapshot.atr_pct * auto.atr_soft_stop_multiplier,
         )
 
-    def _hard_break_band_pct(self, snapshot: StrategySnapshot, *, auto=None) -> float:
-        auto = auto or self.config.auto_trade
-        return max(
-            auto.hard_stop_loss_pct,
-            snapshot.atr_pct * auto.atr_hard_stop_multiplier,
-        )
-
     def _drawdown_from_peak(self, price: float) -> float:
         if self.position.peak_price <= 0 or price <= 0:
             return 0.0

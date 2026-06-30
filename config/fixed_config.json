@@ -148,7 +148,10 @@
     },
     "liquidity_lab": {
         "enabled": true,
-        "loop_interval_sec": 20,
+        "loop_interval_sec": 25,
+        "use_slot_sizing": true,
+        "slot_entry_pct": 0.10,
+        "slot_max_pct": 0.20,
         "domestic_candidates": [
             "005930",
             "000660",
@@ -459,7 +462,7 @@
         "domestic_paper_iterations": 6,
         "domestic_paper_interval_sec": 5,
         "domestic_top_n": 3,
-        "overseas_scan_top_n": 15,
+        "overseas_scan_top_n": 12,
         "domestic_test_order_qty": 1,
         "overseas_test_order_qty": 1,
         "domestic_min_price_krw": 5000,

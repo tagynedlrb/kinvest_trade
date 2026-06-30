@@ -218,6 +218,9 @@ class LiquidityLabConfig:
     domestic_candidates: list[str]
     overseas_candidates: list[OverseasCandidateConfig]
     loop_interval_sec: int
+    use_slot_sizing: bool
+    slot_entry_pct: float
+    slot_max_pct: float
     domestic_paper_iterations: int
     domestic_paper_interval_sec: int
     domestic_top_n: int
@@ -682,6 +685,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 if str(item.get("symbol", "")).strip()
             ],
             loop_interval_sec=int(liquidity_lab_raw.get("loop_interval_sec", 120)),
+            use_slot_sizing=bool(liquidity_lab_raw.get("use_slot_sizing", False)),
+            slot_entry_pct=float(liquidity_lab_raw.get("slot_entry_pct", 0.10)),
+            slot_max_pct=float(liquidity_lab_raw.get("slot_max_pct", 0.20)),
             domestic_paper_iterations=int(
                 liquidity_lab_raw.get("domestic_paper_iterations", 6)
             ),

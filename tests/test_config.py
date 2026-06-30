@@ -77,4 +77,7 @@ def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:
     assert config.auto_trade.sec_fee_rate > 0
     assert config.auto_trade.max_decision_cycles_per_run >= 0
     assert config.liquidity_lab.domestic_test_order_qty >= 1
+    assert config.liquidity_lab.use_slot_sizing is True
+    assert config.liquidity_lab.slot_entry_pct > 0
+    assert config.liquidity_lab.slot_max_pct >= config.liquidity_lab.slot_entry_pct
     assert config.notifications.telegram_command_poll_timeout_sec > 0

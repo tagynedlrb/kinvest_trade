@@ -530,6 +530,47 @@ class LiquidityLabService:
         self.position_tracker = tracker
         return tracker
 
+    async def _get_overseas_available_usd(
+        self,
+        *,
+        symbol: str,
+        exchange_code: str,
+        price: float,
+    ) -> float:
+        if price <= 0:
+            return 0.0
+        possible = await self.client.get_overseas_possible_order(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            price=f"{price:.4f}",
+        )
+        raw = possible.get("raw", {}) or {}
+        return max(
+            self._parse_float(possible.get("cash_available")),
+            self._parse_float(raw.get("ord_psbl_frcr_amt_wcrc")),
+            self._parse_float(raw.get("frcr_ord_psbl_amt1")),
+            self._parse_float(raw.get("frcr_dncl_amt_2")),
+        )
+
+    async def _get_domestic_available_krw(self) -> float:
+        balance = await self.client.get_balance()
+        summary = balance.get("summary", {}) or {}
+        return max(
+            self._parse_float(summary.get("ord_psbl_cash")),
+            self._parse_float(summary.get("dnca_tot_amt")),
+        )
+
+    def _slot_based_qty(self, *, available_amount: float, price: float) -> int:
+        config = self.config.liquidity_lab
+        if available_amount <= 0 or price <= 0:
+            return 0
+        slot_max_pct = max(float(config.slot_max_pct), 0.0)
+        slot_entry_pct = max(float(config.slot_entry_pct), 0.0)
+        if slot_max_pct <= 0 or slot_entry_pct <= 0:
+            return 0
+        budget = available_amount * min(slot_entry_pct, slot_max_pct)
+        return max(int(math.floor(budget / price)), 0)
+
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         krx_open = is_krx_regular_session(now)
@@ -1635,7 +1676,28 @@ class LiquidityLabService:
         )
 
     async def _place_domestic_test_order(self, candidate: DomesticScanResult) -> dict:
-        qty = self.config.liquidity_lab.domestic_test_order_qty
+        config = self.config.liquidity_lab
+        qty = config.domestic_test_order_qty
+        if config.use_slot_sizing:
+            try:
+                available_krw = await self._get_domestic_available_krw()
+            except KisApiError:
+                available_krw = 0.0
+            slot_qty = self._slot_based_qty(
+                available_amount=available_krw,
+                price=float(candidate.best_ask or candidate.current_price),
+            )
+            if slot_qty > 0:
+                qty = slot_qty
+            elif available_krw > 0:
+                return {
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "reason": "slot_budget_insufficient",
+                    "available_krw": available_krw,
+                }
         if qty <= 0:
             return {"skipped": True, "reason": "domestic_test_order_qty_zero"}
         if self.config.credentials.dry_run:
@@ -1785,7 +1847,33 @@ class LiquidityLabService:
                 "reason": buy_reason,
             }
 
-        qty = self.config.liquidity_lab.overseas_test_order_qty
+        config = self.config.liquidity_lab
+        qty = config.overseas_test_order_qty
+        if config.use_slot_sizing:
+            try:
+                available_usd = await self._get_overseas_available_usd(
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    price=candidate.last_price,
+                )
+            except KisApiError:
+                available_usd = 0.0
+            slot_qty = self._slot_based_qty(
+                available_amount=available_usd,
+                price=candidate.last_price,
+            )
+            if slot_qty > 0:
+                qty = slot_qty
+            elif available_usd > 0:
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "signal_snapshot": asdict(signal_snapshot),
+                    "reason": "slot_budget_insufficient",
+                    "available_usd": available_usd,
+                }
         if qty <= 0:
             return {"skipped": True, "reason": "overseas_test_order_qty_zero"}
         if self.config.credentials.dry_run:
@@ -1898,7 +1986,32 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
         rejected_error: str | None = None,
     ) -> dict:
-        qty = int(self.config.liquidity_lab.overseas_test_order_qty)
+        config = self.config.liquidity_lab
+        qty = int(config.overseas_test_order_qty)
+        if config.use_slot_sizing:
+            try:
+                available_usd = await self._get_overseas_available_usd(
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    price=candidate.last_price,
+                )
+            except KisApiError:
+                available_usd = 0.0
+            slot_qty = self._slot_based_qty(
+                available_amount=available_usd,
+                price=candidate.last_price,
+            )
+            if slot_qty > 0:
+                qty = slot_qty
+            elif available_usd > 0:
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "reason": "slot_budget_insufficient",
+                    "available_usd": available_usd,
+                }
         if qty <= 0:
             return {
                 "skipped": True,
@@ -2583,22 +2696,6 @@ class LiquidityLabService:
             f"{auto.daily_fast_window}d{daily_relation}{auto.daily_slow_window}d "
             f"{auto.intraday_fast_window}{minute_relation}{auto.intraday_slow_window}"
         )
-
-    @staticmethod
-    def _wait_state(snapshot: MovingAverageSnapshot) -> str:
-        mapping = {
-            "trend_up": "SETUP",
-            "momentum_breakout": "SPIKE",
-            "momentum_setup": "SETUP",
-            "recovery": "SETUP",
-            "breakout_test": "BREAK",
-            "pullback": "PULLBACK",
-            "trend_down": "DOWNTREND",
-            "breakdown": "DOWNTREND",
-            "range": "RANGE",
-            "warmup": "WARMUP",
-        }
-        return mapping.get(snapshot.regime, "WAIT")
 
     def _estimate_api_calls_per_cycle(
         self,

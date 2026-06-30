@@ -17,6 +17,7 @@ from kinvest_trade.liquidity_lab import (
 )
 from kinvest_trade.client import KisApiError
 from kinvest_trade.repository import SqliteRepository
+from kinvest_trade.technical_signals import MovingAverageSnapshot
 
 
 def test_select_primary_target_reports_mock_daytime_limit() -> None:
@@ -313,6 +314,43 @@ class DummyNotifier:
 
 def _build_repository() -> SqliteRepository:
     return SqliteRepository(Path(tempfile.mkdtemp()) / "liquidity_lab_test.db")
+
+
+def _snapshot(**overrides) -> MovingAverageSnapshot:
+    payload = dict(
+        price=20.0,
+        spread_pct=0.001,
+        daily_ma_fast=19.8,
+        daily_ma_slow=19.4,
+        minute_ma_fast=20.1,
+        minute_ma_slow=19.9,
+        prev_minute_ma_fast=19.9,
+        prev_minute_ma_slow=19.8,
+        rsi14=58.0,
+        intraday_volatility=0.001,
+        intraday_momentum=0.003,
+        intraday_bar_return=0.0012,
+        volume_last=200_000.0,
+        volume_avg=100_000.0,
+        volume_ratio=2.0,
+        breakout_level=19.9,
+        breakdown_level=19.2,
+        breakout_distance_pct=0.002,
+        atr=0.2,
+        atr_pct=0.01,
+        bollinger_basis=19.7,
+        bollinger_upper=20.2,
+        bollinger_lower=19.2,
+        daily_gap_fast_pct=0.01,
+        daily_gap_slow_pct=0.02,
+        minute_gap_slow_pct=0.004,
+        fast_above_slow=True,
+        crossed_up=False,
+        crossed_down=False,
+        regime="momentum_breakout",
+    )
+    payload.update(overrides)
+    return MovingAverageSnapshot(**payload)
 
 
 class DummySellClient:
@@ -690,7 +728,10 @@ def test_domestic_buy_rejected_marks_skipped_true() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = SimpleNamespace(
         credentials=SimpleNamespace(dry_run=False),
-        liquidity_lab=SimpleNamespace(domestic_test_order_qty=1),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=False,
+        ),
     )
     service.client = DummyDomesticSellClient(error=KisApiError("domestic rejected"))
     service.notifier = DummyNotifier()
@@ -712,6 +753,41 @@ def test_domestic_buy_rejected_marks_skipped_true() -> None:
     assert result["skipped"] is True
     assert result["reason"] == "order_rejected"
     assert service.notifier.messages == []
+
+
+def test_domestic_buy_uses_slot_sizing_when_balance_is_available() -> None:
+    class DummyDomesticSlotClient(DummyDomesticSellClient):
+        async def get_balance(self):
+            return {"summary": {"ord_psbl_cash": "2500000"}}
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=True,
+            slot_entry_pct=0.10,
+            slot_max_pct=0.20,
+        ),
+    )
+    service.client = DummyDomesticSlotClient()
+    service.notifier = DummyNotifier()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=80000,
+        best_ask=80000,
+        best_bid=79950,
+        spread_pct=0.0006,
+        minute_change_pct=0.002,
+        intraday_turnover_krw=120_000_000_000,
+        volume_sum=600_000,
+        activity_score=12.0,
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["submitted"] is True
+    assert result["qty"] == 3
 
 
 def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
@@ -775,6 +851,9 @@ def _build_run_service() -> LiquidityLabService:
             overseas_max_position_qty=3,
             overseas_take_profit_pct=0.012,
             overseas_stop_loss_pct=0.008,
+            use_slot_sizing=False,
+            slot_entry_pct=0.10,
+            slot_max_pct=0.20,
         ),
         auto_trade=SimpleNamespace(
             daily_fast_window=20,
@@ -1183,6 +1262,103 @@ def test_virtual_buy_does_not_touch_real_broker_balance() -> None:
 
     assert result["submitted"] is True
     assert result["virtual"] is True
+    assert service.virtual_trades.get_position("overseas", "SOXL") is not None
+
+
+def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
+    class DummyOverseasSlotClient:
+        async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
+            return {
+                "cash_available": "1000",
+                "raw": {
+                    "ord_psbl_frcr_amt_wcrc": "1000",
+                },
+            }
+
+        async def place_overseas_order_for_current_session(
+            self,
+            *,
+            side: str,
+            symbol: str,
+            exchange_code: str,
+            qty: int,
+            price: str,
+            order_division: str,
+        ):
+            return {
+                "side": side,
+                "symbol": symbol,
+                "exchange_code": exchange_code,
+                "qty": qty,
+                "price": price,
+                "order_division": order_division,
+            }
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            overseas_test_order_qty=1,
+            use_slot_sizing=True,
+            slot_entry_pct=0.10,
+            slot_max_pct=0.20,
+        ),
+    )
+    service.client = DummyOverseasSlotClient()
+    service.notifier = DummyNotifier()
+    service._signal_cache = {"SOXL": _snapshot(price=25.0)}
+    service._should_buy_overseas_candidate = lambda snapshot: (True, "volume_breakout_entry")  # type: ignore[method-assign]
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+
+    result = asyncio.run(service._place_overseas_test_order(candidate))
+
+    assert result["submitted"] is True
+    assert result["qty"] == 4
+
+
+def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
+    class DummyVirtualSlotClient:
+        async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
+            return {
+                "cash_available": "1000",
+                "raw": {
+                    "ord_psbl_frcr_amt_wcrc": "1000",
+                },
+            }
+
+    service = _build_run_service()
+    service.config.liquidity_lab.use_slot_sizing = True
+    service.client = DummyVirtualSlotClient()
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+
+    result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+
+    assert result["submitted"] is True
+    assert result["qty"] == 4
     assert service.virtual_trades.get_position("overseas", "SOXL") is not None
 
 

@@ -255,11 +255,6 @@ class KisRestClient:
             )
         return self.credentials.account_no, self.credentials.account_product_code
 
-    def environment_division(self) -> str:
-        if self.credentials.env == "prod":
-            return "real"
-        return "demo"
-
     def product_type_code_for_exchange(self, exchange_code: str) -> str:
         exchange_upper = exchange_code.upper()
         mapping = {

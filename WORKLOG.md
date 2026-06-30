@@ -1,6 +1,16 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 18
+- `config/fixed_config.json`의 해외 감시 후보군에 `SQQQ`, `TQQQ`, `SOXL`, `SOXS`, `UVXY`를 추가해 인버스/레버리지 ETF도 같은 모멘텀 로직으로 스캔되도록 확장
+- `repository.py`에 `virtual_sell_pending` 테이블과 CRUD를 추가해 거래불가 세션에서 실제 보유분을 가상 매도로 먼저 처리한 뒤 정산 대기 상태를 별도로 보존하도록 변경
+- `liquidity_lab.py`에 `UnifiedPosition`, `UnifiedPositionTracker`를 추가하고, 실제 보유 수량 + 가상 매수 수량 - 가상 매도 pending 수량을 합산한 통합 포지션 기준으로 청산/추가매수 판단을 재구성
+- `_select_overseas_exit_target()`가 종목별 pending 정산 수량을 감안해 이미 가상매도로 처리된 실제 보유분을 같은 세션에서 다시 청산 후보로 고르지 않도록 수정
+- `_place_overseas_sell_order()`와 가상 매도 전환 경로를 `apply_sell()` 기반으로 바꿔, 가상 매수분 우선 차감 후 남는 실제 수량만 정산 대기 혹은 실주문으로 연결되게 조정
+- 거래 가능 시간이 되면 `_reconcile_pending_virtual_sells()`가 `virtual_sell_pending`을 실제 매도로 정산하고 `[KIS][VIRTUAL_SETTLED]` 알림을 보내도록 추가
+- `/lab_virtual` 출력에 정산 대기 매도 수량을 음수 형태로 함께 보여주도록 확장
+- `tests/test_unified_position_tracker.py`를 새로 추가하고, 반복 가상매도 방지/정산/가상매수 우선 차감 시나리오를 포함해 전체 테스트를 148개 통과 상태로 갱신
+
 ### 추가 개선 17
 - 모의투자가 미국 extended session 주문을 거부할 때 별도 저장소에 가상 체결을 남기는 `virtual_positions`, `virtual_orders` 스키마와 `VirtualTradeManager`를 추가
 - `liquidity_lab`가 미국장이 열려 있으나 `vps` 환경에서 주문 불가한 경우 실제 주문 대신 `(virtual)` 매수/매도를 기록하고 `[KIS][VIRTUAL_TRADE]` 텔레그램 알림을 보내도록 확장

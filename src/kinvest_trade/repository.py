@@ -146,6 +146,17 @@ class SqliteRepository:
                     realized_pnl_pct REAL NOT NULL DEFAULT 0
                 );
 
+                CREATE TABLE IF NOT EXISTS virtual_sell_pending (
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    qty INTEGER NOT NULL,
+                    avg_sell_price REAL NOT NULL,
+                    currency TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (market, symbol)
+                );
+
                 CREATE TABLE IF NOT EXISTS indicator_checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -659,6 +670,60 @@ class SqliteRepository:
                 """
             ).fetchall()
         return {f"{row['market']}_{row['currency']}": dict(row) for row in rows}
+
+    def upsert_virtual_sell_pending(
+        self,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        qty: int,
+        avg_sell_price: float,
+        currency: str,
+        updated_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO virtual_sell_pending
+                    (market, symbol, exchange_code, qty, avg_sell_price, currency, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(market, symbol) DO UPDATE SET
+                    qty = excluded.qty,
+                    avg_sell_price = excluded.avg_sell_price,
+                    exchange_code = excluded.exchange_code,
+                    currency = excluded.currency,
+                    updated_at = excluded.updated_at
+                """,
+                (market, symbol, exchange_code, qty, avg_sell_price, currency, updated_at),
+            )
+
+    def get_virtual_sell_pending(self, market: str, symbol: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM virtual_sell_pending WHERE market = ? AND symbol = ?",
+                (market, symbol),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_virtual_sell_pending(self, market: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if market is not None:
+                rows = conn.execute(
+                    "SELECT * FROM virtual_sell_pending WHERE market = ? ORDER BY symbol",
+                    (market,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM virtual_sell_pending ORDER BY market, symbol"
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_virtual_sell_pending(self, market: str, symbol: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM virtual_sell_pending WHERE market = ? AND symbol = ?",
+                (market, symbol),
+            )
 
     def get_latest_quotes_for_run(self, run_id: int) -> dict[str, dict]:
         with self._connect() as conn:

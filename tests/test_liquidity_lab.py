@@ -11,6 +11,7 @@ from kinvest_trade.liquidity_lab import (
     LiquidityLabReport,
     OverseasHeldPosition,
     OverseasScanResult,
+    UnifiedPositionTracker,
     VirtualTradeManager,
     WatchTargetStatus,
 )
@@ -352,6 +353,7 @@ def _build_sell_service(*, dry_run: bool = False, error: Exception | None = None
     service.client = DummySellClient(error=error)
     service.repository = _build_repository()
     service.virtual_trades = VirtualTradeManager(service.repository)
+    service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
     service.notifier = DummyNotifier()
     service._signal_cache = {}
     return service
@@ -459,6 +461,9 @@ def test_overseas_sell_rejected_converts_to_virtual_trade() -> None:
     assert result["submitted"] is True
     assert result["virtual"] is True
     assert result["reason"] == "session_not_orderable_in_profile"
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert int(pending["qty"]) == 1
     assert service.virtual_trades.performance_summary()["overseas_USD"]["trade_count"] == 1
 
 
@@ -493,6 +498,7 @@ def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
 
     assert result["submitted"] is True
     assert any("[KIS][VIRTUAL_TRADE]" in message for message in service.notifier.messages)
+    assert "실보유정산대기=1주" in service.notifier.messages[-1]
 
 
 def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
@@ -611,6 +617,7 @@ def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | No
     service.client = DummyDomesticSellClient(error=error)
     service.repository = _build_repository()
     service.virtual_trades = VirtualTradeManager(service.repository)
+    service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
     service.notifier = DummyNotifier()
     service._signal_cache = {}
     return service
@@ -766,6 +773,8 @@ def _build_run_service() -> LiquidityLabService:
             overseas_scan_top_n=3,
             overseas_test_order_qty=1,
             overseas_max_position_qty=3,
+            overseas_take_profit_pct=0.012,
+            overseas_stop_loss_pct=0.008,
         ),
         auto_trade=SimpleNamespace(
             daily_fast_window=20,
@@ -777,6 +786,7 @@ def _build_run_service() -> LiquidityLabService:
     service.client = object()
     service.repository = _build_repository()
     service.virtual_trades = VirtualTradeManager(service.repository)
+    service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
     service.notifier = DummyNotifier()
     service._domestic_excluded = []
     service._overseas_excluded = []
@@ -1211,3 +1221,93 @@ def test_send_summary_skips_virtual_trade_messages() -> None:
     asyncio.run(service._send_summary(report))
 
     assert service.notifier.messages == []
+
+
+def test_repeated_cycles_do_not_duplicate_virtual_sell() -> None:
+    service = _build_run_service()
+    service.client = DummySellClient(
+        error=KisApiError("KIS mock does not support US daytime trading for this session")
+    )
+    candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=196.96,
+        bid=196.95,
+        ask=196.97,
+        spread_pct=0.0001,
+        change_rate_pct=0.9,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=12.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=193.46,
+        current_price=196.96,
+        pnl_pct=0.0181,
+    )
+
+    async def fake_scan_overseas():
+        return [candidate], {"NVDA"}
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return [
+            OverseasHeldPosition(
+                symbol=held.symbol,
+                exchange_code=held.exchange_code,
+                quantity=held.quantity,
+                orderable_qty=held.orderable_qty,
+                avg_price=held.avg_price,
+                current_price=held.current_price,
+                pnl_pct=held.pnl_pct,
+            )
+        ]
+
+    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+        return []
+
+    async def fake_send_summary(report):
+        return None
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
+    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._send_summary = fake_send_summary  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
+    try:
+        first = asyncio.run(service.run())
+        second = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert first.overseas_order["submitted"] is True
+    assert first.overseas_order["virtual"] is True
+    assert second.overseas_order["skipped"] is True
+    assert second.overseas_order["reason"] == "us_open_but_mock_session_not_supported"
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert int(pending["qty"]) == 1
+    sell_orders = [
+        row
+        for row in service.repository.list_virtual_orders(limit=20)
+        if row["symbol"] == "NVDA" and row["side"] == "sell"
+    ]
+    assert len(sell_orders) == 1

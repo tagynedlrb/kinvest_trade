@@ -304,6 +304,26 @@
                 "exchange_code": "NASD"
             },
             {
+                "symbol": "SQQQ",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "TQQQ",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SOXL",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "SOXS",
+                "exchange_code": "NASD"
+            },
+            {
+                "symbol": "UVXY",
+                "exchange_code": "NASD"
+            },
+            {
                 "symbol": "JPM",
                 "exchange_code": "NYSE"
             },

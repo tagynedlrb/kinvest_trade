@@ -649,6 +649,7 @@ class TelegramLiquidityLabController:
     def _build_virtual_portfolio_message(self) -> str:
         manager = VirtualTradeManager(self.repository)
         positions = manager.list_positions()
+        pending_sells = self.repository.list_virtual_sell_pending(market="overseas")
         summary = manager.performance_summary()
         now = datetime.now(timezone.utc)
         lines = [
@@ -666,6 +667,20 @@ class TelegramLiquidityLabController:
                 symbol_label = f"{position.symbol} (virtual)"
                 lines.append(
                     f"{market} {symbol_label} 수량={position.qty} 평균단가={price_text}"
+                )
+
+        lines.append("--- 정산 대기 매도 (virtual) ---")
+        if not pending_sells:
+            lines.append("정산대기=없음")
+        else:
+            for row in pending_sells:
+                market = format_market_korean(str(row.get("market", "overseas")))
+                symbol = str(row.get("symbol", "-"))
+                qty = int(row.get("qty", 0) or 0)
+                avg_sell_price = float(row.get("avg_sell_price", 0.0) or 0.0)
+                currency = str(row.get("currency", "USD"))
+                lines.append(
+                    f"{market} {symbol} (virtual) 수량=-{qty} 가상매도가={self._format_price(avg_sell_price, currency)}"
                 )
 
         lines.append("--- 누적 성과 (virtual) ---")

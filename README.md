@@ -237,7 +237,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.
 - `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
 - `/lab_positions`는 국내/해외 보유 종목을 함께 보여주고, `/lab_watchlist`는 시장·상태·이평·메모·가격 한 줄 형식으로 요약한다.
-- `/lab_virtual`는 미국 거래불가 세션에서 `(virtual)`로 체결된 별도 포트폴리오와 누적 실현손익만 따로 보여준다.
+- `/lab_virtual`는 미국 거래불가 세션에서 `(virtual)`로 체결된 별도 포트폴리오, 정산 대기 매도 수량, 누적 실현손익을 따로 보여준다.
 
 ### 1. 모의투자 모드로 전환
 `.env`에서 아래처럼 둔다.
@@ -383,10 +383,13 @@ DRY_RUN=false python3 main.py overseas-order-test sell SOXL --exchange AMEX --qt
 모의투자 환경에서 미국 시장이 열려 있지만 주문이 거부되는 세션
 (데이타임/프리마켓/애프터마켓)에는 실제 브로커 잔고와 분리된
 `virtual_positions`, `virtual_orders` 테이블에 가상 체결을 기록한다.
+실제 보유분을 거래불가 세션에 먼저 가상 매도한 경우에는
+`virtual_sell_pending`에 정산 대기 수량이 음수 성격으로 따로 쌓인다.
 이 포트폴리오는 실제 `liquidity_lab`의 진입/청산 신호를 그대로 따르지만,
-`get_overseas_balance` 등 실제 잔고와는 섞이지 않는다. 텔레그램 알림은
-종목명 뒤에 `(virtual)`이 붙고, 누적 성과는 `/lab_virtual` 명령으로
-확인할 수 있다.
+`get_overseas_balance` 등 실제 잔고와는 섞이지 않는다. 거래 가능 시간이
+되면 정산 대기 매도는 실제 매도로 맞춰지고 `[KIS][VIRTUAL_SETTLED]`
+알림이 전송된다. 텔레그램 알림은 종목명 뒤에 `(virtual)`이 붙고,
+누적 성과와 정산 대기 상태는 `/lab_virtual` 명령으로 확인할 수 있다.
 
 ### 시장이 모두 닫혀 있을 때
 

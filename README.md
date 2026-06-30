@@ -205,6 +205,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_resume`: 일시정지 상태에서 재개
 - `/lab_stop`: 현재 사이클 취소 요청 후 정지. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_terminate`: 현재 lab 실행을 강제 종료하고 대기 상태로 복귀. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
+- `/lab_service_restart`: `kinvest-telegram-control.service` 자체를 재시작
 - `/lab_status`: 현재 상태 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
 - `/lab_positions`: 현재 보유 포지션과 미실현 손익 조회

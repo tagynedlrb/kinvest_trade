@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
@@ -31,6 +32,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_resume - 일시정지 해제",
         "/lab_stop - 즉시 중지 후 세션 요약",
         "/lab_terminate - 강제 종료 후 대기",
+        "/lab_service_restart - 텔레그램 제어 서비스 재시작",
         "/lab_status - 현재 상태",
         "/lab_watchlist - 감시 종목 요약",
         "/lab_positions - 보유 종목 요약",
@@ -40,6 +42,7 @@ HELP_MESSAGE = "\n".join(
 )
 
 ParsedCommand: TypeAlias = str | tuple[str, str | None]
+SERVICE_UNIT_NAME = "kinvest-telegram-control.service"
 
 
 @dataclass(slots=True)
@@ -224,6 +227,9 @@ class TelegramLiquidityLabController:
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
             await self._handle_paper_test(stock_code)
             return
+        if command_name == "service_restart":
+            await self._handle_service_restart()
+            return
         if command_name == "start":
             await self._handle_start_like_command("running", "started")
             return
@@ -278,6 +284,53 @@ class TelegramLiquidityLabController:
                 ]
             )
         )
+
+    async def _handle_service_restart(self) -> None:
+        if not self._service_restart_supported():
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][SERVICE]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        f"서비스={SERVICE_UNIT_NAME}",
+                        "상태=실패",
+                        "사유=systemd 사용자 서비스가 확인되지 않음",
+                    ]
+                )
+            )
+            return
+
+        await self.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][SERVICE]",
+                    f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                    f"서비스={SERVICE_UNIT_NAME}",
+                    "동작=재시작",
+                    "상태=요청접수",
+                ]
+            )
+        )
+        asyncio.create_task(self._restart_service_soon())
+
+    async def _restart_service_soon(self) -> None:
+        await asyncio.sleep(0.5)
+        subprocess.Popen(
+            ["systemctl", "--user", "restart", SERVICE_UNIT_NAME],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    @staticmethod
+    def _service_restart_supported() -> bool:
+        result = subprocess.run(
+            ["systemctl", "--user", "status", SERVICE_UNIT_NAME, "--no-pager"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return result.returncode == 0
 
     async def _handle_start_like_command(self, target_mode: str, verb: str) -> None:
         if self.mode == "stopped":
@@ -799,6 +852,7 @@ class TelegramLiquidityLabController:
             "/lab_resume": "resume",
             "/lab_stop": "stop",
             "/lab_terminate": "terminate",
+            "/lab_service_restart": "service_restart",
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
             "/lab_positions": "positions",

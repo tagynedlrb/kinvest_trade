@@ -16,6 +16,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_resume") == "resume"
     assert TelegramLiquidityLabController.parse_command("/lab_stop") == "stop"
     assert TelegramLiquidityLabController.parse_command("/lab_terminate") == "terminate"
+    assert TelegramLiquidityLabController.parse_command("/lab_service_restart") == "service_restart"
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_positions") == "positions"
@@ -308,3 +309,32 @@ def test_run_cycle_resets_consecutive_errors_on_success() -> None:
 
     assert controller._consecutive_errors == 0
     assert controller.last_error is None
+
+
+def test_handle_service_restart_rejects_when_service_missing() -> None:
+    controller = _build_async_controller()
+    controller._service_restart_supported = lambda: False  # type: ignore[method-assign]
+
+    asyncio.run(controller._handle_service_restart())
+
+    assert "상태=실패" in controller.notifier.messages[-1]
+
+
+def test_handle_service_restart_schedules_restart_when_service_exists() -> None:
+    controller = _build_async_controller()
+    controller._service_restart_supported = lambda: True  # type: ignore[method-assign]
+    restart_calls: list[str] = []
+
+    async def fake_restart_service_soon() -> None:
+        restart_calls.append("called")
+
+    original_create_task = telegram_control_module.asyncio.create_task
+    telegram_control_module.asyncio.create_task = lambda coro: asyncio.get_running_loop().create_task(coro)
+    controller._restart_service_soon = fake_restart_service_soon  # type: ignore[method-assign]
+    try:
+        asyncio.run(controller._handle_service_restart())
+    finally:
+        telegram_control_module.asyncio.create_task = original_create_task
+
+    assert "상태=요청접수" in controller.notifier.messages[-1]
+    assert restart_calls == ["called"]

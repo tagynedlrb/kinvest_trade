@@ -76,6 +76,16 @@ class ExcludedCandidate:
 
 
 @dataclass(slots=True)
+class VirtualPosition:
+    market: str
+    symbol: str
+    exchange_code: str | None
+    qty: int
+    avg_price: float
+    currency: str
+
+
+@dataclass(slots=True)
 class OverseasHeldPosition:
     symbol: str
     exchange_code: str
@@ -84,6 +94,7 @@ class OverseasHeldPosition:
     avg_price: float
     current_price: float
     pnl_pct: float
+    is_virtual: bool = False
 
 
 @dataclass(slots=True)
@@ -157,6 +168,165 @@ class LiquidityLabReport:
         }
 
 
+class VirtualTradeManager:
+    """
+    Keep a virtual portfolio for orders rejected by the paper environment while the
+    underlying market itself is open.
+    """
+
+    def __init__(self, repository: SqliteRepository) -> None:
+        self.repository = repository
+
+    def get_position(self, market: str, symbol: str) -> VirtualPosition | None:
+        row = self.repository.get_virtual_position(market.strip().lower(), symbol.strip().upper())
+        if row is None:
+            return None
+        return self._to_position(row)
+
+    def list_positions(self, market: str | None = None) -> list[VirtualPosition]:
+        positions = [self._to_position(row) for row in self.repository.list_virtual_positions()]
+        if market is None:
+            return positions
+        market_key = market.strip().lower()
+        return [position for position in positions if position.market == market_key]
+
+    def record_buy(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        qty: int,
+        fill_price: float,
+        currency: str,
+        session: str,
+        reason: str,
+        created_at: str,
+    ) -> VirtualPosition | None:
+        if qty <= 0 or fill_price <= 0:
+            return None
+
+        market_key = market.strip().lower()
+        symbol_key = symbol.strip().upper()
+        existing = self.get_position(market_key, symbol_key)
+        next_qty = qty if existing is None else existing.qty + qty
+        avg_price = fill_price
+        if existing is not None and next_qty > 0:
+            avg_price = (
+                existing.avg_price * existing.qty + fill_price * qty
+            ) / next_qty
+
+        self.repository.upsert_virtual_position(
+            market=market_key,
+            symbol=symbol_key,
+            exchange_code=exchange_code,
+            qty=next_qty,
+            avg_price=avg_price,
+            currency=currency,
+            opened_at=created_at,
+            updated_at=created_at,
+        )
+        self.repository.save_virtual_order(
+            created_at=created_at,
+            market=market_key,
+            symbol=symbol_key,
+            exchange_code=exchange_code,
+            side="buy",
+            qty=qty,
+            fill_price=fill_price,
+            currency=currency,
+            session=session,
+            reason=reason,
+        )
+        return self.get_position(market_key, symbol_key)
+
+    def record_sell(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        qty: int,
+        fill_price: float,
+        currency: str,
+        session: str,
+        reason: str,
+        created_at: str,
+        seed_avg_price: float | None = None,
+        seed_qty: int | None = None,
+    ) -> tuple[float, float]:
+        if qty <= 0 or fill_price <= 0:
+            return 0.0, 0.0
+
+        market_key = market.strip().lower()
+        symbol_key = symbol.strip().upper()
+        position = self.get_position(market_key, symbol_key)
+        if position is None and seed_avg_price and seed_avg_price > 0 and seed_qty and seed_qty > 0:
+            position = VirtualPosition(
+                market=market_key,
+                symbol=symbol_key,
+                exchange_code=exchange_code,
+                qty=seed_qty,
+                avg_price=seed_avg_price,
+                currency=currency,
+            )
+        if position is None or position.qty <= 0:
+            return 0.0, 0.0
+
+        sell_qty = min(qty, position.qty)
+        realized_pnl = (fill_price - position.avg_price) * sell_qty
+        realized_pnl_pct = (
+            (fill_price - position.avg_price) / position.avg_price
+            if position.avg_price > 0
+            else 0.0
+        )
+        remaining_qty = position.qty - sell_qty
+
+        if remaining_qty > 0:
+            self.repository.upsert_virtual_position(
+                market=market_key,
+                symbol=symbol_key,
+                exchange_code=exchange_code or position.exchange_code,
+                qty=remaining_qty,
+                avg_price=position.avg_price,
+                currency=position.currency,
+                opened_at=created_at,
+                updated_at=created_at,
+            )
+        else:
+            self.repository.delete_virtual_position(market_key, symbol_key)
+
+        self.repository.save_virtual_order(
+            created_at=created_at,
+            market=market_key,
+            symbol=symbol_key,
+            exchange_code=exchange_code or position.exchange_code,
+            side="sell",
+            qty=sell_qty,
+            fill_price=fill_price,
+            currency=position.currency,
+            session=session,
+            reason=reason,
+            realized_pnl=realized_pnl,
+            realized_pnl_pct=realized_pnl_pct,
+        )
+        return realized_pnl, realized_pnl_pct
+
+    def performance_summary(self) -> dict:
+        return self.repository.get_virtual_performance_summary()
+
+    @staticmethod
+    def _to_position(row: dict) -> VirtualPosition:
+        return VirtualPosition(
+            market=str(row["market"]),
+            symbol=str(row["symbol"]),
+            exchange_code=row.get("exchange_code"),
+            qty=int(row["qty"]),
+            avg_price=float(row["avg_price"]),
+            currency=str(row["currency"]),
+        )
+
+
 class LiquidityLabService:
     def __init__(
         self,
@@ -169,6 +339,7 @@ class LiquidityLabService:
         self.client = client
         self.repository = repository
         self.notifier = notifier
+        self.virtual_trades = VirtualTradeManager(repository)
         self._domestic_excluded: list[ExcludedCandidate] = []
         self._overseas_excluded: list[ExcludedCandidate] = []
         self._last_held_symbols: set[str] = set()
@@ -219,21 +390,27 @@ class LiquidityLabService:
                 overseas_ranked,
                 held_symbols_cache=held_symbols_cache,
             )
+            virtual_overseas_positions = self._load_virtual_overseas_positions(overseas_ranked)
+            monitored_overseas_positions = [
+                *overseas_positions,
+                *virtual_overseas_positions,
+            ]
         else:
             overseas_ranked = []
             overseas_positions = []
+            monitored_overseas_positions = []
         domestic_watch_targets = (
             await self._build_domestic_watch_targets(domestic_ranked, domestic_positions)
             if krx_open
             else []
         )
         overseas_watch_targets = (
-            await self._build_overseas_watch_targets(overseas_ranked, overseas_positions)
+            await self._build_overseas_watch_targets(overseas_ranked, monitored_overseas_positions)
             if us_open
             else []
         )
         overseas_exit_target = (
-            await self._select_overseas_exit_target(overseas_ranked, overseas_positions)
+            await self._select_overseas_exit_target(overseas_ranked, monitored_overseas_positions)
             if us_open
             else None
         )
@@ -338,13 +515,7 @@ class LiquidityLabService:
             and overseas_buy_target is not None
             and not us_orderable_in_profile
         ):
-            overseas_order = {
-                "skipped": True,
-                "market": "overseas",
-                "side": "buy",
-                "candidate": asdict(overseas_buy_target),
-                "reason": "session_not_orderable_in_profile",
-            }
+            overseas_order = await self._record_virtual_overseas_buy(overseas_buy_target)
         else:
             overseas_order = {
                 "skipped": True,
@@ -549,7 +720,7 @@ class LiquidityLabService:
                 candidate.exchange_code.upper()
                 for candidate in self.config.liquidity_lab.overseas_candidates
             }
-            held: set[str] = set()
+            held: set[str] = set(self._get_virtual_held_symbols())
             for exchange_code in sorted(exchange_codes):
                 balance = await self.client.get_overseas_balance(
                     exchange_code=exchange_code,
@@ -565,7 +736,17 @@ class LiquidityLabService:
             self._last_held_symbols = held
             return held
         except Exception:
-            return self._last_held_symbols
+            return self._last_held_symbols or self._get_virtual_held_symbols()
+
+    def _get_virtual_held_symbols(self) -> set[str]:
+        manager = getattr(self, "virtual_trades", None)
+        if manager is None:
+            return set()
+        return {
+            position.symbol.upper()
+            for position in manager.list_positions("overseas")
+            if position.qty > 0
+        }
 
     async def _scan_single_domestic(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
@@ -702,9 +883,43 @@ class LiquidityLabService:
                     avg_price=avg_price,
                     current_price=current_price,
                     pnl_pct=pnl_pct,
+                    is_virtual=False,
                 )
 
         return list(positions_by_key.values())
+
+    def _load_virtual_overseas_positions(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+    ) -> list[OverseasHeldPosition]:
+        manager = getattr(self, "virtual_trades", None)
+        if not overseas_ranked or manager is None:
+            return []
+
+        quote_map = {item.symbol.upper(): item for item in overseas_ranked}
+        positions: list[OverseasHeldPosition] = []
+        for position in manager.list_positions("overseas"):
+            quote = quote_map.get(position.symbol.upper())
+            if quote is None or position.qty <= 0:
+                continue
+            pnl_pct = (
+                (quote.last_price - position.avg_price) / position.avg_price
+                if position.avg_price > 0
+                else 0.0
+            )
+            positions.append(
+                OverseasHeldPosition(
+                    symbol=position.symbol.upper(),
+                    exchange_code=(position.exchange_code or quote.exchange_code).upper(),
+                    quantity=position.qty,
+                    orderable_qty=position.qty,
+                    avg_price=position.avg_price,
+                    current_price=quote.last_price,
+                    pnl_pct=pnl_pct,
+                    is_virtual=True,
+                )
+            )
+        return positions
 
     async def _load_domestic_positions(
         self,
@@ -1276,20 +1491,12 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
-            if (
-                "미국주식 주간거래는 제공하지 않습니다" in str(exc)
-                or "KIS mock currently supports US order tests only during the US regular session" in str(exc)
-            ):
-                return {
-                    "skipped": True,
-                    "market": "overseas",
-                    "side": "buy",
-                    "candidate": asdict(candidate),
-                    "signal_snapshot": asdict(signal_snapshot),
-                    "qty": qty,
-                    "reason": "mock_us_session_not_supported",
-                    "error": str(exc),
-                }
+            if self._is_mock_us_session_blocked_error(str(exc)):
+                return await self._record_virtual_overseas_buy(
+                    candidate,
+                    signal_snapshot=signal_snapshot,
+                    rejected_error=str(exc),
+                )
             return {
                 "submitted": False,
                 "market": "overseas",
@@ -1342,6 +1549,74 @@ class LiquidityLabService:
 
         return await self._place_overseas_test_order(candidate)
 
+    async def _record_virtual_overseas_buy(
+        self,
+        candidate: OverseasScanResult,
+        *,
+        signal_snapshot: MovingAverageSnapshot | None = None,
+        rejected_error: str | None = None,
+    ) -> dict:
+        qty = int(self.config.liquidity_lab.overseas_test_order_qty)
+        if qty <= 0:
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": "overseas_test_order_qty_zero",
+            }
+
+        now = datetime.now(timezone.utc)
+        session = get_us_trading_session(now)
+        created_at = format_kst(now) or now.isoformat()
+        snapshot = signal_snapshot or self._signal_cache.get(candidate.symbol.upper())
+        position = self.virtual_trades.record_buy(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            qty=qty,
+            fill_price=candidate.last_price,
+            currency="USD",
+            session=session,
+            reason="session_not_orderable_in_profile",
+            created_at=created_at,
+        )
+        if position is None:
+            return {
+                "submitted": False,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": "virtual_buy_record_failed",
+            }
+
+        lines = [
+            "[KIS][VIRTUAL_TRADE]",
+            f"시각={format_kst_korean(now)}",
+            f"시장={format_market_korean('overseas')}",
+            f"종목={candidate.symbol} (virtual)",
+            "구분=매수 (virtual)",
+            f"가격={format_usd(candidate.last_price)}",
+            f"수량={qty}주",
+            f"세션={session}",
+            "사유=거래불가 세션 가상체결",
+        ]
+        if rejected_error:
+            lines.append(f"참고={rejected_error}")
+        await self.notifier.send("\n".join(lines))
+        return {
+            "submitted": True,
+            "virtual": True,
+            "market": "overseas",
+            "side": "buy",
+            "candidate": asdict(candidate),
+            "signal_snapshot": None if snapshot is None else asdict(snapshot),
+            "qty": qty,
+            "reason": "session_not_orderable_in_profile",
+            "session": session,
+            "virtual_position": asdict(position),
+        }
+
     async def _place_overseas_sell_order(
         self,
         candidate: OverseasScanResult,
@@ -1349,6 +1624,13 @@ class LiquidityLabService:
         exit_reason: str,
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
+        if held.is_virtual:
+            return await self._record_virtual_overseas_sell(
+                candidate,
+                held,
+                exit_reason,
+                signal_snapshot=signal_snapshot,
+            )
         if self.config.credentials.dry_run:
             return {
                 "skipped": True,
@@ -1372,11 +1654,15 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
-            is_session_blocked = (
-                "미국주식 주간거래는 제공하지 않습니다" in str(exc)
-                or "KIS mock currently supports US order tests only during the US regular session" in str(exc)
-                or "does not support US daytime trading" in str(exc)
-            )
+            is_session_blocked = self._is_mock_us_session_blocked_error(str(exc))
+            if is_session_blocked and is_us_regular_session(datetime.now(timezone.utc)):
+                return await self._record_virtual_overseas_sell(
+                    candidate,
+                    held,
+                    exit_reason,
+                    signal_snapshot=signal_snapshot,
+                    rejected_error=str(exc),
+                )
             return {
                 "submitted": False,
                 "skipped": True,
@@ -1422,6 +1708,75 @@ class LiquidityLabService:
             "qty": sell_qty,
             "exit_reason": exit_reason,
             "response": response,
+        }
+
+    async def _record_virtual_overseas_sell(
+        self,
+        candidate: OverseasScanResult,
+        held: OverseasHeldPosition,
+        exit_reason: str,
+        *,
+        signal_snapshot: MovingAverageSnapshot | None = None,
+        rejected_error: str | None = None,
+    ) -> dict:
+        sell_qty = min(held.quantity, max(held.orderable_qty, 0))
+        if sell_qty <= 0:
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "reason": "no_orderable_qty",
+                "virtual": True,
+            }
+
+        now = datetime.now(timezone.utc)
+        session = get_us_trading_session(now)
+        created_at = format_kst(now) or now.isoformat()
+        realized_pnl, realized_pnl_pct = self.virtual_trades.record_sell(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            qty=sell_qty,
+            fill_price=candidate.last_price,
+            currency="USD",
+            session=session,
+            reason=exit_reason,
+            created_at=created_at,
+            seed_avg_price=None if held.is_virtual else held.avg_price,
+            seed_qty=None if held.is_virtual else held.quantity,
+        )
+
+        lines = [
+            "[KIS][VIRTUAL_TRADE]",
+            f"시각={format_kst_korean(now)}",
+            f"시장={format_market_korean('overseas')}",
+            f"종목={candidate.symbol} (virtual)",
+            "구분=매도 (virtual)",
+            f"가격={format_usd(candidate.last_price)}",
+            f"수량={sell_qty}주",
+            f"사유={format_reason_korean(exit_reason)}",
+            f"손익={format_usd(realized_pnl)}",
+            f"수익률={format_pct(realized_pnl_pct)}",
+        ]
+        if rejected_error:
+            lines.append("참고=실매도거부를 가상체결로 전환")
+        await self.notifier.send("\n".join(lines))
+        return {
+            "submitted": True,
+            "virtual": True,
+            "market": "overseas",
+            "side": "sell",
+            "candidate": asdict(candidate),
+            "held_position": asdict(held),
+            "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+            "qty": sell_qty,
+            "exit_reason": exit_reason,
+            "reason": "session_not_orderable_in_profile" if rejected_error else exit_reason,
+            "session": session,
+            "realized_pnl": realized_pnl,
+            "realized_pnl_pct": realized_pnl_pct,
         }
 
     async def _load_overseas_signal(
@@ -1581,9 +1936,17 @@ class LiquidityLabService:
         exit_setup = self._build_exit_setup(snapshot, pnl_pct, 1)
         return exit_setup.action in {"sell", "sell_partial"}, exit_setup.reason
 
+    @staticmethod
+    def _is_mock_us_session_blocked_error(message: str) -> bool:
+        return (
+            "미국주식 주간거래는 제공하지 않습니다" in message
+            or "KIS mock currently supports US order tests only during the US regular session" in message
+            or "does not support US daytime trading" in message
+        )
+
     async def _send_summary(self, report: LiquidityLabReport) -> None:
         action = self._build_action_summary(report)
-        if action["action_raw"] == "WAIT":
+        if action["action_raw"] in {"WAIT", "VIRTUAL_BUY", "VIRTUAL_SELL"}:
             return
         session_note = ""
         if report.primary_market == "overseas" and not report.us_orderable_in_profile:
@@ -1632,7 +1995,12 @@ class LiquidityLabService:
         held = order.get("held_position") or {}
         signal_snapshot = order.get("signal_snapshot") or {}
         side = str(order.get("side", "wait")).upper()
-        action = side if side not in {"HOLD", "WAIT"} else "WAIT"
+        if order.get("virtual") and side == "BUY":
+            action = "VIRTUAL_BUY"
+        elif order.get("virtual") and side == "SELL":
+            action = "VIRTUAL_SELL"
+        else:
+            action = side if side not in {"HOLD", "WAIT"} else "WAIT"
         if order.get("skipped"):
             action = "WAIT"
             if side == "BUY" and str(order.get("reason")) == "dry_run_enabled":

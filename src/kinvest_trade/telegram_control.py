@@ -10,7 +10,7 @@ from typing import TypeAlias
 
 from .client import KisRestClient
 from .config import AppConfig
-from .liquidity_lab import LiquidityLabReport, LiquidityLabService
+from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from .market_sessions import (
     determine_loop_interval_sec,
     get_us_trading_session,
@@ -36,6 +36,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_status - 현재 상태",
         "/lab_watchlist - 감시 종목 요약",
         "/lab_positions - 보유 종목 요약",
+        "/lab_virtual - 가상 포트폴리오 요약",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
     ]
@@ -51,6 +52,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_status", "description": "현재 상태 조회"},
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_positions", "description": "보유 종목 요약"},
+    {"command": "lab_virtual", "description": "가상 거래 성과 보기"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
 ]
@@ -242,6 +244,9 @@ class TelegramLiquidityLabController:
             return
         if command_name == "positions":
             await self._send_positions_message()
+            return
+        if command_name == "virtual":
+            await self._send_virtual_portfolio_message()
             return
         if command_name == "paper_test":
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -641,6 +646,49 @@ class TelegramLiquidityLabController:
     async def _send_positions_message(self) -> None:
         await self.notifier.send(self._build_positions_message())
 
+    def _build_virtual_portfolio_message(self) -> str:
+        manager = VirtualTradeManager(self.repository)
+        positions = manager.list_positions()
+        summary = manager.performance_summary()
+        now = datetime.now(timezone.utc)
+        lines = [
+            "[KIS][VIRTUAL_PORTFOLIO]",
+            f"시각={format_kst_korean(now)}",
+        ]
+
+        lines.append("--- 보유 종목 (virtual) ---")
+        if not positions:
+            lines.append("보유종목=없음")
+        else:
+            for position in positions:
+                market = format_market_korean(position.market)
+                price_text = self._format_price(position.avg_price, position.currency)
+                symbol_label = f"{position.symbol} (virtual)"
+                lines.append(
+                    f"{market} {symbol_label} 수량={position.qty} 평균단가={price_text}"
+                )
+
+        lines.append("--- 누적 성과 (virtual) ---")
+        if not summary:
+            lines.append("성과=없음")
+        else:
+            for key in sorted(summary):
+                item = summary[key]
+                market = format_market_korean(str(item.get("market", "overseas")))
+                currency = str(item.get("currency", "USD"))
+                trade_count = int(item.get("trade_count", 0) or 0)
+                win_count = int(item.get("win_count", 0) or 0)
+                total_pnl = float(item.get("total_pnl", 0.0) or 0.0)
+                win_rate = (win_count / trade_count) if trade_count > 0 else 0.0
+                pnl_text = self._format_price(total_pnl, currency)
+                lines.append(
+                    f"{market} 체결={trade_count} 승률={format_pct(win_rate)} 실현손익={pnl_text}"
+                )
+        return "\n".join(lines)
+
+    async def _send_virtual_portfolio_message(self) -> None:
+        await self.notifier.send(self._build_virtual_portfolio_message())
+
     def _accumulate_session_performance(self, report: LiquidityLabReport) -> None:
         perf = self.session_performance
         if perf.started_at is None:
@@ -897,6 +945,7 @@ class TelegramLiquidityLabController:
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
             "/lab_positions": "positions",
+            "/lab_virtual": "virtual",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",

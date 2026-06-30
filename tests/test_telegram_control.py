@@ -6,7 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import kinvest_trade.telegram_control as telegram_control_module
-from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService
+from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
+from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.telegram_control import (
     BOT_COMMANDS,
     SessionPerformance,
@@ -24,6 +25,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_positions") == "positions"
+    assert TelegramLiquidityLabController.parse_command("/lab_virtual") == "virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test") == ("paper_test", None)
     assert TelegramLiquidityLabController.parse_command("/lab_help") == "help"
@@ -124,6 +126,60 @@ def test_build_positions_message_returns_none_when_no_positions() -> None:
     message = controller._build_positions_message()
 
     assert "보유종목=없음" in message
+
+
+def test_build_virtual_portfolio_message_formats_positions_and_summary(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_virtual.db")
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 19:55:00 KST",
+    )
+    manager.record_sell(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=21.0,
+        currency="USD",
+        session="premarket",
+        reason="take_profit",
+        created_at="2026-06-30 20:05:00 KST",
+    )
+    manager.record_buy(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=2,
+        fill_price=200.0,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 20:10:00 KST",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_virtual_portfolio_message()
+
+    assert "[KIS][VIRTUAL_PORTFOLIO]" in message
+    assert "AAPL (virtual) 수량=2 평균단가=$200.0000" in message
+    assert "해외 체결=1 승률=+100.00% 실현손익=$1.0000" in message
 
 
 def test_format_watch_target_line_includes_pnl_when_holding() -> None:

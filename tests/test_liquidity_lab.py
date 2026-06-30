@@ -1,4 +1,6 @@
 import asyncio
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import kinvest_trade.liquidity_lab as liquidity_lab_module
@@ -9,9 +11,11 @@ from kinvest_trade.liquidity_lab import (
     LiquidityLabReport,
     OverseasHeldPosition,
     OverseasScanResult,
+    VirtualTradeManager,
     WatchTargetStatus,
 )
 from kinvest_trade.client import KisApiError
+from kinvest_trade.repository import SqliteRepository
 
 
 def test_select_primary_target_reports_mock_daytime_limit() -> None:
@@ -306,6 +310,10 @@ class DummyNotifier:
         self.messages.append(message)
 
 
+def _build_repository() -> SqliteRepository:
+    return SqliteRepository(Path(tempfile.mkdtemp()) / "liquidity_lab_test.db")
+
+
 class DummySellClient:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
@@ -342,7 +350,10 @@ def _build_sell_service(*, dry_run: bool = False, error: Exception | None = None
         },
     )()
     service.client = DummySellClient(error=error)
+    service.repository = _build_repository()
+    service.virtual_trades = VirtualTradeManager(service.repository)
     service.notifier = DummyNotifier()
+    service._signal_cache = {}
     return service
 
 
@@ -416,7 +427,7 @@ def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
     assert service.notifier.messages == []
 
 
-def test_overseas_sell_rejected_marks_skipped_true() -> None:
+def test_overseas_sell_rejected_converts_to_virtual_trade() -> None:
     service = _build_sell_service(
         error=KisApiError("KIS mock does not support US daytime trading for this session")
     )
@@ -445,12 +456,13 @@ def test_overseas_sell_rejected_marks_skipped_true() -> None:
 
     result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
 
-    assert result["submitted"] is False
-    assert result["skipped"] is True
+    assert result["submitted"] is True
+    assert result["virtual"] is True
     assert result["reason"] == "session_not_orderable_in_profile"
+    assert service.virtual_trades.performance_summary()["overseas_USD"]["trade_count"] == 1
 
 
-def test_overseas_sell_rejected_does_not_send_lab_sell_notification() -> None:
+def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
     service = _build_sell_service(
         error=KisApiError("KIS mock does not support US daytime trading for this session")
     )
@@ -479,8 +491,8 @@ def test_overseas_sell_rejected_does_not_send_lab_sell_notification() -> None:
 
     result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
 
-    assert result["submitted"] is False
-    assert service.notifier.messages == []
+    assert result["submitted"] is True
+    assert any("[KIS][VIRTUAL_TRADE]" in message for message in service.notifier.messages)
 
 
 def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
@@ -597,7 +609,10 @@ def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | No
         },
     )()
     service.client = DummyDomesticSellClient(error=error)
+    service.repository = _build_repository()
+    service.virtual_trades = VirtualTradeManager(service.repository)
     service.notifier = DummyNotifier()
+    service._signal_cache = {}
     return service
 
 
@@ -749,6 +764,8 @@ def _build_run_service() -> LiquidityLabService:
             domestic_candidates=[],
             overseas_candidates=[],
             overseas_scan_top_n=3,
+            overseas_test_order_qty=1,
+            overseas_max_position_qty=3,
         ),
         auto_trade=SimpleNamespace(
             daily_fast_window=20,
@@ -758,7 +775,8 @@ def _build_run_service() -> LiquidityLabService:
         ),
     )
     service.client = object()
-    service.repository = object()
+    service.repository = _build_repository()
+    service.virtual_trades = VirtualTradeManager(service.repository)
     service.notifier = DummyNotifier()
     service._domestic_excluded = []
     service._overseas_excluded = []
@@ -767,7 +785,7 @@ def _build_run_service() -> LiquidityLabService:
     return service
 
 
-def test_overseas_buy_not_attempted_when_session_not_orderable() -> None:
+def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None:
     service = _build_run_service()
     candidate = OverseasScanResult(
         symbol="SMCI",
@@ -844,7 +862,8 @@ def test_overseas_buy_not_attempted_when_session_not_orderable() -> None:
 
     assert report.primary_market == "overseas"
     assert report.primary_selection_reason == "watchlist_wait"
-    assert report.overseas_order["skipped"] is True
+    assert report.overseas_order["submitted"] is True
+    assert report.overseas_order["virtual"] is True
     assert report.overseas_order["reason"] == "session_not_orderable_in_profile"
     assert manage_calls == []
 
@@ -1059,3 +1078,136 @@ def test_send_summary_sends_message_for_sell_rejected() -> None:
     assert len(service.notifier.messages) == 1
     assert "동작=매도거부" in service.notifier.messages[0]
     assert "참고=주문이 거부되어 실제로 체결되지 않았습니다" in service.notifier.messages[0]
+
+
+def test_overseas_buy_stays_skipped_when_market_closed() -> None:
+    service = _build_run_service()
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    liquidity_lab_module.get_us_trading_session = lambda now: "closed"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.primary_selection_reason == "no_supported_market_open"
+    assert report.overseas_order["skipped"] is True
+    assert service.virtual_trades.list_positions("overseas") == []
+
+
+def test_virtual_overseas_sell_uses_existing_virtual_position() -> None:
+    service = _build_sell_service()
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 19:55:00 KST",
+    )
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=21.0,
+        bid=20.95,
+        ask=21.05,
+        spread_pct=0.0001,
+        change_rate_pct=0.9,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=12.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=20.0,
+        current_price=21.0,
+        pnl_pct=0.05,
+        is_virtual=True,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+
+    assert result["submitted"] is True
+    assert result["virtual"] is True
+    assert service.virtual_trades.get_position("overseas", "SOXL") is None
+    assert any("구분=매도 (virtual)" in message for message in service.notifier.messages)
+
+
+def test_virtual_buy_does_not_touch_real_broker_balance() -> None:
+    class BalanceForbiddenClient:
+        async def get_overseas_balance(self, *args, **kwargs):
+            raise AssertionError("real broker balance should not be called")
+
+    service = _build_run_service()
+    service.client = BalanceForbiddenClient()
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=20.0,
+        bid=19.99,
+        ask=20.01,
+        spread_pct=0.0001,
+        change_rate_pct=1.2,
+        volume=2_000_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=15.0,
+    )
+
+    result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+
+    assert result["submitted"] is True
+    assert result["virtual"] is True
+    assert service.virtual_trades.get_position("overseas", "SOXL") is not None
+
+
+def test_send_summary_skips_virtual_trade_messages() -> None:
+    service = _build_run_service()
+    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
+        "action_raw": "VIRTUAL_BUY",
+        "action": "매수",
+        "price": "$41.0000",
+        "qty": "1",
+        "indicator": "RSI 61.0",
+        "reason": "거래불가 세션 가상체결",
+    }
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:37:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="overseas",
+        primary_target="SMCI",
+        primary_selection_reason="watchlist_wait",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []

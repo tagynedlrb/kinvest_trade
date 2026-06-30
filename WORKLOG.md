@@ -1,6 +1,14 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 17
+- 모의투자가 미국 extended session 주문을 거부할 때 별도 저장소에 가상 체결을 남기는 `virtual_positions`, `virtual_orders` 스키마와 `VirtualTradeManager`를 추가
+- `liquidity_lab`가 미국장이 열려 있으나 `vps` 환경에서 주문 불가한 경우 실제 주문 대신 `(virtual)` 매수/매도를 기록하고 `[KIS][VIRTUAL_TRADE]` 텔레그램 알림을 보내도록 확장
+- 가상 포트폴리오는 실제 브로커 잔고와 분리해 유지하고, 전략 판단에서는 가상 보유분도 exit/watch 대상에 포함되도록 연결
+- 텔레그램 컨트롤러에 `/lab_virtual` 명령과 메뉴 등록을 추가해 가상 포트폴리오 보유 현황, 누적 체결 수, 승률, 실현손익을 즉시 조회할 수 있게 함
+- README에 거래불가 세션의 가상 체결 정책과 `/lab_virtual` 사용법을 문서화
+- `tests/test_virtual_trades.py`를 새로 추가하고, `tests/test_liquidity_lab.py`, `tests/test_telegram_control.py`를 가상 체결 흐름 기준으로 확장
+
 ### 추가 개선 15
 - `TelegramNotifier`에 `set_commands()`를 추가해 텔레그램 Bot API `setMyCommands` 호출을 지원하도록 확장
 - `telegram_control.py`에 `BOT_COMMANDS` 상수를 추가하고, 서비스 시작 시 `setMyCommands`를 1회 호출해 슬래시 자동완성 및 메뉴 명령 목록이 항상 등록되도록 변경

@@ -14,7 +14,9 @@ class SqliteRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -114,6 +116,34 @@ class SqliteRepository:
                     opened_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (run_id, stock_code)
+                );
+
+                CREATE TABLE IF NOT EXISTS virtual_positions (
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    qty INTEGER NOT NULL,
+                    avg_price REAL NOT NULL,
+                    currency TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (market, symbol)
+                );
+
+                CREATE TABLE IF NOT EXISTS virtual_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    side TEXT NOT NULL,
+                    qty INTEGER NOT NULL,
+                    fill_price REAL NOT NULL,
+                    currency TEXT NOT NULL,
+                    session TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    realized_pnl REAL NOT NULL DEFAULT 0,
+                    realized_pnl_pct REAL NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS indicator_checks (
@@ -512,12 +542,123 @@ class SqliteRepository:
 
     def get_paper_positions(self, run_id: int) -> list[dict]:
         with self._connect() as conn:
-            conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM paper_positions WHERE run_id = ? ORDER BY stock_code",
                 (run_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_virtual_position(
+        self,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        qty: int,
+        avg_price: float,
+        currency: str,
+        opened_at: str,
+        updated_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO virtual_positions
+                    (market, symbol, exchange_code, qty, avg_price, currency, opened_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(market, symbol) DO UPDATE SET
+                    qty = excluded.qty,
+                    avg_price = excluded.avg_price,
+                    exchange_code = excluded.exchange_code,
+                    updated_at = excluded.updated_at
+                """,
+                (market, symbol, exchange_code, qty, avg_price, currency, opened_at, updated_at),
+            )
+
+    def delete_virtual_position(self, market: str, symbol: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM virtual_positions WHERE market = ? AND symbol = ?",
+                (market, symbol),
+            )
+
+    def get_virtual_position(self, market: str, symbol: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM virtual_positions WHERE market = ? AND symbol = ?",
+                (market, symbol),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_virtual_positions(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM virtual_positions ORDER BY opened_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_virtual_order(
+        self,
+        *,
+        created_at: str,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        side: str,
+        qty: int,
+        fill_price: float,
+        currency: str,
+        session: str,
+        reason: str,
+        realized_pnl: float = 0.0,
+        realized_pnl_pct: float = 0.0,
+    ) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO virtual_orders
+                    (created_at, market, symbol, exchange_code, side, qty,
+                     fill_price, currency, session, reason, realized_pnl, realized_pnl_pct)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    market,
+                    symbol,
+                    exchange_code,
+                    side,
+                    qty,
+                    fill_price,
+                    currency,
+                    session,
+                    reason,
+                    realized_pnl,
+                    realized_pnl_pct,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_virtual_orders(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM virtual_orders ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_virtual_performance_summary(self) -> dict:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT market, currency,
+                       COUNT(*) AS trade_count,
+                       SUM(realized_pnl) AS total_pnl,
+                       SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS win_count
+                FROM virtual_orders
+                WHERE side = 'sell'
+                GROUP BY market, currency
+                """
+            ).fetchall()
+        return {f"{row['market']}_{row['currency']}": dict(row) for row in rows}
 
     def get_latest_quotes_for_run(self, run_id: int) -> dict[str, dict]:
         with self._connect() as conn:

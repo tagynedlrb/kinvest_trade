@@ -1071,25 +1071,17 @@ def test_send_summary_skips_when_action_raw_is_wait() -> None:
     assert service.notifier.messages == []
 
 
-def test_send_summary_sends_when_action_raw_is_buy() -> None:
+def test_send_summary_skips_when_overseas_sell_already_notified() -> None:
     service = _build_run_service()
-    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
-        "action_raw": "BUY",
-        "action": "매수",
-        "price": "$41.0000",
-        "qty": "1",
-        "indicator": "RSI 61.0, 거래량 2.5x",
-        "reason": "거래량 돌파 진입",
-    }
     report = LiquidityLabReport(
         scanned_at="2026-06-30 20:00:00 KST",
         krx_market_open=False,
         us_market_open=True,
-        us_market_session="daytime",
-        us_orderable_in_profile=False,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
         primary_market="overseas",
-        primary_target="SMCI",
-        primary_selection_reason="watchlist_wait",
+        primary_target="NVDA",
+        primary_selection_reason="existing_position_stop_loss",
         domestic_ranked=[],
         overseas_ranked=[],
         domestic_excluded=[],
@@ -1100,13 +1092,129 @@ def test_send_summary_sends_when_action_raw_is_buy() -> None:
         estimated_api_calls_per_cycle=0,
         paper_run=None,
         domestic_order=None,
-        overseas_order=None,
+        overseas_order={
+            "submitted": True,
+            "already_notified": True,
+            "side": "sell",
+            "candidate": {"symbol": "NVDA", "last_price": 196.96},
+            "qty": 1,
+            "exit_reason": "stop_loss",
+        },
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
+
+
+def test_send_summary_still_sends_when_overseas_buy_not_pre_notified() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:00:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target="SMCI",
+        primary_selection_reason="watchlist_buy_signal",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order={
+            "submitted": True,
+            "side": "buy",
+            "candidate": {"symbol": "SMCI", "last_price": 41.0},
+            "qty": 1,
+            "reason": "volume_breakout_entry",
+        },
     )
 
     asyncio.run(service._send_summary(report))
 
     assert len(service.notifier.messages) == 1
-    assert "시장=해외 (거래불가 세션)" in service.notifier.messages[0]
+    assert "종목=SMCI" in service.notifier.messages[0]
+    assert "동작=매수" in service.notifier.messages[0]
+
+
+def test_send_summary_skips_when_domestic_buy_already_notified() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 10:00:00 KST",
+        krx_market_open=True,
+        us_market_open=False,
+        us_market_session="closed",
+        us_orderable_in_profile=False,
+        primary_market="domestic",
+        primary_target="005930",
+        primary_selection_reason="watchlist_buy_signal",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order={
+            "submitted": True,
+            "already_notified": True,
+            "side": "buy",
+            "candidate": {"stock_code": "005930", "current_price": 82000},
+            "qty": 1,
+            "reason": "volume_breakout_entry",
+        },
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
+
+
+def test_send_summary_skips_when_domestic_sell_already_notified() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 10:05:00 KST",
+        krx_market_open=True,
+        us_market_open=False,
+        us_market_session="closed",
+        us_orderable_in_profile=False,
+        primary_market="domestic",
+        primary_target="005930",
+        primary_selection_reason="existing_position_stop_loss",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order={
+            "submitted": True,
+            "already_notified": True,
+            "side": "sell",
+            "candidate": {"stock_code": "005930", "current_price": 82000},
+            "held_position": {"quantity": 1, "avg_price": 80000, "pnl_pct": 0.025},
+            "qty": 1,
+            "exit_reason": "stop_loss",
+        },
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
 
 
 def test_format_order_summary_sell_rejected_returns_sell_rejected_action() -> None:
@@ -1487,3 +1595,96 @@ def test_repeated_cycles_do_not_duplicate_virtual_sell() -> None:
         if row["symbol"] == "NVDA" and row["side"] == "sell"
     ]
     assert len(sell_orders) == 1
+
+
+def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None:
+    service = _build_run_service()
+    candidate = OverseasScanResult(
+        symbol="AMD",
+        exchange_code="NASD",
+        last_price=155.5,
+        bid=155.4,
+        ask=155.6,
+        spread_pct=0.0013,
+        change_rate_pct=-1.2,
+        volume=1_200_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=15.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="AMD",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=160.0,
+        current_price=155.5,
+        pnl_pct=-0.0281,
+    )
+
+    async def fake_scan_overseas():
+        return [candidate], {"AMD"}
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return [held]
+
+    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+        return []
+
+    async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
+        return candidate, held, "stop_loss", None
+
+    async def fake_place_overseas_sell_order(candidate, held, exit_reason, signal_snapshot=None):
+        await service.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][LAB_SELL]",
+                    "시각=6월 30일 22:30",
+                    "시장=해외",
+                    f"종목={candidate.symbol}",
+                    "구분=매도",
+                    f"가격=${candidate.last_price:.4f}",
+                    "수량=1주",
+                    "사유=손절",
+                ]
+            )
+        )
+        return {
+            "submitted": True,
+            "already_notified": True,
+            "market": "overseas",
+            "side": "sell",
+            "candidate": {"symbol": candidate.symbol, "last_price": candidate.last_price},
+            "held_position": {"quantity": held.quantity, "avg_price": held.avg_price, "pnl_pct": held.pnl_pct},
+            "qty": 1,
+            "exit_reason": exit_reason,
+        }
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
+    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
+    service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.overseas_order["submitted"] is True
+    assert len(service.notifier.messages) == 1
+    assert service.notifier.messages[0].startswith("[KIS][LAB_SELL]")

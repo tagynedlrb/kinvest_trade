@@ -1,6 +1,13 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 21
+- `liquidity_lab.py`의 `_send_summary()`가 사이클 말미에 다시 한 번 체결 요약을 보내며 생기던 중복 알림을 수정
+- 실시간 체결 시점에 이미 텔레그램 알림을 보낸 경로(국내 매수, 국내 매도, 해외 매도, 가상 매수/매도)는 반환값에 `already_notified=True`를 담고, `_send_summary()`는 이 플래그를 보면 추가 요약 발송을 건너뛰도록 정리
+- 실해외 매수처럼 체결 함수 내부에서 즉시 알림을 보내지 않는 경로는 그대로 `_send_summary()`가 1회만 통보하도록 유지
+- `SELL_REJECTED`는 여전히 `_send_summary()`가 유일한 통보 경로이므로 기존처럼 발송되도록 유지
+- `tests/test_liquidity_lab.py`에 국내/해외 실거래 중복 차단, 해외 매수 단일 통보 유지, 거부 매도 유지, 전체 `run()` 경로에서 실매도 1건당 알림 1회만 남는 회귀 방지 테스트를 추가
+
 ### 추가 개선 20
 - `auto_trade` 기본 라벨을 `FIXED_SYMBOL_MOMENTUM`으로 바꾸고, 고정종목 기본 예시를 `SOXL/AMEX`에서 `NVDA/NASD`로 일반화
 - `SoxlAutoTrader` 클래스명을 `FixedSymbolAutoTrader`로 바꿔 고정 1종목 전략이 특정 ETF 전용처럼 보이던 오해를 제거

@@ -1741,6 +1741,7 @@ class LiquidityLabService:
         )
         return {
             "submitted": True,
+            "already_notified": True,
             "market": "domestic",
             "side": "buy",
             "candidate": asdict(candidate),
@@ -1812,6 +1813,7 @@ class LiquidityLabService:
 
         return {
             "submitted": True,
+            "already_notified": True,
             "market": "domestic",
             "side": "sell",
             "candidate": asdict(candidate),
@@ -2061,6 +2063,7 @@ class LiquidityLabService:
         await self.notifier.send("\n".join(lines))
         return {
             "submitted": True,
+            "already_notified": True,
             "virtual": True,
             "market": "overseas",
             "side": "buy",
@@ -2230,6 +2233,7 @@ class LiquidityLabService:
 
         return {
             "submitted": True,
+            "already_notified": True,
             "market": "overseas",
             "side": "sell",
             "candidate": asdict(candidate),
@@ -2324,6 +2328,7 @@ class LiquidityLabService:
         await self.notifier.send("\n".join(lines))
         return {
             "submitted": True,
+            "already_notified": True,
             "virtual": True,
             "market": "overseas",
             "side": "sell",
@@ -2581,6 +2586,19 @@ class LiquidityLabService:
     async def _send_summary(self, report: LiquidityLabReport) -> None:
         action = self._build_action_summary(report)
         if action["action_raw"] in {"WAIT", "VIRTUAL_BUY", "VIRTUAL_SELL"}:
+            return
+        overseas_order = report.overseas_order or {}
+        domestic_order = report.domestic_order or {}
+        submitted_order = (
+            overseas_order
+            if overseas_order.get("submitted")
+            else domestic_order
+            if domestic_order.get("submitted")
+            else None
+        )
+        # Some execution paths already send an immediate fill notification.
+        # Skip the cycle-end summary for those paths so each trade is reported once.
+        if submitted_order and submitted_order.get("already_notified"):
             return
         session_note = ""
         if report.primary_market == "overseas" and not report.us_orderable_in_profile:

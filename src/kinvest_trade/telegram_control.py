@@ -41,6 +41,20 @@ HELP_MESSAGE = "\n".join(
     ]
 )
 
+BOT_COMMANDS: list[dict[str, str]] = [
+    {"command": "lab_start", "description": "거래 루프 시작"},
+    {"command": "lab_pause", "description": "사이클 종료 후 일시정지"},
+    {"command": "lab_resume", "description": "일시정지 해제"},
+    {"command": "lab_stop", "description": "즉시 중지 후 세션 요약"},
+    {"command": "lab_terminate", "description": "강제 종료 후 대기"},
+    {"command": "lab_service_restart", "description": "제어 서비스 재시작"},
+    {"command": "lab_status", "description": "현재 상태 조회"},
+    {"command": "lab_watchlist", "description": "감시 종목 요약"},
+    {"command": "lab_positions", "description": "보유 종목 요약"},
+    {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
+    {"command": "lab_help", "description": "명령 목록 보기"},
+]
+
 ParsedCommand: TypeAlias = str | tuple[str, str | None]
 SERVICE_UNIT_NAME = "kinvest-telegram-control.service"
 
@@ -143,6 +157,10 @@ class TelegramLiquidityLabController:
             raise RuntimeError("Telegram bot token/chat id are required for telegram-control.")
         self._restore_runtime_state()
         self._write_runtime_state()
+        try:
+            await self.notifier.set_commands(BOT_COMMANDS)
+        except Exception:  # noqa: BLE001
+            pass
         await self.notifier.send(
             "\n".join(
                 [
@@ -250,7 +268,14 @@ class TelegramLiquidityLabController:
     async def _handle_paper_test(self, stock_code: str | None) -> None:
         if not stock_code:
             await self.notifier.send(
-                "[KIS][PAPER_TEST]\n실행실패=종목코드를 함께 보내주세요\n예시=/lab_paper_test 005930"
+                "\n".join(
+                    [
+                        "[KIS][PAPER_TEST]",
+                        "실행실패=종목코드를 함께 보내주세요",
+                        "예시=/lab_paper_test 005930",
+                        "참고=메뉴에서 누르면 종목코드가 빠지니 직접 입력해주세요",
+                    ]
+                )
             )
             return
 

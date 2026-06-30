@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 import kinvest_trade.telegram_control as telegram_control_module
 from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService
 from kinvest_trade.telegram_control import (
+    BOT_COMMANDS,
     SessionPerformance,
     TelegramLiquidityLabController,
 )
@@ -238,10 +240,18 @@ def test_liquidity_lab_send_summary_sends_when_action_raw_is_buy() -> None:
 class DummyNotifier:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.command_calls: list[list[dict[str, str]]] = []
+        self.raise_on_set_commands = False
         self.enabled = True
 
     async def send(self, message: str) -> None:
         self.messages.append(message)
+
+    async def set_commands(self, commands: list[dict[str, str]]) -> bool:
+        self.command_calls.append(commands)
+        if self.raise_on_set_commands:
+            raise RuntimeError("setMyCommands failed")
+        return True
 
 
 class DummyRepository:
@@ -439,3 +449,47 @@ def test_handle_service_restart_schedules_restart_when_service_exists() -> None:
 
     assert "상태=요청접수" in controller.notifier.messages[-1]
     assert restart_calls == ["called"]
+
+
+def test_run_calls_set_commands_before_start_message() -> None:
+    controller = _build_async_controller()
+
+    async def fake_scheduler_loop() -> None:
+        raise asyncio.CancelledError
+
+    async def fake_command_loop() -> None:
+        raise asyncio.CancelledError
+
+    controller._scheduler_loop = fake_scheduler_loop  # type: ignore[method-assign]
+    controller._command_loop = fake_command_loop  # type: ignore[method-assign]
+
+    asyncio.run(controller.run())
+
+    assert controller.notifier.command_calls == [BOT_COMMANDS]
+    assert controller.notifier.messages[0].startswith("[KIS][TELEGRAM_CONTROL_START]")
+
+
+def test_run_continues_when_set_commands_raises() -> None:
+    controller = _build_async_controller()
+    controller.notifier.raise_on_set_commands = True
+
+    async def fake_scheduler_loop() -> None:
+        raise asyncio.CancelledError
+
+    async def fake_command_loop() -> None:
+        raise asyncio.CancelledError
+
+    controller._scheduler_loop = fake_scheduler_loop  # type: ignore[method-assign]
+    controller._command_loop = fake_command_loop  # type: ignore[method-assign]
+
+    asyncio.run(controller.run())
+
+    assert controller.notifier.command_calls == [BOT_COMMANDS]
+    assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)
+
+
+def test_bot_commands_all_match_telegram_naming_rules() -> None:
+    pattern = re.compile(r"^[a-z0-9_]{1,32}$")
+
+    for command in BOT_COMMANDS:
+        assert pattern.fullmatch(command["command"]) is not None

@@ -32,6 +32,19 @@ class TelegramNotifier:
             response.raise_for_status()
         return True
 
+    async def set_commands(self, commands: list[dict[str, str]]) -> bool:
+        if not self.enabled:
+            return False
+
+        url = self._api_url("setMyCommands")
+        payload = {"commands": commands}
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            body = response.json()
+        return bool(body.get("ok"))
+
     async def get_updates(
         self,
         *,

@@ -198,6 +198,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 ```
 
 서비스로 올려두면 `liquidity-lab` 테스트가 끝난 뒤에도 컨트롤러는 계속 살아 있고, 텔레그램 명령만 보내면 다시 수행할 수 있다.
+서비스가 시작되면 텔레그램 `setMyCommands`도 함께 등록되어, 채팅창에서 `/`를 입력했을 때 자동완성 목록과 메뉴 버튼 명령 목록이 보이도록 설정된다.
 
 지원 명령:
 - `/lab_start`: 즉시 루프 시작
@@ -211,6 +212,9 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_positions`: 현재 보유 포지션과 미실현 손익 조회
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
+
+메뉴 메모:
+- `/lab_paper_test`는 텔레그램 메뉴에서 누르면 종목코드 없이 들어오므로, 실제 실행할 때는 `/lab_paper_test 005930`처럼 직접 종목코드를 덧붙여 입력해야 한다.
 
 동작 메모:
 - `중지(stop)`는 루프를 멈추지만 컨트롤러 프로세스는 살아 있다.

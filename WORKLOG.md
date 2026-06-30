@@ -1,6 +1,14 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 15
+- `TelegramNotifier`에 `set_commands()`를 추가해 텔레그램 Bot API `setMyCommands` 호출을 지원하도록 확장
+- `telegram_control.py`에 `BOT_COMMANDS` 상수를 추가하고, 서비스 시작 시 `setMyCommands`를 1회 호출해 슬래시 자동완성 및 메뉴 명령 목록이 항상 등록되도록 변경
+- 명령 메뉴 등록 실패는 서비스 기동을 막지 않도록 `run()`에서 예외를 삼키고 계속 START 메시지를 보내도록 처리
+- `/lab_paper_test`를 메뉴에서 눌렀을 때 인자 없이 들어오는 상황을 고려해 안내 문구에 `직접 종목코드를 입력해달라`는 설명을 추가
+- `tests/test_notifier.py`를 새로 추가하고, `setMyCommands` payload/반환값/disabled 동작을 검증
+- `tests/test_telegram_control.py`에 `set_commands` 호출 순서, 예외 무시, 텔레그램 명령명 규칙 검증 테스트를 추가
+
 ### 추가 개선 14
 - 해외/국내 매도 주문이 KIS에서 거부될 때 `submitted=False`만 반환하고 `skipped=True`가 빠져 성공처럼 `동작=매도`로 보이던 문제를 수정
 - `_place_overseas_sell_order()`는 daytime/mock 세션 거부를 `session_not_orderable_in_profile`로, 그 외 거부는 `order_rejected`로 분리해 반환하도록 보강

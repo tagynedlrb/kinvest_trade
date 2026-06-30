@@ -11,6 +11,9 @@
 - 재시작 후 `telegram getUpdates offset`가 초기화되며 같은 `/lab_service_restart` 명령을 다시 읽어 무한 재시작 루프에 들어가는 문제를 수정
 - `state/runtime_state.json`에 `telegram_update_offset`를 저장하고, 서비스 시작 시 복구하도록 변경
 - `message_format.py`와 `format_kst_korean()`을 도입해 `liquidity_lab`, `auto_trader`, `telegram_control` 알림을 한국어/KST 중심의 짧은 형식으로 단순화
+- 해외 mock 계정이 거래 불가한 daytime/premarket 세션에서도 `overseas_buy_target`이 있으면 매수 시도를 하던 버그를 수정해, 이제 `us_orderable_in_profile=False`일 때는 `session_not_orderable_in_profile`로 건너뛰도록 변경
+- 반대로 보유 해외 포지션 청산 후보는 `us_orderable_in_profile`와 무관하게 계산하고 매도 시도 경로를 유지하도록 보강
+- `liquidity_lab` 요약 메시지의 WAIT 비교를 한글 `대기`가 아닌 `action_raw` 원본 값 기준으로 바꿔, 대기 상태 알림이 매 사이클 반복 발송되던 문제를 수정
 - `tests/test_message_format.py`를 새로 추가하고, 국내 매도/국내 잔고/새 텔레그램 메시지 포맷에 맞춰 관련 테스트를 확장
 
 ### 검증 결과

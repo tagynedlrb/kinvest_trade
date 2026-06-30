@@ -234,7 +234,7 @@ class LiquidityLabService:
         )
         overseas_exit_target = (
             await self._select_overseas_exit_target(overseas_ranked, overseas_positions)
-            if us_orderable_in_profile
+            if us_open
             else None
         )
         domestic_exit_target = (
@@ -324,11 +324,27 @@ class LiquidityLabService:
                 exit_reason,
                 signal_snapshot=exit_signal,
             )
-        elif primary_market == "overseas" and overseas_buy_target is not None:
+        elif (
+            primary_market == "overseas"
+            and overseas_buy_target is not None
+            and us_orderable_in_profile
+        ):
             overseas_order = await self._manage_overseas_position(
                 candidate=overseas_buy_target,
                 held_positions=overseas_positions,
             )
+        elif (
+            primary_market == "overseas"
+            and overseas_buy_target is not None
+            and not us_orderable_in_profile
+        ):
+            overseas_order = {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(overseas_buy_target),
+                "reason": "session_not_orderable_in_profile",
+            }
         else:
             overseas_order = {
                 "skipped": True,
@@ -1547,12 +1563,15 @@ class LiquidityLabService:
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:
         action = self._build_action_summary(report)
-        if action["action"] == "WAIT":
+        if action["action_raw"] == "WAIT":
             return
+        session_note = ""
+        if report.primary_market == "overseas" and not report.us_orderable_in_profile:
+            session_note = " (거래불가 세션)"
         lines = [
             "[KIS][LIQUIDITY_LAB]",
             f"시각={self._format_report_time(report.scanned_at)}",
-            f"시장={format_market_korean(report.primary_market)}",
+            f"시장={format_market_korean(report.primary_market)}{session_note}",
             f"종목={report.primary_target or '-'}",
             f"동작={action['action']}",
             f"가격={action['price']}",
@@ -1578,7 +1597,8 @@ class LiquidityLabService:
         ):
             return self._format_order_summary(domestic_order, currency="KRW")
         return {
-            "action": "WAIT",
+            "action_raw": "WAIT",
+            "action": format_side_korean("WAIT"),
             "price": "-",
             "qty": "-",
             "indicator": "-",
@@ -1625,6 +1645,7 @@ class LiquidityLabService:
             price = f"{int(float(price_value)):,}원"
 
         return {
+            "action_raw": action,
             "action": format_side_korean(action),
             "price": price,
             "qty": str(qty_value),

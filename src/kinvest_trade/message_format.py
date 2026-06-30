@@ -66,6 +66,7 @@ REASON_KOREAN_MAP = {
     "signal_unavailable": "신호 부족",
     "trend_holding": "추세 보유",
     "paper_test_removed_for_speed": "속도 개선으로 페이퍼 테스트 생략",
+    "session_not_orderable_in_profile": "현재 계정에서 거래 불가한 세션",
 }
 
 

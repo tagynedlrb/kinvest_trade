@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import kinvest_trade.telegram_control as telegram_control_module
+from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService
 from kinvest_trade.telegram_control import (
     SessionPerformance,
     TelegramLiquidityLabController,
@@ -155,6 +156,83 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
     )
 
     assert "손익=" not in line
+
+
+def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.notifier = DummyNotifier()
+    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
+        "action_raw": "WAIT",
+        "action": "대기",
+        "price": "-",
+        "qty": "-",
+        "indicator": "-",
+        "reason": "watchlist_wait",
+    }
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:00:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="overseas",
+        primary_target="SMCI",
+        primary_selection_reason="watchlist_wait",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
+
+
+def test_liquidity_lab_send_summary_sends_when_action_raw_is_buy() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.notifier = DummyNotifier()
+    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
+        "action_raw": "BUY",
+        "action": "매수",
+        "price": "$41.0000",
+        "qty": "1",
+        "indicator": "RSI 61.0, 거래량 2.5x",
+        "reason": "거래량 돌파 진입",
+    }
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:00:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="overseas",
+        primary_target="SMCI",
+        primary_selection_reason="watchlist_wait",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert len(service.notifier.messages) == 1
+    assert "동작=매수" in service.notifier.messages[0]
 
 
 class DummyNotifier:

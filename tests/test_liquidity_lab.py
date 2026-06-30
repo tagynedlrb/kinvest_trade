@@ -1,9 +1,15 @@
+import asyncio
+from types import SimpleNamespace
+
+import kinvest_trade.liquidity_lab as liquidity_lab_module
 from kinvest_trade.liquidity_lab import (
     DomesticHeldPosition,
     DomesticScanResult,
     LiquidityLabService,
+    LiquidityLabReport,
     OverseasHeldPosition,
     OverseasScanResult,
+    WatchTargetStatus,
 )
 from kinvest_trade.client import KisApiError
 
@@ -608,3 +614,264 @@ def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
     assert held.stock_code == "005930"
     assert reason == "stop_loss"
     assert signal_snapshot is None
+
+
+def _build_run_service() -> LiquidityLabService:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(env="vps", dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_top_n=3,
+            domestic_candidates=[],
+            overseas_candidates=[],
+            overseas_scan_top_n=3,
+        ),
+        auto_trade=SimpleNamespace(
+            daily_fast_window=20,
+            daily_slow_window=60,
+            intraday_fast_window=5,
+            intraday_slow_window=20,
+        ),
+    )
+    service.client = object()
+    service.repository = object()
+    service.notifier = DummyNotifier()
+    service._domestic_excluded = []
+    service._overseas_excluded = []
+    service._last_held_symbols = set()
+    service._signal_cache = {}
+    return service
+
+
+def test_overseas_buy_not_attempted_when_session_not_orderable() -> None:
+    service = _build_run_service()
+    candidate = OverseasScanResult(
+        symbol="SMCI",
+        exchange_code="NASD",
+        last_price=41.0,
+        bid=40.9,
+        ask=41.1,
+        spread_pct=0.0048,
+        change_rate_pct=2.0,
+        volume=500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=15.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="SMCI",
+        exchange_code="NASD",
+        price=41.0,
+        activity_score=15.0,
+        signal_score=9.0,
+        action_bias="BUY",
+        signal_state="BUY_READY",
+        ma_summary="20d>60d 5>20",
+        note="volume_breakout_entry",
+        holding_qty=0,
+    )
+    manage_calls: list[str] = []
+
+    async def fake_scan_overseas():
+        return [candidate], set()
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return []
+
+    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+        return [watch_target]
+
+    async def fake_manage_overseas_position(*, candidate, held_positions):
+        manage_calls.append(candidate.symbol)
+        return {"submitted": True}
+
+    async def fake_send_summary(report):
+        return None
+
+    async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
+        return None
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
+    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
+    service._manage_overseas_position = fake_manage_overseas_position  # type: ignore[method-assign]
+    service._send_summary = fake_send_summary  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.primary_market == "overseas"
+    assert report.primary_selection_reason == "watchlist_wait"
+    assert report.overseas_order["skipped"] is True
+    assert report.overseas_order["reason"] == "session_not_orderable_in_profile"
+    assert manage_calls == []
+
+
+def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
+    service = _build_run_service()
+    candidate = OverseasScanResult(
+        symbol="SMCI",
+        exchange_code="NASD",
+        last_price=41.0,
+        bid=40.9,
+        ask=41.1,
+        spread_pct=0.0048,
+        change_rate_pct=2.0,
+        volume=500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=15.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="SMCI",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=45.0,
+        current_price=41.0,
+        pnl_pct=-0.0889,
+    )
+    sell_calls: list[str] = []
+
+    async def fake_scan_overseas():
+        return [candidate], {"SMCI"}
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return [held]
+
+    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+        return []
+
+    async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
+        return candidate, held, "stop_loss", None
+
+    async def fake_place_overseas_sell_order(candidate, held, exit_reason, signal_snapshot=None):
+        sell_calls.append(candidate.symbol)
+        return {"submitted": True, "side": "sell", "candidate": {"symbol": candidate.symbol}}
+
+    async def fake_send_summary(report):
+        return None
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
+    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
+    service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
+    service._send_summary = fake_send_summary  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.primary_market == "overseas"
+    assert report.primary_selection_reason == "existing_position_stop_loss"
+    assert report.overseas_order["submitted"] is True
+    assert sell_calls == ["SMCI"]
+
+
+def test_send_summary_skips_when_action_raw_is_wait() -> None:
+    service = _build_run_service()
+    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
+        "action_raw": "WAIT",
+        "action": "대기",
+        "price": "-",
+        "qty": "-",
+        "indicator": "-",
+        "reason": "watchlist_wait",
+    }
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:00:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="overseas",
+        primary_target="SMCI",
+        primary_selection_reason="watchlist_wait",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
+
+
+def test_send_summary_sends_when_action_raw_is_buy() -> None:
+    service = _build_run_service()
+    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
+        "action_raw": "BUY",
+        "action": "매수",
+        "price": "$41.0000",
+        "qty": "1",
+        "indicator": "RSI 61.0, 거래량 2.5x",
+        "reason": "거래량 돌파 진입",
+    }
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:00:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="overseas",
+        primary_target="SMCI",
+        primary_selection_reason="watchlist_wait",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert len(service.notifier.messages) == 1
+    assert "시장=해외 (거래불가 세션)" in service.notifier.messages[0]

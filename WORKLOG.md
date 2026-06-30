@@ -1,6 +1,14 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 20
+- `auto_trade` 기본 라벨을 `FIXED_SYMBOL_MOMENTUM`으로 바꾸고, 고정종목 기본 예시를 `SOXL/AMEX`에서 `NVDA/NASD`로 일반화
+- `SoxlAutoTrader` 클래스명을 `FixedSymbolAutoTrader`로 바꿔 고정 1종목 전략이 특정 ETF 전용처럼 보이던 오해를 제거
+- `cli.py`의 `auto-run` / `liquidity-lab` help 문구를 보강해 `고정 1종목 모드`와 `다종목 자동선정 모드` 차이를 명시
+- `main.py` 무인자 실행 주석을 보강해 기본 동작이 `auto_trade.symbol` 고정 감시라는 점을 설명
+- `README.md`를 실제 실행 순서 기준으로 전면 재구성하고, `환경 점검 순서`, `운용 모드 비교: auto-run vs liquidity-lab`, 주석 포함 명령 예시, 최신 74개 해외 후보 목록을 반영
+- `tests/test_config.py`에 `SOXL` 기본값 제거와 `FIXED_SYMBOL_MOMENTUM` 기본 라벨 검증 테스트를 추가
+
 ### 추가 개선 19
 - `liquidity_lab` 설정에 `use_slot_sizing`, `slot_entry_pct`, `slot_max_pct`를 추가하고, 국내/해외 실주문 및 해외 가상매수 경로가 고정 1주 대신 주문가능 금액 기반 슬롯 수량을 우선 계산하도록 확장
 - 주문가능 금액 조회 실패 시에는 기존 고정 수량으로 자동 폴백하고, 조회는 성공했지만 슬롯 예산으로 1주도 담지 못하는 경우에는 `slot_budget_insufficient`로 안전하게 건너뛰도록 처리

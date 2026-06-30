@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import httpx
 
 from .client import KisApiError, KisRestClient, MissingCredentialsError, parse_kis_number
-from .auto_trader import SoxlAutoTrader
+from .auto_trader import FixedSymbolAutoTrader
 from .config import AppConfig, load_app_config
 from .indicators import summarize_indicators
 from .liquidity_lab import LiquidityLabService
@@ -31,11 +31,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "auto-run",
-        help="Run the default overseas moving-average strategy from fixed configuration",
+        help=(
+            "Run a fixed single-symbol strategy on the symbol configured in "
+            "auto_trade.symbol (no candidate scanning; same entry/exit logic "
+            "as liquidity-lab but applied to one pinned symbol only)"
+        ),
     )
     subparsers.add_parser(
         "liquidity-lab",
-        help="Scan high-liquidity domestic/overseas candidates, run a domestic paper test, and submit mock orders when the market is open",
+        help=(
+            "Scan all candidates in liquidity_lab.domestic_candidates / "
+            "overseas_candidates, automatically pick the most active symbol "
+            "each cycle, and trade it (no fixed symbol)"
+        ),
     )
     subparsers.add_parser(
         "telegram-control",
@@ -570,7 +578,7 @@ async def run_auto_trade(config: AppConfig) -> None:
     repository = SqliteRepository(config.storage.db_path)
     notifier = TelegramNotifier(config.notifications)
     async with KisRestClient(config.credentials) as client:
-        service = SoxlAutoTrader(config, client, repository, notifier)
+        service = FixedSymbolAutoTrader(config, client, repository, notifier)
         summary = await service.run()
 
     print(

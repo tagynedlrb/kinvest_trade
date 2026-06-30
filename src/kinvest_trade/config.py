@@ -500,9 +500,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
         ),
         auto_trade=AutoTradeConfig(
             enabled=bool(auto_trade_raw.get("enabled", True)),
-            mode=str(auto_trade_raw.get("mode", "SOXL_MICRO_SCALP")),
-            symbol=str(auto_trade_raw.get("symbol", "SOXL")),
-            exchange_code=str(auto_trade_raw.get("exchange_code", "AMEX")),
+            mode=str(auto_trade_raw.get("mode", "FIXED_SYMBOL_MOMENTUM")),
+            symbol=str(auto_trade_raw.get("symbol", "NVDA")),
+            exchange_code=str(auto_trade_raw.get("exchange_code", "NASD")),
             currency_code=str(auto_trade_raw.get("currency_code", "USD")),
             quantity=int(auto_trade_raw.get("quantity", 1)),
             use_slot_sizing=bool(auto_trade_raw.get("use_slot_sizing", False)),
@@ -680,7 +680,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 )
                 for item in liquidity_lab_raw.get(
                     "overseas_candidates",
-                    [{"symbol": "SOXL", "exchange_code": "AMEX"}],
+                    [{"symbol": "NVDA", "exchange_code": "NASD"}],
                 )
                 if str(item.get("symbol", "")).strip()
             ],

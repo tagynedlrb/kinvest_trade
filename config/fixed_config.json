@@ -34,9 +34,9 @@
     },
     "auto_trade": {
         "enabled": true,
-        "mode": "OVERSEAS_LIQUIDITY_MOMENTUM",
-        "symbol": "SOXL",
-        "exchange_code": "AMEX",
+        "mode": "FIXED_SYMBOL_MOMENTUM",
+        "symbol": "NVDA",
+        "exchange_code": "NASD",
         "currency_code": "USD",
         "quantity": 1,
         "use_slot_sizing": true,

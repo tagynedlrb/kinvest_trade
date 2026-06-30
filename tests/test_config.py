@@ -81,3 +81,17 @@ def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.slot_entry_pct > 0
     assert config.liquidity_lab.slot_max_pct >= config.liquidity_lab.slot_entry_pct
     assert config.notifications.telegram_command_poll_timeout_sec > 0
+
+
+def test_auto_trade_default_symbol_is_not_soxl(monkeypatch) -> None:
+    monkeypatch.setenv("KIS_ENV", "vps")
+    monkeypatch.setenv("KIS_VPS_APPKEY", "paper-key")
+    monkeypatch.setenv("KIS_VPS_APPSECRET", "paper-secret")
+    monkeypatch.setenv("KIS_VPS_ACCOUNT_NO", "8765432101")
+    monkeypatch.delenv("KIS_VPS_ACCOUNT_PRODUCT_CODE", raising=False)
+
+    config = load_app_config()
+
+    assert config.auto_trade.symbol != "SOXL"
+    assert config.auto_trade.symbol == "NVDA"
+    assert config.auto_trade.mode == "FIXED_SYMBOL_MOMENTUM"

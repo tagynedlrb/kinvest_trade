@@ -86,7 +86,7 @@ class AutoTradeSummary:
     completion_reason: str
 
 
-class SoxlAutoTrader:
+class FixedSymbolAutoTrader:
     """Liquidity and momentum based overseas auto trader."""
 
     def __init__(

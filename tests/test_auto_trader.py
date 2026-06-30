@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from kinvest_trade.auto_trader import RealizedBreakdown, SoxlAutoTrader, StrategySnapshot
+from kinvest_trade.auto_trader import FixedSymbolAutoTrader, RealizedBreakdown, StrategySnapshot
 from kinvest_trade.config import load_app_config
 
 
@@ -24,10 +24,10 @@ class DummyNotifier:
         self.messages.append(message)
 
 
-def _build_trader() -> SoxlAutoTrader:
+def _build_trader() -> FixedSymbolAutoTrader:
     project_root = Path(__file__).resolve().parents[1]
     base_auto = load_app_config(project_root / "config" / "fixed_config.json").auto_trade
-    trader = SoxlAutoTrader.__new__(SoxlAutoTrader)
+    trader = FixedSymbolAutoTrader.__new__(FixedSymbolAutoTrader)
     trader.config = SimpleNamespace(
         auto_trade=replace(
             base_auto,

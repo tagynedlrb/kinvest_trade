@@ -1,6 +1,19 @@
 # WORKLOG
 
 ## 2026-06-30
+### 추가 개선 14
+- 해외/국내 매도 주문이 KIS에서 거부될 때 `submitted=False`만 반환하고 `skipped=True`가 빠져 성공처럼 `동작=매도`로 보이던 문제를 수정
+- `_place_overseas_sell_order()`는 daytime/mock 세션 거부를 `session_not_orderable_in_profile`로, 그 외 거부는 `order_rejected`로 분리해 반환하도록 보강
+- `_place_domestic_sell_order()`도 동일하게 `skipped=True`, `reason=order_rejected`를 명시하도록 수정
+- `_format_order_summary()`에 `SELL_REJECTED` 상태를 추가하고, 텔레그램 표시값은 `매도거부`로 매핑
+- `_send_summary()`가 `SELL_REJECTED`일 때는 알림을 숨기지 않고, `참고=주문이 거부되어 실제로 체결되지 않았습니다` 문구를 추가해 실제 미체결 상태를 명확히 알리도록 조정
+- `_place_domestic_test_order()`에 `KisApiError` 방어 처리를 추가해 장중 거부·일시 정지 등 예외 상황에서도 런타임 예외 전파 없이 `skipped=True`로 정리되도록 보강
+- `/lab_paper_test` 명령은 이미 코드에 반영된 상태임을 재확인했고, 재적용은 하지 않음
+- 추가 점검 결과:
+  - `_select_overseas_exit_target()`은 `고정 손절/익절 우선 -> signal cache 기반 청산` 2단계 구조
+  - `_select_domestic_exit_target()`은 `watch_targets`에서 이미 `_build_exit_setup()`을 거친 `SELL_READY` 후보만 고르는 구조
+  - 완전한 내부 구현 대칭은 아니지만, 둘 다 최종적으로 `_build_exit_setup()` 계열 판단을 기반으로 청산 대상을 고르는 점은 일관됨
+
 ### 추가 개선 13
 - 첨부된 `11차 개선`, `12차 개선` 지시문을 기준으로 `liquidity_lab.py`에 `DomesticHeldPosition`, `_load_domestic_positions()`, `_select_domestic_exit_target()`, `_place_domestic_sell_order()`를 추가해 국내 보유 포지션 추적과 실제 국내 매도 경로를 연결
 - 국내 `watch_targets`가 이제 보유 포지션을 인식하고, `domestic_top_n` 밖의 보유 종목도 강제로 감시에 포함하도록 수정

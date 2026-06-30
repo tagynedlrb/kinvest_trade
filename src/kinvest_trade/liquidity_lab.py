@@ -1114,13 +1114,24 @@ class LiquidityLabService:
                 "reason": "dry_run_enabled",
                 "candidate": asdict(candidate),
             }
-        response = await self.client.place_cash_order(
-            side="buy",
-            stock_code=candidate.stock_code,
-            qty=qty,
-            price=candidate.best_ask or candidate.current_price,
-            order_division="00",
-        )
+        try:
+            response = await self.client.place_cash_order(
+                side="buy",
+                stock_code=candidate.stock_code,
+                qty=qty,
+                price=candidate.best_ask or candidate.current_price,
+                order_division="00",
+            )
+        except KisApiError as exc:
+            return {
+                "submitted": False,
+                "skipped": True,
+                "market": "domestic",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": "order_rejected",
+                "error": str(exc),
+            }
         await self.notifier.send(
             "\n".join(
                 [
@@ -1175,12 +1186,14 @@ class LiquidityLabService:
         except KisApiError as exc:
             return {
                 "submitted": False,
+                "skipped": True,
                 "market": "domestic",
                 "side": "sell",
                 "candidate": asdict(candidate),
                 "held_position": asdict(held),
                 "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
                 "exit_reason": exit_reason,
+                "reason": "order_rejected",
                 "error": str(exc),
             }
 
@@ -1359,14 +1372,21 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            is_session_blocked = (
+                "미국주식 주간거래는 제공하지 않습니다" in str(exc)
+                or "KIS mock currently supports US order tests only during the US regular session" in str(exc)
+                or "does not support US daytime trading" in str(exc)
+            )
             return {
                 "submitted": False,
+                "skipped": True,
                 "market": "overseas",
                 "side": "sell",
                 "candidate": asdict(candidate),
                 "held_position": asdict(held),
                 "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
                 "exit_reason": exit_reason,
+                "reason": "session_not_orderable_in_profile" if is_session_blocked else "order_rejected",
                 "error": str(exc),
             }
 
@@ -1579,6 +1599,8 @@ class LiquidityLabService:
             f"지표={action['indicator']}",
             f"사유={action['reason']}",
         ]
+        if action["action_raw"] == "SELL_REJECTED":
+            lines.append("참고=주문이 거부되어 실제로 체결되지 않았습니다")
         await self.notifier.send("\n".join(lines))
 
     def _build_action_summary(self, report: LiquidityLabReport) -> dict[str, str]:
@@ -1617,6 +1639,8 @@ class LiquidityLabService:
                 action = "BUY_SETUP"
             elif side == "SELL" and str(order.get("reason")) == "dry_run_enabled":
                 action = "SELL_SETUP"
+            elif side == "SELL" and order.get("error"):
+                action = "SELL_REJECTED"
         price_value = candidate.get("last_price") or candidate.get("current_price") or held.get("current_price")
         qty_value = order.get("qty") or held.get("quantity") or "-"
 

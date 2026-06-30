@@ -33,6 +33,9 @@ def format_side_korean(side: str) -> str:
         "wait": "대기",
         "HOLD": "보유",
         "hold": "보유",
+        "BUY_SETUP": "매수준비",
+        "SELL_SETUP": "매도준비",
+        "SELL_REJECTED": "매도거부",
     }
     return mapping.get(side, side)
 
@@ -67,6 +70,7 @@ REASON_KOREAN_MAP = {
     "trend_holding": "추세 보유",
     "paper_test_removed_for_speed": "속도 개선으로 페이퍼 테스트 생략",
     "session_not_orderable_in_profile": "현재 계정에서 거래 불가한 세션",
+    "order_rejected": "주문 거부",
 }
 
 

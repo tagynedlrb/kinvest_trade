@@ -416,6 +416,73 @@ def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
     assert service.notifier.messages == []
 
 
+def test_overseas_sell_rejected_marks_skipped_true() -> None:
+    service = _build_sell_service(
+        error=KisApiError("KIS mock does not support US daytime trading for this session")
+    )
+    candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=196.96,
+        bid=196.95,
+        ask=196.97,
+        spread_pct=0.0001,
+        change_rate_pct=0.9,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=12.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=193.46,
+        current_price=196.96,
+        pnl_pct=0.0181,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+
+    assert result["submitted"] is False
+    assert result["skipped"] is True
+    assert result["reason"] == "session_not_orderable_in_profile"
+
+
+def test_overseas_sell_rejected_does_not_send_lab_sell_notification() -> None:
+    service = _build_sell_service(
+        error=KisApiError("KIS mock does not support US daytime trading for this session")
+    )
+    candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=196.96,
+        bid=196.95,
+        ask=196.97,
+        spread_pct=0.0001,
+        change_rate_pct=0.9,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=12.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=193.46,
+        current_price=196.96,
+        pnl_pct=0.0181,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+
+    assert result["submitted"] is False
+    assert service.notifier.messages == []
+
+
 def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     service = _build_sell_service()
     candidate = OverseasScanResult(
@@ -566,6 +633,63 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     assert "시장=국내" in message
     assert "손익=+4,000원" in message
     assert "수익률=+2.50%" in message
+
+
+def test_domestic_sell_rejected_marks_skipped_true() -> None:
+    service = _build_domestic_sell_service(error=KisApiError("domestic rejected"))
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=-0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+    held = DomesticHeldPosition(
+        stock_code="005930",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=80000.0,
+        current_price=82000.0,
+        pnl_pct=0.025,
+    )
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "stop_loss"))
+
+    assert result["submitted"] is False
+    assert result["skipped"] is True
+    assert result["reason"] == "order_rejected"
+
+
+def test_domestic_buy_rejected_marks_skipped_true() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(domestic_test_order_qty=1),
+    )
+    service.client = DummyDomesticSellClient(error=KisApiError("domestic rejected"))
+    service.notifier = DummyNotifier()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["submitted"] is False
+    assert result["skipped"] is True
+    assert result["reason"] == "order_rejected"
+    assert service.notifier.messages == []
 
 
 def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
@@ -875,3 +999,63 @@ def test_send_summary_sends_when_action_raw_is_buy() -> None:
 
     assert len(service.notifier.messages) == 1
     assert "시장=해외 (거래불가 세션)" in service.notifier.messages[0]
+
+
+def test_format_order_summary_sell_rejected_returns_sell_rejected_action() -> None:
+    service = _build_sell_service()
+
+    summary = service._format_order_summary(
+        {
+            "submitted": False,
+            "skipped": True,
+            "side": "sell",
+            "candidate": {"last_price": 196.96},
+            "qty": 1,
+            "reason": "session_not_orderable_in_profile",
+            "error": "KIS mock does not support US daytime trading for this session",
+            "exit_reason": "partial_profit_lock",
+        },
+        currency="USD",
+    )
+
+    assert summary["action_raw"] == "SELL_REJECTED"
+    assert summary["action"] == "매도거부"
+
+
+def test_send_summary_sends_message_for_sell_rejected() -> None:
+    service = _build_run_service()
+    service._build_action_summary = lambda report: {  # type: ignore[method-assign]
+        "action_raw": "SELL_REJECTED",
+        "action": "매도거부",
+        "price": "$196.9600",
+        "qty": "1",
+        "indicator": "손익 +1.81%",
+        "reason": "현재 계정에서 거래 불가한 세션",
+    }
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 20:37:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="overseas",
+        primary_target="NVDA",
+        primary_selection_reason="existing_position_take_profit",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert len(service.notifier.messages) == 1
+    assert "동작=매도거부" in service.notifier.messages[0]
+    assert "참고=주문이 거부되어 실제로 체결되지 않았습니다" in service.notifier.messages[0]

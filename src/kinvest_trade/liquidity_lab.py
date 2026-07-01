@@ -673,8 +673,13 @@ class LiquidityLabService:
             if krx_open
             else None
         )
-        domestic_buy_target = self._select_domestic_buy_target(domestic_ranked, domestic_watch_targets)
         config_ll = self.config.liquidity_lab
+        domestic_buy_targets = self._select_domestic_buy_targets(
+            domestic_ranked,
+            domestic_watch_targets,
+            max_concurrent=getattr(config_ll, "max_concurrent_domestic_orders", 2),
+        )
+        domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
         overseas_buy_targets = self._select_overseas_buy_targets(
             overseas_ranked,
             overseas_watch_targets,
@@ -684,6 +689,7 @@ class LiquidityLabService:
         paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
         domestic_order: dict = {"skipped": True, "reason": "no_action"}
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
+        domestic_orders: list[dict] = []
         overseas_orders: list[dict] = []
 
         if domestic_exit_target is not None:
@@ -694,8 +700,13 @@ class LiquidityLabService:
                 exit_reason,
                 exit_signal,
             )
-        elif domestic_buy_target is not None and krx_open:
-            domestic_order = await self._place_domestic_test_order(domestic_buy_target)
+            domestic_orders = [domestic_order]
+        elif domestic_buy_targets and krx_open:
+            for buy_candidate in domestic_buy_targets:
+                domestic_orders.append(await self._place_domestic_test_order(buy_candidate))
+            domestic_order = domestic_orders[0]
+        else:
+            domestic_orders = [domestic_order]
 
         if overseas_exit_target is not None:
             exit_candidate, exit_position, exit_reason, exit_signal = overseas_exit_target
@@ -732,8 +743,11 @@ class LiquidityLabService:
         if overseas_orders:
             overseas_order = dict(overseas_order)
             overseas_order["batched_orders"] = overseas_orders
+        if domestic_orders:
+            domestic_order = dict(domestic_order)
+            domestic_order["batched_orders"] = domestic_orders
 
-        domestic_active = not domestic_order.get("skipped", False)
+        domestic_active = any(not order.get("skipped", False) for order in domestic_orders)
         overseas_active = any(not order.get("skipped", False) for order in overseas_orders)
         if domestic_active and overseas_active:
             domestic_code = (
@@ -1826,6 +1840,39 @@ class LiquidityLabService:
             key=lambda item: (item.signal_score, item.activity_score),
         )
         return candidate_map.get(best_target.code)
+
+    def _select_domestic_buy_targets(
+        self,
+        domestic_ranked: list[DomesticScanResult],
+        watch_targets: list[WatchTargetStatus],
+        max_concurrent: int = 2,
+    ) -> list[DomesticScanResult]:
+        candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
+        ready_targets = [
+            watch_target
+            for watch_target in watch_targets
+            if watch_target.market == "domestic" and watch_target.action_bias == "BUY"
+        ]
+        if not ready_targets or max_concurrent <= 0:
+            return []
+        ready_targets.sort(
+            key=lambda item: (item.signal_score, item.activity_score),
+            reverse=True,
+        )
+        selected: list[DomesticScanResult] = []
+        seen: set[str] = set()
+        for watch_target in ready_targets:
+            if len(selected) >= max_concurrent:
+                break
+            code = watch_target.code
+            if code in seen:
+                continue
+            candidate = candidate_map.get(code)
+            if candidate is None:
+                continue
+            selected.append(candidate)
+            seen.add(code)
+        return selected
 
     def _select_domestic_exit_target(
         self,

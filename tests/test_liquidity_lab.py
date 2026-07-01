@@ -876,6 +876,39 @@ def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
     assert signal_snapshot is None
 
 
+def test_select_domestic_buy_targets_returns_multiple() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    ranked = [
+        DomesticScanResult("005930", 82000, 82050, 81950, 0.0012, 0.003, 100_000_000_000, 500_000, 18.0),
+        DomesticScanResult("000660", 210000, 210500, 209500, 0.0015, 0.004, 90_000_000_000, 420_000, 17.0),
+        DomesticScanResult("035420", 180000, 180500, 179500, 0.0014, 0.002, 85_000_000_000, 390_000, 16.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus("domestic", "005930", None, 82000.0, 18.0, 12.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("domestic", "000660", None, 210000.0, 17.0, 11.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("domestic", "005930", None, 82000.0, 18.0, 10.0, "BUY", "BUY_READY", "20d>60d 5>20", "duplicate", 0),
+        WatchTargetStatus("domestic", "035420", None, 180000.0, 16.0, 9.0, "BUY", "BUY_READY", "20d>60d 5>20", "volume_breakout_entry", 0),
+    ]
+
+    selected = service._select_domestic_buy_targets(ranked, watch_targets, max_concurrent=2)
+
+    assert [item.stock_code for item in selected] == ["005930", "000660"]
+
+
+def test_select_domestic_buy_targets_returns_empty_when_no_buy() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    ranked = [
+        DomesticScanResult("005930", 82000, 82050, 81950, 0.0012, 0.003, 100_000_000_000, 500_000, 18.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus("domestic", "005930", None, 82000.0, 18.0, 0.0, "WAIT", "WAIT", "20d>60d 5>20", "watch", 0),
+    ]
+
+    selected = service._select_domestic_buy_targets(ranked, watch_targets)
+
+    assert selected == []
+
+
 def _build_run_service() -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     project_root = Path(__file__).resolve().parents[1]
@@ -1325,6 +1358,92 @@ def test_run_executes_both_markets_when_both_open() -> None:
     assert report.primary_selection_reason == "dual_market_active"
     assert report.domestic_order["submitted"] is True
     assert report.overseas_order["submitted"] is True
+
+
+def test_run_executes_domestic_buy_for_multiple_targets() -> None:
+    service = _build_run_service()
+    first = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=18.0,
+    )
+    second = DomesticScanResult(
+        stock_code="000660",
+        current_price=210000,
+        best_ask=210500,
+        best_bid=209500,
+        spread_pct=0.0015,
+        minute_change_pct=0.004,
+        intraday_turnover_krw=90_000_000_000,
+        volume_sum=420_000,
+        activity_score=17.0,
+    )
+    watch_targets = [
+        WatchTargetStatus("domestic", "005930", None, 82000.0, 18.0, 9.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("domestic", "000660", None, 210000.0, 17.0, 8.0, "BUY", "BUY_READY", "20d>60d 5>20", "volume_breakout_entry", 0),
+    ]
+    order_calls: list[str] = []
+
+    async def fake_scan_domestic():
+        return [first, second]
+
+    async def fake_load_domestic_positions(domestic_ranked):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return watch_targets
+
+    async def fake_place_domestic_test_order(candidate):
+        order_calls.append(candidate.stock_code)
+        return {
+            "submitted": True,
+            "side": "buy",
+            "candidate": {"stock_code": candidate.stock_code},
+            "qty": 1,
+        }
+
+    async def fake_send_summary(report):
+        return None
+
+    service.scan_domestic = fake_scan_domestic  # type: ignore[method-assign]
+    service._load_domestic_positions = fake_load_domestic_positions  # type: ignore[method-assign]
+    async def fake_scan_overseas():
+        return [], set()
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return []
+
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+    service._place_domestic_test_order = fake_place_domestic_test_order  # type: ignore[method-assign]
+    service._send_summary = fake_send_summary  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: True
+    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    liquidity_lab_module.get_us_trading_session = lambda now: "closed"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert order_calls == ["005930", "000660"]
+    assert report.domestic_order["candidate"]["stock_code"] == "005930"
+    assert len(report.domestic_order["batched_orders"]) == 2
 
 
 def test_run_executes_overseas_when_only_us_open() -> None:

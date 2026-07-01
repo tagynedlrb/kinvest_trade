@@ -50,6 +50,7 @@ def format_market_korean(market: str) -> str:
 
 
 REASON_KOREAN_MAP = {
+    "pullback_entry": "눌림목 진입",
     "volume_breakout_entry": "거래량 돌파 진입",
     "band_breakout_entry": "밴드 돌파 진입",
     "breakout_proximity_entry": "고점 근접 진입",

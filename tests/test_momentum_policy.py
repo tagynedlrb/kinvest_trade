@@ -2,7 +2,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from kinvest_trade.config import load_app_config
-from kinvest_trade.momentum_policy import evaluate_entry_setup, evaluate_exit_setup
+from kinvest_trade.momentum_policy import (
+    _pullback_ready,
+    evaluate_entry_setup,
+    evaluate_exit_setup,
+)
 from kinvest_trade.technical_signals import MovingAverageSnapshot
 
 
@@ -58,6 +62,7 @@ def test_time_exit_triggers_on_loss_with_trend_gone() -> None:
             minute_ma_fast=99.1,
             minute_ma_slow=99.5,
             intraday_momentum=0.0005,
+            volume_ratio=0.7,
         ),
         -0.003,
         drawdown_from_peak=0.0,
@@ -91,6 +96,52 @@ def test_time_exit_does_not_trigger_on_loss_with_trend_intact() -> None:
 
     assert result.action == "hold"
     assert result.reason == "hold"
+
+
+def test_time_exit_does_not_trigger_on_loss_with_only_one_condition() -> None:
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(
+            price=99.4,
+            daily_ma_fast=98.5,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.1,
+            minute_ma_slow=99.5,
+            intraday_momentum=0.0008,
+            volume_ratio=1.2,
+        ),
+        -0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=10,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason == "hold"
+
+
+def test_time_exit_triggers_on_loss_with_two_conditions() -> None:
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(
+            price=99.4,
+            daily_ma_fast=98.5,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.1,
+            minute_ma_slow=99.5,
+            intraday_momentum=0.0008,
+            volume_ratio=0.7,
+        ),
+        -0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=10,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "sell"
+    assert result.reason == "time_exit_loss"
 
 
 def test_time_exit_forced_after_extended_hold_on_loss() -> None:
@@ -149,7 +200,7 @@ def test_rsi_85_blocks_entry() -> None:
 
 
 def test_rsi_71_does_not_block_entry_with_new_threshold() -> None:
-    config = replace(_build_config(), max_entry_rsi14=85.0)
+    config = replace(_build_config(), max_entry_rsi14=75.0, volume_spike_ratio=1.1)
     result = evaluate_entry_setup(
         config,
         _snapshot(
@@ -157,7 +208,7 @@ def test_rsi_71_does_not_block_entry_with_new_threshold() -> None:
             volume_ratio=1.3,
             intraday_momentum=0.002,
             intraday_bar_return=0.0009,
-            price=100.2,
+            price=100.25,
             breakout_level=100.1,
         ),
     )
@@ -165,35 +216,13 @@ def test_rsi_71_does_not_block_entry_with_new_threshold() -> None:
     assert result.ready is True
 
 
-def test_trend_filter_adaptive_allows_entry_below_slow_ma() -> None:
+def test_breakout_proximity_entry() -> None:
     config = replace(
         _build_config(),
-        trend_require_price_above_slow=False,
+        breakout_proximity_pct=0.98,
         volume_spike_ratio=1.1,
+        trend_require_price_above_slow=False,
     )
-    result = evaluate_entry_setup(
-        config,
-        _snapshot(
-            price=99.9,
-            daily_ma_fast=101.0,
-            daily_ma_slow=99.0,
-            minute_ma_fast=100.3,
-            minute_ma_slow=100.1,
-            volume_ratio=1.2,
-            intraday_momentum=0.001,
-            intraday_bar_return=0.0004,
-            breakout_level=101.0,
-            breakout_distance_pct=-0.0109,
-            rsi14=60.0,
-        ),
-    )
-
-    assert result.ready is True
-    assert result.reason == "breakout_proximity_entry"
-
-
-def test_breakout_proximity_entry() -> None:
-    config = replace(_build_config(), breakout_proximity_pct=0.98, volume_spike_ratio=1.1)
     breakout_level = 100.0
     result = evaluate_entry_setup(
         config,
@@ -202,8 +231,8 @@ def test_breakout_proximity_entry() -> None:
             breakout_level=breakout_level,
             breakout_distance_pct=-0.01,
             volume_ratio=1.2,
-            intraday_momentum=0.001,
-            intraday_bar_return=0.0005,
+            intraday_momentum=0.0016,
+            intraday_bar_return=0.0009,
             rsi14=62.0,
         ),
     )
@@ -212,17 +241,17 @@ def test_breakout_proximity_entry() -> None:
     assert result.reason == "breakout_proximity_entry"
 
 
-def test_fast_track_vr_1_6_multiplier() -> None:
+def test_fast_track_vr_2_0_multiplier() -> None:
     config = replace(
         _build_config(),
-        volume_spike_ratio=1.1,
-        min_bar_return_pct=0.0003,
+        volume_spike_ratio=1.2,
+        min_bar_return_pct=0.0004,
     )
     result = evaluate_entry_setup(
         config,
         _snapshot(
-            volume_ratio=1.77,
-            intraday_bar_return=0.0006,
+            volume_ratio=2.4,
+            intraday_bar_return=0.0013,
             intraday_momentum=0.001,
             rsi14=60.0,
         ),
@@ -236,3 +265,72 @@ def test_has_required_context_without_slow_ma() -> None:
     snapshot = _snapshot(minute_ma_slow=None)
 
     assert snapshot.has_required_context is True
+
+
+def test_pullback_ready_returns_true_for_valid_pullback() -> None:
+    result = _pullback_ready(
+        _build_config(),
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.5,
+            rsi14=50.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+
+    assert result is True
+
+
+def test_pullback_blocked_when_price_too_far_above_ma() -> None:
+    result = _pullback_ready(
+        _build_config(),
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=103.0,
+            rsi14=50.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+
+    assert result is False
+
+
+def test_pullback_blocked_when_rsi_overbought() -> None:
+    result = _pullback_ready(
+        _build_config(),
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.2,
+            rsi14=70.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+
+    assert result is False
+
+
+def test_pullback_is_first_priority_in_evaluate_entry() -> None:
+    config = replace(_build_config(), volume_spike_ratio=1.5)
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.3,
+            breakout_level=100.8,
+            breakout_distance_pct=-0.0049,
+            rsi14=50.0,
+            intraday_momentum=0.0015,
+            intraday_bar_return=0.001,
+            volume_ratio=1.6,
+        ),
+    )
+
+    assert result.ready is True
+    assert result.reason == "pullback_entry"

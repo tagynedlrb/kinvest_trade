@@ -192,7 +192,7 @@ def test_entry_edge_filter_blocks_trade_when_reward_risk_is_too_small() -> None:
     assert trader.repository.heartbeats[-1][0] == "EDGE_FAIL_RISK"
 
 
-def test_decide_action_buys_on_volume_breakout() -> None:
+def test_decide_action_prefers_pullback_entry() -> None:
     trader = _build_trader()
 
     decision = trader._decide_action(
@@ -203,7 +203,7 @@ def test_decide_action_buys_on_volume_breakout() -> None:
     )
 
     assert decision.side == "buy"
-    assert decision.reason == "volume_breakout_entry"
+    assert decision.reason == "pullback_entry"
     assert decision.qty >= 1
 
 

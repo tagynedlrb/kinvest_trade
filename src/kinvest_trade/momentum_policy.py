@@ -34,14 +34,15 @@ def evaluate_entry_setup(
         return EntrySetup(False, "warmup_context", "WARMUP", "warmup")
     if snapshot.rsi14 is not None and snapshot.rsi14 > config.max_entry_rsi14:
         return EntrySetup(False, "entry_rsi_too_high", "SKIP", _note(snapshot))
-
-    volume_ready = snapshot.volume_ratio >= config.volume_spike_ratio
-    if not volume_ready:
+    if snapshot.volume_ratio < config.volume_spike_ratio * 0.7:
         return EntrySetup(False, "volume_low", "WAIT", _note(snapshot))
 
+    if not snapshot.daily_trend_up:
+        return EntrySetup(False, "trend_down", "WAIT", _note(snapshot))
+
     fast_track = (
-        snapshot.volume_ratio >= config.volume_spike_ratio * 1.6
-        and snapshot.intraday_bar_return >= config.min_bar_return_pct * 2.0
+        snapshot.volume_ratio >= config.volume_spike_ratio * 2.0
+        and snapshot.intraday_bar_return >= config.min_bar_return_pct * 3.0
     )
     if fast_track:
         score = (
@@ -57,6 +58,32 @@ def evaluate_entry_setup(
             urgent=True,
         )
 
+    if _pullback_ready(config, snapshot):
+        score = (
+            min(snapshot.volume_ratio, 4.0) * 25.0
+            + max(snapshot.intraday_momentum, 0.0) * 5000.0
+            + max(snapshot.intraday_bar_return, 0.0) * 4000.0
+        )
+        return EntrySetup(
+            True,
+            "pullback_entry",
+            "BUY",
+            _note(snapshot),
+            score=round(score, 2),
+            urgent=False,
+        )
+
+    if snapshot.volume_ratio < config.volume_spike_ratio:
+        return EntrySetup(False, "volume_low", "WAIT", _note(snapshot))
+
+    extension_too_large = (
+        snapshot.breakout_distance_pct > config.max_breakout_extension_pct
+        if snapshot.breakout_distance_pct > 0
+        else False
+    )
+    if extension_too_large:
+        return EntrySetup(False, "chasing", "SKIP", _note(snapshot))
+
     if not _trend_filter_ok_adaptive(config, snapshot):
         return EntrySetup(False, "trend_down", "WAIT", _note(snapshot))
 
@@ -66,14 +93,6 @@ def evaluate_entry_setup(
     )
     if not momentum_ready:
         return EntrySetup(False, "momentum_weak", "WAIT", _note(snapshot))
-
-    extension_too_large = (
-        snapshot.breakout_distance_pct > config.max_breakout_extension_pct
-        if snapshot.breakout_distance_pct > 0
-        else False
-    )
-    if extension_too_large:
-        return EntrySetup(False, "chasing", "SKIP", _note(snapshot))
 
     breakout_ready = _breakout_ready(config, snapshot)
     band_breakout_ready = _band_breakout_ready(config, snapshot)
@@ -87,10 +106,7 @@ def evaluate_entry_setup(
         + max(snapshot.intraday_bar_return, 0.0) * 4000.0
         + max((snapshot.rsi14 or 50.0) - 45.0, 0.0)
     )
-    urgent = (
-        snapshot.volume_ratio >= (config.volume_spike_ratio * 1.5)
-        or snapshot.intraday_bar_return >= (config.min_bar_return_pct * 2.0)
-    )
+    urgent = snapshot.volume_ratio >= (config.volume_spike_ratio * 1.5)
     if breakout_ready:
         reason = "volume_breakout_entry"
     elif band_breakout_ready:
@@ -196,10 +212,15 @@ def evaluate_exit_setup(
     if hold_cycles >= config.max_hold_cycles:
         if pnl_pct >= 0 and snapshot.intraday_momentum <= 0:
             return ExitSetup("sell", "time_exit_profit", "SELL_READY", note)
-        if pnl_pct < 0 and not trend_filter_ok(snapshot):
-            return ExitSetup("sell", "time_exit_loss", "SELL_READY", note)
-        if pnl_pct < 0 and hold_cycles >= int(config.max_hold_cycles * 1.5):
-            return ExitSetup("sell", "time_exit_forced", "SELL_READY", note)
+        if pnl_pct < 0:
+            trend_lost = not trend_filter_ok(snapshot)
+            momentum_gone = snapshot.intraday_momentum <= 0
+            volume_dying = snapshot.volume_ratio <= (config.volume_fade_ratio or 0.8)
+            conditions_met = sum([trend_lost, momentum_gone, volume_dying])
+            if conditions_met >= 2:
+                return ExitSetup("sell", "time_exit_loss", "SELL_READY", note)
+            if hold_cycles >= int(config.max_hold_cycles * 1.5):
+                return ExitSetup("sell", "time_exit_forced", "SELL_READY", note)
 
     if snapshot.volume_ratio >= config.volume_spike_ratio and trend_filter_ok(snapshot):
         return ExitSetup("hold", "trend_holding", "HOLD", note)
@@ -238,6 +259,31 @@ def _trend_filter_ok_adaptive(
         and snapshot.minute_ma_fast >= snapshot.minute_ma_slow
     )
     return daily_ok and intraday_ok
+
+
+def _pullback_ready(
+    config: AutoTradeConfig,
+    snapshot: MovingAverageSnapshot,
+) -> bool:
+    del config
+    fast = snapshot.minute_ma_fast
+    slow = snapshot.minute_ma_slow
+    if fast is None or slow is None or fast <= 0 or fast < slow:
+        return False
+
+    distance_pct = (snapshot.price - fast) / fast
+    if not (-0.015 <= distance_pct <= 0.005):
+        return False
+
+    rsi = snapshot.rsi14
+    if rsi is not None and not (35.0 <= rsi <= 62.0):
+        return False
+
+    if snapshot.intraday_bar_return < 0:
+        return False
+    if snapshot.volume_ratio < 1.3:
+        return False
+    return True
 
 
 def _breakout_ready(config: AutoTradeConfig, snapshot: MovingAverageSnapshot) -> bool:

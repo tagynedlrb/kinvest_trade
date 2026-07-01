@@ -452,3 +452,22 @@
 - `liquidity-lab`은 해외 1순위 후보만 계속 사던 동작을 수정해, 기존 보유 포지션 중 손절/익절 조건 충족 종목을 신규 매수보다 우선 청산하도록 변경
 - 해외 잔고 조회 시 동일 포지션이 거래소별 응답에 중복 노출되더라도 1건으로 정규화하도록 보완
 - 텔레그램 컨트롤러의 기본 감시 간격을 `30초`로 낮추고, 다음 실행 시점을 `사이클 종료 후 + interval`이 아니라 `사이클 시작 기준 고정 간격`으로 계산하도록 조정
+
+## 2026-07-01
+### 이번에 수행한 내용
+- 자동매매 기본 전략을 `1분 돌파 추종` 중심에서 `5분 눌림목 진입` 중심으로 전환
+- `config/fixed_config.json`의 기본 파라미터를 5분봉 기준으로 재조정
+  - `intraday_bar_minutes=5`, `intraday_chart_refresh_sec=90`, `poll_interval_sec=30`
+  - `intraday_fast_window=10`, `intraday_slow_window=20`, `breakout_lookback_bars=5`
+  - `take_profit_pct=0.012`, `full_take_profit_pct=0.020`, `stop_loss_pct=0.005`, `hard_stop_loss_pct=0.010`
+  - `volume_spike_ratio=1.5`, `min_intraday_momentum_pct=0.0015`, `min_bar_return_pct=0.0008`
+  - `max_entry_rsi14=65.0`, `trend_require_price_above_slow=true`, `max_hold_cycles=120`
+- `momentum_policy.py`에 `_pullback_ready()`를 추가하고, 진입 우선순위를 `pullback_entry -> breakout fallback` 구조로 변경
+- `time_exit_loss`는 단순 추세 이탈 1개 조건으로 즉시 청산하지 않고, `추세 약화 / 모멘텀 소진 / 거래량 감소` 중 2개 이상일 때만 발동하도록 완화
+- 텔레그램/로그 reason 매핑에 `pullback_entry -> 눌림목 진입`을 추가
+- 자동매매 시작 메시지의 전략 설명도 `5m pullback` 기준으로 갱신
+
+### 검증 결과
+- `python3 -m compileall src` 통과
+- `python3 -m pytest tests/test_momentum_policy.py -v` 통과
+- `python3 -m pytest tests -v` 통과 (`161 passed`)

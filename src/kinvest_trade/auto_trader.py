@@ -930,8 +930,9 @@ class FixedSymbolAutoTrader:
                     f"symbol={auto.symbol}",
                     f"profile={self.config.credentials.profile_name}",
                     (
-                        f"strategy=vol>{auto.volume_spike_ratio:.1f}x breakout({auto.breakout_lookback_bars}) "
-                        f"with {auto.daily_fast_window}d/{auto.daily_slow_window}d filter"
+                        f"strategy=5m pullback {auto.intraday_fast_window}/{auto.intraday_slow_window}MA "
+                        f"vol>{auto.volume_spike_ratio:.1f}x with "
+                        f"{auto.daily_fast_window}d/{auto.daily_slow_window}d filter"
                     ),
                     f"interval={auto.poll_interval_sec}s",
                     "until=manual_stop_or_market_close",

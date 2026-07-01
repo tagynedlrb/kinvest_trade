@@ -190,20 +190,148 @@ def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
         market="overseas",
         symbol="SOXL",
         exchange_code="NASD",
-        action_bias="BUY",
-        action_reason="pullback_entry",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
         pnl_pct=0.012,
+        realized_pnl_usd=1.5,
+        realized_pnl_krw=2025,
         cycle_no=1,
+        session_id="sess-log",
     )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.active_session_id = "sess-log"
+    controller.session_performance = SessionPerformance(started_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc))
+
+    asyncio.run(controller._send_recent_trade_log())
+
+    message = controller.notifier.messages[-1]
+    assert "[KIS][손익요약]" in message
+    assert "실거래" in message
+    assert "거래=1건" in message
+    assert "해외손익=+$1.50" in message
+
+
+def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_log_command.db")
     repository.save_cycle_log(
-        logged_at="2026-07-01T00:01:00+00:00",
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        pnl_pct=0.015,
+        realized_pnl_krw=3900,
+        cycle_no=3,
+        session_id="sess-log-cmd",
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    controller.active_session_id = "sess-log-cmd"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_log",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][손익요약]" in message
+    assert "실거래" in message
+    assert "환산손익=+3,900원" in message
+
+
+def test_pnl_summary_excludes_virtual_for_prod(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_prod.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
         market="overseas",
         symbol="SOXL",
         exchange_code="NASD",
-        action_bias="SELL",
-        action_reason="marginal_profit_exit",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
         pnl_pct=0.008,
+        realized_pnl_usd=2.0,
+        realized_pnl_krw=2700,
         cycle_no=2,
+        session_id="sess-prod",
+    )
+    repository.save_virtual_order(
+        created_at="2026-07-01 10:00:00 KST",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=21.0,
+        currency="USD",
+        session="regular",
+        reason="take_profit",
+        realized_pnl=1.0,
+        realized_pnl_pct=0.05,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="live", env="prod"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.active_session_id = "sess-prod"
+
+    message = controller._build_session_pnl_message(
+        started_at="2026-07-01T00:00:00+00:00",
+        session_id="sess-prod",
+    )
+
+    assert "[KIS][손익요약]" in message
+    assert "가상거래" not in message
+
+
+def test_pnl_summary_includes_virtual_for_paper(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_paper.db")
+    repository.save_virtual_order(
+        created_at="2026-07-01 10:00:00 KST",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=21.0,
+        currency="USD",
+        session="regular",
+        reason="take_profit",
+        realized_pnl=1.0,
+        realized_pnl_pct=0.05,
     )
     controller = TelegramLiquidityLabController(
         config=SimpleNamespace(
@@ -216,12 +344,9 @@ def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
         notifier=DummyNotifier(),
     )
 
-    asyncio.run(controller._send_recent_trade_log())
+    message = controller._build_session_pnl_message(started_at="2026-07-01T00:00:00+00:00")
 
-    message = controller.notifier.messages[-1]
-    assert "[KIS][거래내역]" in message
-    assert "↓ SOXL 소수익 조기청산 [+0.80%]" in message
-    assert "↑ SOXL 눌림목 진입 [+1.20%]" in message
+    assert "가상거래(virtual)" in message
 
 
 def test_format_watch_target_line_includes_pnl_when_holding() -> None:
@@ -351,6 +476,9 @@ class DummyNotifier:
             raise RuntimeError("setMyCommands failed")
         return True
 
+    def is_authorized_chat(self, chat_id) -> bool:
+        return True
+
 
 class DummyRepository:
     def save_telegram_control_session(self, **kwargs) -> int:
@@ -364,6 +492,9 @@ class DummyRepository:
 
     def query_cycle_log(self, **kwargs) -> list[dict]:
         return []
+
+    def get_session_pnl_summary(self, **kwargs) -> dict:
+        return {"real": {}, "virtual": {}}
 
 
 class DummyAsyncClient:

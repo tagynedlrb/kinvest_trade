@@ -432,6 +432,7 @@ def _build_sell_service(*, dry_run: bool = False, error: Exception | None = None
     service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
     service.notifier = DummyNotifier()
     service._signal_cache = {}
+    service._session_id = "sess-test"
     return service
 
 
@@ -470,6 +471,41 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert "[KIS][LAB_SELL]" in message
     assert "손익=+$4.00" in message
     assert "수익률=+0.71%" in message
+
+
+def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
+    service = _build_sell_service()
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=282.0,
+        bid=281.9,
+        ask=282.1,
+        spread_pct=0.0007,
+        change_rate_pct=1.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=282.0,
+        pnl_pct=0.0071,
+    )
+
+    asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    rows = service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5)
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "TSLA"
+    assert rows[0]["session_id"] == "sess-test"
+    assert rows[0]["realized_pnl_usd"] == 4.0
+    assert rows[0]["realized_pnl_krw"] == 5520.0
 
 
 def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
@@ -696,6 +732,7 @@ def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | No
     service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
     service.notifier = DummyNotifier()
     service._signal_cache = {}
+    service._session_id = "sess-domestic"
     return service
 
 
@@ -729,8 +766,39 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     message = service.notifier.messages[0]
     assert "[KIS][LAB_SELL]" in message
     assert "시장=국내" in message
-    assert "손익=+4,000원" in message
-    assert "수익률=+2.50%" in message
+    assert "손익=+3,900원" in message
+    assert "수익률=+2.44%" in message
+
+
+def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
+    service = _build_domestic_sell_service()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=-0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+    held = DomesticHeldPosition(
+        stock_code="005930",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=80000.0,
+        current_price=82000.0,
+        pnl_pct=0.025,
+    )
+
+    asyncio.run(service._place_domestic_sell_order(candidate, held, "stop_loss"))
+    rows = service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5)
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "005930"
+    assert rows[0]["session_id"] == "sess-domestic"
+    assert rows[0]["realized_pnl_krw"] == 3900.0
 
 
 def test_domestic_sell_rejected_marks_skipped_true() -> None:

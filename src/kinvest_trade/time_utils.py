@@ -68,12 +68,16 @@ def parse_datetime(value: str | datetime | None) -> datetime | None:
             pass
 
     for pattern in (
+        "%Y-%m-%d %H:%M:%S KST",
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
     ):
         try:
-            return datetime.strptime(text, pattern).replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(text, pattern)
+            if pattern.endswith("KST"):
+                return parsed.replace(tzinfo=KST)
+            return parsed.replace(tzinfo=timezone.utc)
         except ValueError:
             pass
 

@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from .time_utils import parse_datetime
+
 
 class SqliteRepository:
     def __init__(self, db_path: Path) -> None:
@@ -216,7 +218,10 @@ class SqliteRepository:
                     minute_ma_fast REAL,
                     minute_ma_slow REAL,
                     activity_score REAL,
-                    cycle_no INTEGER DEFAULT 0
+                    cycle_no INTEGER DEFAULT 0,
+                    realized_pnl_usd REAL,
+                    realized_pnl_krw REAL,
+                    session_id TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_cycle_log_logged_at
                     ON cycle_log(logged_at);
@@ -237,6 +242,9 @@ class SqliteRepository:
             self._ensure_column(conn, "auto_trade_actions", "fx_rate_krw", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_actions", "fx_pnl_krw", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_actions", "estimated_tax_delta_krw", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "cycle_log", "realized_pnl_usd", "REAL")
+            self._ensure_column(conn, "cycle_log", "realized_pnl_krw", "REAL")
+            self._ensure_column(conn, "cycle_log", "session_id", "TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _ensure_column(
@@ -333,6 +341,8 @@ class SqliteRepository:
         action_reason: str,
         price: float | None = None,
         pnl_pct: float | None = None,
+        realized_pnl_usd: float | None = None,
+        realized_pnl_krw: float | None = None,
         holding_qty: int = 0,
         rsi14: float | None = None,
         volume_ratio: float | None = None,
@@ -342,16 +352,17 @@ class SqliteRepository:
         minute_ma_slow: float | None = None,
         activity_score: float | None = None,
         cycle_no: int = 0,
+        session_id: str = "",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO cycle_log
                     (logged_at, market, symbol, exchange_code, action_bias, action_reason,
-                     price, pnl_pct, holding_qty, rsi14, volume_ratio, intraday_momentum,
-                     intraday_bar_return, minute_ma_fast, minute_ma_slow, activity_score,
-                     cycle_no)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     price, pnl_pct, realized_pnl_usd, realized_pnl_krw, holding_qty,
+                     rsi14, volume_ratio, intraday_momentum, intraday_bar_return,
+                     minute_ma_fast, minute_ma_slow, activity_score, cycle_no, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     logged_at,
@@ -362,6 +373,8 @@ class SqliteRepository:
                     action_reason,
                     price,
                     pnl_pct,
+                    realized_pnl_usd,
+                    realized_pnl_krw,
                     holding_qty,
                     rsi14,
                     volume_ratio,
@@ -371,6 +384,7 @@ class SqliteRepository:
                     minute_ma_slow,
                     activity_score,
                     cycle_no,
+                    session_id,
                 ),
             )
 
@@ -396,6 +410,106 @@ class SqliteRepository:
                 [*params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_session_pnl_summary(
+        self,
+        *,
+        session_id: str = "",
+        include_virtual: bool = True,
+        after_logged_at: str = "",
+    ) -> dict:
+        after_dt = parse_datetime(after_logged_at)
+        with self._connect() as conn:
+            real_query = "SELECT * FROM cycle_log WHERE action_bias = 'SELL_REAL'"
+            real_params: list[object] = []
+            if session_id:
+                real_query += " AND session_id = ?"
+                real_params.append(session_id)
+            real_rows = [dict(row) for row in conn.execute(real_query, real_params).fetchall()]
+
+            virtual_rows: list[dict] = []
+            if include_virtual:
+                virtual_rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM virtual_orders WHERE side = 'sell'"
+                    ).fetchall()
+                ]
+
+        real_summary: dict[str, dict[str, float | int | None]] = {}
+        for row in real_rows:
+            logged_at_dt = parse_datetime(row.get("logged_at"))
+            if after_dt is not None and logged_at_dt is not None and logged_at_dt < after_dt:
+                continue
+            market = str(row.get("market") or "unknown")
+            stats = real_summary.setdefault(
+                market,
+                {
+                    "market": market,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "avg_pnl_pct": 0.0,
+                    "_sum_pnl_pct": 0.0,
+                    "total_pnl_usd": 0.0,
+                    "total_pnl_krw": 0.0,
+                },
+            )
+            pnl_pct = float(row.get("pnl_pct") or 0.0)
+            stats["trade_count"] = int(stats["trade_count"]) + 1
+            if pnl_pct > 0:
+                stats["win_count"] = int(stats["win_count"]) + 1
+            else:
+                stats["loss_count"] = int(stats["loss_count"]) + 1
+            stats["_sum_pnl_pct"] = float(stats["_sum_pnl_pct"]) + pnl_pct
+            stats["total_pnl_usd"] = float(stats["total_pnl_usd"]) + float(row.get("realized_pnl_usd") or 0.0)
+            stats["total_pnl_krw"] = float(stats["total_pnl_krw"]) + float(row.get("realized_pnl_krw") or 0.0)
+
+        for stats in real_summary.values():
+            trade_count = int(stats["trade_count"])
+            stats["avg_pnl_pct"] = (float(stats["_sum_pnl_pct"]) / trade_count) if trade_count else 0.0
+            del stats["_sum_pnl_pct"]
+
+        virtual_summary: dict[str, dict[str, float | int | str]] = {}
+        for row in virtual_rows:
+            created_at_dt = parse_datetime(row.get("created_at"))
+            if after_dt is not None and created_at_dt is not None and created_at_dt < after_dt:
+                continue
+            market = str(row.get("market") or "unknown")
+            currency = str(row.get("currency") or "USD")
+            key = f"{market}_{currency}"
+            stats = virtual_summary.setdefault(
+                key,
+                {
+                    "market": market,
+                    "currency": currency,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "avg_pnl_pct": 0.0,
+                    "_sum_pnl_pct": 0.0,
+                    "total_pnl": 0.0,
+                },
+            )
+            pnl = float(row.get("realized_pnl") or 0.0)
+            pnl_pct = float(row.get("realized_pnl_pct") or 0.0)
+            stats["trade_count"] = int(stats["trade_count"]) + 1
+            if pnl > 0:
+                stats["win_count"] = int(stats["win_count"]) + 1
+            else:
+                stats["loss_count"] = int(stats["loss_count"]) + 1
+            stats["_sum_pnl_pct"] = float(stats["_sum_pnl_pct"]) + pnl_pct
+            stats["total_pnl"] = float(stats["total_pnl"]) + pnl
+
+        for stats in virtual_summary.values():
+            trade_count = int(stats["trade_count"])
+            stats["avg_pnl_pct"] = (float(stats["_sum_pnl_pct"]) / trade_count) if trade_count else 0.0
+            del stats["_sum_pnl_pct"]
+
+        return {
+            "real": real_summary,
+            "virtual": virtual_summary,
+        }
 
     def create_paper_run(
         self,

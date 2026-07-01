@@ -317,9 +317,19 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_status`: 현재 상태 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
 - `/lab_positions`: 현재 보유 포지션과 미실현 손익 조회
+- `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
 - `/lab_virtual`: 거래불가 세션에서 가상 체결된 별도 포트폴리오와 누적 성과 조회
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
+
+### 손익 확인 (`/lab_log`)
+`/lab_log`는 `/lab_start` 이후 발생한 모든 거래의 손익을 집계해 표시한다.
+
+- 모의투자: 실거래(KIS 모의서버 체결) + 가상거래(virtual, 거래불가 세션 대체) 손익을 함께 표시
+- 실거래: 실거래 손익만 표시하고 가상거래는 제외
+- 표시 항목: 거래 건수, 승률, 해외 USD 손익, KRW 환산 손익, 시장별 세부 통계
+
+수수료, 세금, 환율 손익은 반영되지 않은 매매 차익 기준 추정값이며, 정확한 실현 손익은 KIS 앱에서 확인하는 것이 안전하다.
 
 메뉴 메모:
 - `/lab_paper_test`는 텔레그램 메뉴에서 누르면 종목코드 없이 들어오므로, 실제 실행할 때는 `/lab_paper_test 005930`처럼 직접 종목코드를 덧붙여 입력해야 한다.
@@ -328,7 +338,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `중지(stop)`는 루프를 멈추지만 컨트롤러 프로세스는 살아 있다.
 - `종료(terminate)`도 컨트롤러 서비스는 유지하고, lab 실행만 강제로 끝낸 뒤 명령 대기 상태로 돌아간다.
 - `stop`/`terminate` 요약은 `telegram_control_sessions` 테이블에도 저장되어 다음 전략 개선 때 누적 성과를 되짚는 데 사용한다.
-- `stop`/`terminate` 요약은 `종목별 buy/sell 횟수`, `domestic paper 실현손익`, `해외 청산 추정손익`까지 함께 묶어 짧게 보여준다.
+- `stop`/`terminate` 요약은 `종목별 buy/sell 횟수`와 함께 `/lab_log`와 동일한 세션 손익 요약을 함께 보여준다.
 - 장이 닫혀도 `no_supported_market_open`만으로 자동 정지하지 않는다. 서비스는 계속 살아 있고, 장이 다시 열리면 자동으로 감시/거래를 재개한다.
 - 다음 자동 실행 간격은 장 상태와 오류 횟수에 따라 동적으로 결정된다.
 - 거래 가능 세션은 `20초`, 미장 pre/after는 `30초`, 양쪽 장이 모두 닫혔고 다음 장이 멀면 `120초`까지 늘려 불필요한 호출을 줄인다.

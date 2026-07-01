@@ -27,6 +27,13 @@ def test_format_any_datetime_to_kst_from_sqlite_timestamp() -> None:
     )
 
 
+def test_format_any_datetime_to_kst_from_kst_string() -> None:
+    assert (
+        format_any_datetime_to_kst("2026-06-25 17:30:45 KST")
+        == "2026-06-25 17:30:45 KST"
+    )
+
+
 def test_format_kst_korean_from_aware_datetime() -> None:
     value = datetime(2026, 6, 25, 8, 30, 45, tzinfo=timezone.utc)
     assert format_kst_korean(value) == "6월 25일 17:30"

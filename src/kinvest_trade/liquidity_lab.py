@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -532,6 +533,7 @@ class LiquidityLabService:
         self._last_held_symbols: set[str] = set()
         self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
         self._cycle_count: int = 0
+        self._session_id: str = uuid.uuid4().hex[:12]
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -1820,6 +1822,7 @@ class LiquidityLabService:
             minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
             activity_score=watch_target.activity_score,
             cycle_no=getattr(self, "_cycle_count", 0),
+            session_id=getattr(self, "_session_id", ""),
         )
 
     def _select_domestic_buy_target(
@@ -2072,13 +2075,14 @@ class LiquidityLabService:
                 "exit_reason": exit_reason,
             }
 
+        sell_price = float(candidate.best_bid or candidate.current_price)
         try:
             sell_qty = min(held.quantity, max(held.orderable_qty, 0))
             response = await self.client.place_cash_order(
                 side="sell",
                 stock_code=candidate.stock_code,
                 qty=sell_qty,
-                price=candidate.best_bid or candidate.current_price,
+                price=int(sell_price),
                 order_division="00",
             )
         except KisApiError as exc:
@@ -2101,13 +2105,13 @@ class LiquidityLabService:
             f"시장={format_market_korean('domestic')}",
             f"종목={candidate.stock_code}",
             "구분=매도",
-            f"가격={format_krw(candidate.current_price)}",
+            f"가격={format_krw(sell_price)}",
             f"수량={sell_qty}주",
             f"사유={format_reason_korean(exit_reason)}",
         ]
         if held.avg_price > 0:
-            gross_pnl = (candidate.current_price - held.avg_price) * sell_qty
-            pnl_pct = (candidate.current_price - held.avg_price) / held.avg_price
+            gross_pnl = (sell_price - held.avg_price) * sell_qty
+            pnl_pct = (sell_price - held.avg_price) / held.avg_price
             lines.append(f"매입가={format_krw(held.avg_price)}")
             lines.append(f"손익={format_krw(gross_pnl)}")
             lines.append(f"수익률={format_pct(pnl_pct)}")
@@ -2115,6 +2119,22 @@ class LiquidityLabService:
             lines.append("매입가=알수없음")
             lines.append("손익=알수없음")
         await self.notifier.send("\n".join(lines))
+        if held.avg_price > 0:
+            self.repository.save_cycle_log(
+                logged_at=datetime.now(timezone.utc).isoformat(),
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                action_bias="SELL_REAL",
+                action_reason=exit_reason,
+                price=sell_price,
+                pnl_pct=pnl_pct,
+                realized_pnl_usd=None,
+                realized_pnl_krw=float(gross_pnl),
+                holding_qty=sell_qty,
+                cycle_no=getattr(self, "_cycle_count", 0),
+                session_id=getattr(self, "_session_id", ""),
+            )
 
         return {
             "submitted": True,
@@ -2535,6 +2555,27 @@ class LiquidityLabService:
             lines.append("손익=알수없음")
             lines.append("수익률=알수없음")
         await self.notifier.send("\n".join(lines))
+        if held.avg_price > 0:
+            real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
+            auto_trade_cfg = getattr(self.config, "auto_trade", None)
+            fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
+            gross_pnl_usd = (candidate.last_price - held.avg_price) * real_qty_sold
+            gross_pnl_krw = gross_pnl_usd * fx_rate
+            self.repository.save_cycle_log(
+                logged_at=datetime.now(timezone.utc).isoformat(),
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                action_bias="SELL_REAL",
+                action_reason=exit_reason,
+                price=candidate.last_price,
+                pnl_pct=pnl_pct,
+                realized_pnl_usd=gross_pnl_usd,
+                realized_pnl_krw=gross_pnl_krw,
+                holding_qty=real_qty_sold,
+                cycle_no=getattr(self, "_cycle_count", 0),
+                session_id=getattr(self, "_session_id", ""),
+            )
 
         return {
             "submitted": True,

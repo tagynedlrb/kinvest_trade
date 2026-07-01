@@ -95,6 +95,7 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         minute_ma_slow=20.1,
         activity_score=15.0,
         cycle_no=7,
+        session_id="sess-a",
     )
     repository.save_cycle_log(
         logged_at="2026-07-01T00:01:00+00:00",
@@ -104,6 +105,7 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         action_bias="SELL",
         action_reason="marginal_profit_exit",
         cycle_no=8,
+        session_id="sess-a",
     )
 
     buy_rows = repository.query_cycle_log(symbol="SOXL", action_bias="BUY", limit=10)
@@ -114,3 +116,157 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
     assert buy_rows[0]["cycle_no"] == 7
     assert len(sell_rows) == 1
     assert sell_rows[0]["action_reason"] == "marginal_profit_exit"
+
+
+def test_get_session_pnl_summary_real_only(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        pnl_pct=0.01,
+        realized_pnl_krw=5000,
+        cycle_no=1,
+        session_id="sess-real",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:01:00+00:00",
+        market="domestic",
+        symbol="000660",
+        exchange_code=None,
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        pnl_pct=-0.02,
+        realized_pnl_krw=-3000,
+        cycle_no=1,
+        session_id="sess-real",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:02:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        pnl_pct=0.03,
+        realized_pnl_usd=12.5,
+        realized_pnl_krw=17000,
+        cycle_no=1,
+        session_id="sess-real",
+    )
+
+    summary = repository.get_session_pnl_summary(session_id="sess-real", include_virtual=False)
+
+    assert summary["virtual"] == {}
+    assert summary["real"]["domestic"]["trade_count"] == 2
+    assert summary["real"]["domestic"]["win_count"] == 1
+    assert summary["real"]["overseas"]["trade_count"] == 1
+    assert summary["real"]["overseas"]["total_pnl_usd"] == 12.5
+
+
+def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_virtual_order(
+        created_at="2026-07-01 10:00:00 KST",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=21.0,
+        currency="USD",
+        session="regular",
+        reason="take_profit",
+        realized_pnl=1.0,
+        realized_pnl_pct=0.05,
+    )
+    repository.save_virtual_order(
+        created_at="2026-07-01 10:10:00 KST",
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=199.0,
+        currency="USD",
+        session="regular",
+        reason="stop_loss",
+        realized_pnl=-2.0,
+        realized_pnl_pct=-0.01,
+    )
+
+    summary = repository.get_session_pnl_summary(include_virtual=True)
+
+    assert summary["real"] == {}
+    assert summary["virtual"]["overseas_USD"]["trade_count"] == 2
+    assert summary["virtual"]["overseas_USD"]["win_count"] == 1
+    assert summary["virtual"]["overseas_USD"]["total_pnl"] == -1.0
+
+
+def test_get_session_pnl_summary_after_filter(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        pnl_pct=0.02,
+        realized_pnl_usd=5.0,
+        realized_pnl_krw=7000,
+        cycle_no=1,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T01:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        pnl_pct=0.03,
+        realized_pnl_usd=7.0,
+        realized_pnl_krw=9800,
+        cycle_no=2,
+    )
+    repository.save_virtual_order(
+        created_at="2026-07-01 08:50:00 KST",
+        market="overseas",
+        symbol="OLD",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=10.0,
+        currency="USD",
+        session="regular",
+        reason="old",
+        realized_pnl=1.0,
+        realized_pnl_pct=0.01,
+    )
+    repository.save_virtual_order(
+        created_at="2026-07-01 10:30:00 KST",
+        market="overseas",
+        symbol="NEW",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=10.0,
+        currency="USD",
+        session="regular",
+        reason="new",
+        realized_pnl=2.0,
+        realized_pnl_pct=0.02,
+    )
+
+    summary = repository.get_session_pnl_summary(
+        include_virtual=True,
+        after_logged_at="2026-07-01T00:30:00+00:00",
+    )
+
+    assert summary["real"]["overseas"]["trade_count"] == 1
+    assert summary["real"]["overseas"]["total_pnl_usd"] == 7.0
+    assert summary["virtual"]["overseas_USD"]["trade_count"] == 1
+    assert summary["virtual"]["overseas_USD"]["total_pnl"] == 2.0

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import subprocess
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
@@ -21,7 +22,7 @@ from .market_sessions import (
 from .message_format import format_market_korean, format_pct, format_reason_korean
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
-from .time_utils import format_display_times, format_kst, format_kst_korean
+from .time_utils import format_display_times, format_kst, format_kst_korean, parse_datetime
 
 
 HELP_MESSAGE = "\n".join(
@@ -155,6 +156,7 @@ class TelegramLiquidityLabController:
         self.update_offset: int | None = None
         self._consecutive_errors: int = 0
         self._last_market_state: str = ""
+        self.active_session_id: str = ""
 
     async def run(self) -> None:
         if not self.notifier.enabled:
@@ -373,6 +375,9 @@ class TelegramLiquidityLabController:
     async def _handle_start_like_command(self, target_mode: str, verb: str) -> None:
         if self.mode == "stopped":
             self.session_performance = SessionPerformance(started_at=datetime.now(timezone.utc))
+            self.active_session_id = uuid.uuid4().hex[:12]
+        elif not self.active_session_id:
+            self.active_session_id = uuid.uuid4().hex[:12]
         self.mode = target_mode
         self.next_run_at = datetime.now(timezone.utc)
         self.last_error = None
@@ -399,11 +404,10 @@ class TelegramLiquidityLabController:
         self.current_task = None
         self.current_task_started_at = None
         self.next_run_at = None
-        summary = self._finalize_session_summary(command="stop")
+        summaries = self._finalize_session_summary(command="stop")
         self._write_runtime_state()
-        await self.notifier.send(
-            summary
-        )
+        for summary in summaries:
+            await self.notifier.send(summary)
 
     async def _handle_terminate(self) -> None:
         self.mode = "stopped"
@@ -415,11 +419,10 @@ class TelegramLiquidityLabController:
         self.current_task = None
         self.current_task_started_at = None
         self.next_run_at = None
-        summary = self._finalize_session_summary(command="terminate")
+        summaries = self._finalize_session_summary(command="terminate")
         self._write_runtime_state()
-        await self.notifier.send(
-            summary
-        )
+        for summary in summaries:
+            await self.notifier.send(summary)
 
     async def _run_cycle(self, cycle_no: int) -> None:
         """
@@ -428,6 +431,8 @@ class TelegramLiquidityLabController:
         try:
             async with KisRestClient(self.config.credentials) as client:
                 service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+                if self.active_session_id:
+                    service._session_id = self.active_session_id
                 report = await service.run()
             self.last_report_summary = self._summarize_report(report, cycle_no)
             self._accumulate_session_performance(report)
@@ -710,28 +715,80 @@ class TelegramLiquidityLabController:
         await self.notifier.send(self._build_virtual_portfolio_message())
 
     async def _send_recent_trade_log(self) -> None:
-        buy_rows = self.repository.query_cycle_log(action_bias="BUY", limit=10)
-        sell_rows = self.repository.query_cycle_log(action_bias="SELL", limit=10)
-        rows = sorted(
-            buy_rows + sell_rows,
-            key=lambda row: str(row.get("logged_at", "")),
-            reverse=True,
+        started_at = (
+            self.session_performance.started_at.isoformat()
+            if getattr(self.session_performance, "started_at", None)
+            else ""
         )
+        await self.notifier.send(
+            self._build_session_pnl_message(
+                started_at=started_at,
+                session_id=self.active_session_id,
+            )
+        )
+
+    def _build_session_pnl_message(
+        self,
+        *,
+        started_at: str = "",
+        session_id: str = "",
+    ) -> str:
+        is_prod = self.config.credentials.env == "prod"
+        include_virtual = not is_prod
+        summary = self.repository.get_session_pnl_summary(
+            session_id=session_id,
+            include_virtual=include_virtual,
+            after_logged_at=started_at,
+        )
+        parsed_started = parse_datetime(started_at)
+        period_label = (format_kst(parsed_started) or "")[:16] if parsed_started else "전체"
         lines = [
-            "[KIS][거래내역]",
+            "[KIS][손익요약]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"환경={'실거래' if is_prod else '모의투자'}",
+            f"기간={period_label}~",
         ]
-        for row in rows[:15]:
-            mark = "↑" if row.get("action_bias") == "BUY" else "↓"
-            reason = format_reason_korean(str(row.get("action_reason") or row.get("action_bias") or "-"))
-            pnl_text = ""
-            pnl_raw = row.get("pnl_pct")
-            if pnl_raw is not None:
-                pnl_text = f" [{format_pct(float(pnl_raw))}]"
-            lines.append(f"{mark} {row.get('symbol', '-')} {reason}{pnl_text}")
-        if len(lines) <= 2:
-            lines.append("내역 없음")
-        await self.notifier.send("\n".join(lines))
+
+        real = summary.get("real", {})
+        total_real_trades = sum(int(item.get("trade_count", 0) or 0) for item in real.values())
+        total_real_wins = sum(int(item.get("win_count", 0) or 0) for item in real.values())
+        total_pnl_krw = sum(float(item.get("total_pnl_krw") or 0.0) for item in real.values())
+        total_pnl_usd = sum(float(item.get("total_pnl_usd") or 0.0) for item in real.values())
+        if total_real_trades > 0:
+            win_rate = (total_real_wins / total_real_trades) * 100.0
+            lines.append("─── 실거래 ───")
+            lines.append(f"거래={total_real_trades}건 (승률 {win_rate:.0f}%)")
+            if abs(total_pnl_usd) > 1e-9:
+                usd_sign = "+" if total_pnl_usd >= 0 else ""
+                lines.append(f"해외손익={usd_sign}${total_pnl_usd:,.2f}")
+            krw_sign = "+" if total_pnl_krw >= 0 else ""
+            lines.append(f"환산손익={krw_sign}{int(round(total_pnl_krw)):,}원")
+            for market, stats in sorted(real.items()):
+                trade_count = int(stats.get("trade_count", 0) or 0)
+                win_count = int(stats.get("win_count", 0) or 0)
+                market_win_rate = (win_count / trade_count * 100.0) if trade_count else 0.0
+                lines.append(f"{market}: {trade_count}건 승률{market_win_rate:.0f}%")
+        else:
+            lines.append("실거래 내역 없음")
+
+        if include_virtual:
+            virtual = summary.get("virtual", {})
+            total_virtual_trades = sum(int(item.get("trade_count", 0) or 0) for item in virtual.values())
+            if total_virtual_trades > 0:
+                lines.append("─── 가상거래(virtual) ───")
+                for key, stats in sorted(virtual.items()):
+                    trade_count = int(stats.get("trade_count", 0) or 0)
+                    win_count = int(stats.get("win_count", 0) or 0)
+                    pnl = float(stats.get("total_pnl") or 0.0)
+                    currency_suffix = "원" if "KRW" in key else "$"
+                    sign = "+" if pnl >= 0 else ""
+                    win_rate = (win_count / trade_count * 100.0) if trade_count else 0.0
+                    lines.append(
+                        f"{key}: {trade_count}건 승률{win_rate:.0f}% 손익{sign}{pnl:,.2f}{currency_suffix}"
+                    )
+            else:
+                lines.append("가상거래 내역 없음")
+        return "\n".join(lines)
 
     def _accumulate_session_performance(self, report: LiquidityLabReport) -> None:
         perf = self.session_performance
@@ -760,6 +817,11 @@ class TelegramLiquidityLabController:
 
     def _accumulate_order_stats(self, order_result: dict | None, *, market: str) -> None:
         if not order_result:
+            return
+        batched_orders = order_result.get("batched_orders")
+        if isinstance(batched_orders, list) and batched_orders:
+            for item in batched_orders:
+                self._accumulate_order_stats(item, market=market)
             return
         perf = self.session_performance
         is_submitted = bool(order_result.get("submitted"))
@@ -860,8 +922,13 @@ class TelegramLiquidityLabController:
             )
         return "; ".join(chunks)
 
-    def _finalize_session_summary(self, *, command: str) -> str:
+    def _finalize_session_summary(self, *, command: str) -> list[str]:
         ended_at = datetime.now(timezone.utc)
+        started_at_iso = (
+            self.session_performance.started_at.isoformat()
+            if self.session_performance.started_at is not None
+            else ""
+        )
         summary = format_display_times(
             {
                 "command": command,
@@ -902,7 +969,6 @@ class TelegramLiquidityLabController:
             ),
             raw_payload=summary,
         )
-        self.session_performance = SessionPerformance()
         lines = [
             "[KIS][TELEGRAM_CONTROL_SESSION_SUMMARY]",
             f"기록={record_id}",
@@ -922,7 +988,16 @@ class TelegramLiquidityLabController:
             f"종목통계={self._format_symbol_stats_inline(summary.get('symbol_stats') or {})}",
             f"최근오류={summary['last_error'] or '-'}",
         ]
-        return "\n".join(lines)
+        pnl_message = self._build_session_pnl_message(
+            started_at=started_at_iso,
+            session_id=self.active_session_id,
+        )
+        self.session_performance = SessionPerformance()
+        self.active_session_id = ""
+        combined = "\n".join([*lines, "", pnl_message])
+        if len(combined) <= 3900:
+            return [combined]
+        return ["\n".join(lines), pnl_message]
 
     @staticmethod
     def _summarize_report(report: LiquidityLabReport, cycle_no: int) -> dict:

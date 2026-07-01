@@ -124,6 +124,11 @@ class AutoTradeConfig:
     min_intraday_momentum_pct: float
     min_bar_return_pct: float
     max_breakout_extension_pct: float
+    pullback_distance_lower_pct: float
+    pullback_distance_upper_pct: float
+    pullback_rsi_low: float
+    pullback_rsi_high: float
+    pullback_min_volume_ratio: float
     bollinger_window: int
     bollinger_stddev: float
     bollinger_breakout_buffer_pct: float
@@ -561,6 +566,17 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             min_bar_return_pct=float(auto_trade_raw.get("min_bar_return_pct", 0.0015)),
             max_breakout_extension_pct=float(
                 auto_trade_raw.get("max_breakout_extension_pct", 0.01)
+            ),
+            pullback_distance_lower_pct=float(
+                auto_trade_raw.get("pullback_distance_lower_pct", 0.015)
+            ),
+            pullback_distance_upper_pct=float(
+                auto_trade_raw.get("pullback_distance_upper_pct", 0.005)
+            ),
+            pullback_rsi_low=float(auto_trade_raw.get("pullback_rsi_low", 35.0)),
+            pullback_rsi_high=float(auto_trade_raw.get("pullback_rsi_high", 62.0)),
+            pullback_min_volume_ratio=float(
+                auto_trade_raw.get("pullback_min_volume_ratio", 1.3)
             ),
             bollinger_window=int(auto_trade_raw.get("bollinger_window", 20)),
             bollinger_stddev=float(auto_trade_raw.get("bollinger_stddev", 2.0)),

@@ -2756,7 +2756,8 @@ class LiquidityLabService:
             else None
         )
         # Some execution paths already send an immediate fill notification.
-        # Skip the cycle-end summary for those paths so each trade is reported once.
+        # Real overseas buys do not, so do not blanket-suppress BUY/SELL here.
+        # Instead, skip only the paths that explicitly mark themselves as already notified.
         if submitted_order and submitted_order.get("already_notified"):
             return
         session_note = ""

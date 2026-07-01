@@ -1486,6 +1486,43 @@ def test_send_summary_skips_when_domestic_sell_already_notified() -> None:
     assert service.notifier.messages == []
 
 
+def test_send_summary_real_overseas_buy_without_pre_notification_still_sends_once() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 22:05:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target="INTC",
+        primary_selection_reason="watchlist_buy_signal",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        paper_run=None,
+        domestic_order=None,
+        overseas_order={
+            "submitted": True,
+            "side": "buy",
+            "candidate": {"symbol": "INTC", "last_price": 35.25},
+            "qty": 1,
+            "reason": "pullback_entry",
+        },
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert len(service.notifier.messages) == 1
+    assert "종목=INTC" in service.notifier.messages[0]
+    assert "동작=매수" in service.notifier.messages[0]
+
+
 def test_format_order_summary_sell_rejected_returns_sell_rejected_action() -> None:
     service = _build_sell_service()
 

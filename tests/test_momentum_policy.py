@@ -334,3 +334,84 @@ def test_pullback_is_first_priority_in_evaluate_entry() -> None:
 
     assert result.ready is True
     assert result.reason == "pullback_entry"
+
+
+def test_pullback_ready_respects_config_rsi_bounds() -> None:
+    config = replace(_build_config(), pullback_rsi_low=40.0, pullback_rsi_high=60.0)
+
+    blocked = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.2,
+            rsi14=61.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+    allowed = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.2,
+            rsi14=59.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+
+    assert blocked is False
+    assert allowed is True
+
+
+def test_pullback_ready_respects_config_distance() -> None:
+    config = replace(
+        _build_config(),
+        pullback_distance_lower_pct=0.010,
+        pullback_distance_upper_pct=0.005,
+    )
+
+    blocked = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=98.5,
+            rsi14=50.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+    allowed = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=99.2,
+            rsi14=50.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.8,
+        ),
+    )
+
+    assert blocked is False
+    assert allowed is True
+
+
+def test_pullback_ready_respects_config_volume() -> None:
+    config = replace(_build_config(), pullback_min_volume_ratio=2.0)
+    result = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.2,
+            rsi14=50.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.5,
+        ),
+    )
+
+    assert result is False

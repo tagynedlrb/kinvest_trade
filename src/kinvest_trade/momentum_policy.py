@@ -265,23 +265,26 @@ def _pullback_ready(
     config: AutoTradeConfig,
     snapshot: MovingAverageSnapshot,
 ) -> bool:
-    del config
     fast = snapshot.minute_ma_fast
     slow = snapshot.minute_ma_slow
     if fast is None or slow is None or fast <= 0 or fast < slow:
         return False
 
     distance_pct = (snapshot.price - fast) / fast
-    if not (-0.015 <= distance_pct <= 0.005):
+    if not (
+        -config.pullback_distance_lower_pct
+        <= distance_pct
+        <= config.pullback_distance_upper_pct
+    ):
         return False
 
     rsi = snapshot.rsi14
-    if rsi is not None and not (35.0 <= rsi <= 62.0):
+    if rsi is not None and not (config.pullback_rsi_low <= rsi <= config.pullback_rsi_high):
         return False
 
     if snapshot.intraday_bar_return < 0:
         return False
-    if snapshot.volume_ratio < 1.3:
+    if snapshot.volume_ratio < config.pullback_min_volume_ratio:
         return False
     return True
 

@@ -486,3 +486,18 @@
 - `python3 -m compileall src` 통과
 - `python3 -m pytest tests/test_liquidity_lab.py tests/test_overseas_scan.py tests/test_message_format.py -v` 통과
 - `python3 -m pytest tests -v` 통과 (`166 passed`)
+
+## 2026-07-01
+### 이번에 수행한 내용
+- 24차 점검 결과를 기준으로 `pullback` 판단 로직의 남은 하드코딩을 제거하고, 눌림 거리/RSI 범위/최소 거래량 배율을 모두 `AutoTradeConfig`로 이동
+- `config/fixed_config.json`에 `pullback_distance_lower_pct`, `pullback_distance_upper_pct`, `pullback_rsi_low`, `pullback_rsi_high`, `pullback_min_volume_ratio`를 추가
+- `_pullback_ready()`가 위 5개 값을 실제로 참조하도록 수정해 설정 변경이 전략 판정에 반영되게 보완
+- `overseas_scan_top_n`을 `12`로 되돌려 `unified_watch_top_n=15`와 역할을 분리
+- `_send_summary`는 단순 `BUY/SELL` 문자열 가드로 바꾸지 않고, 기존 `already_notified` 구조를 유지
+  - 이유: 실해외 매수는 즉시 알림을 보내지 않고 cycle-end summary가 유일한 통보 경로이므로, blanket suppression을 넣으면 알림 누락이 생김
+- 대신 `already_notified`가 있는 경로는 중복 전송을 막고, 실해외 매수는 summary로 1회만 전송되는 동작을 테스트로 고정
+
+### 검증 결과
+- `python3 -m compileall src` 통과
+- `python3 -m pytest tests/test_momentum_policy.py tests/test_liquidity_lab.py -v` 통과
+- `python3 -m pytest tests -v` 통과 (`170 passed`)

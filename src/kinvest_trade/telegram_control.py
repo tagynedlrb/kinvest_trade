@@ -36,6 +36,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_status - 현재 상태",
         "/lab_watchlist - 감시 종목 요약",
         "/lab_positions - 보유 종목 요약",
+        "/lab_log - 최근 매매 내역 조회",
         "/lab_virtual - 가상 포트폴리오 요약",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
@@ -52,6 +53,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_status", "description": "현재 상태 조회"},
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_positions", "description": "보유 종목 요약"},
+    {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_virtual", "description": "가상 거래 성과 보기"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
@@ -244,6 +246,9 @@ class TelegramLiquidityLabController:
             return
         if command_name == "positions":
             await self._send_positions_message()
+            return
+        if command_name == "log":
+            await self._send_recent_trade_log()
             return
         if command_name == "virtual":
             await self._send_virtual_portfolio_message()
@@ -704,6 +709,30 @@ class TelegramLiquidityLabController:
     async def _send_virtual_portfolio_message(self) -> None:
         await self.notifier.send(self._build_virtual_portfolio_message())
 
+    async def _send_recent_trade_log(self) -> None:
+        buy_rows = self.repository.query_cycle_log(action_bias="BUY", limit=10)
+        sell_rows = self.repository.query_cycle_log(action_bias="SELL", limit=10)
+        rows = sorted(
+            buy_rows + sell_rows,
+            key=lambda row: str(row.get("logged_at", "")),
+            reverse=True,
+        )
+        lines = [
+            "[KIS][거래내역]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+        ]
+        for row in rows[:15]:
+            mark = "↑" if row.get("action_bias") == "BUY" else "↓"
+            reason = format_reason_korean(str(row.get("action_reason") or row.get("action_bias") or "-"))
+            pnl_text = ""
+            pnl_raw = row.get("pnl_pct")
+            if pnl_raw is not None:
+                pnl_text = f" [{format_pct(float(pnl_raw))}]"
+            lines.append(f"{mark} {row.get('symbol', '-')} {reason}{pnl_text}")
+        if len(lines) <= 2:
+            lines.append("내역 없음")
+        await self.notifier.send("\n".join(lines))
+
     def _accumulate_session_performance(self, report: LiquidityLabReport) -> None:
         perf = self.session_performance
         if perf.started_at is None:
@@ -960,6 +989,7 @@ class TelegramLiquidityLabController:
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
             "/lab_positions": "positions",
+            "/lab_log": "log",
             "/lab_virtual": "virtual",
             "/lab_help": "help",
             "/start": "help",

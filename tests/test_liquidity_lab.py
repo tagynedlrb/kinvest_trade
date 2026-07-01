@@ -125,7 +125,44 @@ def test_overseas_speculative_reasons_flag_low_volume_and_spread() -> None:
         "low_price_usd",
         "thin_volume",
         "wide_spread",
+        "thin_turnover",
     ]
+
+
+def test_overseas_speculative_reasons_flag_thin_turnover() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_min_price_usd": 5.0,
+                    "overseas_min_volume": 500_000,
+                    "overseas_max_spread_pct": 0.003,
+                },
+            )()
+        },
+    )()
+    candidate = OverseasScanResult(
+        symbol="AAL",
+        exchange_code="NASD",
+        last_price=6.0,
+        bid=5.99,
+        ask=6.01,
+        spread_pct=0.002,
+        change_rate_pct=1.0,
+        volume=100_000,
+        orderable_qty=100,
+        fx_rate_krw=1300.0,
+        activity_score=10.0,
+    )
+
+    reasons = service._overseas_speculative_reasons(candidate)
+
+    assert "thin_turnover" in reasons
 
 
 def test_select_overseas_exit_target_prioritizes_stop_loss() -> None:
@@ -855,6 +892,8 @@ def _build_run_service() -> LiquidityLabService:
             overseas_max_position_qty=3,
             overseas_take_profit_pct=0.012,
             overseas_stop_loss_pct=0.008,
+            max_concurrent_overseas_orders=3,
+            max_concurrent_domestic_orders=2,
             use_slot_sizing=False,
             slot_entry_pct=0.10,
             slot_max_pct=0.20,
@@ -917,6 +956,44 @@ def test_build_unified_watch_targets_merges_domestic_and_overseas() -> None:
     ]
 
 
+def test_cycle_log_saved_per_watch_target() -> None:
+    service = _build_run_service()
+    service._cycle_count = 9
+    service.config.liquidity_lab.unified_watch_top_n = 3
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+    ]
+    overseas_ranked = [
+        OverseasScanResult("O1", "NASD", 51.0, 50.9, 51.1, 0.001, 1.0, 100_000, 0, 1350.0, 60.0),
+        OverseasScanResult("O2", "NASD", 41.0, 40.9, 41.1, 0.001, 1.0, 100_000, 0, 1350.0, 55.0),
+    ]
+    service._signal_cache = {
+        "O1": _snapshot(price=51.0),
+        "O2": _snapshot(price=41.0),
+    }
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=True,
+            us_open=True,
+        )
+    )
+    rows = service.repository.query_cycle_log(limit=10)
+
+    assert len(rows) == len(watch_targets)
+    assert rows[0]["cycle_no"] == 9
+    assert {row["symbol"] for row in rows} == {"D1", "O1", "O2"}
+
+
 def test_unified_watch_includes_held_domestic_regardless_of_rank() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.unified_watch_top_n = 2
@@ -953,6 +1030,27 @@ def test_unified_watch_includes_held_domestic_regardless_of_rank() -> None:
     )
 
     assert [item.code for item in watch_targets] == ["D3", "D1", "D2"]
+
+
+def test_select_overseas_buy_targets_returns_multiple() -> None:
+    service = _build_run_service()
+    overseas_ranked = [
+        OverseasScanResult("NVDA", "NASD", 150.0, 149.9, 150.1, 0.0013, 2.0, 900_000, 10, 1350.0, 18.0),
+        OverseasScanResult("AMD", "NASD", 155.0, 154.9, 155.1, 0.0012, 1.5, 800_000, 10, 1350.0, 17.0),
+        OverseasScanResult("AAPL", "NASD", 210.0, 209.9, 210.1, 0.0010, 1.2, 700_000, 10, 1350.0, 16.0),
+        OverseasScanResult("MSFT", "NASD", 430.0, 429.9, 430.1, 0.0009, 1.1, 600_000, 10, 1350.0, 15.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus("overseas", "NVDA", "NASD", 150.0, 18.0, 12.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("overseas", "AMD", "NASD", 155.0, 17.0, 11.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("overseas", "AAPL", "NASD", 210.0, 16.0, 10.0, "BUY", "BUY_READY", "20d>60d 5>20", "volume_breakout_entry", 0),
+        WatchTargetStatus("overseas", "NVDA", "NASD", 150.0, 18.0, 9.0, "BUY", "BUY_READY", "20d>60d 5>20", "duplicate", 0),
+        WatchTargetStatus("overseas", "MSFT", "NASD", 430.0, 15.0, 8.0, "WAIT", "WAIT", "20d>60d 5>20", "watch", 0),
+    ]
+
+    selected = service._select_overseas_buy_targets(overseas_ranked, watch_targets, max_concurrent=3)
+
+    assert [item.symbol for item in selected] == ["NVDA", "AMD", "AAPL"]
 
 
 def test_unified_watch_excludes_closed_market() -> None:

@@ -25,6 +25,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_positions") == "positions"
+    assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
     assert TelegramLiquidityLabController.parse_command("/lab_virtual") == "virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test") == ("paper_test", None)
@@ -182,6 +183,47 @@ def test_build_virtual_portfolio_message_formats_positions_and_summary(tmp_path)
     assert "해외 체결=1 승률=+100.00% 실현손익=$1.0000" in message
 
 
+def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_log.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="BUY",
+        action_reason="pullback_entry",
+        pnl_pct=0.012,
+        cycle_no=1,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:01:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL",
+        action_reason="marginal_profit_exit",
+        pnl_pct=0.008,
+        cycle_no=2,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    asyncio.run(controller._send_recent_trade_log())
+
+    message = controller.notifier.messages[-1]
+    assert "[KIS][거래내역]" in message
+    assert "↓ SOXL 소수익 조기청산 [+0.80%]" in message
+    assert "↑ SOXL 눌림목 진입 [+1.20%]" in message
+
+
 def test_format_watch_target_line_includes_pnl_when_holding() -> None:
     line = TelegramLiquidityLabController._format_watch_target_line(
         {
@@ -319,6 +361,9 @@ class DummyRepository:
 
     def save_risk_event(self, **kwargs) -> None:
         return None
+
+    def query_cycle_log(self, **kwargs) -> list[dict]:
+        return []
 
 
 class DummyAsyncClient:

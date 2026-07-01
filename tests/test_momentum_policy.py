@@ -182,6 +182,103 @@ def test_time_exit_profit_still_works() -> None:
     assert result.reason == "time_exit_profit"
 
 
+def test_momentum_loss_cut_requires_two_of_three_conditions() -> None:
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(
+            price=99.8,
+            minute_ma_slow=100.0,
+            intraday_momentum=0.001,
+            intraday_bar_return=0.001,
+            atr_pct=0.001,
+        ),
+        -0.006,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason == "hold"
+
+
+def test_momentum_loss_cut_triggers_when_two_conditions_align() -> None:
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(
+            price=99.8,
+            minute_ma_slow=100.0,
+            intraday_momentum=-0.001,
+            intraday_bar_return=0.001,
+            atr_pct=0.001,
+        ),
+        -0.006,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "sell"
+    assert result.reason == "momentum_loss_cut"
+
+
+def test_marginal_profit_exit_triggers() -> None:
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(
+            volume_ratio=0.7,
+            intraday_momentum=-0.0002,
+        ),
+        0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "sell"
+    assert result.reason == "marginal_profit_exit"
+
+
+def test_trend_filter_lost_deferred_when_pullback_still_valid() -> None:
+    config = replace(
+        _build_config(),
+        trend_require_price_above_slow=False,
+    )
+    snapshot = _snapshot(
+        price=100.82,
+        daily_ma_fast=100.0,
+        daily_ma_slow=100.5,
+        minute_ma_fast=101.0,
+        minute_ma_slow=100.8,
+        intraday_momentum=-0.001,
+        intraday_bar_return=0.0004,
+        volume_ratio=1.4,
+        rsi14=55.0,
+        breakout_level=101.2,
+        breakout_distance_pct=-0.00375,
+        minute_gap_slow_pct=0.0002,
+        fast_above_slow=True,
+    )
+
+    assert _pullback_ready(config, snapshot) is True
+
+    result = evaluate_exit_setup(
+        config,
+        snapshot,
+        -0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason == "hold"
+
+
 def test_rsi_85_blocks_entry() -> None:
     result = evaluate_entry_setup(
         _build_config(),

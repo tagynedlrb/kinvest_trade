@@ -179,14 +179,15 @@ def evaluate_exit_setup(
 
     if pnl_pct <= -hard_stop:
         return ExitSetup("sell", "atr_hard_stop", "SELL_READY", note)
-    if pnl_pct <= -soft_stop and (
-        snapshot.price < (snapshot.minute_ma_slow or snapshot.price + 1.0)
-        or snapshot.intraday_momentum < 0
-        or snapshot.intraday_bar_return < 0
-    ):
-        return ExitSetup("sell", "momentum_loss_cut", "SELL_READY", note)
+    if pnl_pct <= -soft_stop:
+        price_below_ma = snapshot.price < (snapshot.minute_ma_slow or snapshot.price + 1.0)
+        momentum_negative = snapshot.intraday_momentum < 0
+        bar_negative = snapshot.intraday_bar_return < 0
+        if sum([price_below_ma, momentum_negative, bar_negative]) >= 2:
+            return ExitSetup("sell", "momentum_loss_cut", "SELL_READY", note)
     if pnl_pct < 0 and not trend_filter_ok(snapshot) and snapshot.intraday_momentum <= 0:
-        return ExitSetup("sell", "trend_filter_lost", "SELL_READY", note)
+        if not _pullback_ready(config, snapshot):
+            return ExitSetup("sell", "trend_filter_lost", "SELL_READY", note)
 
     if (
         config.allow_partial_exit
@@ -208,6 +209,11 @@ def evaluate_exit_setup(
         or (snapshot.rsi14 is not None and snapshot.rsi14 >= config.partial_exit_rsi14 + 4.0)
     ):
         return ExitSetup("sell", "breakout_exhaustion_exit", "SELL_READY", note)
+    small_profit = 0 < pnl_pct < (config.take_profit_pct * 0.4)
+    volume_fading = snapshot.volume_ratio <= (config.volume_fade_ratio or 0.8)
+    momentum_fading = snapshot.intraday_momentum <= 0
+    if small_profit and volume_fading and momentum_fading:
+        return ExitSetup("sell", "marginal_profit_exit", "SELL_READY", note)
 
     if hold_cycles >= config.max_hold_cycles:
         if pnl_pct >= 0 and snapshot.intraday_momentum <= 0:

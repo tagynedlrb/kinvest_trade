@@ -197,6 +197,33 @@ class SqliteRepository:
                     overseas_orders_failed INTEGER NOT NULL DEFAULT 0,
                     summary_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS cycle_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    logged_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    action_bias TEXT NOT NULL,
+                    action_reason TEXT NOT NULL,
+                    price REAL,
+                    pnl_pct REAL,
+                    holding_qty INTEGER DEFAULT 0,
+                    rsi14 REAL,
+                    volume_ratio REAL,
+                    intraday_momentum REAL,
+                    intraday_bar_return REAL,
+                    minute_ma_fast REAL,
+                    minute_ma_slow REAL,
+                    activity_score REAL,
+                    cycle_no INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_cycle_log_logged_at
+                    ON cycle_log(logged_at);
+                CREATE INDEX IF NOT EXISTS idx_cycle_log_symbol
+                    ON cycle_log(symbol);
+                CREATE INDEX IF NOT EXISTS idx_cycle_log_action
+                    ON cycle_log(action_bias);
                 """
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
@@ -294,6 +321,81 @@ class SqliteRepository:
                 ),
             )
             return int(cursor.lastrowid)
+
+    def save_cycle_log(
+        self,
+        *,
+        logged_at: str,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        action_bias: str,
+        action_reason: str,
+        price: float | None = None,
+        pnl_pct: float | None = None,
+        holding_qty: int = 0,
+        rsi14: float | None = None,
+        volume_ratio: float | None = None,
+        intraday_momentum: float | None = None,
+        intraday_bar_return: float | None = None,
+        minute_ma_fast: float | None = None,
+        minute_ma_slow: float | None = None,
+        activity_score: float | None = None,
+        cycle_no: int = 0,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cycle_log
+                    (logged_at, market, symbol, exchange_code, action_bias, action_reason,
+                     price, pnl_pct, holding_qty, rsi14, volume_ratio, intraday_momentum,
+                     intraday_bar_return, minute_ma_fast, minute_ma_slow, activity_score,
+                     cycle_no)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    logged_at,
+                    market,
+                    symbol,
+                    exchange_code,
+                    action_bias,
+                    action_reason,
+                    price,
+                    pnl_pct,
+                    holding_qty,
+                    rsi14,
+                    volume_ratio,
+                    intraday_momentum,
+                    intraday_bar_return,
+                    minute_ma_fast,
+                    minute_ma_slow,
+                    activity_score,
+                    cycle_no,
+                ),
+            )
+
+    def query_cycle_log(
+        self,
+        *,
+        symbol: str | None = None,
+        action_bias: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        with self._connect() as conn:
+            where_parts: list[str] = []
+            params: list[object] = []
+            if symbol:
+                where_parts.append("symbol = ?")
+                params.append(symbol)
+            if action_bias:
+                where_parts.append("action_bias = ?")
+                params.append(action_bias)
+            clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+            rows = conn.execute(
+                f"SELECT * FROM cycle_log {clause} ORDER BY id DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_paper_run(
         self,

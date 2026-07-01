@@ -233,6 +233,8 @@ class LiquidityLabConfig:
     overseas_scan_top_n: int
     domestic_test_order_qty: int
     overseas_test_order_qty: int
+    max_concurrent_overseas_orders: int
+    max_concurrent_domestic_orders: int
     domestic_min_price_krw: int
     domestic_min_intraday_turnover_krw: int
     domestic_min_volume_sum: int
@@ -716,15 +718,21 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             overseas_scan_top_n=int(liquidity_lab_raw.get("overseas_scan_top_n", 69)),
             domestic_test_order_qty=int(liquidity_lab_raw.get("domestic_test_order_qty", 1)),
             overseas_test_order_qty=int(liquidity_lab_raw.get("overseas_test_order_qty", 1)),
-            domestic_min_price_krw=int(liquidity_lab_raw.get("domestic_min_price_krw", 5000)),
+            max_concurrent_overseas_orders=int(
+                liquidity_lab_raw.get("max_concurrent_overseas_orders", 3)
+            ),
+            max_concurrent_domestic_orders=int(
+                liquidity_lab_raw.get("max_concurrent_domestic_orders", 2)
+            ),
+            domestic_min_price_krw=int(liquidity_lab_raw.get("domestic_min_price_krw", 3000)),
             domestic_min_intraday_turnover_krw=int(
                 liquidity_lab_raw.get("domestic_min_intraday_turnover_krw", 50_000_000_000)
             ),
-            domestic_min_volume_sum=int(liquidity_lab_raw.get("domestic_min_volume_sum", 30_000)),
+            domestic_min_volume_sum=int(liquidity_lab_raw.get("domestic_min_volume_sum", 100_000)),
             domestic_max_spread_pct=float(liquidity_lab_raw.get("domestic_max_spread_pct", 0.003)),
-            overseas_min_price_usd=float(liquidity_lab_raw.get("overseas_min_price_usd", 10.0)),
-            overseas_min_volume=int(liquidity_lab_raw.get("overseas_min_volume", 50_000)),
-            overseas_max_spread_pct=float(liquidity_lab_raw.get("overseas_max_spread_pct", 0.004)),
+            overseas_min_price_usd=float(liquidity_lab_raw.get("overseas_min_price_usd", 5.0)),
+            overseas_min_volume=int(liquidity_lab_raw.get("overseas_min_volume", 500_000)),
+            overseas_max_spread_pct=float(liquidity_lab_raw.get("overseas_max_spread_pct", 0.003)),
             overseas_take_profit_pct=float(liquidity_lab_raw.get("overseas_take_profit_pct", 0.012)),
             overseas_stop_loss_pct=float(liquidity_lab_raw.get("overseas_stop_loss_pct", 0.008)),
             overseas_max_position_qty=int(liquidity_lab_raw.get("overseas_max_position_qty", 1)),

@@ -65,6 +65,7 @@ REASON_KOREAN_MAP = {
     "time_exit_forced": "시간 만료 강제 청산",
     "partial_profit_lock": "부분 익절",
     "breakout_exhaustion_exit": "모멘텀 소진 청산",
+    "marginal_profit_exit": "소수익 조기청산",
     "take_profit": "익절",
     "stop_loss": "손절",
     "watch": "감시중",

@@ -130,6 +130,7 @@ class WatchTargetStatus:
     ma_summary: str
     note: str
     holding_qty: int = 0
+    signal_snapshot: MovingAverageSnapshot | None = None
 
 
 @dataclass(slots=True)
@@ -170,7 +171,10 @@ class LiquidityLabReport:
             "overseas_excluded": [asdict(item) for item in self.overseas_excluded],
             "domestic_positions": [asdict(item) for item in self.domestic_positions],
             "overseas_positions": [asdict(item) for item in self.overseas_positions],
-            "watch_targets": [asdict(item) for item in self.watch_targets],
+            "watch_targets": [
+                {key: value for key, value in asdict(item).items() if key != "signal_snapshot"}
+                for item in self.watch_targets
+            ],
             "estimated_api_calls_per_cycle": self.estimated_api_calls_per_cycle,
             "paper_run": self.paper_run,
             "domestic_order": self.domestic_order,
@@ -527,6 +531,7 @@ class LiquidityLabService:
         self._overseas_excluded: list[ExcludedCandidate] = []
         self._last_held_symbols: set[str] = set()
         self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
+        self._cycle_count: int = 0
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -583,6 +588,7 @@ class LiquidityLabService:
 
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
+        self._cycle_count = getattr(self, "_cycle_count", 0) + 1
         krx_open = is_krx_regular_session(now)
         us_open = is_us_regular_session(now)
         us_session = get_us_trading_session(now)
@@ -668,10 +674,17 @@ class LiquidityLabService:
             else None
         )
         domestic_buy_target = self._select_domestic_buy_target(domestic_ranked, domestic_watch_targets)
-        overseas_buy_target = self._select_overseas_buy_target(overseas_ranked, overseas_watch_targets)
+        config_ll = self.config.liquidity_lab
+        overseas_buy_targets = self._select_overseas_buy_targets(
+            overseas_ranked,
+            overseas_watch_targets,
+            max_concurrent=getattr(config_ll, "max_concurrent_overseas_orders", 3),
+        )
+        overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
         paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
         domestic_order: dict = {"skipped": True, "reason": "no_action"}
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
+        overseas_orders: list[dict] = []
 
         if domestic_exit_target is not None:
             exit_candidate, held, exit_reason, exit_signal = domestic_exit_target
@@ -692,13 +705,20 @@ class LiquidityLabService:
                 exit_reason,
                 signal_snapshot=exit_signal,
             )
-        elif overseas_buy_target is not None and us_orderable_in_profile:
-            overseas_order = await self._manage_overseas_position(
-                candidate=overseas_buy_target,
-                held_positions=overseas_positions,
-            )
-        elif overseas_buy_target is not None and us_open and not us_orderable_in_profile:
-            overseas_order = await self._record_virtual_overseas_buy(overseas_buy_target)
+            overseas_orders = [overseas_order]
+        elif overseas_buy_targets and us_orderable_in_profile:
+            for buy_candidate in overseas_buy_targets:
+                overseas_orders.append(
+                    await self._manage_overseas_position(
+                        candidate=buy_candidate,
+                        held_positions=overseas_positions,
+                    )
+                )
+            overseas_order = overseas_orders[0]
+        elif overseas_buy_targets and us_open and not us_orderable_in_profile:
+            for buy_candidate in overseas_buy_targets:
+                overseas_orders.append(await self._record_virtual_overseas_buy(buy_candidate))
+            overseas_order = overseas_orders[0]
         else:
             overseas_order = {
                 "skipped": True,
@@ -708,9 +728,13 @@ class LiquidityLabService:
                     else "no_overseas_candidate"
                 ),
             }
+            overseas_orders = [overseas_order]
+        if overseas_orders:
+            overseas_order = dict(overseas_order)
+            overseas_order["batched_orders"] = overseas_orders
 
         domestic_active = not domestic_order.get("skipped", False)
-        overseas_active = not overseas_order.get("skipped", False)
+        overseas_active = any(not order.get("skipped", False) for order in overseas_orders)
         if domestic_active and overseas_active:
             domestic_code = (
                 domestic_order.get("candidate", {}).get("stock_code")
@@ -1421,6 +1445,10 @@ class LiquidityLabService:
             reasons.append("thin_volume")
         if candidate.spread_pct > config.overseas_max_spread_pct:
             reasons.append("wide_spread")
+        approx_daily_turnover = candidate.last_price * candidate.volume
+        min_daily_turnover = config.overseas_min_price_usd * config.overseas_min_volume
+        if approx_daily_turnover < min_daily_turnover:
+            reasons.append("thin_turnover")
         return reasons
 
     async def _build_domestic_watch_targets(
@@ -1562,17 +1590,20 @@ class LiquidityLabService:
                 candidate = item.domestic
                 signal_snapshot = await self._load_domestic_signal(candidate)
                 held = domestic_held_map.get(candidate.stock_code)
-                watch_targets.append(
-                    self._build_watch_target_status(
-                        market="domestic",
-                        code=candidate.stock_code,
-                        exchange_code=None,
-                        price=float(candidate.current_price),
-                        activity_score=candidate.activity_score,
-                        signal_snapshot=signal_snapshot,
-                        held_position=held,
-                        holding_qty=0 if held is None else held.quantity,
-                    )
+                watch_target = self._build_watch_target_status(
+                    market="domestic",
+                    code=candidate.stock_code,
+                    exchange_code=None,
+                    price=float(candidate.current_price),
+                    activity_score=candidate.activity_score,
+                    signal_snapshot=signal_snapshot,
+                    held_position=held,
+                    holding_qty=0 if held is None else held.quantity,
+                )
+                watch_targets.append(watch_target)
+                self._save_cycle_log_from_watch_target(
+                    watch_target,
+                    pnl_pct=None if held is None else held.pnl_pct,
                 )
                 await asyncio.sleep(0.05)
                 continue
@@ -1594,17 +1625,20 @@ class LiquidityLabService:
                     holding_qty = max(0, unified_position.total_qty)
                 elif held is not None:
                     holding_qty = held.quantity
-                watch_targets.append(
-                    self._build_watch_target_status(
-                        market="overseas",
-                        code=candidate.symbol,
-                        exchange_code=candidate.exchange_code,
-                        price=candidate.last_price,
-                        activity_score=candidate.activity_score,
-                        signal_snapshot=signal_snapshot,
-                        held_position=held,
-                        holding_qty=holding_qty,
-                    )
+                watch_target = self._build_watch_target_status(
+                    market="overseas",
+                    code=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    price=candidate.last_price,
+                    activity_score=candidate.activity_score,
+                    signal_snapshot=signal_snapshot,
+                    held_position=held,
+                    holding_qty=holding_qty,
+                )
+                watch_targets.append(watch_target)
+                self._save_cycle_log_from_watch_target(
+                    watch_target,
+                    pnl_pct=None if held is None else held.pnl_pct,
                 )
         return watch_targets
 
@@ -1680,6 +1714,7 @@ class LiquidityLabService:
                 ma_summary="-",
                 note="signal_unavailable",
                 holding_qty=holding_qty,
+                signal_snapshot=signal_snapshot,
             )
 
         if held_position is not None:
@@ -1697,6 +1732,7 @@ class LiquidityLabService:
                     ma_summary=self._ma_relation_summary(signal_snapshot),
                     note=exit_setup.reason,
                     holding_qty=holding_qty,
+                    signal_snapshot=signal_snapshot,
                 )
             return WatchTargetStatus(
                 market=market,
@@ -1710,6 +1746,7 @@ class LiquidityLabService:
                 ma_summary=self._ma_relation_summary(signal_snapshot),
                 note=exit_setup.note,
                 holding_qty=holding_qty,
+                signal_snapshot=signal_snapshot,
             )
 
         entry_setup = evaluate_entry_setup(self.config.auto_trade, signal_snapshot)
@@ -1726,6 +1763,7 @@ class LiquidityLabService:
                 ma_summary=self._ma_relation_summary(signal_snapshot),
                 note=entry_setup.reason,
                 holding_qty=holding_qty,
+                signal_snapshot=signal_snapshot,
             )
         signal_state, note = derive_watch_state(self.config.auto_trade, signal_snapshot)
         return WatchTargetStatus(
@@ -1740,6 +1778,34 @@ class LiquidityLabService:
             ma_summary=self._ma_relation_summary(signal_snapshot),
             note=note,
             holding_qty=holding_qty,
+            signal_snapshot=signal_snapshot,
+        )
+
+    def _save_cycle_log_from_watch_target(
+        self,
+        watch_target: WatchTargetStatus,
+        *,
+        pnl_pct: float | None = None,
+    ) -> None:
+        signal_snapshot = watch_target.signal_snapshot
+        self.repository.save_cycle_log(
+            logged_at=datetime.now(timezone.utc).isoformat(),
+            market=watch_target.market,
+            symbol=watch_target.code,
+            exchange_code=watch_target.exchange_code,
+            action_bias=watch_target.action_bias,
+            action_reason=watch_target.note or watch_target.action_bias,
+            price=watch_target.price,
+            pnl_pct=pnl_pct,
+            holding_qty=watch_target.holding_qty,
+            rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
+            volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
+            intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
+            intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
+            minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
+            minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+            activity_score=watch_target.activity_score,
+            cycle_no=getattr(self, "_cycle_count", 0),
         )
 
     def _select_domestic_buy_target(
@@ -1791,7 +1857,7 @@ class LiquidityLabService:
         overseas_ranked: list[OverseasScanResult],
         watch_targets: list[WatchTargetStatus],
     ) -> OverseasScanResult | None:
-        candidate_map = {candidate.symbol: candidate for candidate in overseas_ranked}
+        candidate_map = {candidate.symbol.upper(): candidate for candidate in overseas_ranked}
         ready_targets = [
             watch_target
             for watch_target in watch_targets
@@ -1803,7 +1869,40 @@ class LiquidityLabService:
             ready_targets,
             key=lambda item: (item.signal_score, item.activity_score),
         )
-        return candidate_map.get(best_target.code)
+        return candidate_map.get(best_target.code.upper())
+
+    def _select_overseas_buy_targets(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+        watch_targets: list[WatchTargetStatus],
+        max_concurrent: int = 3,
+    ) -> list[OverseasScanResult]:
+        candidate_map = {candidate.symbol.upper(): candidate for candidate in overseas_ranked}
+        ready_targets = [
+            watch_target
+            for watch_target in watch_targets
+            if watch_target.market == "overseas" and watch_target.action_bias == "BUY"
+        ]
+        if not ready_targets or max_concurrent <= 0:
+            return []
+        ready_targets.sort(
+            key=lambda item: (item.signal_score, item.activity_score),
+            reverse=True,
+        )
+        selected: list[OverseasScanResult] = []
+        seen: set[str] = set()
+        for watch_target in ready_targets:
+            symbol = watch_target.code.upper()
+            if symbol in seen:
+                continue
+            candidate = candidate_map.get(symbol)
+            if candidate is None:
+                continue
+            selected.append(candidate)
+            seen.add(symbol)
+            if len(selected) >= max_concurrent:
+                break
+        return selected
 
     @staticmethod
     def _select_primary_target(

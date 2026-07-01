@@ -27,5 +27,6 @@ def test_format_side_market_and_reason_korean() -> None:
     assert format_side_korean("SELL") == "매도"
     assert format_side_korean("SELL_REJECTED") == "매도거부"
     assert format_market_korean("domestic") == "국내"
+    assert format_market_korean("both") == "국내+해외"
     assert format_reason_korean("stop_loss") == "손절"
     assert format_reason_korean("order_rejected") == "주문 거부"

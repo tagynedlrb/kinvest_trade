@@ -223,7 +223,8 @@ class LiquidityLabConfig:
     slot_max_pct: float
     domestic_paper_iterations: int
     domestic_paper_interval_sec: int
-    domestic_top_n: int
+    unified_watch_top_n: int
+    unified_scan_top_n: int
     overseas_scan_top_n: int
     domestic_test_order_qty: int
     overseas_test_order_qty: int
@@ -694,7 +695,8 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             domestic_paper_interval_sec=int(
                 liquidity_lab_raw.get("domestic_paper_interval_sec", 5)
             ),
-            domestic_top_n=int(liquidity_lab_raw.get("domestic_top_n", 3)),
+            unified_watch_top_n=int(liquidity_lab_raw.get("unified_watch_top_n", 15)),
+            unified_scan_top_n=int(liquidity_lab_raw.get("unified_scan_top_n", 15)),
             overseas_scan_top_n=int(liquidity_lab_raw.get("overseas_scan_top_n", 69)),
             domestic_test_order_qty=int(liquidity_lab_raw.get("domestic_test_order_qty", 1)),
             overseas_test_order_qty=int(liquidity_lab_raw.get("overseas_test_order_qty", 1)),

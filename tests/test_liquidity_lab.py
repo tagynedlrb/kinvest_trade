@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import kinvest_trade.liquidity_lab as liquidity_lab_module
+from kinvest_trade.config import load_app_config
 from kinvest_trade.liquidity_lab import (
     DomesticHeldPosition,
     DomesticScanResult,
@@ -840,10 +841,13 @@ def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
 
 def _build_run_service() -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
+    project_root = Path(__file__).resolve().parents[1]
+    base_auto = load_app_config(project_root / "config" / "fixed_config.json").auto_trade
     service.config = SimpleNamespace(
         credentials=SimpleNamespace(env="vps", dry_run=False),
         liquidity_lab=SimpleNamespace(
-            domestic_top_n=3,
+            unified_watch_top_n=3,
+            unified_scan_top_n=3,
             domestic_candidates=[],
             overseas_candidates=[],
             overseas_scan_top_n=3,
@@ -855,12 +859,7 @@ def _build_run_service() -> LiquidityLabService:
             slot_entry_pct=0.10,
             slot_max_pct=0.20,
         ),
-        auto_trade=SimpleNamespace(
-            daily_fast_window=20,
-            daily_slow_window=60,
-            intraday_fast_window=5,
-            intraday_slow_window=20,
-        ),
+        auto_trade=base_auto,
     )
     service.client = object()
     service.repository = _build_repository()
@@ -872,6 +871,118 @@ def _build_run_service() -> LiquidityLabService:
     service._last_held_symbols = set()
     service._signal_cache = {}
     return service
+
+
+def test_build_unified_watch_targets_merges_domestic_and_overseas() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 4
+    service.config.liquidity_lab.domestic_candidates = ["D1", "D2", "D3"]
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+        DomesticScanResult("D2", 9900, 9910, 9890, 0.001, 0.008, 8_000_000_000, 90_000, 40.0),
+        DomesticScanResult("D3", 9800, 9810, 9790, 0.001, 0.007, 7_000_000_000, 80_000, 30.0),
+    ]
+    overseas_ranked = [
+        OverseasScanResult("O1", "NASD", 51.0, 50.9, 51.1, 0.001, 1.0, 100_000, 0, 1350.0, 60.0),
+        OverseasScanResult("O2", "NASD", 41.0, 40.9, 41.1, 0.001, 1.0, 100_000, 0, 1350.0, 55.0),
+        OverseasScanResult("O3", "NYSE", 31.0, 30.9, 31.1, 0.001, 1.0, 100_000, 0, 1350.0, 25.0),
+    ]
+    service._signal_cache = {
+        "O1": _snapshot(price=51.0),
+        "O2": _snapshot(price=41.0),
+        "O3": _snapshot(price=31.0),
+    }
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=True,
+            us_open=True,
+        )
+    )
+
+    assert [(item.market, item.code) for item in watch_targets] == [
+        ("overseas", "O1"),
+        ("overseas", "O2"),
+        ("domestic", "D1"),
+        ("domestic", "D2"),
+    ]
+
+
+def test_unified_watch_includes_held_domestic_regardless_of_rank() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 2
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+        DomesticScanResult("D2", 9900, 9910, 9890, 0.001, 0.008, 8_000_000_000, 90_000, 40.0),
+        DomesticScanResult("D3", 9800, 9810, 9790, 0.001, 0.007, 7_000_000_000, 80_000, 10.0),
+    ]
+    held_positions = [
+        DomesticHeldPosition(
+            stock_code="D3",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=9700.0,
+            current_price=9800.0,
+            pnl_pct=0.0103,
+        )
+    ]
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=[],
+            domestic_positions=held_positions,
+            overseas_positions=[],
+            krx_open=True,
+            us_open=False,
+        )
+    )
+
+    assert [item.code for item in watch_targets] == ["D3", "D1", "D2"]
+
+
+def test_unified_watch_excludes_closed_market() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 3
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+    ]
+    overseas_ranked = [
+        OverseasScanResult("O1", "NASD", 51.0, 50.9, 51.1, 0.001, 1.0, 100_000, 0, 1350.0, 60.0),
+    ]
+    service._signal_cache = {"O1": _snapshot(price=51.0)}
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=False,
+            us_open=True,
+        )
+    )
+
+    assert [item.market for item in watch_targets] == ["overseas"]
 
 
 def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None:
@@ -910,7 +1021,7 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
         return []
 
-    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+    async def fake_build_unified_watch_targets(**kwargs):
         return [watch_target]
 
     async def fake_manage_overseas_position(*, candidate, held_positions):
@@ -927,8 +1038,7 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
-    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
-    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
     service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
     service._manage_overseas_position = fake_manage_overseas_position  # type: ignore[method-assign]
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
@@ -950,7 +1060,7 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
     assert report.primary_market == "overseas"
-    assert report.primary_selection_reason == "watchlist_wait"
+    assert report.primary_selection_reason == "watchlist_buy_signal"
     assert report.overseas_order["submitted"] is True
     assert report.overseas_order["virtual"] is True
     assert report.overseas_order["reason"] == "session_not_orderable_in_profile"
@@ -989,7 +1099,7 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
         return [held]
 
-    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+    async def fake_build_unified_watch_targets(**kwargs):
         return []
 
     async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
@@ -1006,8 +1116,7 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
-    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
-    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
     service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
     service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
@@ -1032,6 +1141,166 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     assert report.primary_selection_reason == "existing_position_stop_loss"
     assert report.overseas_order["submitted"] is True
     assert sell_calls == ["SMCI"]
+
+
+def test_run_executes_both_markets_when_both_open() -> None:
+    service = _build_run_service()
+    domestic_candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=18.0,
+    )
+    overseas_candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=131.0,
+        bid=130.9,
+        ask=131.1,
+        spread_pct=0.0015,
+        change_rate_pct=2.0,
+        volume=900_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=19.0,
+    )
+    watch_targets = [
+        WatchTargetStatus("domestic", "005930", None, 82000.0, 18.0, 9.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("overseas", "NVDA", "NASD", 131.0, 19.0, 10.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+    ]
+
+    async def fake_scan_domestic():
+        return [domestic_candidate]
+
+    async def fake_load_domestic_positions(domestic_ranked):
+        return []
+
+    async def fake_scan_overseas():
+        return [overseas_candidate], set()
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return watch_targets
+
+    async def fake_place_domestic_test_order(candidate):
+        return {"submitted": True, "side": "buy", "candidate": {"stock_code": candidate.stock_code}, "qty": 1}
+
+    async def fake_manage_overseas_position(*, candidate, held_positions):
+        return {"submitted": True, "side": "buy", "candidate": {"symbol": candidate.symbol}, "qty": 1}
+
+    async def fake_send_summary(report):
+        return None
+
+    service.scan_domestic = fake_scan_domestic  # type: ignore[method-assign]
+    service._load_domestic_positions = fake_load_domestic_positions  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+    service._place_domestic_test_order = fake_place_domestic_test_order  # type: ignore[method-assign]
+    service._manage_overseas_position = fake_manage_overseas_position  # type: ignore[method-assign]
+    service._send_summary = fake_send_summary  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: True
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.primary_market == "both"
+    assert report.primary_selection_reason == "dual_market_active"
+    assert report.domestic_order["submitted"] is True
+    assert report.overseas_order["submitted"] is True
+
+
+def test_run_executes_overseas_when_only_us_open() -> None:
+    service = _build_run_service()
+    overseas_candidate = OverseasScanResult(
+        symbol="AMD",
+        exchange_code="NASD",
+        last_price=155.0,
+        bid=154.9,
+        ask=155.1,
+        spread_pct=0.0012,
+        change_rate_pct=1.5,
+        volume=800_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=17.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="AMD",
+        exchange_code="NASD",
+        price=155.0,
+        activity_score=17.0,
+        signal_score=8.0,
+        action_bias="BUY",
+        signal_state="BUY_READY",
+        ma_summary="20d>60d 5>20",
+        note="pullback_entry",
+        holding_qty=0,
+    )
+
+    async def fake_scan_overseas():
+        return [overseas_candidate], set()
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return [watch_target]
+
+    async def fake_manage_overseas_position(*, candidate, held_positions):
+        return {"submitted": True, "side": "buy", "candidate": {"symbol": candidate.symbol}, "qty": 1}
+
+    async def fake_send_summary(report):
+        return None
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+    service._manage_overseas_position = fake_manage_overseas_position  # type: ignore[method-assign]
+    service._send_summary = fake_send_summary  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.primary_market == "overseas"
+    assert report.primary_selection_reason == "watchlist_buy_signal"
+    assert report.domestic_order["skipped"] is True
+    assert report.overseas_order["submitted"] is True
 
 
 def test_send_summary_skips_when_action_raw_is_wait() -> None:
@@ -1551,7 +1820,7 @@ def test_repeated_cycles_do_not_duplicate_virtual_sell() -> None:
             )
         ]
 
-    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+    async def fake_build_unified_watch_targets(**kwargs):
         return []
 
     async def fake_send_summary(report):
@@ -1561,8 +1830,7 @@ def test_repeated_cycles_do_not_duplicate_virtual_sell() -> None:
     service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
-    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
-    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
@@ -1628,7 +1896,7 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
         return [held]
 
-    async def fake_build_overseas_watch_targets(overseas_ranked, overseas_positions):
+    async def fake_build_unified_watch_targets(**kwargs):
         return []
 
     async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
@@ -1664,8 +1932,7 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
-    service._build_domestic_watch_targets = lambda domestic_ranked, held_positions: []  # type: ignore[method-assign]
-    service._build_overseas_watch_targets = fake_build_overseas_watch_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
     service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
     service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
 

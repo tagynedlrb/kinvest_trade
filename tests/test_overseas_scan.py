@@ -52,6 +52,8 @@ def _build_service() -> LiquidityLabService:
     service.config = SimpleNamespace(
         liquidity_lab=SimpleNamespace(
             overseas_candidates=candidates,
+            unified_watch_top_n=15,
+            unified_scan_top_n=2,
             overseas_scan_top_n=2,
             overseas_min_price_usd=10.0,
             overseas_min_volume=100,
@@ -303,6 +305,7 @@ def test_estimate_api_calls_overseas_reflects_new_structure() -> None:
         DummyCandidate(f"S{i:02d}", "NASD" if i < 35 else "NYSE")
         for i in range(69)
     ]
+    service.config.liquidity_lab.unified_scan_top_n = 15
     service.config.liquidity_lab.overseas_scan_top_n = 15
     service._last_held_symbols = set()
 

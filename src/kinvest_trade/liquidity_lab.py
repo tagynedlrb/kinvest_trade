@@ -68,6 +68,16 @@ class OverseasScanResult:
 
 
 @dataclass(slots=True)
+class UnifiedScanResult:
+    market: str
+    code: str
+    exchange_code: str | None
+    activity_score: float
+    domestic: DomesticScanResult | None = None
+    overseas: OverseasScanResult | None = None
+
+
+@dataclass(slots=True)
 class ExcludedCandidate:
     market: str
     code: str
@@ -629,16 +639,20 @@ class LiquidityLabService:
             overseas_ranked = []
             overseas_positions = []
             monitored_overseas_positions = []
-        domestic_watch_targets = (
-            await self._build_domestic_watch_targets(domestic_ranked, domestic_positions)
-            if krx_open
-            else []
+        watch_targets = await self._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+            domestic_positions=domestic_positions,
+            overseas_positions=monitored_overseas_positions,
+            krx_open=krx_open,
+            us_open=us_open,
         )
-        overseas_watch_targets = (
-            await self._build_overseas_watch_targets(overseas_ranked, monitored_overseas_positions)
-            if us_open
-            else []
-        )
+        domestic_watch_targets = [
+            watch_target for watch_target in watch_targets if watch_target.market == "domestic"
+        ]
+        overseas_watch_targets = [
+            watch_target for watch_target in watch_targets if watch_target.market == "overseas"
+        ]
         overseas_exit_target = (
             await self._select_overseas_exit_target(overseas_ranked, monitored_overseas_positions)
             if us_open
@@ -655,31 +669,90 @@ class LiquidityLabService:
         )
         domestic_buy_target = self._select_domestic_buy_target(domestic_ranked, domestic_watch_targets)
         overseas_buy_target = self._select_overseas_buy_target(overseas_ranked, overseas_watch_targets)
-        primary_market, primary_target, primary_reason = self._select_primary_target(
-            krx_open=krx_open,
-            us_open=us_open,
-            us_orderable_in_profile=us_orderable_in_profile,
-            domestic_ranked=domestic_ranked,
-            overseas_ranked=overseas_ranked,
-        )
+        paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
+        domestic_order: dict = {"skipped": True, "reason": "no_action"}
+        overseas_order: dict = {"skipped": True, "reason": "no_action"}
+
         if domestic_exit_target is not None:
-            exit_candidate, _, exit_reason, _ = domestic_exit_target
-            primary_market = "domestic"
-            primary_target = exit_candidate.stock_code
-            primary_reason = f"existing_position_{exit_reason}"
-        elif overseas_exit_target is not None:
-            exit_candidate, _, exit_reason, _ = overseas_exit_target
-            primary_market = "overseas"
-            primary_target = exit_candidate.symbol
-            primary_reason = f"existing_position_{exit_reason}"
-        elif domestic_buy_target is not None:
-            primary_market = "domestic"
-            primary_target = domestic_buy_target.stock_code
-            primary_reason = "watchlist_buy_signal"
+            exit_candidate, held, exit_reason, exit_signal = domestic_exit_target
+            domestic_order = await self._place_domestic_sell_order(
+                exit_candidate,
+                held,
+                exit_reason,
+                exit_signal,
+            )
+        elif domestic_buy_target is not None and krx_open:
+            domestic_order = await self._place_domestic_test_order(domestic_buy_target)
+
+        if overseas_exit_target is not None:
+            exit_candidate, exit_position, exit_reason, exit_signal = overseas_exit_target
+            overseas_order = await self._place_overseas_sell_order(
+                exit_candidate,
+                exit_position,
+                exit_reason,
+                signal_snapshot=exit_signal,
+            )
         elif overseas_buy_target is not None and us_orderable_in_profile:
+            overseas_order = await self._manage_overseas_position(
+                candidate=overseas_buy_target,
+                held_positions=overseas_positions,
+            )
+        elif overseas_buy_target is not None and us_open and not us_orderable_in_profile:
+            overseas_order = await self._record_virtual_overseas_buy(overseas_buy_target)
+        else:
+            overseas_order = {
+                "skipped": True,
+                "reason": (
+                    "us_open_but_mock_session_not_supported"
+                    if us_open and not us_orderable_in_profile
+                    else "no_overseas_candidate"
+                ),
+            }
+
+        domestic_active = not domestic_order.get("skipped", False)
+        overseas_active = not overseas_order.get("skipped", False)
+        if domestic_active and overseas_active:
+            domestic_code = (
+                domestic_order.get("candidate", {}).get("stock_code")
+                or (domestic_buy_target.stock_code if domestic_buy_target is not None else None)
+            )
+            overseas_code = (
+                overseas_order.get("candidate", {}).get("symbol")
+                or (overseas_buy_target.symbol if overseas_buy_target is not None else None)
+            )
+            primary_market = "both"
+            primary_target = "+".join(
+                [code for code in [domestic_code, overseas_code] if code]
+            ) or None
+            primary_reason = "dual_market_active"
+        elif domestic_active:
+            primary_market = "domestic"
+            if domestic_exit_target is not None:
+                exit_candidate, _, exit_reason, _ = domestic_exit_target
+                primary_target = exit_candidate.stock_code
+                primary_reason = f"existing_position_{exit_reason}"
+            elif domestic_buy_target is not None:
+                primary_target = domestic_buy_target.stock_code
+                primary_reason = "watchlist_buy_signal"
+            else:
+                primary_target = domestic_watch_targets[0].code if domestic_watch_targets else None
+                primary_reason = "domestic_active"
+        elif overseas_active:
             primary_market = "overseas"
-            primary_target = overseas_buy_target.symbol
-            primary_reason = "watchlist_buy_signal"
+            if overseas_exit_target is not None:
+                exit_candidate, _, exit_reason, _ = overseas_exit_target
+                primary_target = exit_candidate.symbol
+                primary_reason = f"existing_position_{exit_reason}"
+            elif overseas_buy_target is not None:
+                primary_target = overseas_buy_target.symbol
+                primary_reason = "watchlist_buy_signal"
+            else:
+                primary_target = overseas_watch_targets[0].code if overseas_watch_targets else None
+                primary_reason = "overseas_active"
+        elif krx_open and us_open and watch_targets:
+            primary_market = "both"
+            primary_target = None
+            primary_reason = "both_waiting"
         elif krx_open and domestic_watch_targets:
             primary_market = "domestic"
             primary_target = domestic_watch_targets[0].code
@@ -688,73 +761,26 @@ class LiquidityLabService:
             primary_market = "overseas"
             primary_target = overseas_watch_targets[0].code
             primary_reason = "watchlist_wait"
-
-        paper_summary = None
-        domestic_order = None
-        overseas_order = None
-
-        if primary_market == "domestic" and domestic_exit_target is not None:
-            exit_candidate, held, exit_reason, exit_signal = domestic_exit_target
-            paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
-            domestic_order = await self._place_domestic_sell_order(
-                exit_candidate,
-                held,
-                exit_reason,
-                exit_signal,
+        elif us_open and not us_orderable_in_profile:
+            primary_market = "none"
+            primary_target = None
+            primary_reason = "us_open_but_mock_session_not_supported"
+        elif krx_open:
+            primary_market = "domestic"
+            primary_target = None
+            primary_reason = "krx_open_but_no_candidate"
+        elif us_open:
+            primary_market = "overseas" if us_orderable_in_profile else "none"
+            primary_target = None
+            primary_reason = (
+                "us_open_but_no_candidate"
+                if us_orderable_in_profile
+                else "us_open_but_mock_session_not_supported"
             )
-        elif primary_market == "domestic" and domestic_buy_target is not None:
-            paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
-            domestic_order = await self._place_domestic_test_order(domestic_buy_target)
         else:
-            paper_summary = {
-                "skipped": True,
-                "reason": (
-                    primary_reason
-                    if primary_market != "domestic"
-                    else "no_domestic_candidate"
-                ),
-            }
-            domestic_order = {
-                "skipped": True,
-                "reason": (
-                    primary_reason
-                    if primary_market != "domestic"
-                    else "no_domestic_candidate"
-                ),
-            }
-
-        if primary_market == "overseas" and overseas_exit_target is not None:
-            exit_candidate, exit_position, exit_reason, exit_signal = overseas_exit_target
-            overseas_order = await self._place_overseas_sell_order(
-                exit_candidate,
-                exit_position,
-                exit_reason,
-                signal_snapshot=exit_signal,
-            )
-        elif (
-            primary_market == "overseas"
-            and overseas_buy_target is not None
-            and us_orderable_in_profile
-        ):
-            overseas_order = await self._manage_overseas_position(
-                candidate=overseas_buy_target,
-                held_positions=overseas_positions,
-            )
-        elif (
-            primary_market == "overseas"
-            and overseas_buy_target is not None
-            and not us_orderable_in_profile
-        ):
-            overseas_order = await self._record_virtual_overseas_buy(overseas_buy_target)
-        else:
-            overseas_order = {
-                "skipped": True,
-                "reason": (
-                    primary_reason
-                    if primary_market != "overseas"
-                    else "no_overseas_candidate"
-                ),
-            }
+            primary_market = "none"
+            primary_target = None
+            primary_reason = "no_supported_market_open"
 
         report = LiquidityLabReport(
             scanned_at=format_kst(now) or "",
@@ -771,12 +797,10 @@ class LiquidityLabService:
             overseas_excluded=self._overseas_excluded,
             domestic_positions=domestic_positions,
             overseas_positions=overseas_positions,
-            watch_targets=domestic_watch_targets if krx_open else overseas_watch_targets,
+            watch_targets=watch_targets,
             estimated_api_calls_per_cycle=self._estimate_api_calls_per_cycle(
                 krx_open=krx_open,
                 us_open=us_open,
-                domestic_watch_count=len(domestic_watch_targets),
-                overseas_watch_count=len(overseas_watch_targets),
                 include_domestic_order=bool(domestic_exit_target or domestic_buy_target),
                 include_overseas_order=bool(overseas_exit_target or overseas_buy_target),
             ),
@@ -815,7 +839,7 @@ class LiquidityLabService:
             return []
 
         quote_results.sort(key=lambda item: item.activity_score, reverse=True)
-        refine_n = min(len(quote_results), max(config.domestic_top_n * 2, 3))
+        refine_n = min(len(quote_results), max(config.unified_scan_top_n, 3))
         refined: list[DomesticScanResult] = []
         for candidate in quote_results[:refine_n]:
             try:
@@ -1403,10 +1427,16 @@ class LiquidityLabService:
         self,
         domestic_ranked: list[DomesticScanResult],
         held_positions: list[DomesticHeldPosition],
+        top_n: int | None = None,
     ) -> list[WatchTargetStatus]:
         watch_targets: list[WatchTargetStatus] = []
         held_map = {position.stock_code: position for position in held_positions}
-        for candidate in domestic_ranked[: self.config.liquidity_lab.domestic_top_n]:
+        watch_limit = (
+            top_n
+            if top_n is not None
+            else self.config.liquidity_lab.unified_watch_top_n
+        )
+        for candidate in domestic_ranked[:watch_limit]:
             signal_snapshot = await self._load_domestic_signal(candidate)
             held = held_map.get(candidate.stock_code)
             watch_targets.append(
@@ -1447,6 +1477,135 @@ class LiquidityLabService:
                 )
             )
             await asyncio.sleep(0.05)
+        return watch_targets
+
+    async def _build_unified_watch_targets(
+        self,
+        *,
+        domestic_ranked: list[DomesticScanResult],
+        overseas_ranked: list[OverseasScanResult],
+        domestic_positions: list[DomesticHeldPosition],
+        overseas_positions: list[OverseasHeldPosition],
+        krx_open: bool,
+        us_open: bool,
+    ) -> list[WatchTargetStatus]:
+        unified: list[UnifiedScanResult] = []
+        if krx_open:
+            for candidate in domestic_ranked:
+                unified.append(
+                    UnifiedScanResult(
+                        market="domestic",
+                        code=candidate.stock_code,
+                        exchange_code=None,
+                        activity_score=candidate.activity_score,
+                        domestic=candidate,
+                    )
+                )
+        if us_open:
+            for candidate in overseas_ranked:
+                unified.append(
+                    UnifiedScanResult(
+                        market="overseas",
+                        code=candidate.symbol.upper(),
+                        exchange_code=candidate.exchange_code,
+                        activity_score=candidate.activity_score,
+                        overseas=candidate,
+                    )
+                )
+
+        unified.sort(key=lambda item: item.activity_score, reverse=True)
+
+        held_domestic_codes = {position.stock_code for position in domestic_positions}
+        held_overseas_codes = {
+            position.symbol.upper()
+            for position in overseas_positions
+            if not position.is_virtual
+        }
+        selected: list[UnifiedScanResult] = []
+        selected_keys: set[tuple[str, str]] = set()
+
+        for item in unified:
+            key = item.code.upper()
+            is_held = (
+                item.market == "domestic" and key in held_domestic_codes
+            ) or (
+                item.market == "overseas" and key in held_overseas_codes
+            )
+            pair = (item.market, key)
+            if is_held and pair not in selected_keys:
+                selected.append(item)
+                selected_keys.add(pair)
+
+        remaining_slots = max(0, self.config.liquidity_lab.unified_watch_top_n)
+        for item in unified:
+            if remaining_slots <= 0:
+                break
+            pair = (item.market, item.code.upper())
+            if pair in selected_keys:
+                continue
+            selected.append(item)
+            selected_keys.add(pair)
+            remaining_slots -= 1
+
+        domestic_held_map = {position.stock_code: position for position in domestic_positions}
+        overseas_held_map: dict[str, OverseasHeldPosition] = {}
+        for position in overseas_positions:
+            symbol = position.symbol.upper()
+            existing = overseas_held_map.get(symbol)
+            if existing is None or (existing.is_virtual and not position.is_virtual):
+                overseas_held_map[symbol] = position
+
+        tracker = self._get_position_tracker()
+        watch_targets: list[WatchTargetStatus] = []
+        for item in selected:
+            if item.market == "domestic" and item.domestic is not None:
+                candidate = item.domestic
+                signal_snapshot = await self._load_domestic_signal(candidate)
+                held = domestic_held_map.get(candidate.stock_code)
+                watch_targets.append(
+                    self._build_watch_target_status(
+                        market="domestic",
+                        code=candidate.stock_code,
+                        exchange_code=None,
+                        price=float(candidate.current_price),
+                        activity_score=candidate.activity_score,
+                        signal_snapshot=signal_snapshot,
+                        held_position=held,
+                        holding_qty=0 if held is None else held.quantity,
+                    )
+                )
+                await asyncio.sleep(0.05)
+                continue
+
+            if item.market == "overseas" and item.overseas is not None:
+                candidate = item.overseas
+                symbol = candidate.symbol.upper()
+                signal_snapshot = self._signal_cache.get(symbol)
+                held = overseas_held_map.get(symbol)
+                holding_qty = 0
+                if tracker is not None:
+                    unified_position = tracker.get_unified(
+                        market="overseas",
+                        symbol=symbol,
+                        real_qty=0 if held is None or held.is_virtual else held.quantity,
+                        currency="USD",
+                        exchange_code=candidate.exchange_code,
+                    )
+                    holding_qty = max(0, unified_position.total_qty)
+                elif held is not None:
+                    holding_qty = held.quantity
+                watch_targets.append(
+                    self._build_watch_target_status(
+                        market="overseas",
+                        code=candidate.symbol,
+                        exchange_code=candidate.exchange_code,
+                        price=candidate.last_price,
+                        activity_score=candidate.activity_score,
+                        signal_snapshot=signal_snapshot,
+                        held_position=held,
+                        holding_qty=holding_qty,
+                    )
+                )
         return watch_targets
 
     async def _build_overseas_watch_targets(
@@ -2720,8 +2879,8 @@ class LiquidityLabService:
         *,
         krx_open: bool,
         us_open: bool,
-        domestic_watch_count: int,
-        overseas_watch_count: int,
+        domestic_watch_count: int | None = None,
+        overseas_watch_count: int | None = None,
         include_domestic_order: bool | None = None,
         include_domestic_paper: bool | None = None,
         include_overseas_order: bool,
@@ -2729,33 +2888,32 @@ class LiquidityLabService:
         if include_domestic_order is None:
             include_domestic_order = bool(include_domestic_paper)
         estimated_calls = 0
+        config = self.config.liquidity_lab
         if krx_open:
-            domestic_candidates = len(self.config.liquidity_lab.domestic_candidates)
+            domestic_candidates = len(config.domestic_candidates)
             refine_n = min(
                 domestic_candidates,
-                max(self.config.liquidity_lab.domestic_top_n * 2, 3),
+                max(config.unified_watch_top_n, 3),
             )
             estimated_calls += domestic_candidates * 2
             estimated_calls += refine_n
-            estimated_calls += domestic_watch_count * 2
             estimated_calls += 1
             if include_domestic_order:
                 estimated_calls += 1
         if us_open:
-            config = self.config.liquidity_lab
             n_candidates = len(config.overseas_candidates)
-            top_n = config.overseas_scan_top_n
-            held_n = len(self._last_held_symbols)
+            top_n = max(config.unified_scan_top_n, 1)
             estimated_calls += n_candidates
-            signal_n = top_n + max(0, held_n - top_n)
-            estimated_calls += min(signal_n, n_candidates) * 2
+            estimated_calls += min(top_n, n_candidates) * 2
             exchange_codes = {
                 candidate.exchange_code.upper()
                 for candidate in config.overseas_candidates
             }
             estimated_calls += len(exchange_codes)
-            if include_overseas_order:
-                estimated_calls += 1
+        if krx_open and us_open:
+            estimated_calls += min(len(config.domestic_candidates), config.unified_watch_top_n)
+        if include_overseas_order:
+            estimated_calls += 1
         return estimated_calls
 
     @staticmethod

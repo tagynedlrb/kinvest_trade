@@ -471,3 +471,18 @@
 - `python3 -m compileall src` 통과
 - `python3 -m pytest tests/test_momentum_policy.py -v` 통과
 - `python3 -m pytest tests -v` 통과 (`161 passed`)
+
+## 2026-07-01
+### 이번에 수행한 내용
+- `liquidity-lab`의 국내/해외 감시 대상을 분리된 풀로 보지 않고 하나의 통합 activity pool로 재구성
+- `domestic_top_n` 고정 제한을 제거하고 `unified_watch_top_n`, `unified_scan_top_n` 설정을 추가
+- 국내/해외 스캔 결과를 `UnifiedScanResult`로 합산 정렬한 뒤, 상위 후보와 보유 종목을 함께 `watch_targets`에 포함하도록 변경
+- 국내 보유 종목은 activity 순위가 낮아도 감시 목록에서 빠지지 않도록 보장
+- `run()`에서 더 이상 `한 시장 / 한 종목`만 고르지 않고, 국내와 해외가 동시에 열려 있으면 각 시장의 최선 후보에 독립적으로 진입/청산 가능하도록 분기 재구성
+- 리포트/텔레그램용 시장 표기에 `both -> 국내+해외` 매핑을 추가
+- API 호출량 추정도 통합 감시 구조에 맞춰 갱신
+
+### 검증 결과
+- `python3 -m compileall src` 통과
+- `python3 -m pytest tests/test_liquidity_lab.py tests/test_overseas_scan.py tests/test_message_format.py -v` 통과
+- `python3 -m pytest tests -v` 통과 (`166 passed`)

@@ -44,6 +44,7 @@ def format_market_korean(market: str) -> str:
     mapping = {
         "domestic": "국내",
         "overseas": "해외",
+        "both": "국내+해외",
         "none": "없음",
     }
     return mapping.get(market, market)

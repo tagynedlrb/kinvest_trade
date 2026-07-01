@@ -149,6 +149,7 @@ class AutoTradeConfig:
     trend_chase_limit_pct: float
     max_entry_rsi14: float
     trend_require_price_above_slow: bool
+    min_hold_before_trend_exit: int
     max_hold_cycles: int
     force_reentry_after_cycles: int
     startup_buy_if_flat: bool
@@ -624,6 +625,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             max_entry_rsi14=float(auto_trade_raw.get("max_entry_rsi14", 62.0)),
             trend_require_price_above_slow=bool(
                 auto_trade_raw.get("trend_require_price_above_slow", True)
+            ),
+            min_hold_before_trend_exit=int(
+                auto_trade_raw.get("min_hold_before_trend_exit", 3)
             ),
             max_hold_cycles=int(auto_trade_raw.get("max_hold_cycles", 1)),
             force_reentry_after_cycles=int(auto_trade_raw.get("force_reentry_after_cycles", 1)),

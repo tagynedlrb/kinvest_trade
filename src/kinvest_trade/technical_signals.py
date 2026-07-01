@@ -100,6 +100,8 @@ def build_moving_average_snapshot(
     bollinger_window: int,
     bollinger_stddev: float,
     atr_window: int,
+    bar_duration_sec: int = 300,
+    chart_elapsed_sec: int = 0,
 ) -> MovingAverageSnapshot:
     daily_ma_fast = compute_sma(daily_closes, daily_fast_window)
     daily_ma_slow = compute_sma(daily_closes, daily_slow_window)
@@ -133,11 +135,16 @@ def build_moving_average_snapshot(
     volume_last = minute_volumes[0] if minute_volumes else 0.0
     volume_avg = 0.0
     if len(minute_volumes) > 1:
-        baseline_window = max(3, min(max(volume_window, 3), len(minute_volumes) - 1))
+        baseline_window = max(5, min(max(volume_window, 5), len(minute_volumes) - 1))
         baseline = minute_volumes[1 : baseline_window + 1]
         if baseline:
             volume_avg = sum(baseline) / len(baseline)
     volume_ratio = volume_last / volume_avg if volume_avg > 0 else 0.0
+    if chart_elapsed_sec > 0 and bar_duration_sec > 0:
+        elapsed_ratio = min(chart_elapsed_sec / bar_duration_sec, 1.0)
+        if elapsed_ratio > 0.1:
+            adjustment = min(1.0 / elapsed_ratio, 3.0)
+            volume_ratio *= adjustment
 
     breakout_level = None
     breakdown_level = None

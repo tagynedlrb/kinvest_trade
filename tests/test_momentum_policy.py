@@ -279,6 +279,81 @@ def test_trend_filter_lost_deferred_when_pullback_still_valid() -> None:
     assert result.reason == "hold"
 
 
+def test_trend_filter_lost_suppressed_when_hold_cycles_low() -> None:
+    config = replace(_build_config(), min_hold_before_trend_exit=3)
+    result = evaluate_exit_setup(
+        config,
+        _snapshot(
+            price=99.7,
+            daily_ma_fast=98.5,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.6,
+            minute_ma_slow=100.0,
+            intraday_momentum=-0.001,
+            intraday_bar_return=-0.0002,
+            volume_ratio=1.1,
+        ),
+        -0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=2,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason == "hold"
+
+
+def test_trend_filter_lost_fires_after_min_hold_cycles() -> None:
+    config = replace(_build_config(), min_hold_before_trend_exit=3)
+    result = evaluate_exit_setup(
+        config,
+        _snapshot(
+            price=99.7,
+            daily_ma_fast=98.5,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.6,
+            minute_ma_slow=100.0,
+            intraday_momentum=-0.001,
+            intraday_bar_return=-0.0002,
+            volume_ratio=1.1,
+        ),
+        -0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=4,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "sell"
+    assert result.reason == "trend_filter_lost"
+
+
+def test_hard_stop_still_fires_during_hold_protection() -> None:
+    config = replace(_build_config(), min_hold_before_trend_exit=3)
+    result = evaluate_exit_setup(
+        config,
+        _snapshot(
+            price=98.0,
+            daily_ma_fast=98.5,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.0,
+            minute_ma_slow=100.0,
+            intraday_momentum=-0.001,
+            intraday_bar_return=-0.001,
+            atr_pct=0.004,
+        ),
+        -0.02,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "sell"
+    assert result.reason == "atr_hard_stop"
+
+
 def test_rsi_85_blocks_entry() -> None:
     result = evaluate_entry_setup(
         _build_config(),

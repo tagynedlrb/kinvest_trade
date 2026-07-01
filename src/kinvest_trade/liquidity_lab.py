@@ -2047,6 +2047,23 @@ class LiquidityLabService:
                 ]
             )
         )
+        repository = getattr(self, "repository", None)
+        if repository is not None:
+            repository.save_cycle_log(
+                logged_at=datetime.now(timezone.utc).isoformat(),
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                action_bias="BUY_REAL",
+                action_reason="domestic_buy",
+                price=float(candidate.current_price),
+                pnl_pct=0.0,
+                realized_pnl_usd=None,
+                realized_pnl_krw=0.0,
+                holding_qty=qty,
+                cycle_no=getattr(self, "_cycle_count", 0),
+                session_id=getattr(self, "_session_id", ""),
+            )
         return {
             "submitted": True,
             "already_notified": True,
@@ -2236,6 +2253,23 @@ class LiquidityLabService:
                 "qty": qty,
                 "error": str(exc),
             }
+        repository = getattr(self, "repository", None)
+        if repository is not None:
+            repository.save_cycle_log(
+                logged_at=datetime.now(timezone.utc).isoformat(),
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                action_bias="BUY_REAL",
+                action_reason=buy_reason,
+                price=candidate.last_price,
+                pnl_pct=0.0,
+                realized_pnl_usd=0.0,
+                realized_pnl_krw=0.0,
+                holding_qty=qty,
+                cycle_no=getattr(self, "_cycle_count", 0),
+                session_id=getattr(self, "_session_id", ""),
+            )
         return {
             "submitted": True,
             "market": "overseas",

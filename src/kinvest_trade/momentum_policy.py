@@ -188,7 +188,8 @@ def evaluate_exit_setup(
             return ExitSetup("sell", "momentum_loss_cut", "SELL_READY", note)
     if pnl_pct < 0 and not trend_filter_ok(snapshot) and snapshot.intraday_momentum <= 0:
         if not _pullback_ready(config, snapshot):
-            return ExitSetup("sell", "trend_filter_lost", "SELL_READY", note)
+            if hold_cycles >= config.min_hold_before_trend_exit:
+                return ExitSetup("sell", "trend_filter_lost", "SELL_READY", note)
 
     if (
         config.allow_partial_exit

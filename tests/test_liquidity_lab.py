@@ -896,6 +896,47 @@ def test_domestic_buy_uses_slot_sizing_when_balance_is_available() -> None:
     assert result["qty"] == 3
 
 
+def test_domestic_buy_saves_buy_real_cycle_log() -> None:
+    class DummyDomesticSlotClient(DummyDomesticSellClient):
+        async def get_balance(self):
+            return {"summary": {"ord_psbl_cash": "2500000"}}
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=True,
+            slot_entry_pct=0.10,
+            slot_max_pct=0.20,
+        ),
+    )
+    service.client = DummyDomesticSlotClient()
+    service.repository = _build_repository()
+    service.notifier = DummyNotifier()
+    service._session_id = "sess-domestic-buy"
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=80000,
+        best_ask=80000,
+        best_bid=79950,
+        spread_pct=0.0006,
+        minute_change_pct=0.002,
+        intraday_turnover_krw=120_000_000_000,
+        volume_sum=600_000,
+        activity_score=12.0,
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+    rows = service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5)
+
+    assert result["submitted"] is True
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "005930"
+    assert rows[0]["session_id"] == "sess-domestic-buy"
+    assert rows[0]["action_reason"] == "domestic_buy"
+
+
 def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     ranked = [
@@ -2070,6 +2111,75 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
 
     assert result["submitted"] is True
     assert result["qty"] == 4
+
+
+def test_overseas_buy_saves_buy_real_cycle_log() -> None:
+    class DummyOverseasSlotClient:
+        async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
+            return {
+                "cash_available": "1000",
+                "raw": {
+                    "ord_psbl_frcr_amt_wcrc": "1000",
+                },
+            }
+
+        async def place_overseas_order_for_current_session(
+            self,
+            *,
+            side: str,
+            symbol: str,
+            exchange_code: str,
+            qty: int,
+            price: str,
+            order_division: str,
+        ):
+            return {
+                "side": side,
+                "symbol": symbol,
+                "exchange_code": exchange_code,
+                "qty": qty,
+                "price": price,
+                "order_division": order_division,
+            }
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            overseas_test_order_qty=1,
+            use_slot_sizing=True,
+            slot_entry_pct=0.10,
+            slot_max_pct=0.20,
+        ),
+    )
+    service.client = DummyOverseasSlotClient()
+    service.repository = _build_repository()
+    service.notifier = DummyNotifier()
+    service._signal_cache = {"SOXL": _snapshot(price=25.0)}
+    service._session_id = "sess-overseas-buy"
+    service._should_buy_overseas_candidate = lambda snapshot: (True, "volume_breakout_entry")  # type: ignore[method-assign]
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+
+    result = asyncio.run(service._place_overseas_test_order(candidate))
+    rows = service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5)
+
+    assert result["submitted"] is True
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "SOXL"
+    assert rows[0]["session_id"] == "sess-overseas-buy"
+    assert rows[0]["action_reason"] == "volume_breakout_entry"
 
 
 def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:

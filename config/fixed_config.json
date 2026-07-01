@@ -102,6 +102,7 @@
         "trend_chase_limit_pct": 0.02,
         "max_entry_rsi14": 65.0,
         "trend_require_price_above_slow": true,
+        "min_hold_before_trend_exit": 3,
         "max_hold_cycles": 120,
         "force_reentry_after_cycles": 3,
         "startup_buy_if_flat": false,

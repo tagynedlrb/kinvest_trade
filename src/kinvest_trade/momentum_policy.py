@@ -34,7 +34,8 @@ def evaluate_entry_setup(
         return EntrySetup(False, "warmup_context", "WARMUP", "warmup")
     if snapshot.rsi14 is not None and snapshot.rsi14 > config.max_entry_rsi14:
         return EntrySetup(False, "entry_rsi_too_high", "SKIP", _note(snapshot))
-    if snapshot.volume_ratio < config.volume_spike_ratio * 0.7:
+    prefilter_factor = max(config.volume_spike_ratio_prefilter_factor, 0.0)
+    if snapshot.volume_ratio < config.volume_spike_ratio * prefilter_factor:
         return EntrySetup(False, "volume_low", "WAIT", _note(snapshot))
 
     if not snapshot.daily_trend_up:
@@ -290,8 +291,11 @@ def _pullback_ready(
 
     if snapshot.intraday_bar_return < 0:
         return False
-    if snapshot.volume_ratio < config.pullback_min_volume_ratio:
-        return False
+    # Pullbacks usually form on lighter volume, so only reject when activity
+    # falls below the relaxed floor configured for this setup.
+    if config.pullback_min_volume_ratio > 0:
+        if snapshot.volume_ratio < config.pullback_min_volume_ratio:
+            return False
     return True
 
 

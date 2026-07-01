@@ -119,6 +119,7 @@ class AutoTradeConfig:
     breakout_lookback_bars: int
     breakout_proximity_pct: float
     volume_spike_ratio: float
+    volume_spike_ratio_prefilter_factor: float
     scale_in_volume_ratio: float
     volume_fade_ratio: float
     min_intraday_momentum_pct: float
@@ -560,6 +561,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("breakout_proximity_pct", 0.98)
             ),
             volume_spike_ratio=float(auto_trade_raw.get("volume_spike_ratio", 1.8)),
+            volume_spike_ratio_prefilter_factor=float(
+                auto_trade_raw.get("volume_spike_ratio_prefilter_factor", 0.7)
+            ),
             scale_in_volume_ratio=float(auto_trade_raw.get("scale_in_volume_ratio", 1.3)),
             volume_fade_ratio=float(auto_trade_raw.get("volume_fade_ratio", 0.85)),
             min_intraday_momentum_pct=float(

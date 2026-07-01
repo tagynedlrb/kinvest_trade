@@ -1757,7 +1757,7 @@ class LiquidityLabService:
                 price=price,
                 activity_score=activity_score,
                 signal_score=0.0,
-                action_bias="WAIT",
+                action_bias="HOLD",
                 signal_state="HOLD",
                 ma_summary=self._ma_relation_summary(signal_snapshot),
                 note=exit_setup.note,

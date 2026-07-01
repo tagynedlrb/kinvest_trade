@@ -19,7 +19,7 @@ from .market_sessions import (
     is_us_orderable_session_for_env,
     minutes_until_next_tradeable_session,
 )
-from .message_format import format_market_korean, format_pct, format_reason_korean
+from .message_format import format_market_korean, format_pct, format_reason_korean, format_side_korean
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
 from .time_utils import format_display_times, format_kst, format_kst_korean, parse_datetime
@@ -1076,9 +1076,10 @@ class TelegramLiquidityLabController:
     def _format_watch_target_line(watch_target: dict, pnl_pct: float | None = None) -> str:
         market = format_market_korean(str(watch_target.get("market", "overseas")))
         code = str(watch_target.get("code", "-"))
-        signal_state = str(watch_target.get("signal_state", "WAIT"))
+        action_bias = str(watch_target.get("action_bias", "WAIT")).upper()
         ma_summary = str(watch_target.get("ma_summary", "-"))
-        note = format_reason_korean(str(watch_target.get("note", "-")))
+        note_raw = str(watch_target.get("note", "-"))
+        note = format_reason_korean(note_raw)
         price = watch_target.get("price", "-")
         if isinstance(price, (int, float)):
             if float(price) >= 1000:
@@ -1088,11 +1089,35 @@ class TelegramLiquidityLabController:
         else:
             price_text = str(price)
         holding_qty = int(watch_target.get("holding_qty", 0) or 0)
-        holding_text = f" 보유={holding_qty}주" if holding_qty > 0 else ""
-        pnl_text = ""
+        if action_bias == "HOLD" and holding_qty > 0:
+            parts = [
+                f"{market} {code}",
+                f"상태={format_side_korean('HOLD')}",
+                f"보유={holding_qty}주",
+                f"이평={ma_summary}",
+            ]
+            if pnl_pct is not None:
+                parts.append(f"손익={format_pct(pnl_pct)}")
+            return " ".join(parts)
+
+        status_map = {
+            "BUY": "매수신호",
+            "SELL": "매도신호",
+            "HOLD": format_side_korean("HOLD"),
+            "WAIT": format_side_korean("WAIT"),
+        }
+        parts = [
+            f"{market} {code}",
+            f"상태={status_map.get(action_bias, action_bias)}",
+            f"이평={ma_summary}",
+            f"가격={price_text}",
+        ]
         if holding_qty > 0 and pnl_pct is not None:
-            pnl_text = f" 손익={format_pct(pnl_pct)}"
-        return f"{market} {code} 상태={signal_state} 이평={ma_summary} 메모={note} 가격={price_text}{holding_text}{pnl_text}"
+            parts.append(f"보유={holding_qty}주")
+            parts.append(f"손익={format_pct(pnl_pct)}")
+        elif note != note_raw:
+            parts.append(f"사유={note}")
+        return " ".join(parts)
 
     @staticmethod
     def _format_price(value: float, currency: str) -> str:

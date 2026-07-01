@@ -319,6 +319,7 @@ def test_breakout_proximity_entry() -> None:
         breakout_proximity_pct=0.98,
         volume_spike_ratio=1.1,
         trend_require_price_above_slow=False,
+        pullback_rsi_high=60.0,
     )
     breakout_level = 100.0
     result = evaluate_entry_setup(
@@ -403,7 +404,7 @@ def test_pullback_blocked_when_rsi_overbought() -> None:
             minute_ma_fast=100.0,
             minute_ma_slow=98.0,
             price=100.2,
-            rsi14=70.0,
+            rsi14=71.0,
             intraday_bar_return=0.002,
             volume_ratio=1.8,
         ),
@@ -512,3 +513,79 @@ def test_pullback_ready_respects_config_volume() -> None:
     )
 
     assert result is False
+
+
+def test_pullback_ready_with_relaxed_rsi() -> None:
+    config = replace(_build_config(), pullback_rsi_high=70.0)
+    result = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.4,
+            rsi14=67.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.0,
+        ),
+    )
+
+    assert result is True
+
+
+def test_pullback_ready_with_wider_distance() -> None:
+    config = replace(_build_config(), pullback_distance_upper_pct=0.012)
+    result = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=101.0,
+            rsi14=55.0,
+            intraday_bar_return=0.002,
+            volume_ratio=1.0,
+        ),
+    )
+
+    assert result is True
+
+
+def test_pullback_ready_with_low_volume() -> None:
+    config = replace(_build_config(), pullback_min_volume_ratio=0.8)
+    result = _pullback_ready(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.4,
+            rsi14=55.0,
+            intraday_bar_return=0.002,
+            volume_ratio=0.9,
+        ),
+    )
+
+    assert result is True
+
+
+def test_evaluate_entry_uses_prefilter_factor() -> None:
+    config = replace(
+        _build_config(),
+        volume_spike_ratio=1.5,
+        volume_spike_ratio_prefilter_factor=0.5,
+        pullback_min_volume_ratio=0.8,
+    )
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            minute_ma_fast=100.0,
+            minute_ma_slow=98.0,
+            price=100.3,
+            rsi14=55.0,
+            intraday_momentum=0.0015,
+            intraday_bar_return=0.001,
+            volume_ratio=0.8,
+            breakout_level=100.8,
+            breakout_distance_pct=-0.0049,
+        ),
+    )
+
+    assert result.reason != "volume_low"

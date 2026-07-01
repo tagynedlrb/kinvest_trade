@@ -1133,6 +1133,51 @@ def test_unified_watch_includes_held_domestic_regardless_of_rank() -> None:
     assert [item.code for item in watch_targets] == ["D3", "D1", "D2"]
 
 
+def test_held_position_shows_hold_not_wait() -> None:
+    service = _build_run_service()
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=150.0,
+        current_price=151.0,
+        pnl_pct=0.0067,
+    )
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="NVDA",
+        exchange_code="NASD",
+        price=151.0,
+        activity_score=20.0,
+        signal_snapshot=_snapshot(price=151.0, volume_ratio=1.2),
+        held_position=held,
+        holding_qty=2,
+    )
+
+    assert watch_target.action_bias == "HOLD"
+    assert watch_target.signal_state == "HOLD"
+
+
+def test_buy_target_excludes_hold_status() -> None:
+    service = _build_run_service()
+    overseas_ranked = [
+        OverseasScanResult("NVDA", "NASD", 150.0, 149.9, 150.1, 0.0013, 2.0, 900_000, 10, 1350.0, 18.0),
+        OverseasScanResult("AMD", "NASD", 155.0, 154.9, 155.1, 0.0012, 1.5, 800_000, 10, 1350.0, 17.0),
+        OverseasScanResult("AAPL", "NASD", 210.0, 209.9, 210.1, 0.0010, 1.2, 700_000, 10, 1350.0, 16.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus("overseas", "NVDA", "NASD", 150.0, 18.0, 12.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("overseas", "AMD", "NASD", 155.0, 17.0, 11.0, "HOLD", "HOLD", "20d>60d 5>20", "trend_holding", 3),
+        WatchTargetStatus("overseas", "AAPL", "NASD", 210.0, 16.0, 10.0, "HOLD", "HOLD", "20d>60d 5>20", "hold", 2),
+    ]
+
+    selected = service._select_overseas_buy_targets(overseas_ranked, watch_targets, max_concurrent=3)
+
+    assert [item.symbol for item in selected] == ["NVDA"]
+
+
 def test_select_overseas_buy_targets_returns_multiple() -> None:
     service = _build_run_service()
     overseas_ranked = [

@@ -759,6 +759,75 @@ class DummyDomesticSellClient:
         }
 
 
+class DummyOverseasBalanceClient:
+    def __init__(self, positions_by_exchange: dict[str, list[dict[str, str]]]) -> None:
+        self.positions_by_exchange = positions_by_exchange
+
+    async def get_overseas_balance(self, exchange_code: str, currency_code: str):
+        del currency_code
+        return {"positions": list(self.positions_by_exchange.get(exchange_code, []))}
+
+
+def test_load_overseas_positions_includes_real_holdings_outside_ranked_candidates() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        liquidity_lab=SimpleNamespace(
+            overseas_candidates=[
+                SimpleNamespace(symbol="SOFI", exchange_code="NASD"),
+                SimpleNamespace(symbol="AAL", exchange_code="NASD"),
+                SimpleNamespace(symbol="HOOD", exchange_code="NASD"),
+            ]
+        )
+    )
+    service.client = DummyOverseasBalanceClient(
+        {
+            "NASD": [
+                {
+                    "ovrs_pdno": "SOFI",
+                    "ovrs_cblc_qty": "1",
+                    "ord_psbl_qty": "1",
+                    "pchs_avg_pric": "20.00",
+                },
+                {
+                    "ovrs_pdno": "AAL",
+                    "ovrs_cblc_qty": "2",
+                    "ord_psbl_qty": "2",
+                    "pchs_avg_pric": "11.00",
+                },
+                {
+                    "ovrs_pdno": "HOOD",
+                    "ovrs_cblc_qty": "3",
+                    "ord_psbl_qty": "3",
+                    "pchs_avg_pric": "22.00",
+                },
+            ]
+        }
+    )
+    overseas_ranked = [
+        OverseasScanResult(
+            symbol="SOFI",
+            exchange_code="NASD",
+            last_price=21.0,
+            bid=20.9,
+            ask=21.1,
+            spread_pct=0.001,
+            change_rate_pct=1.0,
+            volume=500000,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=10.0,
+        )
+    ]
+
+    positions = asyncio.run(service._load_overseas_positions(overseas_ranked))
+
+    assert {position.symbol for position in positions} == {"SOFI", "AAL", "HOOD"}
+    fallback = {position.symbol: position.current_price for position in positions}
+    assert fallback["SOFI"] == 21.0
+    assert fallback["AAL"] == 11.0
+    assert fallback["HOOD"] == 22.0
+
+
 def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | None = None) -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(

@@ -1169,12 +1169,13 @@ class LiquidityLabService:
         overseas_ranked: list[OverseasScanResult],
         held_symbols_cache: set[str] | None = None,
     ) -> list[OverseasHeldPosition]:
-        if not overseas_ranked:
-            return []
-
         quote_map = {item.symbol.upper(): item for item in overseas_ranked}
-        candidate_symbols = set(quote_map.keys())
-        exchange_codes = {item.exchange_code.upper() for item in overseas_ranked}
+        exchange_codes = {
+            item.exchange_code.upper() for item in overseas_ranked
+        } or {
+            candidate.exchange_code.upper()
+            for candidate in self.config.liquidity_lab.overseas_candidates
+        }
         positions_by_key: dict[tuple[str, str], OverseasHeldPosition] = {}
 
         for exchange_code in sorted(exchange_codes):
@@ -1188,7 +1189,7 @@ class LiquidityLabService:
 
             for row in balance.get("positions", []):
                 symbol = str(row.get("ovrs_pdno", "")).strip().upper()
-                if symbol not in candidate_symbols:
+                if not symbol:
                     continue
                 row_exchange_code = str(row.get("ovrs_excg_cd", "")).strip().upper() or exchange_code
                 quantity = parse_kis_number(row.get("ovrs_cblc_qty"))
@@ -1197,9 +1198,20 @@ class LiquidityLabService:
                 orderable_qty = parse_kis_number(row.get("ord_psbl_qty"))
                 avg_price = self._parse_float(row.get("pchs_avg_pric"))
                 quote = quote_map.get(symbol)
-                if quote is None or avg_price <= 0:
+                if avg_price <= 0:
                     continue
-                current_price = quote.last_price
+                current_price = (
+                    quote.last_price
+                    if quote is not None
+                    else max(
+                        self._parse_float(row.get("ovrs_now_pric")),
+                        self._parse_float(row.get("ovrs_now_pric1")),
+                        self._parse_float(row.get("now_pric2")),
+                        self._parse_float(row.get("last_price")),
+                    )
+                )
+                if current_price <= 0:
+                    current_price = avg_price
                 pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0.0
                 positions_by_key[(symbol, row_exchange_code)] = OverseasHeldPosition(
                     symbol=symbol,

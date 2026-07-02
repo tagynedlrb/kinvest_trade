@@ -541,6 +541,7 @@ class LiquidityLabService:
         self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
+        self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
@@ -2139,6 +2140,7 @@ class LiquidityLabService:
             strategy_flag=strategy_flag,
             entry_by=entry_by,
         )
+        self._mark_session_owned(candidate.stock_code)
         repository = getattr(self, "repository", None)
         if repository is not None:
             repository.save_cycle_log(
@@ -2179,6 +2181,12 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
         strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.stock_code, signal_snapshot)
+        entry_label, exit_label = self._build_sell_strategy_labels(
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            exit_reason=exit_reason,
+        )
         if self.config.credentials.dry_run:
             return {
                 "skipped": True,
@@ -2222,8 +2230,8 @@ class LiquidityLabService:
             "구분=매도",
             f"가격={format_krw(sell_price)}",
             f"수량={sell_qty}주",
-            f"진입전략={strategy_flag or '-'}",
-            f"청산트리거={exit_by or format_reason_korean(exit_reason)}",
+            f"매수전략={entry_label}",
+            f"청산전략={exit_label}",
         ]
         if held.avg_price > 0:
             gross_pnl = (sell_price - held.avg_price) * sell_qty
@@ -2250,6 +2258,7 @@ class LiquidityLabService:
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                is_session_trade=1 if self._is_session_owned(candidate.stock_code) else 0,
             )
 
         return {
@@ -2396,6 +2405,7 @@ class LiquidityLabService:
             strategy_flag=strategy_flag,
             entry_by=entry_by,
         )
+        self._mark_session_owned(candidate.symbol)
         return {
             "submitted": True,
             "market": "overseas",
@@ -2584,6 +2594,12 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
         strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.symbol, signal_snapshot)
+        entry_label, exit_label = self._build_sell_strategy_labels(
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            exit_reason=exit_reason,
+        )
         tracker = self._get_position_tracker()
         unified = None
         target_sell_qty = min(held.quantity, max(held.orderable_qty, 0))
@@ -2721,8 +2737,8 @@ class LiquidityLabService:
             "구분=매도",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}주",
-            f"진입전략={strategy_flag or '-'}",
-            f"청산트리거={exit_by or format_reason_korean(exit_reason)}",
+            f"매수전략={entry_label}",
+            f"청산전략={exit_label}",
         ]
         virtual_closed_qty = int(sell_result.get("qty_from_virtual_buy", 0) or 0)
         if virtual_closed_qty > 0:
@@ -2759,6 +2775,7 @@ class LiquidityLabService:
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                is_session_trade=1 if self._is_session_owned(candidate.symbol) else 0,
             )
 
         return {
@@ -2789,6 +2806,12 @@ class LiquidityLabService:
         sell_qty_override: int | None = None,
     ) -> dict:
         strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.symbol, signal_snapshot)
+        entry_label, exit_label = self._build_sell_strategy_labels(
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            exit_reason=exit_reason,
+        )
         tracker = self._get_position_tracker()
         sell_qty = (
             sell_qty_override
@@ -2849,8 +2872,8 @@ class LiquidityLabService:
             "구분=매도 (virtual)",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={sell_qty}주",
-            f"진입전략={strategy_flag or '-'}",
-            f"청산트리거={exit_by or format_reason_korean(exit_reason)}",
+            f"매수전략={entry_label}",
+            f"청산전략={exit_label}",
             f"수익률={format_pct(realized_pnl_pct)}",
         ]
         if closed_virtual_buy_qty > 0:
@@ -3173,8 +3196,20 @@ class LiquidityLabService:
             lines.append(f"전략={action.get('strategy_flag', '-')}")
             lines.append(f"주도={action.get('entry_by', '-')}")
         elif action["action_raw"] in {"SELL", "SELL_REJECTED", "VIRTUAL_SELL"}:
-            lines.append(f"진입전략={action.get('strategy_flag', '-')}")
-            lines.append(f"청산트리거={action.get('exit_by', '-')}")
+            entry_label, exit_label = self._build_sell_strategy_labels(
+                strategy_flag=str(action.get("strategy_flag", "") or ""),
+                entry_by=str(action.get("entry_by", "") or ""),
+                exit_by=str(action.get("exit_by", "") or ""),
+                exit_reason=(
+                    str(
+                        action.get("exit_reason")
+                        or action.get("reason_raw")
+                        or ""
+                    )
+                ),
+            )
+            lines.append(f"매수전략={entry_label}")
+            lines.append(f"청산전략={exit_label}")
             if action.get("pnl_text", "-") != "-":
                 lines.append(f"수익률={action['pnl_text']}")
             else:
@@ -3276,6 +3311,12 @@ class LiquidityLabService:
                     or "watching"
                 )
             ),
+            "reason_raw": str(
+                order.get("exit_reason")
+                or order.get("reason")
+                or order.get("error")
+                or "watching"
+            ),
             "strategy_flag": str(order.get("strategy_flag") or "-"),
             "entry_by": str(order.get("entry_by") or "-"),
             "exit_by": str(order.get("exit_by") or "-"),
@@ -3304,6 +3345,42 @@ class LiquidityLabService:
             labels = [entry_by]
         triggered = [reverse_map[label] for label in labels if label in reverse_map]
         return frozenset(triggered)
+
+    def _get_session_owned_symbols(self) -> set[str]:
+        owned = getattr(self, "_session_owned_symbols", None)
+        if owned is None:
+            owned = set()
+            self._session_owned_symbols = owned
+        return owned
+
+    def _mark_session_owned(self, symbol: str) -> None:
+        if symbol.strip():
+            self._get_session_owned_symbols().add(symbol.strip().upper())
+
+    def _is_session_owned(self, symbol: str) -> bool:
+        return symbol.strip().upper() in self._get_session_owned_symbols()
+
+    def _build_sell_strategy_labels(
+        self,
+        *,
+        strategy_flag: str,
+        entry_by: str,
+        exit_by: str,
+        exit_reason: str,
+    ) -> tuple[str, str]:
+        entry_label = strategy_flag or "-"
+        if entry_by and entry_by != strategy_flag:
+            entry_label += f" (주도:{entry_by})"
+
+        exit_reason_korean = format_reason_korean(exit_reason) if exit_reason else ""
+        exit_strategy_korean = format_reason_korean(exit_by) if exit_by else ""
+        if exit_strategy_korean and exit_reason_korean:
+            exit_label = f"{exit_strategy_korean}·{exit_reason_korean}"
+        elif exit_strategy_korean:
+            exit_label = exit_strategy_korean
+        else:
+            exit_label = exit_reason_korean or "-"
+        return entry_label, exit_label
 
     def _commit_strategy_entry(
         self,

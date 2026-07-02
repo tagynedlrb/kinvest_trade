@@ -470,7 +470,7 @@
         ],
         "domestic_paper_iterations": 6,
         "domestic_paper_interval_sec": 5,
-        "unified_watch_top_n": 15,
+        "unified_watch_top_n": 20,
         "unified_scan_top_n": 15,
         "overseas_scan_top_n": 12,
         "domestic_test_order_qty": 5,

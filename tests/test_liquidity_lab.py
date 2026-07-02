@@ -469,8 +469,8 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
     assert "[KIS][LAB_SELL]" in message
-    assert "진입전략=-" in message
-    assert "청산트리거=긴급 손절" in message
+    assert "매수전략=-" in message
+    assert "청산전략=긴급 손절" in message
     assert "수익률=+0.71%" in message
     assert "수익률=+0.71%" in message
 
@@ -684,7 +684,7 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
 
     assert result["submitted"] is True
-    assert "진입전략=-" in service.notifier.messages[0]
+    assert "매수전략=-" in service.notifier.messages[0]
     assert "수익률=알수없음" in service.notifier.messages[0]
 
 
@@ -808,8 +808,8 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     message = service.notifier.messages[0]
     assert "[KIS][LAB_SELL]" in message
     assert "시장=국내" in message
-    assert "진입전략=-" in message
-    assert "청산트리거=손절" in message
+    assert "매수전략=-" in message
+    assert "청산전략=손절" in message
     assert "수익률=+2.44%" in message
     assert "수익률=+2.44%" in message
 

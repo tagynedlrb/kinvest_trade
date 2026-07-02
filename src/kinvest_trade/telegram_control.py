@@ -39,6 +39,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_positions - 보유 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
         "/lab_virtual - 가상 포트폴리오 요약",
+        "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
     ]
@@ -56,6 +57,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_positions", "description": "보유 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_virtual", "description": "가상 거래 성과 보기"},
+    {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
 ]
@@ -248,6 +250,9 @@ class TelegramLiquidityLabController:
             return
         if command_name == "positions":
             await self._send_positions_message()
+            return
+        if command_name == "portfolio":
+            await self._send_portfolio_message()
             return
         if command_name == "log":
             await self._send_recent_trade_log()
@@ -714,6 +719,98 @@ class TelegramLiquidityLabController:
     async def _send_virtual_portfolio_message(self) -> None:
         await self.notifier.send(self._build_virtual_portfolio_message())
 
+    def _build_portfolio_message(self) -> str:
+        now = datetime.now(timezone.utc)
+        lines = [
+            "[KIS][포트폴리오]",
+            f"시각={format_kst_korean(now)}",
+        ]
+
+        last_report = self.last_report_summary or {}
+        real_positions = self._combined_positions(last_report)
+        lines.append("─── 실보유 종목 ───")
+        if not real_positions:
+            lines.append("보유종목=없음")
+        else:
+            for pos in real_positions:
+                symbol = str(pos.get("symbol") or pos.get("stock_code") or "-")
+                market_key = str(
+                    pos.get(
+                        "market",
+                        "domestic" if pos.get("stock_code") else "overseas",
+                    )
+                )
+                market = format_market_korean(market_key)
+                qty = int(pos.get("quantity", 0) or 0)
+                avg_price = float(pos.get("avg_price", 0) or 0)
+                current_price = float(pos.get("current_price", 0) or 0)
+                pnl_pct = float(pos.get("pnl_pct", 0) or 0)
+                currency = str(pos.get("currency", "USD"))
+                lines.append(
+                    f"{market} {symbol} "
+                    f"수량={qty} "
+                    f"매입={self._format_price(avg_price, currency)} "
+                    f"현재={self._format_price(current_price, currency)} "
+                    f"손익={format_pct(pnl_pct)}"
+                )
+
+        manager = VirtualTradeManager(self.repository)
+        virtual_positions = manager.list_positions()
+        lines.append("─── 가상보유 종목 ───")
+        if not virtual_positions:
+            lines.append("가상보유=없음")
+        else:
+            for position in virtual_positions:
+                market = format_market_korean(position.market)
+                price_text = self._format_price(position.avg_price, position.currency)
+                lines.append(
+                    f"{market} {position.symbol}(v) "
+                    f"수량={position.qty} "
+                    f"평균단가={price_text}"
+                )
+
+        pending_sells = self.repository.list_virtual_sell_pending(market="overseas")
+        lines.append("─── 정산 대기 매도 ───")
+        if not pending_sells:
+            lines.append("정산대기=없음")
+        else:
+            for row in pending_sells:
+                market = format_market_korean(str(row.get("market", "overseas")))
+                symbol = str(row.get("symbol", "-"))
+                qty = int(row.get("qty", 0) or 0)
+                avg_sell_price = float(row.get("avg_sell_price", 0.0) or 0.0)
+                currency = str(row.get("currency", "USD"))
+                lines.append(
+                    f"{market} {symbol}(v) "
+                    f"수량=-{qty} "
+                    f"가상매도가={self._format_price(avg_sell_price, currency)}"
+                )
+
+        summary = manager.performance_summary()
+        lines.append("─── 누적 성과 (virtual) ───")
+        if not summary:
+            lines.append("성과=없음")
+        else:
+            for key in sorted(summary):
+                item = summary[key]
+                market = format_market_korean(str(item.get("market", "overseas")))
+                currency = str(item.get("currency", "USD"))
+                trade_count = int(item.get("trade_count", 0) or 0)
+                win_count = int(item.get("win_count", 0) or 0)
+                total_pnl = float(item.get("total_pnl", 0.0) or 0.0)
+                win_rate = (win_count / trade_count) if trade_count > 0 else 0.0
+                pnl_text = self._format_price(total_pnl, currency)
+                lines.append(
+                    f"{market} 체결={trade_count} "
+                    f"승률={format_pct(win_rate)} "
+                    f"실현손익={pnl_text}"
+                )
+
+        return "\n".join(lines)
+
+    async def _send_portfolio_message(self) -> None:
+        await self.notifier.send(self._build_portfolio_message())
+
     async def _send_recent_trade_log(self) -> None:
         started_at = (
             self.session_performance.started_at.isoformat()
@@ -1066,6 +1163,7 @@ class TelegramLiquidityLabController:
             "/lab_positions": "positions",
             "/lab_log": "log",
             "/lab_virtual": "virtual",
+            "/lab_portfolio": "portfolio",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",

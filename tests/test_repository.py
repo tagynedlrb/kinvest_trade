@@ -130,6 +130,7 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
 
     assert "strategy_flag" in columns
     assert "entry_by" in columns
+    assert "is_session_trade" in columns
 
 
 def test_get_session_pnl_summary_real_only(tmp_path) -> None:
@@ -170,6 +171,20 @@ def test_get_session_pnl_summary_real_only(tmp_path) -> None:
         realized_pnl_krw=17000,
         cycle_no=1,
         session_id="sess-real",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:03:00+00:00",
+        market="overseas",
+        symbol="OLDPOS",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        pnl_pct=0.20,
+        realized_pnl_usd=50.0,
+        realized_pnl_krw=68000,
+        cycle_no=1,
+        session_id="sess-real",
+        is_session_trade=0,
     )
 
     summary = repository.get_session_pnl_summary(session_id="sess-real", include_virtual=False)

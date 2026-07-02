@@ -74,6 +74,14 @@ REASON_KOREAN_MAP = {
     "paper_test_removed_for_speed": "속도 개선으로 페이퍼 테스트 생략",
     "session_not_orderable_in_profile": "현재 계정에서 거래 불가한 세션",
     "order_rejected": "주문 거부",
+    "trail_stop": "트레일링 스탑",
+    "target_hit": "목표가 달성",
+    "vwap_break": "VWAP 이탈",
+    "macd_dead": "MACD 데드크로스",
+    "rsi_overbought": "RSI 과열",
+    "vwap_pullback": "VWAP 눌림목",
+    "vol_breakout": "거래량 돌파",
+    "macd_golden": "MACD 골든크로스",
 }
 
 

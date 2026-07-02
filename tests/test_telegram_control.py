@@ -27,6 +27,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_positions") == "positions"
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
     assert TelegramLiquidityLabController.parse_command("/lab_virtual") == "virtual"
+    assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test") == ("paper_test", None)
     assert TelegramLiquidityLabController.parse_command("/lab_help") == "help"
@@ -182,6 +183,77 @@ def test_build_virtual_portfolio_message_formats_positions_and_summary(tmp_path)
     assert "[KIS][VIRTUAL_PORTFOLIO]" in message
     assert "AAPL (virtual) 수량=2 평균단가=$200.0000" in message
     assert "해외 체결=1 승률=+100.00% 실현손익=$1.0000" in message
+
+
+def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio.db")
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=2,
+        fill_price=200.0,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 20:10:00 KST",
+    )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="TSLA",
+        exchange_code="NASD",
+        qty=1,
+        avg_sell_price=250.0,
+        currency="USD",
+        updated_at="2026-06-30 21:00:00 KST",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [
+            {
+                "market": "domestic",
+                "stock_code": "005930",
+                "quantity": 3,
+                "avg_price": 80000.0,
+                "current_price": 82400.0,
+                "pnl_pct": 0.03,
+                "currency": "KRW",
+            }
+        ],
+        "overseas_positions": [
+            {
+                "market": "overseas",
+                "symbol": "SOXL",
+                "quantity": 1,
+                "avg_price": 19.25,
+                "current_price": 19.75,
+                "pnl_pct": 0.025974,
+                "currency": "USD",
+            }
+        ],
+    }
+
+    message = controller._build_portfolio_message()
+
+    assert "[KIS][포트폴리오]" in message
+    assert "─── 실보유 종목 ───" in message
+    assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
+    assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
+    assert "─── 가상보유 종목 ───" in message
+    assert "해외 AAPL(v) 수량=2 평균단가=$200.0000" in message
+    assert "─── 정산 대기 매도 ───" in message
+    assert "해외 TSLA(v) 수량=-1 가상매도가=$250.0000" in message
+    assert "─── 누적 성과 (virtual) ───" in message
 
 
 def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:

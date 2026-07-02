@@ -221,7 +221,10 @@ class SqliteRepository:
                     cycle_no INTEGER DEFAULT 0,
                     realized_pnl_usd REAL,
                     realized_pnl_krw REAL,
-                    session_id TEXT NOT NULL DEFAULT ''
+                    session_id TEXT NOT NULL DEFAULT '',
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    is_session_trade INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE INDEX IF NOT EXISTS idx_cycle_log_logged_at
                     ON cycle_log(logged_at);
@@ -247,6 +250,7 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "session_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "entry_by", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "cycle_log", "is_session_trade", "INTEGER NOT NULL DEFAULT 1")
 
     @staticmethod
     def _ensure_column(
@@ -357,6 +361,7 @@ class SqliteRepository:
         session_id: str = "",
         strategy_flag: str = "",
         entry_by: str = "",
+        is_session_trade: int = 1,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -366,8 +371,8 @@ class SqliteRepository:
                      price, pnl_pct, realized_pnl_usd, realized_pnl_krw, holding_qty,
                      rsi14, volume_ratio, intraday_momentum, intraday_bar_return,
                      minute_ma_fast, minute_ma_slow, activity_score, cycle_no, session_id,
-                     strategy_flag, entry_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     strategy_flag, entry_by, is_session_trade)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     logged_at,
@@ -392,6 +397,7 @@ class SqliteRepository:
                     session_id,
                     strategy_flag,
                     entry_by,
+                    is_session_trade,
                 ),
             )
 
@@ -429,6 +435,11 @@ class SqliteRepository:
         with self._connect() as conn:
             real_query = "SELECT * FROM cycle_log WHERE action_bias = 'SELL_REAL'"
             real_params: list[object] = []
+            cycle_log_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(cycle_log)").fetchall()
+            }
+            if "is_session_trade" in cycle_log_columns:
+                real_query += " AND (is_session_trade IS NULL OR is_session_trade = 1)"
             if session_id:
                 real_query += " AND session_id = ?"
                 real_params.append(session_id)

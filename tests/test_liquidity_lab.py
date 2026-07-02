@@ -1143,6 +1143,8 @@ def _build_run_service() -> LiquidityLabService:
             domestic_candidates=[],
             overseas_candidates=[],
             overseas_scan_top_n=3,
+            max_wait_cycles_before_penalty=15,
+            wait_penalty_decay=0.07,
             overseas_test_order_qty=1,
             overseas_max_position_qty=3,
             overseas_take_profit_pct=0.012,
@@ -1164,6 +1166,7 @@ def _build_run_service() -> LiquidityLabService:
     service._overseas_excluded = []
     service._last_held_symbols = set()
     service._signal_cache = {}
+    service._wait_cycles = {}
     return service
 
 
@@ -1311,6 +1314,49 @@ def test_domestic_signal_none_skips_watch_target() -> None:
     )
 
     assert watch_targets == []
+
+
+def test_build_unified_watch_targets_updates_wait_cycles() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 2
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+    ]
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    def fake_build_watch_target_status(**kwargs):
+        return WatchTargetStatus(
+            market=kwargs["market"],
+            code=kwargs["code"],
+            exchange_code=kwargs["exchange_code"],
+            price=kwargs["price"],
+            activity_score=kwargs["activity_score"],
+            signal_score=0.0,
+            action_bias="WAIT",
+            signal_state="WAIT",
+            ma_summary="20d>60d 5>20",
+            note="watch",
+            holding_qty=kwargs["holding_qty"],
+        )
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+    service._build_watch_target_status = fake_build_watch_target_status  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=[],
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=True,
+            us_open=False,
+        )
+    )
+
+    assert watch_targets[0].action_bias == "WAIT"
+    assert service._wait_cycles["domestic:D1"] == 1
 
 
 def test_held_position_shows_hold_not_wait() -> None:

@@ -504,7 +504,7 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
 
     assert "손익=" not in line
     assert "상태=대기" in line
-    assert "전략=20d>60d 5>20" in line
+    assert "전략=-" in line
 
 
 def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:

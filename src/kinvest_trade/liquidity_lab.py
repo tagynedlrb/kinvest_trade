@@ -541,6 +541,7 @@ class LiquidityLabService:
         self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
+        self._wait_cycles: dict[str, int] = {}
         self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
@@ -910,7 +911,22 @@ class LiquidityLabService:
         if not quote_results:
             return []
 
-        quote_results.sort(key=lambda item: item.activity_score, reverse=True)
+        ll_cfg = self.config.liquidity_lab
+        threshold = getattr(ll_cfg, "max_wait_cycles_before_penalty", 15)
+        decay = getattr(ll_cfg, "wait_penalty_decay", 0.07)
+        wait_cycles = getattr(self, "_wait_cycles", None)
+        if wait_cycles is None:
+            wait_cycles = {}
+            self._wait_cycles = wait_cycles
+
+        def _domestic_effective_score(result: DomesticScanResult) -> float:
+            key = f"domestic:{result.stock_code.upper()}"
+            wait_count = wait_cycles.get(key, 0)
+            excess = max(0, wait_count - threshold)
+            penalty = max(0.2, 1.0 - excess * decay)
+            return result.activity_score * penalty
+
+        quote_results.sort(key=_domestic_effective_score, reverse=True)
         refine_n = min(len(quote_results), max(config.unified_scan_top_n, 3))
         refined: list[DomesticScanResult] = []
         for candidate in quote_results[:refine_n]:
@@ -936,7 +952,7 @@ class LiquidityLabService:
 
         self._domestic_excluded = excluded
         remaining = quote_results[refine_n:]
-        return sorted(refined + remaining, key=lambda item: item.activity_score, reverse=True)
+        return sorted(refined + remaining, key=_domestic_effective_score, reverse=True)
 
     async def _scan_single_domestic_quote(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
@@ -1001,7 +1017,22 @@ class LiquidityLabService:
             self._signal_cache.clear()
             return [], set()
 
-        quote_results.sort(key=lambda item: item.activity_score, reverse=True)
+        ll_cfg = self.config.liquidity_lab
+        threshold = getattr(ll_cfg, "max_wait_cycles_before_penalty", 15)
+        decay = getattr(ll_cfg, "wait_penalty_decay", 0.07)
+        wait_cycles = getattr(self, "_wait_cycles", None)
+        if wait_cycles is None:
+            wait_cycles = {}
+            self._wait_cycles = wait_cycles
+
+        def _effective_score(result: OverseasScanResult) -> float:
+            key = f"overseas:{result.symbol.upper()}"
+            wait_count = wait_cycles.get(key, 0)
+            excess = max(0, wait_count - threshold)
+            penalty = max(0.2, 1.0 - excess * decay)
+            return result.activity_score * penalty
+
+        quote_results.sort(key=_effective_score, reverse=True)
         held_symbols = await self._get_held_symbols()
         top_n = max(1, config.overseas_scan_top_n)
 
@@ -1135,7 +1166,7 @@ class LiquidityLabService:
         if bid > 0 and ask > 0 and mid_price > 0:
             spread_pct = (ask - bid) / mid_price
         liquidity_score = math.log10(max(volume, 1)) * 6.0
-        momentum_score = change_rate * 2.5
+        momentum_score = math.copysign(abs(change_rate) ** 1.5, change_rate) * 5.0
         spread_penalty = spread_pct * 2500.0
         volume_surge_bonus = 0.0
         if volume >= self.config.liquidity_lab.overseas_min_volume * 5:
@@ -1703,6 +1734,21 @@ class LiquidityLabService:
                     watch_target,
                     pnl_pct=None if held is None else held.pnl_pct,
                 )
+        wait_cycles = getattr(self, "_wait_cycles", None)
+        if wait_cycles is None:
+            wait_cycles = {}
+            self._wait_cycles = wait_cycles
+        for wt in watch_targets:
+            key = f"{wt.market}:{wt.code.upper()}"
+            if wt.action_bias == "WAIT":
+                wait_cycles[key] = wait_cycles.get(key, 0) + 1
+            else:
+                wait_cycles.pop(key, None)
+
+        active_keys = {f"{wt.market}:{wt.code.upper()}" for wt in watch_targets}
+        stale_keys = [key for key in wait_cycles if key not in active_keys]
+        for key in stale_keys:
+            del wait_cycles[key]
         return watch_targets
 
     async def _build_overseas_watch_targets(

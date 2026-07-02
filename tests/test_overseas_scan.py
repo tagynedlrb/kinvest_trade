@@ -69,6 +69,7 @@ def _build_service() -> LiquidityLabService:
     service._overseas_excluded = []
     service._last_held_symbols = set()
     service._signal_cache = {}
+    service._wait_cycles = {}
     return service
 
 
@@ -319,3 +320,27 @@ def test_estimate_api_calls_overseas_reflects_new_structure() -> None:
     )
 
     assert estimated == 101
+
+
+def test_scan_overseas_wait_penalty_reorders_long_wait_symbol() -> None:
+    service = _build_service()
+    service._wait_cycles = {
+        "overseas:AAA": 25,
+        "overseas:BBB": 0,
+    }
+
+    async def fake_scan(candidate):
+        score_map = {"AAA": 10.0, "BBB": 9.5, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 5.0}
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    ranked, _ = asyncio.run(service.scan_overseas())
+
+    symbols = [item.symbol for item in ranked]
+    assert symbols[0] == "BBB"
+    assert symbols.index("AAA") > symbols.index("BBB")

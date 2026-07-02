@@ -1163,7 +1163,6 @@ class TelegramLiquidityLabController:
         market = format_market_korean(str(watch_target.get("market", "overseas")))
         code = str(watch_target.get("code", "-"))
         action_bias = str(watch_target.get("action_bias", "WAIT")).upper()
-        ma_summary = str(watch_target.get("ma_summary", "-"))
         strategy_flag = str(watch_target.get("strategy_flag", "") or "")
         note_raw = str(watch_target.get("note", "-"))
         note = format_reason_korean(note_raw)
@@ -1181,7 +1180,7 @@ class TelegramLiquidityLabController:
                 f"{market} {code}",
                 f"상태={format_side_korean('HOLD')}",
                 f"보유={holding_qty}주",
-                f"전략={strategy_flag or ma_summary or '-'}",
+                f"전략={strategy_flag or '-'}",
             ]
             if pnl_pct is not None:
                 parts.append(f"손익={format_pct(pnl_pct)}")
@@ -1196,7 +1195,7 @@ class TelegramLiquidityLabController:
         parts = [
             f"{market} {code}",
             f"상태={status_map.get(action_bias, action_bias)}",
-            f"전략={strategy_flag if strategy_flag else ('-' if action_bias == 'BUY' else ma_summary or '-')}",
+            f"전략={strategy_flag or '-'}",
             f"가격={price_text}",
         ]
         if holding_qty > 0 and pnl_pct is not None:

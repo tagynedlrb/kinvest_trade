@@ -102,6 +102,7 @@ class AutoTradeConfig:
     intraday_bar_minutes: int
     intraday_chart_refresh_sec: int
     daily_chart_refresh_sec: int
+    macd_min_bars: int
     entry_pullback_pct: float
     add_on_pullback_pct: float
     breakout_entry_pct: float
@@ -542,6 +543,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             daily_chart_refresh_sec=int(
                 auto_trade_raw.get("daily_chart_refresh_sec", 900)
             ),
+            macd_min_bars=int(auto_trade_raw.get("macd_min_bars", 34)),
             rsi_period=int(auto_trade_raw.get("rsi_period", 14)),
             entry_pullback_pct=float(auto_trade_raw.get("entry_pullback_pct", 0.0005)),
             add_on_pullback_pct=float(auto_trade_raw.get("add_on_pullback_pct", 0.001)),

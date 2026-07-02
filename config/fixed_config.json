@@ -55,6 +55,7 @@
         "intraday_bar_minutes": 5,
         "intraday_chart_refresh_sec": 60,
         "daily_chart_refresh_sec": 600,
+        "macd_min_bars": 34,
         "rsi_period": 14,
         "entry_pullback_pct": 0.0,
         "add_on_pullback_pct": 0.0,

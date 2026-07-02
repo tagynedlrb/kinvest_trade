@@ -69,6 +69,15 @@ def test_priority_strategy_manager_preview_buy_includes_flag_and_entry_by() -> N
     assert manager.position is None
 
 
+def test_priority_strategy_manager_buy_score_sums_buy_signals() -> None:
+    manager = PriorityStrategyManager()
+
+    score = manager.buy_score(_snapshot())
+
+    assert score > 0
+    assert score == 177.0
+
+
 def test_priority_strategy_manager_sell_uses_triggered_strategy_exit() -> None:
     manager = PriorityStrategyManager()
     manager.open_position(

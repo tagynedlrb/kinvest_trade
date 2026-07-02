@@ -81,6 +81,15 @@ class PriorityStrategyManager:
     def reset(self) -> None:
         self.position = None
 
+    def buy_score(self, snapshot: MovingAverageSnapshot) -> float:
+        """Sum the scores of strategies that emit BUY on this snapshot."""
+        total = 0.0
+        for strategy in self._strategies.values():
+            signal = strategy.evaluate(snapshot, None)  # type: ignore[attr-defined]
+            if signal.buy:
+                total += signal.score
+        return total
+
     def _check_entry(
         self,
         symbol: str,

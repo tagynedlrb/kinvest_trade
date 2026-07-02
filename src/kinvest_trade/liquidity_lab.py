@@ -1818,18 +1818,22 @@ class LiquidityLabService:
             signal_snapshot,
             commit=False,
         )
-        if entry_setup.ready:
+        if strategy_result.signal == "BUY":
+            combined_score = (
+                self._get_strategy_manager(code).buy_score(signal_snapshot)
+                + entry_setup.score
+            )
             return WatchTargetStatus(
                 market=market,
                 code=code,
                 exchange_code=exchange_code,
                 price=price,
                 activity_score=activity_score,
-                signal_score=entry_setup.score,
+                signal_score=round(combined_score, 2),
                 action_bias="BUY",
-                signal_state=entry_setup.state,
+                signal_state="BUY",
                 ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=f"[{strategy_result.flag or entry_setup.reason}] {entry_setup.reason}",
+                note=f"[{strategy_result.flag}] {entry_setup.reason}",
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_result.flag,
@@ -1855,6 +1859,8 @@ class LiquidityLabService:
             note=note,
             holding_qty=holding_qty,
             signal_snapshot=signal_snapshot,
+            strategy_flag=strategy_result.flag,
+            entry_by=strategy_result.entry_by,
         )
 
     def _save_cycle_log_from_watch_target(
@@ -2960,6 +2966,7 @@ class LiquidityLabService:
                 stock_code=candidate.stock_code,
                 target_date=target_date,
                 market_code=self.config.trading.market_code,
+                include_previous="Y",
             )
         except KisApiError:
             return None
@@ -2977,9 +2984,14 @@ class LiquidityLabService:
         )
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
+        macd_min = self.config.auto_trade.macd_min_bars
+        required_minute_bars = max(
+            self.config.auto_trade.intraday_slow_window,
+            macd_min,
+        )
         if (
             len(daily_closes) < self.config.auto_trade.daily_slow_window
-            or len(minute_closes) < self.config.auto_trade.intraday_slow_window
+            or len(minute_closes) < required_minute_bars
         ):
             return None
 
@@ -3305,7 +3317,11 @@ class LiquidityLabService:
             return
         manager = self._get_strategy_manager(symbol)
         preview = manager.evaluate(symbol, snapshot, commit=False)
-        triggered = preview.triggered_by or self._decode_strategy_ids(strategy_flag, entry_by)
+        triggered = preview.triggered_by
+        if not triggered:
+            triggered = self._decode_strategy_ids(strategy_flag, entry_by)
+        if not triggered and entry_by:
+            triggered = self._decode_strategy_ids("", entry_by)
         if triggered:
             manager.open_position(
                 symbol=symbol.strip().upper(),

@@ -1271,6 +1271,34 @@ def test_held_position_shows_hold_not_wait() -> None:
     assert watch_target.signal_state == "HOLD"
 
 
+def test_strategy_buy_can_override_entry_setup_wait() -> None:
+    service = _build_run_service()
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="SOXL",
+        exchange_code="AMEX",
+        price=20.0,
+        activity_score=20.0,
+        signal_snapshot=_snapshot(
+            price=20.0,
+            vwap=20.0,
+            rsi14=45.0,
+            volume_ratio=1.0,
+            macd_golden=True,
+            macd_dead=False,
+            breakout_distance_pct=-0.001,
+            intraday_momentum=0.0002,
+            intraday_bar_return=0.0001,
+        ),
+    )
+
+    assert watch_target.action_bias == "BUY"
+    assert watch_target.signal_state == "BUY"
+    assert watch_target.strategy_flag == "VWAP+RSI"
+    assert watch_target.entry_by == "VWAP"
+
+
 def test_buy_target_excludes_hold_status() -> None:
     service = _build_run_service()
     overseas_ranked = [

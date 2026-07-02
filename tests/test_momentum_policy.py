@@ -773,6 +773,20 @@ def test_vwap_computed() -> None:
     assert compute_vwap([100.0, 102.0, 101.0], [1000.0, 2000.0, 1500.0]) == 455500.0 / 4500.0
 
 
+def test_vwap_uses_typical_price_when_high_low_available() -> None:
+    typical = compute_vwap(
+        [100.0, 102.0, 98.0],
+        [1000.0, 2000.0, 1500.0],
+        [103.0, 105.0, 101.0],
+        [98.0, 100.0, 96.0],
+    )
+    close_only = compute_vwap([100.0, 102.0, 98.0], [1000.0, 2000.0, 1500.0])
+
+    assert typical is not None
+    assert close_only is not None
+    assert typical != close_only
+
+
 def test_detect_market_regime() -> None:
     assert detect_market_regime(_snapshot(price=100.4, minute_ma_slow=100.2)) == "bull"
     assert detect_market_regime(

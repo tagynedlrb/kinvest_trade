@@ -181,7 +181,12 @@ def build_moving_average_snapshot(
         window=max(2, min(atr_window, max(len(minute_chrono) - 1, 1))),
     ) or 0.0
     atr_pct = (atr / price) if atr > 0 and price > 0 else 0.0
-    vwap = compute_vwap(minute_chrono, volumes_chrono)
+    vwap = compute_vwap(
+        minute_chrono,
+        volumes_chrono,
+        highs=highs_chrono,
+        lows=lows_chrono,
+    )
     minute_chrono_for_macd = list(reversed(minute_closes))
     macd_line_val, macd_signal_val, macd_golden_val, macd_dead_val = compute_macd(
         minute_chrono_for_macd,
@@ -274,13 +279,33 @@ def build_moving_average_snapshot(
     )
 
 
-def compute_vwap(closes: list[float], volumes: list[float]) -> float | None:
+def compute_vwap(
+    closes: list[float],
+    volumes: list[float],
+    highs: list[float] | None = None,
+    lows: list[float] | None = None,
+) -> float | None:
+    """
+    VWAP using typical price when high/low data is available.
+    """
     if not closes or not volumes or len(closes) != len(volumes):
         return None
     total_volume = sum(volumes)
     if total_volume <= 0:
         return None
-    total_price_volume = sum(price * volume for price, volume in zip(closes, volumes))
+    use_typical = (
+        highs is not None
+        and lows is not None
+        and len(highs) == len(closes)
+        and len(lows) == len(closes)
+    )
+    if use_typical:
+        total_price_volume = sum(
+            ((high + low + close) / 3.0) * volume
+            for high, low, close, volume in zip(highs, lows, closes, volumes)
+        )
+    else:
+        total_price_volume = sum(price * volume for price, volume in zip(closes, volumes))
     return total_price_volume / total_volume
 
 def extract_price_series(

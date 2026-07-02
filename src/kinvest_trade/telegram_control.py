@@ -36,9 +36,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_service_restart - 텔레그램 제어 서비스 재시작",
         "/lab_status - 현재 상태",
         "/lab_watchlist - 감시 종목 요약",
-        "/lab_positions - 보유 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
-        "/lab_virtual - 가상 포트폴리오 요약",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
@@ -54,9 +52,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_service_restart", "description": "제어 서비스 재시작"},
     {"command": "lab_status", "description": "현재 상태 조회"},
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
-    {"command": "lab_positions", "description": "보유 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
-    {"command": "lab_virtual", "description": "가상 거래 성과 보기"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
@@ -248,17 +244,11 @@ class TelegramLiquidityLabController:
         if command_name == "watchlist":
             await self.notifier.send(self._build_watchlist_message())
             return
-        if command_name == "positions":
-            await self._send_positions_message()
-            return
         if command_name == "portfolio":
             await self._send_portfolio_message()
             return
         if command_name == "log":
             await self._send_recent_trade_log()
-            return
-        if command_name == "virtual":
-            await self._send_virtual_portfolio_message()
             return
         if command_name == "paper_test":
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -755,17 +745,17 @@ class TelegramLiquidityLabController:
                 )
 
         manager = VirtualTradeManager(self.repository)
-        virtual_positions = manager.list_positions()
+        effective_positions = self._build_effective_positions(last_report)
         lines.append("─── 가상보유 종목 ───")
-        if not virtual_positions:
+        if not effective_positions:
             lines.append("가상보유=없음")
         else:
-            for position in virtual_positions:
-                market = format_market_korean(position.market)
-                price_text = self._format_price(position.avg_price, position.currency)
+            for position in effective_positions:
+                market = format_market_korean(str(position["market"]))
+                price_text = self._format_price(float(position["avg_price"]), str(position["currency"]))
                 lines.append(
-                    f"{market} {position.symbol}(v) "
-                    f"수량={position.qty} "
+                    f"{market} {position['symbol']} "
+                    f"수량={int(position['qty'])} "
                     f"평균단가={price_text}"
                 )
 
@@ -1160,9 +1150,7 @@ class TelegramLiquidityLabController:
             "/lab_service_restart": "service_restart",
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
-            "/lab_positions": "positions",
             "/lab_log": "log",
-            "/lab_virtual": "virtual",
             "/lab_portfolio": "portfolio",
             "/lab_help": "help",
             "/start": "help",
@@ -1245,6 +1233,63 @@ class TelegramLiquidityLabController:
             *(last_report.get("domestic_positions") or []),
             *(last_report.get("overseas_positions") or []),
         ]
+
+    def _build_effective_positions(self, last_report: dict) -> list[dict[str, object]]:
+        positions = self._combined_positions(last_report)
+        effective: dict[tuple[str, str], dict[str, object]] = {}
+
+        for pos in positions:
+            market = str(
+                pos.get(
+                    "market",
+                    "domestic" if pos.get("stock_code") else "overseas",
+                )
+            )
+            symbol = str(pos.get("symbol") or pos.get("stock_code") or "-").upper()
+            currency = str(pos.get("currency", "USD"))
+            key = (market, symbol)
+            effective[key] = {
+                "market": market,
+                "symbol": symbol,
+                "qty": int(pos.get("quantity", 0) or 0),
+                "avg_price": float(pos.get("avg_price", 0) or 0.0),
+                "currency": currency,
+            }
+
+        manager = VirtualTradeManager(self.repository)
+        for position in manager.list_positions():
+            key = (position.market, position.symbol.upper())
+            existing = effective.get(key)
+            if existing is None:
+                effective[key] = {
+                    "market": position.market,
+                    "symbol": position.symbol.upper(),
+                    "qty": position.qty,
+                    "avg_price": position.avg_price,
+                    "currency": position.currency,
+                }
+                continue
+            base_qty = int(existing["qty"])
+            base_avg = float(existing["avg_price"])
+            next_qty = base_qty + position.qty
+            next_avg = position.avg_price
+            if next_qty > 0:
+                next_avg = ((base_avg * base_qty) + (position.avg_price * position.qty)) / next_qty
+            existing["qty"] = next_qty
+            existing["avg_price"] = next_avg
+
+        for row in self.repository.list_virtual_sell_pending(market="overseas"):
+            market = str(row.get("market", "overseas"))
+            symbol = str(row.get("symbol", "-")).upper()
+            key = (market, symbol)
+            existing = effective.get(key)
+            if existing is None:
+                continue
+            existing["qty"] = int(existing["qty"]) - int(row.get("qty", 0) or 0)
+
+        result = [item for item in effective.values() if int(item["qty"]) > 0]
+        result.sort(key=lambda item: (str(item["market"]), str(item["symbol"])))
+        return result
 
     @staticmethod
     def _parse_float(value: object) -> float:

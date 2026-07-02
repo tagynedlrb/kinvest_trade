@@ -24,10 +24,10 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_service_restart") == "service_restart"
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
-    assert TelegramLiquidityLabController.parse_command("/lab_positions") == "positions"
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
-    assert TelegramLiquidityLabController.parse_command("/lab_virtual") == "virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
+    assert TelegramLiquidityLabController.parse_command("/lab_positions") is None
+    assert TelegramLiquidityLabController.parse_command("/lab_virtual") is None
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test") == ("paper_test", None)
     assert TelegramLiquidityLabController.parse_command("/lab_help") == "help"
@@ -250,10 +250,53 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
     assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
     assert "─── 가상보유 종목 ───" in message
-    assert "해외 AAPL(v) 수량=2 평균단가=$200.0000" in message
+    assert "국내 005930 수량=3 평균단가=80,000원" in message
+    assert "해외 SOXL 수량=1 평균단가=$19.2500" in message
+    assert "해외 AAPL 수량=2 평균단가=$200.0000" in message
     assert "─── 정산 대기 매도 ───" in message
     assert "해외 TSLA(v) 수량=-1 가상매도가=$250.0000" in message
     assert "─── 누적 성과 (virtual) ───" in message
+
+
+def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_pending.db")
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_sell_price=20.5,
+        currency="USD",
+        updated_at="2026-06-30 21:00:00 KST",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [
+            {
+                "market": "overseas",
+                "symbol": "SOXL",
+                "quantity": 3,
+                "avg_price": 19.25,
+                "current_price": 19.75,
+                "pnl_pct": 0.025974,
+                "currency": "USD",
+            }
+        ],
+    }
+
+    message = controller._build_portfolio_message()
+
+    assert "해외 SOXL 수량=2 평균단가=$19.2500" in message
 
 
 def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:

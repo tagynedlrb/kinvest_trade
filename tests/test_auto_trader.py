@@ -197,8 +197,9 @@ def test_decide_action_prefers_pullback_entry() -> None:
 
     decision = trader._decide_action(
         _snapshot(
-            volume_ratio=2.2,
+            volume_ratio=1.9,
             intraday_bar_return=0.0008,
+            rsi14=55.0,
         )
     )
 

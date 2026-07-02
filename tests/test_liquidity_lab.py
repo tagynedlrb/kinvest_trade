@@ -469,7 +469,9 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
     assert "[KIS][LAB_SELL]" in message
-    assert "손익=+$4.00" in message
+    assert "진입전략=-" in message
+    assert "청산트리거=긴급 손절" in message
+    assert "수익률=+0.71%" in message
     assert "수익률=+0.71%" in message
 
 
@@ -682,7 +684,8 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
 
     assert result["submitted"] is True
-    assert "매입가=알수없음" in service.notifier.messages[0]
+    assert "진입전략=-" in service.notifier.messages[0]
+    assert "수익률=알수없음" in service.notifier.messages[0]
 
 
 class DummyDomesticBalanceClient:
@@ -805,7 +808,9 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     message = service.notifier.messages[0]
     assert "[KIS][LAB_SELL]" in message
     assert "시장=국내" in message
-    assert "손익=+3,900원" in message
+    assert "진입전략=-" in message
+    assert "청산트리거=손절" in message
+    assert "수익률=+2.44%" in message
     assert "수익률=+2.44%" in message
 
 
@@ -1374,7 +1379,7 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     async def fake_build_unified_watch_targets(**kwargs):
         return [watch_target]
 
-    async def fake_manage_overseas_position(*, candidate, held_positions):
+    async def fake_manage_overseas_position(*, candidate, held_positions, watch_target=None):
         manage_calls.append(candidate.symbol)
         return {"submitted": True}
 
@@ -1539,10 +1544,10 @@ def test_run_executes_both_markets_when_both_open() -> None:
     async def fake_build_unified_watch_targets(**kwargs):
         return watch_targets
 
-    async def fake_place_domestic_test_order(candidate):
+    async def fake_place_domestic_test_order(candidate, watch_target=None):
         return {"submitted": True, "side": "buy", "candidate": {"stock_code": candidate.stock_code}, "qty": 1}
 
-    async def fake_manage_overseas_position(*, candidate, held_positions):
+    async def fake_manage_overseas_position(*, candidate, held_positions, watch_target=None):
         return {"submitted": True, "side": "buy", "candidate": {"symbol": candidate.symbol}, "qty": 1}
 
     async def fake_send_summary(report):
@@ -1618,7 +1623,7 @@ def test_run_executes_domestic_buy_for_multiple_targets() -> None:
     async def fake_build_unified_watch_targets(**kwargs):
         return watch_targets
 
-    async def fake_place_domestic_test_order(candidate):
+    async def fake_place_domestic_test_order(candidate, watch_target=None):
         order_calls.append(candidate.stock_code)
         return {
             "submitted": True,
@@ -1703,7 +1708,7 @@ def test_run_executes_overseas_when_only_us_open() -> None:
     async def fake_build_unified_watch_targets(**kwargs):
         return [watch_target]
 
-    async def fake_manage_overseas_position(*, candidate, held_positions):
+    async def fake_manage_overseas_position(*, candidate, held_positions, watch_target=None):
         return {"submitted": True, "side": "buy", "candidate": {"symbol": candidate.symbol}, "qty": 1}
 
     async def fake_send_summary(report):
@@ -1988,6 +1993,10 @@ def test_send_summary_sends_message_for_sell_rejected() -> None:
         "price": "$196.9600",
         "qty": "1",
         "indicator": "손익 +1.81%",
+        "pnl_text": "-",
+        "strategy_flag": "-",
+        "entry_by": "-",
+        "exit_by": "-",
         "reason": "현재 계정에서 거래 불가한 세션",
     }
     report = LiquidityLabReport(

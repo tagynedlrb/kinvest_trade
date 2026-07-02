@@ -8,8 +8,8 @@ from .time_utils import parse_datetime
 
 
 class SqliteRepository:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: Path | str) -> None:
+        self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -245,6 +245,8 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "realized_pnl_usd", "REAL")
             self._ensure_column(conn, "cycle_log", "realized_pnl_krw", "REAL")
             self._ensure_column(conn, "cycle_log", "session_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "cycle_log", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "cycle_log", "entry_by", "TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _ensure_column(
@@ -353,6 +355,8 @@ class SqliteRepository:
         activity_score: float | None = None,
         cycle_no: int = 0,
         session_id: str = "",
+        strategy_flag: str = "",
+        entry_by: str = "",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -361,8 +365,9 @@ class SqliteRepository:
                     (logged_at, market, symbol, exchange_code, action_bias, action_reason,
                      price, pnl_pct, realized_pnl_usd, realized_pnl_krw, holding_qty,
                      rsi14, volume_ratio, intraday_momentum, intraday_bar_return,
-                     minute_ma_fast, minute_ma_slow, activity_score, cycle_no, session_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     minute_ma_fast, minute_ma_slow, activity_score, cycle_no, session_id,
+                     strategy_flag, entry_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     logged_at,
@@ -385,6 +390,8 @@ class SqliteRepository:
                     activity_score,
                     cycle_no,
                     session_id,
+                    strategy_flag,
+                    entry_by,
                 ),
             )
 
@@ -577,7 +584,6 @@ class SqliteRepository:
                     spread_pct,
                 ),
             )
-
     def save_paper_order(
         self,
         run_id: int,
@@ -1033,3 +1039,6 @@ class SqliteRepository:
                     json.dumps(raw_payload, ensure_ascii=False, default=str),
                 ),
             )
+
+
+Repository = SqliteRepository

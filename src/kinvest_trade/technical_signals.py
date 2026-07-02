@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .indicators import (
     compute_atr,
     compute_bollinger_bands,
+    compute_macd,
     compute_momentum,
     compute_rsi,
     compute_sma,
@@ -53,6 +54,10 @@ class MovingAverageSnapshot:
     crossed_down: bool
     regime: str
     vwap: float | None = None
+    macd_line: float | None = None
+    macd_signal: float | None = None
+    macd_golden: bool = False
+    macd_dead: bool = False
 
     @property
     def has_required_context(self) -> bool:
@@ -177,6 +182,13 @@ def build_moving_average_snapshot(
     ) or 0.0
     atr_pct = (atr / price) if atr > 0 and price > 0 else 0.0
     vwap = compute_vwap(minute_chrono, volumes_chrono)
+    minute_chrono_for_macd = list(reversed(minute_closes))
+    macd_line_val, macd_signal_val, macd_golden_val, macd_dead_val = compute_macd(
+        minute_chrono_for_macd,
+        fast=12,
+        slow=26,
+        signal=9,
+    )
 
     spread_pct = 0.0
     if bid > 0 and ask > 0:
@@ -255,6 +267,10 @@ def build_moving_average_snapshot(
         crossed_down=crossed_down,
         regime=regime,
         vwap=vwap,
+        macd_line=macd_line_val,
+        macd_signal=macd_signal_val,
+        macd_golden=macd_golden_val,
+        macd_dead=macd_dead_val,
     )
 
 

@@ -142,6 +142,52 @@ def compute_drawdown(current_price: float, peak_price: float) -> float:
     return (current_price - peak_price) / peak_price
 
 
+def compute_ema(values: list[float], period: int) -> list[float]:
+    """Exponentially weighted moving average for chronological values."""
+    if len(values) < 1:
+        return []
+    k = 2.0 / (period + 1)
+    ema: list[float] = [values[0]]
+    for value in values[1:]:
+        ema.append(value * k + ema[-1] * (1 - k))
+    return ema
+
+
+def compute_macd(
+    values: list[float],
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> tuple[float | None, float | None, bool, bool]:
+    """
+    Calculate MACD from chronological values.
+
+    Returns:
+        (macd_line, signal_line, golden_cross, dead_cross)
+    """
+    min_len = slow + signal
+    if len(values) < min_len + 1:
+        return None, None, False, False
+
+    ema_fast = compute_ema(values, fast)
+    ema_slow = compute_ema(values, slow)
+    macd_line_series = [fast_value - slow_value for fast_value, slow_value in zip(ema_fast, ema_slow)]
+    signal_series = compute_ema(macd_line_series, signal)
+
+    if len(macd_line_series) < 2 or len(signal_series) < 2:
+        return None, None, False, False
+
+    macd_cur = macd_line_series[-1]
+    macd_prev = macd_line_series[-2]
+    sig_cur = signal_series[-1]
+    sig_prev = signal_series[-2]
+
+    golden_cross = macd_prev <= sig_prev and macd_cur > sig_cur
+    dead_cross = macd_prev >= sig_prev and macd_cur < sig_cur
+
+    return macd_cur, sig_cur, golden_cross, dead_cross
+
+
 def summarize_indicators(closes: list[int], volumes: list[int]) -> IndicatorSummary:
     closes_float = [float(value) for value in closes]
     last_close = closes[0] if closes else None

@@ -34,6 +34,7 @@ from .momentum_policy import (
 from .notifier import TelegramNotifier
 from .paper import PaperTradingService, PaperRunState
 from .repository import SqliteRepository
+from .strategy import PriorityStrategyManager, STRATEGY_LABEL, StrategyID
 from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
@@ -136,6 +137,8 @@ class WatchTargetStatus:
     note: str
     holding_qty: int = 0
     signal_snapshot: MovingAverageSnapshot | None = None
+    strategy_flag: str = ""
+    entry_by: str = ""
 
 
 @dataclass(slots=True)
@@ -538,6 +541,7 @@ class LiquidityLabService:
         self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
+        self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -675,6 +679,8 @@ class LiquidityLabService:
         overseas_watch_targets = [
             watch_target for watch_target in watch_targets if watch_target.market == "overseas"
         ]
+        domestic_watch_map = {watch_target.code: watch_target for watch_target in domestic_watch_targets}
+        overseas_watch_map = {watch_target.code: watch_target for watch_target in overseas_watch_targets}
         overseas_exit_target = (
             await self._select_overseas_exit_target(overseas_ranked, monitored_overseas_positions)
             if us_open
@@ -719,7 +725,12 @@ class LiquidityLabService:
             domestic_orders = [domestic_order]
         elif domestic_buy_targets and krx_open:
             for buy_candidate in domestic_buy_targets:
-                domestic_orders.append(await self._place_domestic_test_order(buy_candidate))
+                domestic_orders.append(
+                    await self._place_domestic_test_order(
+                        buy_candidate,
+                        watch_target=domestic_watch_map.get(buy_candidate.stock_code),
+                    )
+                )
             domestic_order = domestic_orders[0]
         else:
             domestic_orders = [domestic_order]
@@ -739,12 +750,18 @@ class LiquidityLabService:
                     await self._manage_overseas_position(
                         candidate=buy_candidate,
                         held_positions=overseas_positions,
+                        watch_target=overseas_watch_map.get(buy_candidate.symbol),
                     )
                 )
             overseas_order = overseas_orders[0]
         elif overseas_buy_targets and us_open and not us_orderable_in_profile:
             for buy_candidate in overseas_buy_targets:
-                overseas_orders.append(await self._record_virtual_overseas_buy(buy_candidate))
+                overseas_orders.append(
+                    await self._record_virtual_overseas_buy(
+                        buy_candidate,
+                        watch_target=overseas_watch_map.get(buy_candidate.symbol),
+                    )
+                )
             overseas_order = overseas_orders[0]
         else:
             overseas_order = {
@@ -1750,6 +1767,7 @@ class LiquidityLabService:
                 signal_snapshot=signal_snapshot,
             )
 
+        existing_flag, existing_entry_by, _ = self._get_strategy_labels(code, signal_snapshot)
         if held_position is not None:
             exit_setup = self._build_exit_setup(signal_snapshot, held_position.pnl_pct, holding_qty)
             if exit_setup.action in {"sell", "sell_partial"}:
@@ -1766,6 +1784,8 @@ class LiquidityLabService:
                     note=exit_setup.reason,
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
+                    strategy_flag=existing_flag,
+                    entry_by=existing_entry_by,
                 )
             return WatchTargetStatus(
                 market=market,
@@ -1780,6 +1800,8 @@ class LiquidityLabService:
                 note=exit_setup.note,
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
+                strategy_flag=existing_flag,
+                entry_by=existing_entry_by,
             )
 
         inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
@@ -1790,6 +1812,11 @@ class LiquidityLabService:
             symbol=code,
             inverse_etf_symbols=inverse_symbols,
             leveraged_etf_symbols=leveraged_symbols,
+        )
+        strategy_result = self._get_strategy_manager(code).evaluate(
+            code,
+            signal_snapshot,
+            commit=False,
         )
         if entry_setup.ready:
             return WatchTargetStatus(
@@ -1802,9 +1829,11 @@ class LiquidityLabService:
                 action_bias="BUY",
                 signal_state=entry_setup.state,
                 ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=entry_setup.reason,
+                note=f"[{strategy_result.flag or entry_setup.reason}] {entry_setup.reason}",
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_result.flag,
+                entry_by=strategy_result.entry_by,
             )
         signal_state, note = derive_watch_state(
             self.config.auto_trade,
@@ -1854,6 +1883,8 @@ class LiquidityLabService:
             activity_score=watch_target.activity_score,
             cycle_no=getattr(self, "_cycle_count", 0),
             session_id=getattr(self, "_session_id", ""),
+            strategy_flag=watch_target.strategy_flag,
+            entry_by=watch_target.entry_by,
         )
 
     def _select_domestic_buy_target(
@@ -2025,7 +2056,14 @@ class LiquidityLabService:
             watchlist_override=watchlist,
         )
 
-    async def _place_domestic_test_order(self, candidate: DomesticScanResult) -> dict:
+    async def _place_domestic_test_order(
+        self,
+        candidate: DomesticScanResult,
+        watch_target: WatchTargetStatus | None = None,
+    ) -> dict:
+        strategy_flag = "" if watch_target is None else watch_target.strategy_flag
+        entry_by = "" if watch_target is None else watch_target.entry_by
+        signal_snapshot = None if watch_target is None else watch_target.signal_snapshot
         config = self.config.liquidity_lab
         qty = config.domestic_test_order_qty
         if config.use_slot_sizing:
@@ -2084,10 +2122,16 @@ class LiquidityLabService:
                     f"동작={format_side_korean('buy')}",
                     f"가격={int(candidate.best_ask or candidate.current_price):,}원",
                     f"수량={qty}주",
-                    "지표=RSI -, 거래량 -",
-                    "사유=거래량 돌파 진입",
+                    f"전략={strategy_flag or '-'}",
+                    f"주도={entry_by or '-'}",
                 ]
             )
+        )
+        self._commit_strategy_entry(
+            candidate.stock_code,
+            signal_snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
         )
         repository = getattr(self, "repository", None)
         if repository is not None:
@@ -2105,6 +2149,8 @@ class LiquidityLabService:
                 holding_qty=qty,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
             )
         return {
             "submitted": True,
@@ -2112,6 +2158,9 @@ class LiquidityLabService:
             "market": "domestic",
             "side": "buy",
             "candidate": asdict(candidate),
+            "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
             "qty": qty,
             "response": response,
         }
@@ -2123,6 +2172,7 @@ class LiquidityLabService:
         exit_reason: str,
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
+        strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.stock_code, signal_snapshot)
         if self.config.credentials.dry_run:
             return {
                 "skipped": True,
@@ -2166,18 +2216,17 @@ class LiquidityLabService:
             "구분=매도",
             f"가격={format_krw(sell_price)}",
             f"수량={sell_qty}주",
-            f"사유={format_reason_korean(exit_reason)}",
+            f"진입전략={strategy_flag or '-'}",
+            f"청산트리거={exit_by or format_reason_korean(exit_reason)}",
         ]
         if held.avg_price > 0:
             gross_pnl = (sell_price - held.avg_price) * sell_qty
             pnl_pct = (sell_price - held.avg_price) / held.avg_price
-            lines.append(f"매입가={format_krw(held.avg_price)}")
-            lines.append(f"손익={format_krw(gross_pnl)}")
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
-            lines.append("매입가=알수없음")
-            lines.append("손익=알수없음")
+            lines.append("수익률=알수없음")
         await self.notifier.send("\n".join(lines))
+        self._reset_strategy_position(candidate.stock_code)
         if held.avg_price > 0:
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
@@ -2193,6 +2242,8 @@ class LiquidityLabService:
                 holding_qty=sell_qty,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
             )
 
         return {
@@ -2205,11 +2256,20 @@ class LiquidityLabService:
             "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
             "qty": sell_qty,
             "exit_reason": exit_reason,
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
+            "exit_by": exit_by,
             "response": response,
         }
 
-    async def _place_overseas_test_order(self, candidate: OverseasScanResult) -> dict:
+    async def _place_overseas_test_order(
+        self,
+        candidate: OverseasScanResult,
+        watch_target: WatchTargetStatus | None = None,
+    ) -> dict:
         signal_snapshot = self._signal_cache.get(candidate.symbol.upper())
+        if signal_snapshot is None and watch_target is not None:
+            signal_snapshot = watch_target.signal_snapshot
         if signal_snapshot is None:
             signal_snapshot = await self._load_overseas_signal(candidate)
             self._signal_cache[candidate.symbol.upper()] = signal_snapshot
@@ -2226,6 +2286,13 @@ class LiquidityLabService:
             signal_snapshot,
             symbol=candidate.symbol,
         )
+        strategy_flag = ""
+        entry_by = ""
+        if watch_target is not None:
+            strategy_flag = watch_target.strategy_flag
+            entry_by = watch_target.entry_by
+        if not strategy_flag or not entry_by:
+            strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, signal_snapshot)
         if not should_buy:
             return {
                 "skipped": True,
@@ -2314,7 +2381,15 @@ class LiquidityLabService:
                 holding_qty=qty,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
             )
+        self._commit_strategy_entry(
+            candidate.symbol,
+            signal_snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+        )
         return {
             "submitted": True,
             "market": "overseas",
@@ -2323,6 +2398,8 @@ class LiquidityLabService:
             "signal_snapshot": asdict(signal_snapshot),
             "qty": qty,
             "reason": buy_reason,
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
             "response": response,
         }
 
@@ -2331,6 +2408,7 @@ class LiquidityLabService:
         *,
         candidate: OverseasScanResult,
         held_positions: list[OverseasHeldPosition],
+        watch_target: WatchTargetStatus | None = None,
     ) -> dict:
         config = self.config.liquidity_lab
         tracker = self._get_position_tracker()
@@ -2383,7 +2461,7 @@ class LiquidityLabService:
                     "reason": "already_holding_max_qty_waiting_for_exit",
                 }
 
-        return await self._place_overseas_test_order(candidate)
+        return await self._place_overseas_test_order(candidate, watch_target=watch_target)
 
     async def _record_virtual_overseas_buy(
         self,
@@ -2391,6 +2469,7 @@ class LiquidityLabService:
         *,
         signal_snapshot: MovingAverageSnapshot | None = None,
         rejected_error: str | None = None,
+        watch_target: WatchTargetStatus | None = None,
     ) -> dict:
         config = self.config.liquidity_lab
         qty = int(config.overseas_test_order_qty)
@@ -2431,6 +2510,10 @@ class LiquidityLabService:
         session = get_us_trading_session(now)
         created_at = format_kst(now) or now.isoformat()
         snapshot = signal_snapshot or self._signal_cache.get(candidate.symbol.upper())
+        strategy_flag = "" if watch_target is None else watch_target.strategy_flag
+        entry_by = "" if watch_target is None else watch_target.entry_by
+        if snapshot is not None and (not strategy_flag or not entry_by):
+            strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, snapshot)
         position = self.virtual_trades.record_buy(
             market="overseas",
             symbol=candidate.symbol,
@@ -2459,12 +2542,18 @@ class LiquidityLabService:
             "구분=매수 (virtual)",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={qty}주",
-            f"세션={session}",
-            "사유=거래불가 세션 가상체결",
+            f"전략={strategy_flag or '-'}",
+            f"주도={entry_by or '-'}",
         ]
         if rejected_error:
             lines.append(f"참고={rejected_error}")
         await self.notifier.send("\n".join(lines))
+        self._commit_strategy_entry(
+            candidate.symbol,
+            snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+        )
         return {
             "submitted": True,
             "already_notified": True,
@@ -2476,6 +2565,8 @@ class LiquidityLabService:
             "qty": qty,
             "reason": "session_not_orderable_in_profile",
             "session": session,
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
             "virtual_position": asdict(position),
         }
 
@@ -2486,6 +2577,7 @@ class LiquidityLabService:
         exit_reason: str,
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
+        strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.symbol, signal_snapshot)
         tracker = self._get_position_tracker()
         unified = None
         target_sell_qty = min(held.quantity, max(held.orderable_qty, 0))
@@ -2623,7 +2715,8 @@ class LiquidityLabService:
             "구분=매도",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}주",
-            f"사유={format_reason_korean(exit_reason)}",
+            f"진입전략={strategy_flag or '-'}",
+            f"청산트리거={exit_by or format_reason_korean(exit_reason)}",
         ]
         virtual_closed_qty = int(sell_result.get("qty_from_virtual_buy", 0) or 0)
         if virtual_closed_qty > 0:
@@ -2633,14 +2726,11 @@ class LiquidityLabService:
                 sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty
             )
             pnl_pct = (candidate.last_price - held.avg_price) / held.avg_price
-            lines.append(f"매입가={format_usd(held.avg_price)}")
-            lines.append(f"손익={format_usd(gross_pnl)}")
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
-            lines.append("매입가=알수없음")
-            lines.append("손익=알수없음")
             lines.append("수익률=알수없음")
         await self.notifier.send("\n".join(lines))
+        self._reset_strategy_position(candidate.symbol)
         if held.avg_price > 0:
             real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
             auto_trade_cfg = getattr(self.config, "auto_trade", None)
@@ -2661,6 +2751,8 @@ class LiquidityLabService:
                 holding_qty=real_qty_sold,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
             )
 
         return {
@@ -2674,6 +2766,9 @@ class LiquidityLabService:
             "qty": int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty),
             "requested_qty": target_sell_qty,
             "exit_reason": exit_reason,
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
+            "exit_by": exit_by,
             "response": response,
         }
 
@@ -2687,6 +2782,7 @@ class LiquidityLabService:
         rejected_error: str | None = None,
         sell_qty_override: int | None = None,
     ) -> dict:
+        strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.symbol, signal_snapshot)
         tracker = self._get_position_tracker()
         sell_qty = (
             sell_qty_override
@@ -2747,8 +2843,8 @@ class LiquidityLabService:
             "구분=매도 (virtual)",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={sell_qty}주",
-            f"사유={format_reason_korean(exit_reason)}",
-            f"손익={format_usd(realized_pnl)}",
+            f"진입전략={strategy_flag or '-'}",
+            f"청산트리거={exit_by or format_reason_korean(exit_reason)}",
             f"수익률={format_pct(realized_pnl_pct)}",
         ]
         if closed_virtual_buy_qty > 0:
@@ -2758,6 +2854,7 @@ class LiquidityLabService:
         if rejected_error:
             lines.append("참고=실매도거부를 가상체결로 전환")
         await self.notifier.send("\n".join(lines))
+        self._reset_strategy_position(candidate.symbol)
         return {
             "submitted": True,
             "already_notified": True,
@@ -2773,6 +2870,9 @@ class LiquidityLabService:
             "session": session,
             "realized_pnl": realized_pnl,
             "realized_pnl_pct": realized_pnl_pct,
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
+            "exit_by": exit_by,
             "qty_pending_real": pending_real_qty,
             "qty_from_virtual_buy": closed_virtual_buy_qty,
         }
@@ -3056,9 +3156,20 @@ class LiquidityLabService:
             f"동작={action['action']}",
             f"가격={action['price']}",
             f"수량={action['qty']}",
-            f"지표={action['indicator']}",
-            f"사유={action['reason']}",
         ]
+        if action["action_raw"] == "BUY":
+            lines.append(f"전략={action.get('strategy_flag', '-')}")
+            lines.append(f"주도={action.get('entry_by', '-')}")
+        elif action["action_raw"] in {"SELL", "SELL_REJECTED", "VIRTUAL_SELL"}:
+            lines.append(f"진입전략={action.get('strategy_flag', '-')}")
+            lines.append(f"청산트리거={action.get('exit_by', '-')}")
+            if action.get("pnl_text", "-") != "-":
+                lines.append(f"수익률={action['pnl_text']}")
+            else:
+                lines.append(f"사유={action['reason']}")
+        else:
+            lines.append(f"지표={action['indicator']}")
+            lines.append(f"사유={action['reason']}")
         if action["action_raw"] == "SELL_REJECTED":
             lines.append("참고=주문이 거부되어 실제로 체결되지 않았습니다")
         await self.notifier.send("\n".join(lines))
@@ -3132,6 +3243,11 @@ class LiquidityLabService:
             price = f"${float(price_value):.4f}"
         else:
             price = f"{int(float(price_value)):,}원"
+        pnl_text = "-"
+        if side == "SELL" and "pnl_pct" in held:
+            pnl_text = format_pct(float(held["pnl_pct"]))
+        elif side == "SELL" and order.get("realized_pnl_pct") is not None:
+            pnl_text = format_pct(float(order["realized_pnl_pct"]))
 
         return {
             "action_raw": action,
@@ -3139,6 +3255,7 @@ class LiquidityLabService:
             "price": price,
             "qty": str(qty_value),
             "indicator": ", ".join(indicator_parts) if indicator_parts else "-",
+            "pnl_text": pnl_text,
             "reason": format_reason_korean(
                 str(
                     order.get("exit_reason")
@@ -3147,7 +3264,85 @@ class LiquidityLabService:
                     or "watching"
                 )
             ),
+            "strategy_flag": str(order.get("strategy_flag") or "-"),
+            "entry_by": str(order.get("entry_by") or "-"),
+            "exit_by": str(order.get("exit_by") or "-"),
         }
+
+    def _get_strategy_manager(self, symbol: str) -> PriorityStrategyManager:
+        key = symbol.strip().upper()
+        managers = getattr(self, "_strategy_managers", None)
+        if managers is None:
+            managers = {}
+            self._strategy_managers = managers
+        manager = managers.get(key)
+        if manager is None:
+            manager = PriorityStrategyManager()
+            managers[key] = manager
+        return manager
+
+    def _decode_strategy_ids(
+        self,
+        strategy_flag: str,
+        entry_by: str,
+    ) -> frozenset[StrategyID]:
+        reverse_map = {label: strategy_id for strategy_id, label in STRATEGY_LABEL.items()}
+        labels = [token.strip() for token in strategy_flag.split("+") if token.strip()]
+        if not labels and entry_by:
+            labels = [entry_by]
+        triggered = [reverse_map[label] for label in labels if label in reverse_map]
+        return frozenset(triggered)
+
+    def _commit_strategy_entry(
+        self,
+        symbol: str,
+        snapshot: MovingAverageSnapshot | None,
+        *,
+        strategy_flag: str,
+        entry_by: str,
+    ) -> None:
+        if snapshot is None:
+            return
+        manager = self._get_strategy_manager(symbol)
+        preview = manager.evaluate(symbol, snapshot, commit=False)
+        triggered = preview.triggered_by or self._decode_strategy_ids(strategy_flag, entry_by)
+        if triggered:
+            manager.open_position(
+                symbol=symbol.strip().upper(),
+                entry_price=snapshot.price,
+                triggered_by=triggered,
+            )
+
+    def _reset_strategy_position(self, symbol: str) -> None:
+        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+        if manager is not None:
+            manager.reset()
+
+    def _get_strategy_labels(
+        self,
+        symbol: str,
+        snapshot: MovingAverageSnapshot | None,
+    ) -> tuple[str, str, str]:
+        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+        if manager is None:
+            if snapshot is None:
+                return "", "", ""
+            preview = self._get_strategy_manager(symbol).evaluate(symbol, snapshot, commit=False)
+            return preview.flag, preview.entry_by, preview.exit_by
+
+        if manager.position is None:
+            if snapshot is None:
+                return "", "", ""
+            preview = manager.evaluate(symbol, snapshot, commit=False)
+            return preview.flag, preview.entry_by, preview.exit_by
+
+        flag = manager.position.flag
+        entry_by = manager.position.entry_by
+        exit_by = ""
+        if snapshot is not None:
+            preview = manager.evaluate(symbol, snapshot, commit=False)
+            exit_by = preview.exit_by
+        return flag, entry_by, exit_by
 
     def _ma_relation_summary(self, snapshot: MovingAverageSnapshot) -> str:
         auto = self.config.auto_trade

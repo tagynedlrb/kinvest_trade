@@ -96,6 +96,8 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         activity_score=15.0,
         cycle_no=7,
         session_id="sess-a",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
     )
     repository.save_cycle_log(
         logged_at="2026-07-01T00:01:00+00:00",
@@ -114,8 +116,20 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
     assert len(buy_rows) == 1
     assert buy_rows[0]["action_reason"] == "pullback_entry"
     assert buy_rows[0]["cycle_no"] == 7
+    assert buy_rows[0]["strategy_flag"] == "VWAP+VOL"
+    assert buy_rows[0]["entry_by"] == "VWAP"
     assert len(sell_rows) == 1
     assert sell_rows[0]["action_reason"] == "marginal_profit_exit"
+
+
+def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+
+    with sqlite3.connect(repository.db_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(cycle_log)").fetchall()]
+
+    assert "strategy_flag" in columns
+    assert "entry_by" in columns
 
 
 def test_get_session_pnl_summary_real_only(tmp_path) -> None:

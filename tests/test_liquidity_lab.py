@@ -2309,9 +2309,6 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     service.client = DummyOverseasSlotClient()
     service.notifier = DummyNotifier()
     service._signal_cache = {"SOXL": _snapshot(price=25.0)}
-    service._should_buy_overseas_candidate = (
-        lambda snapshot, symbol="": (True, "volume_breakout_entry")
-    )  # type: ignore[method-assign]
     candidate = OverseasScanResult(
         symbol="SOXL",
         exchange_code="AMEX",
@@ -2376,9 +2373,6 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     service.notifier = DummyNotifier()
     service._signal_cache = {"SOXL": _snapshot(price=25.0)}
     service._session_id = "sess-overseas-buy"
-    service._should_buy_overseas_candidate = (
-        lambda snapshot, symbol="": (True, "volume_breakout_entry")
-    )  # type: ignore[method-assign]
     candidate = OverseasScanResult(
         symbol="SOXL",
         exchange_code="AMEX",
@@ -2400,7 +2394,7 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     assert len(rows) == 1
     assert rows[0]["symbol"] == "SOXL"
     assert rows[0]["session_id"] == "sess-overseas-buy"
-    assert rows[0]["action_reason"] == "volume_breakout_entry"
+    assert rows[0]["action_reason"] == "strategy_buy_signal"
 
 
 def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:

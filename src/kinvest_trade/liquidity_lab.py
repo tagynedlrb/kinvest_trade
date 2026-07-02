@@ -2355,26 +2355,18 @@ class LiquidityLabService:
                 "reason": "signal_snapshot_unavailable",
             }
 
-        should_buy, buy_reason = self._should_buy_overseas_candidate(
-            signal_snapshot,
-            symbol=candidate.symbol,
-        )
+        # strategy 레이어(게이트 1)에서 이미 BUY 판단이 완료된 상태.
+        # watch_target.action_bias == "BUY" 인 종목만 이 함수에 도달하므로
+        # momentum_policy 재검사(이중 게이트)는 제거한다.
         strategy_flag = ""
         entry_by = ""
+        buy_reason = "strategy_buy_signal"
         if watch_target is not None:
             strategy_flag = watch_target.strategy_flag
             entry_by = watch_target.entry_by
+            buy_reason = watch_target.note or buy_reason
         if not strategy_flag or not entry_by:
             strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, signal_snapshot)
-        if not should_buy:
-            return {
-                "skipped": True,
-                "market": "overseas",
-                "side": "wait",
-                "candidate": asdict(candidate),
-                "signal_snapshot": asdict(signal_snapshot),
-                "reason": buy_reason,
-            }
 
         config = self.config.liquidity_lab
         qty = config.overseas_test_order_qty
@@ -3093,31 +3085,6 @@ class LiquidityLabService:
             bollinger_stddev=self.config.auto_trade.bollinger_stddev,
             atr_window=self.config.auto_trade.atr_window,
         )
-
-    def _should_buy_overseas_candidate(
-        self,
-        snapshot: MovingAverageSnapshot,
-        symbol: str = "",
-    ) -> tuple[bool, str]:
-        return self._should_buy_signal(symbol, snapshot)
-
-    def _should_buy_signal(
-        self,
-        symbol: str,
-        snapshot: MovingAverageSnapshot,
-    ) -> tuple[bool, str]:
-        _override = compute_adaptive_override(self.config.auto_trade, snapshot)
-        effective_config = apply_override(self.config.auto_trade, _override)
-        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
-        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
-        entry_setup = evaluate_entry_setup(
-            effective_config,
-            snapshot,
-            symbol=symbol,
-            inverse_etf_symbols=inverse_symbols,
-            leveraged_etf_symbols=leveraged_symbols,
-        )
-        return entry_setup.ready, entry_setup.reason
 
     def _should_exit_overseas_position(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import uuid
 from dataclasses import asdict, dataclass
@@ -26,6 +27,7 @@ from .message_format import (
 from .adaptive_params import apply_override, compute_adaptive_override
 from .momentum_policy import (
     derive_watch_state,
+    detect_market_regime,
     evaluate_entry_setup,
     evaluate_exit_setup,
 )
@@ -38,6 +40,8 @@ from .technical_signals import (
     extract_price_series,
 )
 from .time_utils import format_kst, format_kst_korean
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -570,12 +574,22 @@ class LiquidityLabService:
         )
 
     async def _get_domestic_available_krw(self) -> float:
-        balance = await self.client.get_balance()
-        summary = balance.get("summary", {}) or {}
-        return max(
-            self._parse_float(summary.get("ord_psbl_cash")),
-            self._parse_float(summary.get("dnca_tot_amt")),
-        )
+        try:
+            balance = await self.client.get_balance()
+            summary = balance.get("summary", {}) or {}
+            result = max(
+                self._parse_float(summary.get("ord_psbl_cash")),
+                self._parse_float(summary.get("dnca_tot_amt")),
+            )
+            if result <= 0:
+                _logger.warning(
+                    "domestic_krw_balance_zero balance_keys=%s",
+                    list(summary.keys()),
+                )
+            return result
+        except KisApiError as exc:
+            _logger.warning("domestic_balance_fetch_failed error=%s", exc)
+            return 0.0
 
     def _slot_based_qty(self, *, available_amount: float, price: float) -> int:
         config = self.config.liquidity_lab
@@ -1605,6 +1619,9 @@ class LiquidityLabService:
             if item.market == "domestic" and item.domestic is not None:
                 candidate = item.domestic
                 signal_snapshot = await self._load_domestic_signal(candidate)
+                if signal_snapshot is None:
+                    await asyncio.sleep(0.05)
+                    continue
                 held = domestic_held_map.get(candidate.stock_code)
                 watch_target = self._build_watch_target_status(
                     market="domestic",
@@ -1765,7 +1782,15 @@ class LiquidityLabService:
                 signal_snapshot=signal_snapshot,
             )
 
-        entry_setup = evaluate_entry_setup(self.config.auto_trade, signal_snapshot)
+        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
+        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
+        entry_setup = evaluate_entry_setup(
+            self.config.auto_trade,
+            signal_snapshot,
+            symbol=code,
+            inverse_etf_symbols=inverse_symbols,
+            leveraged_etf_symbols=leveraged_symbols,
+        )
         if entry_setup.ready:
             return WatchTargetStatus(
                 market=market,
@@ -1781,7 +1806,13 @@ class LiquidityLabService:
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
             )
-        signal_state, note = derive_watch_state(self.config.auto_trade, signal_snapshot)
+        signal_state, note = derive_watch_state(
+            self.config.auto_trade,
+            signal_snapshot,
+            symbol=code,
+            inverse_etf_symbols=inverse_symbols,
+            leveraged_etf_symbols=leveraged_symbols,
+        )
         return WatchTargetStatus(
             market=market,
             code=code,
@@ -1935,10 +1966,21 @@ class LiquidityLabService:
         ]
         if not ready_targets or max_concurrent <= 0:
             return []
-        ready_targets.sort(
-            key=lambda item: (item.signal_score, item.activity_score),
-            reverse=True,
-        )
+        inverse_set = {
+            symbol.upper()
+            for symbol in getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
+        }
+
+        def sort_key(item: WatchTargetStatus) -> tuple[int, float, float]:
+            snapshot = item.signal_snapshot
+            prefer_inverse = bool(
+                snapshot is not None
+                and detect_market_regime(snapshot) == "bear"
+                and item.code.upper() in inverse_set
+            )
+            return (0 if prefer_inverse else 1, -item.signal_score, -item.activity_score)
+
+        ready_targets.sort(key=sort_key)
         selected: list[OverseasScanResult] = []
         seen: set[str] = set()
         for watch_target in ready_targets:
@@ -2180,7 +2222,10 @@ class LiquidityLabService:
                 "reason": "signal_snapshot_unavailable",
             }
 
-        should_buy, buy_reason = self._should_buy_overseas_candidate(signal_snapshot)
+        should_buy, buy_reason = self._should_buy_overseas_candidate(
+            signal_snapshot,
+            symbol=candidate.symbol,
+        )
         if not should_buy:
             return {
                 "skipped": True,
@@ -2540,6 +2585,13 @@ class LiquidityLabService:
                 "reason": "session_not_orderable_in_profile" if is_session_blocked else "order_rejected",
                 "error": str(exc),
             }
+        existing_pending = self.repository.get_virtual_sell_pending("overseas", candidate.symbol)
+        if existing_pending is not None and tracker is not None:
+            tracker.settle(
+                market="overseas",
+                symbol=candidate.symbol,
+                real_qty_after_settlement=0,
+            )
 
         sell_result = (
             tracker.apply_sell(
@@ -2783,6 +2835,7 @@ class LiquidityLabService:
             volatility_window=self.config.auto_trade.volatility_window,
             momentum_window=self.config.auto_trade.momentum_window,
             volume_window=self.config.auto_trade.volume_window,
+            rsi_period=self.config.auto_trade.rsi_period,
             breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
             bollinger_window=self.config.auto_trade.bollinger_window,
             bollinger_stddev=self.config.auto_trade.bollinger_stddev,
@@ -2846,6 +2899,7 @@ class LiquidityLabService:
             volatility_window=self.config.auto_trade.volatility_window,
             momentum_window=self.config.auto_trade.momentum_window,
             volume_window=self.config.auto_trade.volume_window,
+            rsi_period=self.config.auto_trade.rsi_period,
             breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
             bollinger_window=self.config.auto_trade.bollinger_window,
             bollinger_stddev=self.config.auto_trade.bollinger_stddev,
@@ -2855,16 +2909,26 @@ class LiquidityLabService:
     def _should_buy_overseas_candidate(
         self,
         snapshot: MovingAverageSnapshot,
+        symbol: str = "",
     ) -> tuple[bool, str]:
-        return self._should_buy_signal(snapshot)
+        return self._should_buy_signal(symbol, snapshot)
 
     def _should_buy_signal(
         self,
+        symbol: str,
         snapshot: MovingAverageSnapshot,
     ) -> tuple[bool, str]:
         _override = compute_adaptive_override(self.config.auto_trade, snapshot)
         effective_config = apply_override(self.config.auto_trade, _override)
-        entry_setup = evaluate_entry_setup(effective_config, snapshot)
+        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
+        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
+        entry_setup = evaluate_entry_setup(
+            effective_config,
+            snapshot,
+            symbol=symbol,
+            inverse_etf_symbols=inverse_symbols,
+            leveraged_etf_symbols=leveraged_symbols,
+        )
         return entry_setup.ready, entry_setup.reason
 
     def _should_exit_overseas_position(

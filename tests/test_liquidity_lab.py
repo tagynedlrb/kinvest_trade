@@ -508,6 +508,45 @@ def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert rows[0]["realized_pnl_krw"] == 5520.0
 
 
+def test_real_sell_clears_virtual_sell_pending() -> None:
+    service = _build_sell_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="AAL",
+        exchange_code="NASD",
+        qty=1,
+        avg_sell_price=18.0,
+        currency="USD",
+        updated_at="2026-07-02T04:40:00+00:00",
+    )
+    candidate = OverseasScanResult(
+        symbol="AAL",
+        exchange_code="NASD",
+        last_price=17.50,
+        bid=17.49,
+        ask=17.51,
+        spread_pct=0.0011,
+        change_rate_pct=-0.8,
+        volume=500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=9.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="AAL",
+        exchange_code="NASD",
+        quantity=973,
+        orderable_qty=973,
+        avg_price=17.655,
+        current_price=17.50,
+        pnl_pct=-0.0088,
+    )
+
+    asyncio.run(service._place_overseas_sell_order(candidate, held, "momentum_loss_cut"))
+
+    assert service.repository.get_virtual_sell_pending("overseas", "AAL") is None
+
+
 def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
     service = _build_sell_service(error=KisApiError("failed"))
     candidate = OverseasScanResult(
@@ -1172,6 +1211,32 @@ def test_unified_watch_includes_held_domestic_regardless_of_rank() -> None:
     )
 
     assert [item.code for item in watch_targets] == ["D3", "D1", "D2"]
+
+
+def test_domestic_signal_none_skips_watch_target() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 2
+    domestic_ranked = [
+        DomesticScanResult("005930", 82000, 82050, 81950, 0.0012, 0.003, 100_000_000_000, 500_000, 18.0),
+    ]
+
+    async def fake_load_domestic_signal(candidate):
+        return None
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=[],
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=True,
+            us_open=False,
+        )
+    )
+
+    assert watch_targets == []
 
 
 def test_held_position_shows_hold_not_wait() -> None:
@@ -2092,7 +2157,9 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     service.client = DummyOverseasSlotClient()
     service.notifier = DummyNotifier()
     service._signal_cache = {"SOXL": _snapshot(price=25.0)}
-    service._should_buy_overseas_candidate = lambda snapshot: (True, "volume_breakout_entry")  # type: ignore[method-assign]
+    service._should_buy_overseas_candidate = (
+        lambda snapshot, symbol="": (True, "volume_breakout_entry")
+    )  # type: ignore[method-assign]
     candidate = OverseasScanResult(
         symbol="SOXL",
         exchange_code="AMEX",
@@ -2157,7 +2224,9 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     service.notifier = DummyNotifier()
     service._signal_cache = {"SOXL": _snapshot(price=25.0)}
     service._session_id = "sess-overseas-buy"
-    service._should_buy_overseas_candidate = lambda snapshot: (True, "volume_breakout_entry")  # type: ignore[method-assign]
+    service._should_buy_overseas_candidate = (
+        lambda snapshot, symbol="": (True, "volume_breakout_entry")
+    )  # type: ignore[method-assign]
     candidate = OverseasScanResult(
         symbol="SOXL",
         exchange_code="AMEX",

@@ -52,6 +52,7 @@ class MovingAverageSnapshot:
     crossed_up: bool
     crossed_down: bool
     regime: str
+    vwap: float | None = None
 
     @property
     def has_required_context(self) -> bool:
@@ -96,6 +97,7 @@ def build_moving_average_snapshot(
     volatility_window: int,
     momentum_window: int,
     volume_window: int,
+    rsi_period: int,
     breakout_lookback_bars: int,
     bollinger_window: int,
     bollinger_stddev: float,
@@ -117,11 +119,16 @@ def build_moving_average_snapshot(
         if len(minute_closes) >= intraday_slow_window + 1
         else None
     )
-    rsi14 = compute_rsi(minute_closes, 14) if len(minute_closes) >= 15 else None
+    rsi14 = (
+        compute_rsi(minute_closes, rsi_period)
+        if rsi_period > 0 and len(minute_closes) >= (rsi_period + 1)
+        else None
+    )
 
     minute_chrono = list(reversed(minute_closes))
     highs_chrono = list(reversed(minute_highs))
     lows_chrono = list(reversed(minute_lows))
+    volumes_chrono = list(reversed(minute_volumes))
     intraday_volatility = compute_volatility(
         minute_chrono,
         min(volatility_window, max(len(minute_chrono) - 1, 1)),
@@ -169,6 +176,7 @@ def build_moving_average_snapshot(
         window=max(2, min(atr_window, max(len(minute_chrono) - 1, 1))),
     ) or 0.0
     atr_pct = (atr / price) if atr > 0 and price > 0 else 0.0
+    vwap = compute_vwap(minute_chrono, volumes_chrono)
 
     spread_pct = 0.0
     if bid > 0 and ask > 0:
@@ -246,7 +254,18 @@ def build_moving_average_snapshot(
         crossed_up=crossed_up,
         crossed_down=crossed_down,
         regime=regime,
+        vwap=vwap,
     )
+
+
+def compute_vwap(closes: list[float], volumes: list[float]) -> float | None:
+    if not closes or not volumes or len(closes) != len(volumes):
+        return None
+    total_volume = sum(volumes)
+    if total_volume <= 0:
+        return None
+    total_price_volume = sum(price * volume for price, volume in zip(closes, volumes))
+    return total_price_volume / total_volume
 
 def extract_price_series(
     rows: list[dict],

@@ -27,16 +27,60 @@ class ExitSetup:
 def evaluate_entry_setup(
     config: AutoTradeConfig,
     snapshot: MovingAverageSnapshot,
+    symbol: str = "",
+    inverse_etf_symbols: list[str] | None = None,
+    leveraged_etf_symbols: list[str] | None = None,
 ) -> EntrySetup:
     if snapshot.spread_pct > config.max_spread_pct:
         return EntrySetup(False, "spread_too_wide", "SKIP", "spread")
     if not snapshot.has_required_context:
         return EntrySetup(False, "warmup_context", "WARMUP", "warmup")
-    if snapshot.rsi14 is not None and snapshot.rsi14 > config.max_entry_rsi14:
+    inverse_symbols = inverse_etf_symbols or getattr(config, "inverse_etf_symbols", [])
+    leveraged_symbols = leveraged_etf_symbols or getattr(config, "leveraged_etf_symbols", [])
+    symbol_upper = symbol.upper()
+    is_inverse = symbol_upper in {value.upper() for value in inverse_symbols}
+    is_leveraged = symbol_upper in {value.upper() for value in leveraged_symbols}
+    effective_rsi_max = config.max_entry_rsi14
+    if is_inverse or is_leveraged:
+        effective_rsi_max = min(config.max_entry_rsi14 + 15.0, 90.0)
+    if snapshot.rsi14 is not None and snapshot.rsi14 > effective_rsi_max:
         return EntrySetup(False, "entry_rsi_too_high", "SKIP", _note(snapshot))
     prefilter_factor = max(config.volume_spike_ratio_prefilter_factor, 0.0)
     if snapshot.volume_ratio < config.volume_spike_ratio * prefilter_factor:
         return EntrySetup(False, "volume_low", "WAIT", _note(snapshot))
+
+    if is_inverse or is_leveraged:
+        if not (
+            snapshot.minute_ma_fast is not None
+            and snapshot.minute_ma_slow is not None
+            and snapshot.minute_ma_fast >= snapshot.minute_ma_slow
+        ):
+            return EntrySetup(False, "trend_down", "WAIT", _note(snapshot))
+        fast_track = (
+            snapshot.volume_ratio >= config.volume_spike_ratio * 1.5
+            and snapshot.intraday_bar_return >= config.min_bar_return_pct * 2.0
+        )
+        if fast_track:
+            score = min(snapshot.volume_ratio, 5.0) * 30.0
+            return EntrySetup(
+                True,
+                "volume_momentum_fast_entry",
+                "BUY",
+                _note(snapshot),
+                score=round(score, 2),
+                urgent=True,
+            )
+        if _pullback_ready(config, snapshot):
+            score = min(snapshot.volume_ratio, 4.0) * 25.0
+            return EntrySetup(
+                True,
+                "pullback_entry",
+                "BUY",
+                _note(snapshot),
+                score=round(score, 2),
+                urgent=False,
+            )
+        return EntrySetup(False, "setup_not_ready", "WAIT", _note(snapshot))
 
     if not snapshot.daily_trend_up:
         return EntrySetup(False, "trend_down", "WAIT", _note(snapshot))
@@ -211,7 +255,7 @@ def evaluate_exit_setup(
         or (snapshot.rsi14 is not None and snapshot.rsi14 >= config.partial_exit_rsi14 + 4.0)
     ):
         return ExitSetup("sell", "breakout_exhaustion_exit", "SELL_READY", note)
-    small_profit = 0 < pnl_pct < (config.take_profit_pct * 0.4)
+    small_profit = 0.001 <= pnl_pct < (config.take_profit_pct * 0.4)
     volume_fading = snapshot.volume_ratio <= (config.volume_fade_ratio or 0.8)
     momentum_fading = snapshot.intraday_momentum <= 0
     if small_profit and volume_fading and momentum_fading:
@@ -238,11 +282,28 @@ def evaluate_exit_setup(
 def derive_watch_state(
     config: AutoTradeConfig,
     snapshot: MovingAverageSnapshot,
+    symbol: str = "",
+    inverse_etf_symbols: list[str] | None = None,
+    leveraged_etf_symbols: list[str] | None = None,
 ) -> tuple[str, str]:
-    entry = evaluate_entry_setup(config, snapshot)
+    entry = evaluate_entry_setup(
+        config,
+        snapshot,
+        symbol=symbol,
+        inverse_etf_symbols=inverse_etf_symbols,
+        leveraged_etf_symbols=leveraged_etf_symbols,
+    )
     if entry.ready:
         return entry.state, entry.reason
     return entry.state, entry.reason
+
+
+def detect_market_regime(snapshot: MovingAverageSnapshot) -> str:
+    if snapshot.daily_trend_up and snapshot.intraday_trend_up:
+        return "bull"
+    if not snapshot.daily_trend_up and not snapshot.intraday_trend_up:
+        return "bear"
+    return "neutral"
 
 
 def trend_filter_ok(snapshot: MovingAverageSnapshot) -> bool:

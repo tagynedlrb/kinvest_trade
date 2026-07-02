@@ -491,6 +491,7 @@ class FixedSymbolAutoTrader:
             volatility_window=self.config.auto_trade.volatility_window,
             momentum_window=self.config.auto_trade.momentum_window,
             volume_window=self.config.auto_trade.volume_window,
+            rsi_period=self.config.auto_trade.rsi_period,
             breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
             bollinger_window=self.config.auto_trade.bollinger_window,
             bollinger_stddev=self.config.auto_trade.bollinger_stddev,
@@ -571,7 +572,7 @@ class FixedSymbolAutoTrader:
 
         if self.position.qty <= 0:
             self.flat_cycles += 1
-            entry_setup = evaluate_entry_setup(auto, snapshot)
+            entry_setup = evaluate_entry_setup(auto, snapshot, symbol=auto.symbol)
             cooldown_block = (
                 self.last_exit_cycle > 0
                 and (self.loop_count - self.last_exit_cycle) < auto.force_reentry_after_cycles

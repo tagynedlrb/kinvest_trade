@@ -2,12 +2,18 @@ from dataclasses import replace
 from pathlib import Path
 
 from kinvest_trade.config import load_app_config
+from kinvest_trade.indicators import compute_rsi
 from kinvest_trade.momentum_policy import (
+    detect_market_regime,
     _pullback_ready,
     evaluate_entry_setup,
     evaluate_exit_setup,
 )
-from kinvest_trade.technical_signals import MovingAverageSnapshot
+from kinvest_trade.technical_signals import (
+    MovingAverageSnapshot,
+    build_moving_average_snapshot,
+    compute_vwap,
+)
 
 
 def _build_config():
@@ -354,6 +360,31 @@ def test_hard_stop_still_fires_during_hold_protection() -> None:
     assert result.reason == "atr_hard_stop"
 
 
+def test_marginal_profit_exit_requires_minimum_pnl() -> None:
+    config = _build_config()
+    low_profit = evaluate_exit_setup(
+        config,
+        _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
+        0.0005,
+        drawdown_from_peak=0.0,
+        hold_cycles=6,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+    enough_profit = evaluate_exit_setup(
+        config,
+        _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
+        0.002,
+        drawdown_from_peak=0.0,
+        hold_cycles=6,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert low_profit.action == "hold"
+    assert enough_profit.reason == "marginal_profit_exit"
+
+
 def test_rsi_85_blocks_entry() -> None:
     result = evaluate_entry_setup(
         _build_config(),
@@ -479,7 +510,7 @@ def test_pullback_blocked_when_rsi_overbought() -> None:
             minute_ma_fast=100.0,
             minute_ma_slow=98.0,
             price=100.2,
-            rsi14=71.0,
+            rsi14=76.0,
             intraday_bar_return=0.002,
             volume_ratio=1.8,
         ),
@@ -664,3 +695,92 @@ def test_evaluate_entry_uses_prefilter_factor() -> None:
     )
 
     assert result.reason != "volume_low"
+
+
+def test_inverse_etf_enters_when_daily_trend_down() -> None:
+    config = _build_config()
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            daily_ma_fast=98.0,
+            daily_ma_slow=100.0,
+            minute_ma_fast=100.0,
+            minute_ma_slow=99.0,
+            price=100.8,
+            rsi14=74.0,
+            intraday_bar_return=0.0012,
+            volume_ratio=1.1,
+        ),
+        symbol="SQQQ",
+        inverse_etf_symbols=["SQQQ", "SOXS", "UVXY", "SPXU"],
+        leveraged_etf_symbols=["TQQQ", "SOXL"],
+    )
+
+    assert result.ready is True
+
+
+def test_normal_stock_blocked_when_daily_trend_down() -> None:
+    result = evaluate_entry_setup(
+        _build_config(),
+        _snapshot(
+            daily_ma_fast=98.0,
+            daily_ma_slow=100.0,
+            minute_ma_fast=100.0,
+            minute_ma_slow=99.0,
+            price=100.8,
+            rsi14=74.0,
+            intraday_bar_return=0.0012,
+            volume_ratio=1.1,
+        ),
+        symbol="NVDA",
+        inverse_etf_symbols=["SQQQ", "SOXS", "UVXY", "SPXU"],
+        leveraged_etf_symbols=["TQQQ", "SOXL"],
+    )
+
+    assert result.ready is False
+    assert result.reason == "trend_down"
+
+
+def test_rsi_period_7_in_snapshot() -> None:
+    minute_closes = [110, 109, 108, 107, 106, 105, 104, 103, 102, 101]
+    snapshot = build_moving_average_snapshot(
+        price=110.0,
+        bid=109.9,
+        ask=110.1,
+        daily_closes=[130, 129, 128, 127, 126, 125, 124, 123, 122, 121, 120, 119, 118, 117, 116, 115, 114, 113, 112, 111, 110],
+        minute_closes=minute_closes,
+        minute_highs=minute_closes,
+        minute_lows=minute_closes,
+        minute_volumes=[1000.0] * len(minute_closes),
+        daily_fast_window=5,
+        daily_slow_window=10,
+        intraday_fast_window=3,
+        intraday_slow_window=5,
+        volatility_window=3,
+        momentum_window=3,
+        volume_window=5,
+        rsi_period=7,
+        breakout_lookback_bars=3,
+        bollinger_window=3,
+        bollinger_stddev=2.0,
+        atr_window=3,
+    )
+
+    assert snapshot.rsi14 == compute_rsi(minute_closes, 7)
+
+
+def test_vwap_computed() -> None:
+    assert compute_vwap([100.0, 102.0, 101.0], [1000.0, 2000.0, 1500.0]) == 455500.0 / 4500.0
+
+
+def test_detect_market_regime() -> None:
+    assert detect_market_regime(_snapshot(price=100.4, minute_ma_slow=100.2)) == "bull"
+    assert detect_market_regime(
+        _snapshot(
+            daily_ma_fast=98.0,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.0,
+            minute_ma_slow=100.0,
+            price=98.5,
+        )
+    ) == "bear"

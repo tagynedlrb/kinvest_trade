@@ -116,6 +116,7 @@ class AutoTradeConfig:
     volatility_window: int
     momentum_window: int
     volume_window: int
+    rsi_period: int
     breakout_lookback_bars: int
     breakout_proximity_pct: float
     volume_spike_ratio: float
@@ -167,6 +168,8 @@ class AutoTradeConfig:
     capital_gains_tax_rate: float
     usd_krw_fallback_rate: float
     stale_run_grace_minutes: int
+    inverse_etf_symbols: list[str]
+    leveraged_etf_symbols: list[str]
 
 
 @dataclass(slots=True)
@@ -247,6 +250,8 @@ class LiquidityLabConfig:
     overseas_take_profit_pct: float
     overseas_stop_loss_pct: float
     overseas_max_position_qty: int
+    inverse_etf_symbols: list[str]
+    leveraged_etf_symbols: list[str]
 
 
 @dataclass(slots=True)
@@ -537,6 +542,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             daily_chart_refresh_sec=int(
                 auto_trade_raw.get("daily_chart_refresh_sec", 900)
             ),
+            rsi_period=int(auto_trade_raw.get("rsi_period", 14)),
             entry_pullback_pct=float(auto_trade_raw.get("entry_pullback_pct", 0.0005)),
             add_on_pullback_pct=float(auto_trade_raw.get("add_on_pullback_pct", 0.001)),
             breakout_entry_pct=float(auto_trade_raw.get("breakout_entry_pct", 0.001)),
@@ -658,6 +664,14 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("usd_krw_fallback_rate", 1350.0)
             ),
             stale_run_grace_minutes=int(auto_trade_raw.get("stale_run_grace_minutes", 180)),
+            inverse_etf_symbols=[
+                str(value)
+                for value in liquidity_lab_raw.get("inverse_etf_symbols", ["SQQQ", "SOXS"])
+            ],
+            leveraged_etf_symbols=[
+                str(value)
+                for value in liquidity_lab_raw.get("leveraged_etf_symbols", ["TQQQ", "SOXL"])
+            ],
         ),
         strategy=StrategyConfig(
             rsi_min=float(strategy_raw["rsi_min"]),
@@ -744,5 +758,13 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             overseas_take_profit_pct=float(liquidity_lab_raw.get("overseas_take_profit_pct", 0.012)),
             overseas_stop_loss_pct=float(liquidity_lab_raw.get("overseas_stop_loss_pct", 0.008)),
             overseas_max_position_qty=int(liquidity_lab_raw.get("overseas_max_position_qty", 1)),
+            inverse_etf_symbols=[
+                str(value)
+                for value in liquidity_lab_raw.get("inverse_etf_symbols", ["SQQQ", "SOXS"])
+            ],
+            leveraged_etf_symbols=[
+                str(value)
+                for value in liquidity_lab_raw.get("leveraged_etf_symbols", ["TQQQ", "SOXL"])
+            ],
         ),
     )

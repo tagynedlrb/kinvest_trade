@@ -75,7 +75,7 @@ def test_priority_strategy_manager_buy_score_sums_buy_signals() -> None:
     score = manager.buy_score(_snapshot())
 
     assert score > 0
-    assert score == 177.0
+    assert score == 179.0
 
 
 def test_priority_strategy_manager_sell_uses_triggered_strategy_exit() -> None:

@@ -67,13 +67,14 @@ def test_format_watch_target_line_is_compact() -> None:
             "action_bias": "BUY",
             "signal_state": "BUY_READY",
             "ma_summary": "20d>60d 5>20",
+            "strategy_flag": "VWAP+VOL",
             "note": "ma_fast_reclaim_entry",
             "price": 218.03,
             "holding_qty": 1,
         }
     )
 
-    assert line == "해외 SOXL 상태=매수신호 이평=20d>60d 5>20 가격=$218.0300"
+    assert line == "해외 SOXL 상태=매수신호 전략=VWAP+VOL 가격=$218.0300"
 
 
 def test_build_positions_message_formats_held_positions() -> None:
@@ -473,6 +474,7 @@ def test_format_watch_target_line_includes_pnl_when_holding() -> None:
             "code": "SOXL",
             "signal_state": "HOLD",
             "ma_summary": "20d>60d 5>20",
+            "strategy_flag": "VWAP",
             "note": "trend_holding",
             "price": 19.75,
             "holding_qty": 3,
@@ -481,6 +483,7 @@ def test_format_watch_target_line_includes_pnl_when_holding() -> None:
     )
 
     assert "상태=보유중" in line
+    assert "전략=VWAP" in line
     assert "손익=+1.20%" in line
 
 
@@ -501,6 +504,7 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
 
     assert "손익=" not in line
     assert "상태=대기" in line
+    assert "전략=20d>60d 5>20" in line
 
 
 def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:

@@ -11,9 +11,9 @@ class VWAPPullbackStrategy:
     VWAP pullback entry with simple target / VWAP break exits.
     """
 
-    VWAP_TOLERANCE = 0.003
-    TARGET_PCT = 0.025
-    STOP_VWAP_PCT = 0.005
+    VWAP_TOLERANCE = 0.008
+    TARGET_PCT = 0.020
+    STOP_VWAP_PCT = 0.008
 
     def evaluate(
         self,
@@ -29,7 +29,7 @@ class VWAPPullbackStrategy:
         near_vwap = abs(snapshot.price - vwap) / vwap <= self.VWAP_TOLERANCE
 
         if position is None:
-            rsi_ok = rsi is not None and 40.0 <= rsi <= 55.0
+            rsi_ok = rsi is not None and 35.0 <= rsi <= 62.0
             if near_vwap and rsi_ok:
                 return StrategySignal(
                     buy=True,

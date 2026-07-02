@@ -3019,14 +3019,9 @@ class LiquidityLabService:
         )
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
-        macd_min = self.config.auto_trade.macd_min_bars
-        required_minute_bars = max(
-            self.config.auto_trade.intraday_slow_window,
-            macd_min,
-        )
         if (
             len(daily_closes) < self.config.auto_trade.daily_slow_window
-            or len(minute_closes) < required_minute_bars
+            or len(minute_closes) < self.config.auto_trade.intraday_slow_window
         ):
             return None
 

@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -609,7 +610,12 @@ def test_overseas_sell_rejected_converts_to_virtual_trade() -> None:
         pnl_pct=0.0181,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    try:
+        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+    finally:
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
 
     assert result["submitted"] is True
     assert result["virtual"] is True
@@ -647,7 +653,12 @@ def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
         pnl_pct=0.0181,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    try:
+        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+    finally:
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
 
     assert result["submitted"] is True
     assert any("[KIS][VIRTUAL_TRADE]" in message for message in service.notifier.messages)
@@ -1167,6 +1178,7 @@ def _build_run_service() -> LiquidityLabService:
     service._last_held_symbols = set()
     service._signal_cache = {}
     service._wait_cycles = {}
+    service._exit_cooldown = {}
     return service
 
 
@@ -1412,6 +1424,35 @@ def test_strategy_buy_can_override_entry_setup_wait() -> None:
     assert watch_target.signal_state == "BUY"
     assert watch_target.strategy_flag == "VWAP+RSI"
     assert watch_target.entry_by == "VWAP"
+
+
+def test_strategy_buy_blocked_by_exit_cooldown() -> None:
+    service = _build_run_service()
+    service._exit_cooldown = {
+        "overseas:SOXL": datetime.now(timezone.utc) + timedelta(minutes=5),
+    }
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="SOXL",
+        exchange_code="AMEX",
+        price=20.0,
+        activity_score=20.0,
+        signal_snapshot=_snapshot(
+            price=20.0,
+            vwap=20.0,
+            rsi14=45.0,
+            volume_ratio=1.0,
+            macd_golden=True,
+            macd_dead=False,
+            breakout_distance_pct=-0.001,
+            intraday_momentum=0.0002,
+            intraday_bar_return=0.0001,
+        ),
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.note.startswith("재진입대기")
 
 
 def test_buy_target_excludes_hold_status() -> None:

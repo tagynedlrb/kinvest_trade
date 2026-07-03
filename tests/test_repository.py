@@ -133,6 +133,60 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     assert "is_session_trade" in columns
 
 
+def test_backup_db_creates_copy(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+
+    backup_path = repository.backup_db(suffix="pre_reset")
+
+    assert backup_path.exists()
+    assert backup_path.name.startswith("test_backup_")
+    assert backup_path.name.endswith("_pre_reset.db")
+
+
+def test_reset_virtual_trades_clears_virtual_tables(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_price=20.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    repository.save_virtual_order(
+        created_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        side="buy",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="regular",
+        reason="test_buy",
+    )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_sell_price=21.0,
+        currency="USD",
+        updated_at="2026-07-01T00:01:00+00:00",
+    )
+
+    deleted = repository.reset_virtual_trades()
+
+    assert deleted["virtual_positions"] == 1
+    assert deleted["virtual_orders"] == 1
+    assert deleted["virtual_sell_pending"] == 1
+    assert repository.list_virtual_positions() == []
+    assert repository.list_virtual_orders(limit=10) == []
+    assert repository.list_virtual_sell_pending() == []
+
+
 def test_get_session_pnl_summary_real_only(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_cycle_log(

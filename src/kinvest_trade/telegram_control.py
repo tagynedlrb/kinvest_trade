@@ -38,6 +38,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_watchlist - 감시 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
+        "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
     ]
@@ -54,6 +55,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
+    {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
 ]
@@ -155,6 +157,7 @@ class TelegramLiquidityLabController:
         self._consecutive_errors: int = 0
         self._last_market_state: str = ""
         self.active_session_id: str = ""
+        self.lab_service: LiquidityLabService | None = None
 
     async def run(self) -> None:
         if not self.notifier.enabled:
@@ -257,6 +260,12 @@ class TelegramLiquidityLabController:
         if command_name == "service_restart":
             await self._handle_service_restart()
             return
+        if command_name == "reset_virtual":
+            await self._send_reset_virtual_prompt()
+            return
+        if command_name == "reset_virtual_confirm":
+            await self._execute_reset_virtual()
+            return
         if command_name == "start":
             await self._handle_start_like_command("running", "started")
             return
@@ -348,6 +357,55 @@ class TelegramLiquidityLabController:
         self._write_runtime_state()
         asyncio.create_task(self._restart_service_soon())
 
+    async def _send_reset_virtual_prompt(self) -> None:
+        lines = [
+            "⚠️ [가상거래 초기화]",
+            "",
+            "삭제 대상:",
+            "  • virtual_positions  (현재 가상 보유)",
+            "  • virtual_orders     (체결 이력)",
+            "  • virtual_sell_pending (정산 대기)",
+            "",
+            "cycle_log 는 보존됩니다.",
+            "삭제 전 DB 파일이 자동 백업됩니다.",
+            "",
+            "진행: /lab_reset_confirm",
+            "취소: 무시",
+        ]
+        await self.notifier.send("\n".join(lines))
+
+    async def _execute_reset_virtual(self) -> None:
+        now = datetime.now(timezone.utc)
+        try:
+            backup_path = self.repository.backup_db(suffix="pre_reset")
+            deleted = self.repository.reset_virtual_trades()
+            if self.lab_service is not None:
+                exit_cooldown = getattr(self.lab_service, "_exit_cooldown", None)
+                if exit_cooldown is not None:
+                    exit_cooldown.clear()
+                wait_cycles = getattr(self.lab_service, "_wait_cycles", None)
+                if wait_cycles is not None:
+                    wait_cycles.clear()
+                strategy_managers = getattr(self.lab_service, "_strategy_managers", None)
+                if strategy_managers is not None:
+                    strategy_managers.clear()
+                session_owned = getattr(self.lab_service, "_session_owned_symbols", None)
+                if session_owned is not None:
+                    session_owned.clear()
+            lines = [
+                "✅ [가상거래 초기화 완료]",
+                f"시각={format_kst_korean(now)}",
+                f"백업={backup_path.name}",
+                f"삭제된 가상포지션={deleted.get('virtual_positions', 0)}건",
+                f"삭제된 가상주문={deleted.get('virtual_orders', 0)}건",
+                f"삭제된 정산대기={deleted.get('virtual_sell_pending', 0)}건",
+                "",
+                "이후 사이클부터 새 전략으로 집계됩니다.",
+            ]
+            await self.notifier.send("\n".join(lines))
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(f"❌ [가상거래 초기화 실패]\n오류={exc}")
+
     async def _restart_service_soon(self) -> None:
         await asyncio.sleep(0.5)
         subprocess.Popen(
@@ -426,6 +484,7 @@ class TelegramLiquidityLabController:
         try:
             async with KisRestClient(self.config.credentials) as client:
                 service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+                self.lab_service = service
                 if self.active_session_id:
                     service._session_id = self.active_session_id
                 report = await service.run()
@@ -1152,6 +1211,8 @@ class TelegramLiquidityLabController:
             "/lab_watchlist": "watchlist",
             "/lab_log": "log",
             "/lab_portfolio": "portfolio",
+            "/lab_reset": "reset_virtual",
+            "/lab_reset_confirm": "reset_virtual_confirm",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",

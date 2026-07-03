@@ -18,6 +18,25 @@ class SqliteRepository:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def backup_db(self, suffix: str = "") -> Path:
+        import shutil
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        tag = f"_{suffix}" if suffix else ""
+        backup_path = self.db_path.parent / f"{self.db_path.stem}_backup_{ts}{tag}.db"
+        shutil.copy2(self.db_path, backup_path)
+        return backup_path
+
+    def reset_virtual_trades(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in ("virtual_positions", "virtual_orders", "virtual_sell_pending"):
+                cursor = conn.execute(f"DELETE FROM {table}")
+                counts[table] = cursor.rowcount
+            conn.commit()
+        return counts
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(

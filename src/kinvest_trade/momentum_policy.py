@@ -255,10 +255,12 @@ def evaluate_exit_setup(
         or (snapshot.rsi14 is not None and snapshot.rsi14 >= config.partial_exit_rsi14 + 4.0)
     ):
         return ExitSetup("sell", "breakout_exhaustion_exit", "SELL_READY", note)
-    small_profit = 0.001 <= pnl_pct < (config.take_profit_pct * 0.4)
+    marginal_threshold = config.take_profit_pct * 0.7
+    min_hold_ok = hold_cycles >= getattr(config, "min_hold_before_marginal_exit", 10)
+    small_profit = marginal_threshold <= pnl_pct < config.take_profit_pct
     volume_fading = snapshot.volume_ratio <= (config.volume_fade_ratio or 0.8)
     momentum_fading = snapshot.intraday_momentum <= 0
-    if small_profit and volume_fading and momentum_fading:
+    if small_profit and volume_fading and momentum_fading and min_hold_ok:
         return ExitSetup("sell", "marginal_profit_exit", "SELL_READY", note)
 
     if hold_cycles >= config.max_hold_cycles:

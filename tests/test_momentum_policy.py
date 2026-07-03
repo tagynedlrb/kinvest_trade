@@ -237,9 +237,9 @@ def test_marginal_profit_exit_triggers() -> None:
             volume_ratio=0.7,
             intraday_momentum=-0.0002,
         ),
-        0.003,
+        0.012,
         drawdown_from_peak=0.0,
-        hold_cycles=1,
+        hold_cycles=10,
         position_qty=1,
         partial_exit_done=False,
     )
@@ -361,28 +361,43 @@ def test_hard_stop_still_fires_during_hold_protection() -> None:
 
 
 def test_marginal_profit_exit_requires_minimum_pnl() -> None:
-    config = _build_config()
+    config = replace(_build_config(), max_hold_cycles=100)
     low_profit = evaluate_exit_setup(
         config,
         _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
-        0.0005,
+        0.008,
         drawdown_from_peak=0.0,
-        hold_cycles=6,
+        hold_cycles=10,
         position_qty=1,
         partial_exit_done=False,
     )
     enough_profit = evaluate_exit_setup(
         config,
         _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
-        0.002,
+        0.012,
         drawdown_from_peak=0.0,
-        hold_cycles=6,
+        hold_cycles=10,
         position_qty=1,
         partial_exit_done=False,
     )
 
     assert low_profit.action == "hold"
     assert enough_profit.reason == "marginal_profit_exit"
+
+
+def test_marginal_profit_exit_requires_min_hold_cycles() -> None:
+    config = _build_config()
+    result = evaluate_exit_setup(
+        config,
+        _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
+        0.012,
+        drawdown_from_peak=0.0,
+        hold_cycles=5,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
 
 
 def test_rsi_85_blocks_entry() -> None:

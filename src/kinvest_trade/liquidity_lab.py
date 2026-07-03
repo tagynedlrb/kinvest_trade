@@ -542,6 +542,7 @@ class LiquidityLabService:
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
         self._wait_cycles: dict[str, int] = {}
+        self._exit_cooldown: dict[str, datetime] = {}
         self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
@@ -1828,7 +1829,12 @@ class LiquidityLabService:
 
         existing_flag, existing_entry_by, _ = self._get_strategy_labels(code, signal_snapshot)
         if held_position is not None:
-            exit_setup = self._build_exit_setup(signal_snapshot, held_position.pnl_pct, holding_qty)
+            exit_setup = self._build_exit_setup(
+                signal_snapshot,
+                held_position.pnl_pct,
+                holding_qty,
+                symbol=code,
+            )
             if exit_setup.action in {"sell", "sell_partial"}:
                 return WatchTargetStatus(
                     market=market,
@@ -1878,6 +1884,36 @@ class LiquidityLabService:
             commit=False,
         )
         if strategy_result.signal == "BUY":
+            exit_cooldown = getattr(self, "_exit_cooldown", None)
+            if exit_cooldown is None:
+                exit_cooldown = {}
+                self._exit_cooldown = exit_cooldown
+            cooldown_key = f"{market}:{code.upper()}"
+            cooldown_until = exit_cooldown.get(cooldown_key)
+            now_utc = datetime.now(timezone.utc)
+            if cooldown_until is not None:
+                if now_utc < cooldown_until:
+                    remaining_min = max(
+                        1,
+                        int((cooldown_until - now_utc).total_seconds() / 60),
+                    )
+                    return WatchTargetStatus(
+                        market=market,
+                        code=code,
+                        exchange_code=exchange_code,
+                        price=price,
+                        activity_score=activity_score,
+                        signal_score=0.0,
+                        action_bias="WAIT",
+                        signal_state="WAIT",
+                        ma_summary=self._ma_relation_summary(signal_snapshot),
+                        note=f"재진입대기 {remaining_min}분",
+                        holding_qty=holding_qty,
+                        signal_snapshot=signal_snapshot,
+                        strategy_flag="",
+                        entry_by="",
+                    )
+                del exit_cooldown[cooldown_key]
             combined_score = (
                 self._get_strategy_manager(code).buy_score(signal_snapshot)
                 + entry_setup.score
@@ -2299,6 +2335,7 @@ class LiquidityLabService:
             lines.append("수익률=알수없음")
         await self.notifier.send("\n".join(lines))
         self._reset_strategy_position(candidate.stock_code)
+        self._register_exit_cooldown("domestic", candidate.stock_code, exit_reason)
         if held.avg_price > 0:
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
@@ -2803,6 +2840,7 @@ class LiquidityLabService:
             lines.append("수익률=알수없음")
         await self.notifier.send("\n".join(lines))
         self._reset_strategy_position(candidate.symbol)
+        self._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
         if held.avg_price > 0:
             real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
             auto_trade_cfg = getattr(self.config, "auto_trade", None)
@@ -2934,6 +2972,7 @@ class LiquidityLabService:
             lines.append("참고=실매도거부를 가상체결로 전환")
         await self.notifier.send("\n".join(lines))
         self._reset_strategy_position(candidate.symbol)
+        self._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
         return {
             "submitted": True,
             "already_notified": True,
@@ -3457,6 +3496,35 @@ class LiquidityLabService:
             exit_by = preview.exit_by
         return flag, entry_by, exit_by
 
+    def _estimate_hold_cycles(self, symbol: str) -> int:
+        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+        if manager is None or manager.position is None:
+            return 0
+        loop_interval_sec = max(
+            1,
+            int(getattr(self.config.liquidity_lab, "loop_interval_sec", 25) or 25),
+        )
+        elapsed_sec = max(
+            0.0,
+            (datetime.now(timezone.utc) - manager.position.entry_time).total_seconds(),
+        )
+        return max(0, int(elapsed_sec // loop_interval_sec))
+
+    def _register_exit_cooldown(
+        self,
+        market: str,
+        symbol: str,
+        exit_reason: str,
+    ) -> None:
+        exit_cooldown = getattr(self, "_exit_cooldown", None)
+        if exit_cooldown is None:
+            exit_cooldown = {}
+            self._exit_cooldown = exit_cooldown
+        cooldown_minutes = 15 if exit_reason == "marginal_profit_exit" else 8
+        exit_cooldown[f"{market}:{symbol.strip().upper()}"] = (
+            datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
+        )
+
     def _ma_relation_summary(self, snapshot: MovingAverageSnapshot) -> str:
         auto = self.config.auto_trade
         if not snapshot.has_required_context:
@@ -3540,13 +3608,15 @@ class LiquidityLabService:
         snapshot: MovingAverageSnapshot,
         pnl_pct: float,
         position_qty: int,
+        *,
+        symbol: str = "",
     ):
         return evaluate_exit_setup(
             self.config.auto_trade,
             snapshot,
             pnl_pct,
             drawdown_from_peak=0.0,
-            hold_cycles=0,
+            hold_cycles=self._estimate_hold_cycles(symbol) if symbol else 0,
             position_qty=position_qty,
             partial_exit_done=False,
         )

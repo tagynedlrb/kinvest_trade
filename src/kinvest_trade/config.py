@@ -139,6 +139,7 @@ class AutoTradeConfig:
     atr_hard_stop_multiplier: float
     atr_trailing_stop_multiplier: float
     partial_exit_rsi14: float
+    min_hold_before_marginal_exit: int
     scale_in_profit_trigger_pct: float
     volatility_high_threshold: float
     strong_rebound_pct: float
@@ -609,6 +610,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("atr_trailing_stop_multiplier", 1.4)
             ),
             partial_exit_rsi14=float(auto_trade_raw.get("partial_exit_rsi14", 70.0)),
+            min_hold_before_marginal_exit=int(
+                auto_trade_raw.get("min_hold_before_marginal_exit", 10)
+            ),
             scale_in_profit_trigger_pct=float(
                 auto_trade_raw.get("scale_in_profit_trigger_pct", 0.003)
             ),

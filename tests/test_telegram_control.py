@@ -26,6 +26,8 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
+    assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
+    assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
     assert TelegramLiquidityLabController.parse_command("/lab_positions") is None
     assert TelegramLiquidityLabController.parse_command("/lab_virtual") is None
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
@@ -805,6 +807,69 @@ def test_handle_service_restart_schedules_restart_when_service_exists() -> None:
 
     assert "상태=요청접수" in controller.notifier.messages[-1]
     assert restart_calls == ["called"]
+
+
+def test_send_reset_virtual_prompt() -> None:
+    controller = _build_async_controller()
+
+    asyncio.run(controller._send_reset_virtual_prompt())
+
+    assert "가상거래 초기화" in controller.notifier.messages[-1]
+    assert "/lab_reset_confirm" in controller.notifier.messages[-1]
+
+
+def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "reset_virtual.db")
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="regular",
+        reason="test_buy",
+        created_at="2026-07-01T00:00:00+00:00",
+    )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_sell_price=21.0,
+        currency="USD",
+        updated_at="2026-07-01T00:01:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.lab_service = SimpleNamespace(
+        _exit_cooldown={"overseas:SOXL": datetime.now(timezone.utc)},
+        _wait_cycles={"overseas:SOXL": 3},
+        _strategy_managers={"SOXL": object()},
+        _session_owned_symbols={"SOXL"},
+    )
+
+    asyncio.run(controller._execute_reset_virtual())
+
+    assert repository.list_virtual_positions() == []
+    assert repository.list_virtual_orders(limit=10) == []
+    assert repository.list_virtual_sell_pending() == []
+    assert controller.lab_service._exit_cooldown == {}
+    assert controller.lab_service._wait_cycles == {}
+    assert controller.lab_service._strategy_managers == {}
+    assert controller.lab_service._session_owned_symbols == set()
+    assert "가상거래 초기화 완료" in controller.notifier.messages[-1]
+    backups = sorted(tmp_path.glob("reset_virtual_backup_*_pre_reset.db"))
+    assert backups
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

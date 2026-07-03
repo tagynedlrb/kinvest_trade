@@ -51,7 +51,7 @@ def parse_datetime(value: str | datetime | None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return ensure_timezone(value)
 
     text = str(value).strip()
     if not text:

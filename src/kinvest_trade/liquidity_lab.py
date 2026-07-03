@@ -17,6 +17,7 @@ from .market_sessions import (
     is_us_orderable_session_for_env,
     is_us_regular_session,
 )
+from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
 from .message_format import (
     format_krw,
     format_side_korean,
@@ -41,7 +42,7 @@ from .technical_signals import (
     build_moving_average_snapshot,
     extract_price_series,
 )
-from .time_utils import format_kst, format_kst_korean
+from .time_utils import ensure_timezone, format_kst, format_kst_korean
 from .tv_scanner import check_connectivity, scan_top_volume_surge
 
 _logger = logging.getLogger(__name__)
@@ -558,6 +559,7 @@ class LiquidityLabService:
         self._last_relist_kst: tuple[int, int] | None = None
         self._tv_available: bool = False
         self._tv_diagnostic_ran: bool = False
+        self._last_holiday_notice_key: tuple[bool, bool, str] | None = None
         self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
@@ -737,6 +739,38 @@ class LiquidityLabService:
             len(self._dynamic_overseas_pool),
         )
 
+    async def _apply_holiday_overrides(self, now_utc: datetime) -> tuple[bool, bool]:
+        nyse_holiday = bool(getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday())
+        krx_holiday = bool(getattr(self.config, "skip_holiday_domestic", True) and is_krx_holiday())
+        notice_key = (
+            nyse_holiday,
+            krx_holiday,
+            now_utc.astimezone(KST).strftime("%Y-%m-%d"),
+        )
+        if (nyse_holiday or krx_holiday) and notice_key != getattr(self, "_last_holiday_notice_key", None):
+            self._last_holiday_notice_key = notice_key
+            notifier = getattr(self, "notifier", None)
+            if notifier is not None and getattr(notifier, "enabled", True):
+                lines = [
+                    "📅 휴장일 감지 — 스캔 중단",
+                    market_status_summary(),
+                    "",
+                    f"해외 스캔 {'중단' if nyse_holiday else '유지'} | 국내 스캔 {'중단' if krx_holiday else '유지'}",
+                    "다음 영업일에 자동으로 재개됩니다.",
+                ]
+                try:
+                    await notifier.send("\n".join(lines))
+                except Exception:  # noqa: BLE001
+                    _logger.debug("holiday_notice_send_failed", exc_info=True)
+            _logger.info(
+                "holiday_skip_detected krx_holiday=%s nyse_holiday=%s",
+                krx_holiday,
+                nyse_holiday,
+            )
+        elif not nyse_holiday and not krx_holiday:
+            self._last_holiday_notice_key = None
+        return krx_holiday, nyse_holiday
+
     def _surge_bonus_from_ratio(self, surge_ratio: float) -> float:
         strong = float(getattr(self.config.liquidity_lab, "vol_surge_threshold_strong", 5.0))
         mild = float(getattr(self.config.liquidity_lab, "vol_surge_threshold_mild", 3.0))
@@ -860,14 +894,15 @@ class LiquidityLabService:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
         await self._ensure_tv_diagnostics()
+        krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
         await self._maybe_send_overseas_relist_alert(now)
-        krx_open = is_krx_regular_session(now)
-        us_open = is_us_regular_session(now)
+        krx_open = is_krx_regular_session(now) and not krx_holiday
+        us_open = is_us_regular_session(now) and not nyse_holiday
         us_session = get_us_trading_session(now)
         us_orderable_in_profile = is_us_orderable_session_for_env(
             now,
             self.config.credentials.env,
-        )
+        ) and not nyse_holiday
 
         if not krx_open and not us_open:
             return LiquidityLabReport(
@@ -878,7 +913,7 @@ class LiquidityLabService:
                 us_orderable_in_profile=False,
                 primary_market="none",
                 primary_target=None,
-                primary_selection_reason="no_supported_market_open",
+                primary_selection_reason="market_holiday" if (krx_holiday or nyse_holiday) else "no_supported_market_open",
                 domestic_ranked=[],
                 overseas_ranked=[],
                 domestic_excluded=[],
@@ -2172,6 +2207,8 @@ class LiquidityLabService:
             cooldown_until = exit_cooldown.get(cooldown_key)
             now_utc = datetime.now(timezone.utc)
             if cooldown_until is not None:
+                cooldown_until = ensure_timezone(cooldown_until)
+                exit_cooldown[cooldown_key] = cooldown_until
                 if now_utc < cooldown_until:
                     remaining_min = max(
                         1,
@@ -3786,7 +3823,7 @@ class LiquidityLabService:
         )
         elapsed_sec = max(
             0.0,
-            (datetime.now(timezone.utc) - manager.position.entry_time).total_seconds(),
+            (datetime.now(timezone.utc) - ensure_timezone(manager.position.entry_time)).total_seconds(),
         )
         return max(0, int(elapsed_sec // loop_interval_sec))
 

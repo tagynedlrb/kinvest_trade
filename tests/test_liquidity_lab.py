@@ -1148,6 +1148,8 @@ def _build_run_service() -> LiquidityLabService:
     base_auto = load_app_config(project_root / "config" / "fixed_config.json").auto_trade
     service.config = SimpleNamespace(
         credentials=SimpleNamespace(env="vps", dry_run=False),
+        skip_holiday_overseas=False,
+        skip_holiday_domestic=False,
         liquidity_lab=SimpleNamespace(
             unified_watch_top_n=3,
             unified_scan_top_n=3,
@@ -1192,8 +1194,13 @@ def _build_run_service() -> LiquidityLabService:
     service._dynamic_domestic_codes = None
     service._domestic_scan_cycle_count = 0
     service._dynamic_overseas_pool = None
+    service._manual_overseas_pool = None
+    service._overseas_scan_cycle_count = 0
     service._overseas_relist_schedule = []
     service._last_relist_kst = None
+    service._tv_available = False
+    service._tv_diagnostic_ran = True
+    service._last_holiday_notice_key = None
     return service
 
 
@@ -2260,6 +2267,36 @@ def test_overseas_buy_stays_skipped_when_market_closed() -> None:
     assert report.primary_selection_reason == "no_supported_market_open"
     assert report.overseas_order["skipped"] is True
     assert service.virtual_trades.list_positions("overseas") == []
+
+
+def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
+    service = _build_run_service()
+    service.config.skip_holiday_overseas = True
+    service.config.skip_holiday_domestic = True
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    original_is_krx_holiday = liquidity_lab_module.is_krx_holiday
+    original_is_nyse_holiday = liquidity_lab_module.is_nyse_holiday
+    liquidity_lab_module.is_krx_regular_session = lambda now: True
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    liquidity_lab_module.is_krx_holiday = lambda: False
+    liquidity_lab_module.is_nyse_holiday = lambda: True
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+        liquidity_lab_module.is_krx_holiday = original_is_krx_holiday
+        liquidity_lab_module.is_nyse_holiday = original_is_nyse_holiday
+
+    assert report.krx_market_open is True
+    assert report.us_market_open is False
 
 
 def test_virtual_overseas_sell_uses_existing_virtual_position() -> None:

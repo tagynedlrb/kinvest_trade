@@ -155,6 +155,10 @@
         "telegram_enabled": true,
         "telegram_command_poll_timeout_sec": 20
     },
+    "github_token": "",
+    "github_repo": "tagynedlrb/kinvest_trade",
+    "skip_holiday_overseas": true,
+    "skip_holiday_domestic": true,
     "liquidity_lab": {
         "enabled": true,
         "tv_scan_enabled": true,

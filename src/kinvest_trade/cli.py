@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     indicator.add_argument("--timeframe", choices=["minute", "daily"], default="minute")
     indicator.add_argument(
         "--base-date",
-        default=datetime.now().strftime("%Y%m%d"),
+        default=datetime.now(timezone.utc).strftime("%Y%m%d"),
         help="Target date for minute mode or end date for daily mode in YYYYMMDD",
     )
     indicator.add_argument(

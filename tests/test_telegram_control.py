@@ -30,6 +30,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
     assert TelegramLiquidityLabController.parse_command("/lab_relist NVDA TSLA") == ("relist", "NVDA TSLA")
     assert TelegramLiquidityLabController.parse_command("/lab_relist_schedule") == "relist_schedule"
+    assert TelegramLiquidityLabController.parse_command("/lab_gitlog 2026-07-03") == ("gitlog", "2026-07-03")
     assert TelegramLiquidityLabController.parse_command("/lab_positions") is None
     assert TelegramLiquidityLabController.parse_command("/lab_virtual") is None
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
@@ -609,6 +610,9 @@ class DummyNotifier:
 
 
 class DummyRepository:
+    def __init__(self) -> None:
+        self.db_path = Path("/tmp/kinvest_trade_test.db")
+
     def save_telegram_control_session(self, **kwargs) -> int:
         return 1
 
@@ -628,9 +632,10 @@ class DummyRepository:
 class DummyAsyncClient:
     def __init__(self, credentials) -> None:
         self.credentials = credentials
+        self._client = object()
 
     async def __aenter__(self):
-        return object()
+        return self
 
     async def __aexit__(self, exc_type, exc, tb):
         return None
@@ -683,6 +688,10 @@ def _build_async_controller() -> TelegramLiquidityLabController:
             ),
             storage=SimpleNamespace(runtime_state_path=Path("/tmp/kinvest_trade_test_runtime_state.json")),
             auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            github_token="test-token",
+            github_repo="tagynedlrb/kinvest_trade",
+            skip_holiday_overseas=True,
+            skip_holiday_domestic=True,
         ),
         repository=DummyRepository(),
         notifier=DummyNotifier(),
@@ -902,6 +911,26 @@ def test_send_relist_schedule_reports_configured_times() -> None:
 
     assert "[KIS][RELIST_SCHEDULE]" in controller.notifier.messages[-1]
     assert "22:35,01:00,03:30" in controller.notifier.messages[-1]
+
+
+def test_handle_gitlog_reports_success() -> None:
+    controller = _build_async_controller()
+
+    async def fake_upload_log(**kwargs):
+        return True, "https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/trades/test.csv"
+
+    original_client = telegram_control_module.KisRestClient
+    original_upload = telegram_control_module.upload_log
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.upload_log = fake_upload_log
+    try:
+        asyncio.run(controller._handle_gitlog("2026-07-03"))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.upload_log = original_upload
+
+    assert "📤 GitHub 로그 업로드 중..." in controller.notifier.messages[0]
+    assert "✅ 업로드 완료" in controller.notifier.messages[-1]
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

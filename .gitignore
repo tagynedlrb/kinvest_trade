@@ -9,9 +9,9 @@ __pycache__/
 .env
 keys/
 data/
-logs/
 state/
 *.sqlite3
 *.db
 *.log
 https:/
+config/fixed_config.json

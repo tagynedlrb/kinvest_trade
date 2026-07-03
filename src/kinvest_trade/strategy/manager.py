@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..technical_signals import MovingAverageSnapshot
@@ -69,7 +69,7 @@ class PriorityStrategyManager:
     ) -> None:
         if not triggered_by:
             return
-        opened_at = entry_time or datetime.now()
+        opened_at = entry_time or datetime.now(timezone.utc)
         self.position = Position(
             symbol=symbol,
             entry_price=entry_price,
@@ -107,7 +107,7 @@ class PriorityStrategyManager:
         preview_position = Position(
             symbol=symbol,
             entry_price=snapshot.price,
-            entry_time=datetime.now(),
+            entry_time=datetime.now(timezone.utc),
             triggered_by=triggered,
             peak_price=snapshot.price,
         )

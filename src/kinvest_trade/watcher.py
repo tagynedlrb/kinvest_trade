@@ -101,8 +101,8 @@ class ConsoleWatchService:
 
         timeframe = self.config.watch.chart_timeframe
         if timeframe == "daily":
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
+            end_date = datetime.now(timezone.utc).strftime("%Y%m%d")
+            start_date = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y%m%d")
             rows = await self.client.get_daily_chart(
                 stock_code=stock_code,
                 start_date=start_date,
@@ -116,7 +116,7 @@ class ConsoleWatchService:
         else:
             rows = await self.client.get_time_daily_chart(
                 stock_code=stock_code,
-                target_date=datetime.now().strftime("%Y%m%d"),
+                target_date=datetime.now(timezone.utc).strftime("%Y%m%d"),
                 market_code=self.config.trading.market_code,
             )
             closes = [parse_kis_number(row.get("stck_prpr")) for row in rows[: self.config.watch.chart_bar_limit]]

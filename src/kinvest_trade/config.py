@@ -287,6 +287,10 @@ class AppConfig:
     storage: StorageConfig
     notifications: NotificationConfig
     liquidity_lab: LiquidityLabConfig
+    github_token: str
+    github_repo: str
+    skip_holiday_overseas: bool
+    skip_holiday_domestic: bool
 
 
 def _project_root() -> Path:
@@ -391,6 +395,12 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
     storage_raw = raw["storage"]
     notification_raw = raw.get("notifications", {})
     liquidity_lab_raw = raw.get("liquidity_lab", {})
+    github_token = (
+        os.getenv("GITHUB_TOKEN", "").strip()
+        or str(raw.get("github_token", "") or "").strip()
+        or _read_optional_file(project_root.parent / "git_token.txt")
+    )
+    github_repo = str(raw.get("github_repo", "tagynedlrb/kinvest_trade") or "").strip()
 
     sibling_telegram_root = project_root.parent / "kiwoom_trade" / "keys"
 
@@ -823,4 +833,8 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 for value in liquidity_lab_raw.get("leveraged_etf_symbols", ["TQQQ", "SOXL"])
             ],
         ),
+        github_token=github_token,
+        github_repo=github_repo or "tagynedlrb/kinvest_trade",
+        skip_holiday_overseas=bool(raw.get("skip_holiday_overseas", True)),
+        skip_holiday_domestic=bool(raw.get("skip_holiday_domestic", True)),
     )

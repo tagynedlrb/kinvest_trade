@@ -11,7 +11,9 @@ from typing import TypeAlias
 
 from .client import KisRestClient
 from .config import AppConfig
+from .git_uploader import upload_log
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
+from .market_calendar import is_krx_holiday, is_nyse_holiday
 from .market_sessions import (
     determine_loop_interval_sec,
     get_us_trading_session,
@@ -41,6 +43,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
         "/lab_relist_schedule - 해외 relist 알림 시간 확인",
+        "/lab_gitlog [날짜] - 오늘(또는 지정 날짜) 거래 로그를 GitHub에 업로드",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
     ]
@@ -60,6 +63,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
     {"command": "lab_relist_schedule", "description": "해외 relist 알림 시간"},
+    {"command": "lab_gitlog", "description": "거래 로그 GitHub 업로드"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
 ]
@@ -278,6 +282,10 @@ class TelegramLiquidityLabController:
         if command_name == "relist_schedule":
             await self._send_relist_schedule()
             return
+        if command_name == "gitlog":
+            date_kst = parsed_command[1] if isinstance(parsed_command, tuple) else None
+            await self._handle_gitlog(date_kst)
+            return
         if command_name == "start":
             await self._handle_start_like_command("running", "started")
             return
@@ -474,6 +482,34 @@ class TelegramLiquidityLabController:
                 ]
             )
         )
+
+    async def _handle_gitlog(self, date_kst: str | None) -> None:
+        await self.notifier.send("📤 GitHub 로그 업로드 중...")
+        try:
+            async with KisRestClient(self.config.credentials) as client:
+                success, result = await upload_log(
+                    client=client._client,
+                    db_path=self.repository.db_path,
+                    github_token=self.config.github_token,
+                    github_repo=self.config.github_repo,
+                    date_kst=date_kst,
+                )
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(f"❌ 업로드 실패\n`{type(exc).__name__}: {exc}`")
+            return
+        if success:
+            filename = result.rsplit("/", 1)[-1] if result else "-"
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "✅ 업로드 완료",
+                        f"파일={filename}",
+                        f"URL={result}",
+                    ]
+                )
+            )
+        else:
+            await self.notifier.send(f"❌ 업로드 실패\n{result}")
 
     async def _restart_service_soon(self) -> None:
         await asyncio.sleep(0.5)
@@ -686,10 +722,18 @@ class TelegramLiquidityLabController:
         session = snapshot.session_performance or {}
         last_report = snapshot.last_report_summary or {}
         now = datetime.now(timezone.utc)
-        krx_open = is_krx_regular_session(now)
+        krx_holiday = bool(getattr(self.config, "skip_holiday_domestic", True) and is_krx_holiday())
+        nyse_holiday = bool(getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday())
+        krx_open = is_krx_regular_session(now) and not krx_holiday
         us_session = get_us_trading_session(now)
-        us_tradeable = is_us_orderable_session_for_env(now, self.config.credentials.env)
-        if krx_open:
+        us_tradeable = is_us_orderable_session_for_env(now, self.config.credentials.env) and not nyse_holiday
+        if krx_holiday and nyse_holiday:
+            market_status = "KRX/US 휴장"
+        elif krx_holiday:
+            market_status = "KRX 휴장"
+        elif nyse_holiday:
+            market_status = "US 휴장"
+        elif krx_open:
             market_status = "KRX 정규장 ✓"
         elif us_tradeable:
             market_status = f"US {us_session} ✓"
@@ -1280,6 +1324,9 @@ class TelegramLiquidityLabController:
             return ("paper_test", parts[1].strip() if len(parts) > 1 else None)
         if stripped.lower().startswith("/lab_relist_schedule"):
             return "relist_schedule"
+        if stripped.lower().startswith("/lab_gitlog"):
+            parts = stripped.split(maxsplit=1)
+            return ("gitlog", parts[1].strip() if len(parts) > 1 else None)
         if stripped.lower().startswith("/lab_relist"):
             parts = stripped.split(maxsplit=1)
             return ("relist", parts[1].strip() if len(parts) > 1 else None)
@@ -1299,6 +1346,7 @@ class TelegramLiquidityLabController:
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",
             "/lab_relist_schedule": "relist_schedule",
+            "/lab_gitlog": "gitlog",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",

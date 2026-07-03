@@ -540,3 +540,18 @@
 ### 런타임 분기
 - TV 접근 가능: `FHPST01710000(국내) + TV 스캔(해외)` 이중 동적 풀
 - TV 접근 불가: `FHPST01710000(국내) + 기존 relist(해외)` (기존 #39 그대로)
+
+## [2026-07-03] 지시문 #41 — datetime 오류 수정 / 휴장일 감지 / GitHub 로그 업로드
+
+### 발생 사고 분석
+- 2026-07-03(미국 독립기념일 대체 휴장): 해외 스캔 강행 -> 감시종목 4개로 급감
+- cycle=2 부터 datetime timezone mismatch 오류 연속 발생
+  원인: `_exit_cooldown` 등에 naive datetime 저장 후 aware datetime과 비교
+
+### 변경 사항
+- 코드베이스 전체: `datetime.now()` -> `datetime.now(timezone.utc)` 전수 교체
+- `market_calendar.py` 신규: exchange_calendars 기반 NYSE/KRX 휴장 감지
+- `liquidity_lab.py`: 휴장일 조기 종료 + 텔레그램 알림
+- `git_uploader.py` 신규: GitHub API 로그 업로드
+- `telegram_control.py`: `/lab_gitlog` 명령 추가
+- `fixed_config.json`: GitHub/휴장 스킵 키 추가

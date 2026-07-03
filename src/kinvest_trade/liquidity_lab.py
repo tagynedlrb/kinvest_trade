@@ -560,6 +560,8 @@ class LiquidityLabService:
         )
         self._last_relist_kst: tuple[int, int] | None = None
         self._tv_available: bool = False
+        self._consecutive_losses: int = 0
+        self._session_realised_krw: float = 0.0
         self._tv_diagnostic_ran: bool = False
         self._last_holiday_notice_key: tuple[bool, bool, str] | None = None
         self._session_owned_symbols: set[str] = set()
@@ -664,6 +666,7 @@ class LiquidityLabService:
     def _active_overseas_pool(
         self,
         held_positions: list | None = None,
+        held_symbols: set[str] | None = None,
     ) -> list[OverseasCandidateConfig]:
         raw_pool: list = (
             getattr(self, "_manual_overseas_pool", None)
@@ -675,8 +678,8 @@ class LiquidityLabService:
             for candidate in (self._coerce_overseas_candidate(item) for item in raw_pool)
             if candidate.symbol.strip()
         ]
+        existing_symbols = {candidate.symbol.upper() for candidate in candidates}
         if held_positions:
-            existing_symbols = {candidate.symbol.upper() for candidate in candidates}
             for position in held_positions:
                 symbol = ""
                 exchange_code = "NASD"
@@ -695,6 +698,19 @@ class LiquidityLabService:
                         )
                     )
                     existing_symbols.add(symbol)
+        if held_symbols:
+            for symbol in held_symbols:
+                symbol_upper = str(symbol).strip().upper()
+                if symbol_upper and symbol_upper not in existing_symbols:
+                    candidates.append(
+                        self._coerce_overseas_candidate(
+                            {
+                                "symbol": symbol_upper,
+                                "exchange_code": "NASD",
+                            }
+                        )
+                    )
+                    existing_symbols.add(symbol_upper)
         return [candidate for candidate in candidates if candidate.symbol.strip()]
 
     def _known_overseas_exchange_codes(
@@ -1052,25 +1068,37 @@ class LiquidityLabService:
             if krx_open
             else None
         )
-        config_ll = self.config.liquidity_lab
-        domestic_buy_targets = self._select_domestic_buy_targets(
-            domestic_ranked,
-            domestic_watch_targets,
-            max_concurrent=getattr(config_ll, "max_concurrent_domestic_orders", 2),
-        )
-        domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
-        _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
-        _real_os = sum(1 for position in overseas_positions if not position.is_virtual)
-        if _real_os >= _max_os:
+        if self._is_trading_halted():
+            domestic_buy_targets = []
+            domestic_buy_target = None
             overseas_buy_targets = []
             overseas_buy_target = None
-        else:
-            overseas_buy_targets = self._select_overseas_buy_targets(
-                overseas_ranked,
-                overseas_watch_targets,
-                max_concurrent=max(1, _max_os - _real_os),
+            _logger.info(
+                "[CB] 서킷브레이커 활성 — 이번 사이클 매수 스킵"
+                " (consecutive=%d, session_pnl=%.0f)",
+                getattr(self, "_consecutive_losses", 0),
+                getattr(self, "_session_realised_krw", 0.0),
             )
-            overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
+        else:
+            config_ll = self.config.liquidity_lab
+            domestic_buy_targets = self._select_domestic_buy_targets(
+                domestic_ranked,
+                domestic_watch_targets,
+                max_concurrent=getattr(config_ll, "max_concurrent_domestic_orders", 2),
+            )
+            domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
+            _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
+            _real_os = sum(1 for position in overseas_positions if not position.is_virtual)
+            if _real_os >= _max_os:
+                overseas_buy_targets = []
+                overseas_buy_target = None
+            else:
+                overseas_buy_targets = self._select_overseas_buy_targets(
+                    overseas_ranked,
+                    overseas_watch_targets,
+                    max_concurrent=max(1, _max_os - _real_os),
+                )
+                overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
         paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
         domestic_order: dict = {"skipped": True, "reason": "no_action"}
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
@@ -1380,7 +1408,10 @@ class LiquidityLabService:
             self._overseas_scan_cycle_count = 0
             await self._refresh_overseas_dynamic_pool()
 
-        active_overseas_pool = self._active_overseas_pool()
+        held_symbols = await self._get_held_symbols()
+        active_overseas_pool = self._active_overseas_pool(
+            held_symbols=held_symbols | self._get_virtual_held_symbols()
+        )
         for candidate in active_overseas_pool:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
@@ -1422,7 +1453,7 @@ class LiquidityLabService:
             return result.activity_score * penalty
 
         quote_results.sort(key=_effective_score, reverse=True)
-        held_symbols = await self._get_held_symbols()
+        # held_symbols is already assigned above (before pool scan).
         top_n = max(1, config.overseas_scan_top_n)
 
         signal_symbols: set[str] = set()
@@ -2745,6 +2776,27 @@ class LiquidityLabService:
         self._reset_strategy_position(candidate.stock_code)
         self._register_exit_cooldown("domestic", candidate.stock_code, exit_reason)
         if held.avg_price > 0:
+            self._session_realised_krw = getattr(self, "_session_realised_krw", 0.0) + float(gross_pnl)
+            if gross_pnl < 0:
+                self._consecutive_losses = getattr(self, "_consecutive_losses", 0) + 1
+            else:
+                self._consecutive_losses = 0
+            if self._is_trading_halted():
+                _logger.warning(
+                    "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
+                    self._consecutive_losses,
+                    self._session_realised_krw,
+                )
+                notifier = getattr(self, "notifier", None)
+                if notifier is not None and getattr(notifier, "enabled", True):
+                    asyncio.create_task(
+                        notifier.send(
+                            f"⛔ 서킷브레이커 발동\n"
+                            f"연속손절 {self._consecutive_losses}회 | "
+                            f"세션손익 {self._session_realised_krw:+,.0f}원\n"
+                            f"신규 매수를 중단합니다."
+                        )
+                    )
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
                 market="domestic",
@@ -3255,6 +3307,27 @@ class LiquidityLabService:
             fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
             gross_pnl_usd = (candidate.last_price - held.avg_price) * real_qty_sold
             gross_pnl_krw = gross_pnl_usd * fx_rate
+            self._session_realised_krw = getattr(self, "_session_realised_krw", 0.0) + float(gross_pnl_krw)
+            if gross_pnl_krw < 0:
+                self._consecutive_losses = getattr(self, "_consecutive_losses", 0) + 1
+            else:
+                self._consecutive_losses = 0
+            if self._is_trading_halted():
+                _logger.warning(
+                    "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
+                    self._consecutive_losses,
+                    self._session_realised_krw,
+                )
+                notifier = getattr(self, "notifier", None)
+                if notifier is not None and getattr(notifier, "enabled", True):
+                    asyncio.create_task(
+                        notifier.send(
+                            f"⛔ 서킷브레이커 발동\n"
+                            f"연속손절 {self._consecutive_losses}회 | "
+                            f"세션손익 {self._session_realised_krw:+,.0f}원\n"
+                            f"신규 매수를 중단합니다."
+                        )
+                    )
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
                 market="overseas",
@@ -3932,6 +4005,35 @@ class LiquidityLabService:
         exit_cooldown[f"{market}:{symbol.strip().upper()}"] = (
             datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
         )
+
+    def _is_trading_halted(self) -> bool:
+        risk = getattr(self.config, "risk", None)
+        if risk is None:
+            return False
+
+        consecutive_losses = int(getattr(self, "_consecutive_losses", 0) or 0)
+        max_consecutive = int(getattr(risk, "max_consecutive_losses", 0) or 0)
+        if max_consecutive > 0 and consecutive_losses >= max_consecutive:
+            return True
+
+        daily_limit = float(getattr(risk, "daily_loss_limit_pct", 0.0) or 0.0)
+        session_realised_krw = float(getattr(self, "_session_realised_krw", 0.0) or 0.0)
+        if daily_limit > 0 and session_realised_krw < 0:
+            try:
+                est_capital = float(
+                    getattr(
+                        self.config.liquidity_lab,
+                        "domestic_min_intraday_turnover_krw",
+                        0,
+                    )
+                    or 500_000_000
+                )
+                if est_capital > 0 and abs(session_realised_krw) / est_capital > daily_limit:
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     def _ma_relation_summary(self, snapshot: MovingAverageSnapshot) -> str:
         auto = self.config.auto_trade

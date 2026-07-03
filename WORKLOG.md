@@ -577,3 +577,23 @@
 - `telegram_control.py`
   - `_handle_relist()`에서 `overseas_candidates` 참조 제거
   - `SYMBOL:EXCHANGE` 형식 파싱 지원 (`GM:NYSE` 등)
+
+## [2026-07-07] 지시문 #44 — 보유종목 스캔 포함 / 국내 필터 수정 / 서킷브레이커
+
+### 배경
+- 전반 점검(2026-07-06)에서 발견된 3가지 미적용 갭 수정.
+
+### 수정 A — scan_overseas 보유종목 pool 강제 포함
+- `_active_overseas_pool()`에 `held_symbols: set[str] | None` 파라미터 추가
+- `scan_overseas()`에서 `_get_held_symbols()` 호출을 pool 스캔 전으로 이동
+- `_active_overseas_pool(held_symbols=held_symbols | _get_virtual_held_symbols())`로 연결
+- dynamic_pool 밖 보유종목도 quote scan 대상에 포함되도록 보정
+
+### 수정 B — config
+- `domestic_min_intraday_turnover_krw: 500억 -> 200억`
+
+### 수정 C — 서킷브레이커
+- `__init__`에 `_consecutive_losses`, `_session_realised_krw` 추가
+- `_is_trading_halted()`로 `risk.max_consecutive_losses`, `risk.daily_loss_limit_pct` 반영
+- 국내/해외 SELL 완료 후 카운터 갱신
+- BUY 선택 직전 halt 체크를 넣어 발동 시 해당 사이클 신규 매수 전체 스킵

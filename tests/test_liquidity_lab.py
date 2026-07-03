@@ -1150,6 +1150,10 @@ def _build_run_service() -> LiquidityLabService:
         credentials=SimpleNamespace(env="vps", dry_run=False),
         skip_holiday_overseas=False,
         skip_holiday_domestic=False,
+        risk=SimpleNamespace(
+            daily_loss_limit_pct=0.01,
+            max_consecutive_losses=3,
+        ),
         liquidity_lab=SimpleNamespace(
             unified_watch_top_n=3,
             unified_scan_top_n=3,
@@ -1200,9 +1204,31 @@ def _build_run_service() -> LiquidityLabService:
     service._last_relist_kst = None
     service._awaiting_relist = False
     service._tv_available = False
+    service._consecutive_losses = 0
+    service._session_realised_krw = 0.0
     service._tv_diagnostic_ran = True
     service._last_holiday_notice_key = None
     return service
+
+
+def test_active_overseas_pool_includes_held_symbols_without_positions() -> None:
+    service = _build_run_service()
+    service._dynamic_overseas_pool = [{"symbol": "NVDA", "exchange_code": "NASD"}]
+
+    pool = service._active_overseas_pool(held_symbols={"AAL", "hood"})
+
+    assert sorted((candidate.symbol, candidate.exchange_code) for candidate in pool) == [
+        ("AAL", "NASD"),
+        ("HOOD", "NASD"),
+        ("NVDA", "NASD"),
+    ]
+
+
+def test_is_trading_halted_when_consecutive_losses_reach_limit() -> None:
+    service = _build_run_service()
+    service._consecutive_losses = 3
+
+    assert service._is_trading_halted() is True
 
 
 def test_build_unified_watch_targets_merges_domestic_and_overseas() -> None:

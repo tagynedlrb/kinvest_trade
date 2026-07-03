@@ -204,7 +204,7 @@
         "max_concurrent_overseas_orders": 20,
         "max_concurrent_domestic_orders": 5,
         "domestic_min_price_krw": 3000,
-        "domestic_min_intraday_turnover_krw": 50000000000,
+        "domestic_min_intraday_turnover_krw": 20000000000,
         "domestic_min_volume_sum": 100000,
         "domestic_max_spread_pct": 0.003,
         "overseas_min_price_usd": 5.0,

@@ -524,3 +524,19 @@
 - `python3 -m compileall src` 통과
 - `python3 -m pytest tests/test_momentum_policy.py tests/test_liquidity_lab.py -v` 통과
 - `python3 -m pytest tests -v` 통과 (`170 passed`)
+
+## [2026-07-03] 지시문 #40 — TradingView 기반 해외 동적 풀 갱신
+
+### 판정 근거
+- 국장(KIS): 실시간, 관리종목 제외, 기존 통합 완료 -> KIS API 유지 (#39)
+- 미장(TV): 기존 고정 74종목 -> relative_volume_10d_calc 기반 동적 풀로 교체
+
+### 변경 사항
+- `tv_scanner.py` 신규 생성: TradingView Scanner API 래퍼
+- `config.py`: TV 스캔 파라미터 추가
+- `liquidity_lab.py`: 해외 풀 갱신 로직을 TV 스캔으로 대체 (fallback 포함)
+- `/lab_relist`는 TV 스캔 결과를 사용자가 수동으로 덮어쓸 수 있도록 유지
+
+### 런타임 분기
+- TV 접근 가능: `FHPST01710000(국내) + TV 스캔(해외)` 이중 동적 풀
+- TV 접근 불가: `FHPST01710000(국내) + 기존 relist(해외)` (기존 #39 그대로)

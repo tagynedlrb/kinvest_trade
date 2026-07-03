@@ -440,7 +440,9 @@ class TelegramLiquidityLabController:
         ]
         self.manual_overseas_pool = pool
         if self.lab_service is not None:
+            self.lab_service._manual_overseas_pool = list(pool)
             self.lab_service._dynamic_overseas_pool = list(pool)
+            self.lab_service._overseas_scan_cycle_count = 0
             self.lab_service._signal_cache.clear()
         await self.notifier.send(
             "\n".join(
@@ -560,6 +562,7 @@ class TelegramLiquidityLabController:
                     service.repository = self.repository
                     service.notifier = self.notifier
                 if self.manual_overseas_pool is not None:
+                    service._manual_overseas_pool = list(self.manual_overseas_pool)
                     service._dynamic_overseas_pool = list(self.manual_overseas_pool)
                 self.lab_service = service
                 if self.active_session_id:

@@ -42,6 +42,7 @@ from .technical_signals import (
     extract_price_series,
 )
 from .time_utils import format_kst, format_kst_korean
+from .tv_scanner import check_connectivity, scan_top_volume_surge
 
 _logger = logging.getLogger(__name__)
 
@@ -549,10 +550,14 @@ class LiquidityLabService:
         self._dynamic_domestic_codes: list[str] | None = None
         self._domestic_scan_cycle_count: int = 0
         self._dynamic_overseas_pool: list[dict[str, str]] | None = None
+        self._manual_overseas_pool: list[dict[str, str]] | None = None
+        self._overseas_scan_cycle_count: int = 0
         self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
             getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
         )
         self._last_relist_kst: tuple[int, int] | None = None
+        self._tv_available: bool = False
+        self._tv_diagnostic_ran: bool = False
         self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
@@ -653,12 +658,84 @@ class LiquidityLabService:
         return OverseasCandidateConfig(symbol="", exchange_code="NASD")
 
     def _active_overseas_pool(self) -> list[OverseasCandidateConfig]:
-        raw_pool = getattr(self, "_dynamic_overseas_pool", None) or self.config.liquidity_lab.overseas_candidates
+        raw_pool = (
+            getattr(self, "_manual_overseas_pool", None)
+            or getattr(self, "_dynamic_overseas_pool", None)
+            or self.config.liquidity_lab.overseas_candidates
+        )
         return [
             candidate
             for candidate in (self._coerce_overseas_candidate(item) for item in raw_pool)
             if candidate.symbol.strip()
         ]
+
+    async def _ensure_tv_diagnostics(self) -> None:
+        if getattr(self, "_tv_diagnostic_ran", False):
+            return
+        self._tv_diagnostic_ran = True
+        ll_cfg = self.config.liquidity_lab
+        if not getattr(ll_cfg, "tv_scan_enabled", True):
+            _logger.info("[TV] tv_scan_enabled=False")
+            self._tv_available = False
+            return
+        client = getattr(self.client, "_client", None)
+        if client is None:
+            _logger.warning("[TV] shared_http_client_missing")
+            self._tv_available = False
+            return
+        self._tv_available = await check_connectivity(client)
+        notifier = getattr(self, "notifier", None)
+        if notifier is not None and getattr(notifier, "enabled", True):
+            try:
+                await notifier.send(
+                    "✅ TradingView Scanner 접근 가능 — 해외 동적 풀 활성화"
+                    if self._tv_available
+                    else "⚠️ TradingView Scanner 접근 불가 — 기존 relist 방식 유지"
+                )
+            except Exception:  # noqa: BLE001
+                _logger.debug("tv_diagnostic_notify_failed", exc_info=True)
+
+    async def _refresh_overseas_dynamic_pool(self) -> None:
+        manual_pool = getattr(self, "_manual_overseas_pool", None)
+        if manual_pool:
+            self._dynamic_overseas_pool = list(manual_pool)
+            _logger.info("overseas_manual_pool_override count=%s", len(manual_pool))
+            return
+
+        ll_cfg = self.config.liquidity_lab
+        if getattr(self, "_tv_available", False):
+            client = getattr(self.client, "_client", None)
+            if client is not None:
+                tv_rows = await scan_top_volume_surge(
+                    client=client,
+                    top_n=max(1, getattr(ll_cfg, "tv_top_n", 30)),
+                    min_rel_volume=float(getattr(ll_cfg, "tv_min_rel_volume", 2.0)),
+                    min_price_usd=float(getattr(ll_cfg, "tv_min_price_usd", 1.0)),
+                    min_volume=int(getattr(ll_cfg, "tv_min_volume", 500_000)),
+                    min_market_cap=float(getattr(ll_cfg, "tv_min_market_cap", 3e8)),
+                    max_market_cap=float(getattr(ll_cfg, "tv_max_market_cap", 2e12)),
+                    max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
+                )
+                if tv_rows:
+                    self._dynamic_overseas_pool = list(tv_rows)
+                    preview = ", ".join(row["symbol"] for row in tv_rows[:5])
+                    _logger.info(
+                        "[TV] 해외 동적 풀 갱신: %s개 -> [%s]",
+                        len(tv_rows),
+                        preview,
+                    )
+                    return
+            _logger.warning("[TV] scan_result_empty -> fallback")
+            self._tv_available = False
+
+        self._dynamic_overseas_pool = [
+            {"symbol": candidate.symbol, "exchange_code": candidate.exchange_code}
+            for candidate in self.config.liquidity_lab.overseas_candidates
+        ]
+        _logger.info(
+            "[풀] Fallback 적용: overseas_candidates %s개",
+            len(self._dynamic_overseas_pool),
+        )
 
     def _surge_bonus_from_ratio(self, surge_ratio: float) -> float:
         strong = float(getattr(self.config.liquidity_lab, "vol_surge_threshold_strong", 5.0))
@@ -763,7 +840,11 @@ class LiquidityLabService:
         notifier = getattr(self, "notifier", None)
         if notifier is None or not getattr(notifier, "enabled", True):
             return
-        pool = self._dynamic_overseas_pool or self.config.liquidity_lab.overseas_candidates
+        pool = (
+            getattr(self, "_manual_overseas_pool", None)
+            or self._dynamic_overseas_pool
+            or self.config.liquidity_lab.overseas_candidates
+        )
         await notifier.send(
             "\n".join(
                 [
@@ -778,6 +859,7 @@ class LiquidityLabService:
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        await self._ensure_tv_diagnostics()
         await self._maybe_send_overseas_relist_alert(now)
         krx_open = is_krx_regular_session(now)
         us_open = is_us_regular_session(now)
@@ -1175,6 +1257,17 @@ class LiquidityLabService:
         config = self.config.liquidity_lab
         quote_results: list[OverseasScanResult] = []
         excluded: list[ExcludedCandidate] = []
+        self._overseas_scan_cycle_count = getattr(self, "_overseas_scan_cycle_count", 0) + 1
+        if (
+            getattr(self, "_manual_overseas_pool", None) is None
+            and (
+                getattr(self, "_dynamic_overseas_pool", None) is None
+                or self._overseas_scan_cycle_count
+                >= max(1, int(getattr(config, "overseas_rescan_cycles", 20)))
+            )
+        ):
+            self._overseas_scan_cycle_count = 0
+            await self._refresh_overseas_dynamic_pool()
 
         active_overseas_pool = self._active_overseas_pool()
         for candidate in active_overseas_pool:
@@ -1393,7 +1486,7 @@ class LiquidityLabService:
             item.exchange_code.upper() for item in overseas_ranked
         } or {
             candidate.exchange_code.upper()
-            for candidate in self.config.liquidity_lab.overseas_candidates
+            for candidate in self._active_overseas_pool()
         }
         positions_by_key: dict[tuple[str, str], OverseasHeldPosition] = {}
 
@@ -3739,7 +3832,12 @@ class LiquidityLabService:
         estimated_calls = 0
         config = self.config.liquidity_lab
         if krx_open:
-            domestic_candidates = len(config.domestic_candidates)
+            active_domestic_codes = (
+                list(getattr(self, "_dynamic_domestic_codes", None))
+                if getattr(self, "_dynamic_domestic_codes", None)
+                else list(config.domestic_candidates)
+            )
+            domestic_candidates = len(active_domestic_codes)
             refine_n = min(
                 domestic_candidates,
                 max(config.unified_watch_top_n, 3),
@@ -3750,17 +3848,25 @@ class LiquidityLabService:
             if include_domestic_order:
                 estimated_calls += 1
         if us_open:
-            n_candidates = len(config.overseas_candidates)
+            active_overseas_candidates = self._active_overseas_pool()
+            n_candidates = len(active_overseas_candidates)
             top_n = max(config.unified_scan_top_n, 1)
             estimated_calls += n_candidates
             estimated_calls += min(top_n, n_candidates) * 2
             exchange_codes = {
                 candidate.exchange_code.upper()
-                for candidate in config.overseas_candidates
+                for candidate in active_overseas_candidates
             }
             estimated_calls += len(exchange_codes)
         if krx_open and us_open:
-            estimated_calls += min(len(config.domestic_candidates), config.unified_watch_top_n)
+            estimated_calls += min(
+                len(
+                    list(getattr(self, "_dynamic_domestic_codes", None))
+                    if getattr(self, "_dynamic_domestic_codes", None)
+                    else list(config.domestic_candidates)
+                ),
+                config.unified_watch_top_n,
+            )
         if include_overseas_order:
             estimated_calls += 1
         return estimated_calls

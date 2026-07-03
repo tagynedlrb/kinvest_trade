@@ -228,6 +228,14 @@ class LiquidityLabConfig:
     enabled: bool
     domestic_candidates: list[str]
     overseas_candidates: list[OverseasCandidateConfig]
+    tv_scan_enabled: bool
+    tv_top_n: int
+    tv_min_rel_volume: float
+    tv_min_price_usd: float
+    tv_min_volume: int
+    tv_min_market_cap: float
+    tv_max_market_cap: float
+    tv_max_change_pct: float
     loop_interval_sec: int
     use_slot_sizing: bool
     slot_entry_pct: float
@@ -237,6 +245,7 @@ class LiquidityLabConfig:
     unified_watch_top_n: int
     unified_scan_top_n: int
     overseas_scan_top_n: int
+    overseas_rescan_cycles: int
     max_wait_cycles_before_penalty: int
     wait_penalty_decay: float
     domestic_dynamic_scan: bool
@@ -739,6 +748,14 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 )
                 if str(item.get("symbol", "")).strip()
             ],
+            tv_scan_enabled=bool(liquidity_lab_raw.get("tv_scan_enabled", True)),
+            tv_top_n=int(liquidity_lab_raw.get("tv_top_n", 30)),
+            tv_min_rel_volume=float(liquidity_lab_raw.get("tv_min_rel_volume", 2.0)),
+            tv_min_price_usd=float(liquidity_lab_raw.get("tv_min_price_usd", 1.0)),
+            tv_min_volume=int(liquidity_lab_raw.get("tv_min_volume", 500_000)),
+            tv_min_market_cap=float(liquidity_lab_raw.get("tv_min_market_cap", 3e8)),
+            tv_max_market_cap=float(liquidity_lab_raw.get("tv_max_market_cap", 2e12)),
+            tv_max_change_pct=float(liquidity_lab_raw.get("tv_max_change_pct", 20.0)),
             loop_interval_sec=int(liquidity_lab_raw.get("loop_interval_sec", 120)),
             use_slot_sizing=bool(liquidity_lab_raw.get("use_slot_sizing", False)),
             slot_entry_pct=float(liquidity_lab_raw.get("slot_entry_pct", 0.10)),
@@ -752,6 +769,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             unified_watch_top_n=int(liquidity_lab_raw.get("unified_watch_top_n", 15)),
             unified_scan_top_n=int(liquidity_lab_raw.get("unified_scan_top_n", 15)),
             overseas_scan_top_n=int(liquidity_lab_raw.get("overseas_scan_top_n", 69)),
+            overseas_rescan_cycles=int(liquidity_lab_raw.get("overseas_rescan_cycles", 20)),
             max_wait_cycles_before_penalty=int(
                 liquidity_lab_raw.get("max_wait_cycles_before_penalty", 15)
             ),

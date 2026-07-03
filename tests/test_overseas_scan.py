@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import kinvest_trade.liquidity_lab as liquidity_lab_module
 from kinvest_trade.liquidity_lab import LiquidityLabService, OverseasScanResult
 from kinvest_trade.technical_signals import MovingAverageSnapshot
 
@@ -55,8 +56,17 @@ def _build_service() -> LiquidityLabService:
             unified_watch_top_n=15,
             unified_scan_top_n=2,
             overseas_scan_top_n=2,
+            overseas_rescan_cycles=20,
             vol_surge_threshold_strong=5.0,
             vol_surge_threshold_mild=3.0,
+            tv_scan_enabled=True,
+            tv_top_n=30,
+            tv_min_rel_volume=2.0,
+            tv_min_price_usd=1.0,
+            tv_min_volume=500_000,
+            tv_min_market_cap=3e8,
+            tv_max_market_cap=2e12,
+            tv_max_change_pct=20.0,
             overseas_min_price_usd=10.0,
             overseas_min_volume=100,
             overseas_max_spread_pct=0.01,
@@ -75,8 +85,12 @@ def _build_service() -> LiquidityLabService:
     service._vol_history = {}
     service._vol_history_maxlen = 12
     service._dynamic_overseas_pool = None
+    service._manual_overseas_pool = None
+    service._overseas_scan_cycle_count = 0
     service._overseas_relist_schedule = []
     service._last_relist_kst = None
+    service._tv_available = False
+    service._tv_diagnostic_ran = True
     return service
 
 
@@ -351,3 +365,66 @@ def test_scan_overseas_wait_penalty_reorders_long_wait_symbol() -> None:
     symbols = [item.symbol for item in ranked]
     assert symbols[0] == "BBB"
     assert symbols.index("AAA") > symbols.index("BBB")
+
+
+def test_scan_overseas_refreshes_dynamic_pool_from_tv() -> None:
+    service = _build_service()
+    service._tv_available = True
+    service._dynamic_overseas_pool = None
+    service.client._client = object()
+
+    async def fake_scan_top_volume_surge(**kwargs):
+        return [
+            {"symbol": "TSLA", "exchange_code": "NASD"},
+            {"symbol": "PLTR", "exchange_code": "NASD"},
+        ]
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, 10.0 if candidate.symbol == "TSLA" else 9.0)
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    original = liquidity_lab_module.scan_top_volume_surge
+    liquidity_lab_module.scan_top_volume_surge = fake_scan_top_volume_surge
+    try:
+        service._scan_single_overseas = fake_scan
+        service._load_overseas_signal = fake_load_signal
+        ranked, _ = asyncio.run(service.scan_overseas())
+    finally:
+        liquidity_lab_module.scan_top_volume_surge = original
+
+    assert [item.symbol for item in ranked] == ["TSLA", "PLTR"]
+    assert service._dynamic_overseas_pool == [
+        {"symbol": "TSLA", "exchange_code": "NASD"},
+        {"symbol": "PLTR", "exchange_code": "NASD"},
+    ]
+
+
+def test_scan_overseas_falls_back_when_tv_returns_empty() -> None:
+    service = _build_service()
+    service._tv_available = True
+    service._dynamic_overseas_pool = None
+    service.client._client = object()
+
+    async def fake_scan_top_volume_surge(**kwargs):
+        return []
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, 10.0)
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    original = liquidity_lab_module.scan_top_volume_surge
+    liquidity_lab_module.scan_top_volume_surge = fake_scan_top_volume_surge
+    try:
+        service._scan_single_overseas = fake_scan
+        service._load_overseas_signal = fake_load_signal
+        ranked, _ = asyncio.run(service.scan_overseas())
+    finally:
+        liquidity_lab_module.scan_top_volume_surge = original
+
+    assert service._tv_available is False
+    assert len(service._dynamic_overseas_pool or []) == len(service.config.liquidity_lab.overseas_candidates)
+    assert len(ranked) == len(service.config.liquidity_lab.overseas_candidates)

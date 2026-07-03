@@ -892,7 +892,12 @@ def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> Non
 
 def test_handle_relist_updates_manual_pool() -> None:
     controller = _build_async_controller()
-    controller.lab_service = SimpleNamespace(_dynamic_overseas_pool=None, _signal_cache={"OLD": object()})
+    controller.lab_service = SimpleNamespace(
+        _dynamic_overseas_pool=None,
+        _manual_overseas_pool=None,
+        _awaiting_relist=True,
+        _signal_cache={"OLD": object()},
+    )
 
     asyncio.run(controller._handle_relist("NVDA TSLA"))
 
@@ -901,7 +906,20 @@ def test_handle_relist_updates_manual_pool() -> None:
         {"symbol": "TSLA", "exchange_code": "NASD"},
     ]
     assert controller.lab_service._dynamic_overseas_pool == controller.manual_overseas_pool
+    assert controller.lab_service._awaiting_relist is False
     assert controller.lab_service._signal_cache == {}
+
+
+def test_handle_relist_parses_exchange_suffix() -> None:
+    controller = _build_async_controller()
+
+    asyncio.run(controller._handle_relist("NVDA GM:NYSE BA:NYSE"))
+
+    assert controller.manual_overseas_pool == [
+        {"symbol": "NVDA", "exchange_code": "NASD"},
+        {"symbol": "GM", "exchange_code": "NYSE"},
+        {"symbol": "BA", "exchange_code": "NYSE"},
+    ]
 
 
 def test_send_relist_schedule_reports_configured_times() -> None:

@@ -54,7 +54,7 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.auto_trade.daily_fast_window < config.auto_trade.daily_slow_window
     assert config.auto_trade.intraday_fast_window < config.auto_trade.intraday_slow_window
     assert len(config.liquidity_lab.domestic_candidates) >= 1
-    assert len(config.liquidity_lab.overseas_candidates) >= 1
+    assert len(config.liquidity_lab.overseas_candidates) == 0
     assert config.notifications.telegram_command_poll_timeout_sec > 0
     assert config.liquidity_lab.loop_interval_sec > 0
 

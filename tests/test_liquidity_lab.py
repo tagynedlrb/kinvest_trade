@@ -1170,8 +1170,8 @@ def _build_run_service() -> LiquidityLabService:
             overseas_max_position_qty=3,
             overseas_take_profit_pct=0.012,
             overseas_stop_loss_pct=0.008,
-            max_concurrent_overseas_orders=3,
-            max_concurrent_domestic_orders=2,
+            max_concurrent_overseas_orders=20,
+            max_concurrent_domestic_orders=5,
             use_slot_sizing=False,
             slot_entry_pct=0.10,
             slot_max_pct=0.20,
@@ -1198,6 +1198,7 @@ def _build_run_service() -> LiquidityLabService:
     service._overseas_scan_cycle_count = 0
     service._overseas_relist_schedule = []
     service._last_relist_kst = None
+    service._awaiting_relist = False
     service._tv_available = False
     service._tv_diagnostic_ran = True
     service._last_holiday_notice_key = None

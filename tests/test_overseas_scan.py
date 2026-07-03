@@ -84,11 +84,12 @@ def _build_service() -> LiquidityLabService:
     service._wait_cycles = {}
     service._vol_history = {}
     service._vol_history_maxlen = 12
-    service._dynamic_overseas_pool = None
+    service._dynamic_overseas_pool = list(candidates)
     service._manual_overseas_pool = None
     service._overseas_scan_cycle_count = 0
     service._overseas_relist_schedule = []
     service._last_relist_kst = None
+    service._awaiting_relist = False
     service._tv_available = False
     service._tv_diagnostic_ran = True
     return service
@@ -323,7 +324,7 @@ def test_non_signal_symbol_not_in_watch_targets() -> None:
 
 def test_estimate_api_calls_overseas_reflects_new_structure() -> None:
     service = _build_service()
-    service.config.liquidity_lab.overseas_candidates = [
+    service._dynamic_overseas_pool = [
         DummyCandidate(f"S{i:02d}", "NASD" if i < 35 else "NYSE")
         for i in range(69)
     ]
@@ -401,7 +402,7 @@ def test_scan_overseas_refreshes_dynamic_pool_from_tv() -> None:
     ]
 
 
-def test_scan_overseas_falls_back_when_tv_returns_empty() -> None:
+def test_scan_overseas_sets_empty_pool_when_tv_returns_empty() -> None:
     service = _build_service()
     service._tv_available = True
     service._dynamic_overseas_pool = None
@@ -426,5 +427,6 @@ def test_scan_overseas_falls_back_when_tv_returns_empty() -> None:
         liquidity_lab_module.scan_top_volume_surge = original
 
     assert service._tv_available is False
-    assert len(service._dynamic_overseas_pool or []) == len(service.config.liquidity_lab.overseas_candidates)
-    assert len(ranked) == len(service.config.liquidity_lab.overseas_candidates)
+    assert service._dynamic_overseas_pool == []
+    assert service._awaiting_relist is True
+    assert ranked == []

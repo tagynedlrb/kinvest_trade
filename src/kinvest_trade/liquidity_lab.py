@@ -46,6 +46,7 @@ from .time_utils import ensure_timezone, format_kst, format_kst_korean
 from .tv_scanner import check_connectivity, scan_top_volume_surge
 
 _logger = logging.getLogger(__name__)
+_DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 
 
 @dataclass(slots=True)
@@ -551,6 +552,7 @@ class LiquidityLabService:
         self._dynamic_domestic_codes: list[str] | None = None
         self._domestic_scan_cycle_count: int = 0
         self._dynamic_overseas_pool: list[dict[str, str]] | None = None
+        self._awaiting_relist: bool = False
         self._manual_overseas_pool: list[dict[str, str]] | None = None
         self._overseas_scan_cycle_count: int = 0
         self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
@@ -659,17 +661,76 @@ class LiquidityLabService:
             )
         return OverseasCandidateConfig(symbol="", exchange_code="NASD")
 
-    def _active_overseas_pool(self) -> list[OverseasCandidateConfig]:
-        raw_pool = (
+    def _active_overseas_pool(
+        self,
+        held_positions: list | None = None,
+    ) -> list[OverseasCandidateConfig]:
+        raw_pool: list = (
             getattr(self, "_manual_overseas_pool", None)
             or getattr(self, "_dynamic_overseas_pool", None)
-            or self.config.liquidity_lab.overseas_candidates
+            or []
         )
-        return [
+        candidates = [
             candidate
             for candidate in (self._coerce_overseas_candidate(item) for item in raw_pool)
             if candidate.symbol.strip()
         ]
+        if held_positions:
+            existing_symbols = {candidate.symbol.upper() for candidate in candidates}
+            for position in held_positions:
+                symbol = ""
+                exchange_code = "NASD"
+                if hasattr(position, "symbol"):
+                    symbol = str(getattr(position, "symbol", "")).strip().upper()
+                    exchange_code = str(getattr(position, "exchange_code", "NASD") or "NASD").strip().upper()
+                else:
+                    symbol = str(position).strip().upper()
+                if symbol and symbol not in existing_symbols:
+                    candidates.append(
+                        self._coerce_overseas_candidate(
+                            {
+                                "symbol": symbol,
+                                "exchange_code": exchange_code,
+                            }
+                        )
+                    )
+                    existing_symbols.add(symbol)
+        return [candidate for candidate in candidates if candidate.symbol.strip()]
+
+    def _known_overseas_exchange_codes(
+        self,
+        held_positions: list[OverseasHeldPosition] | None = None,
+    ) -> set[str]:
+        exchange_codes = {
+            candidate.exchange_code.upper()
+            for candidate in self._active_overseas_pool(held_positions=held_positions or [])
+            if candidate.exchange_code.strip()
+        }
+        if held_positions:
+            for position in held_positions:
+                exchange_code = str(getattr(position, "exchange_code", "") or "").strip().upper()
+                if exchange_code:
+                    exchange_codes.add(exchange_code)
+        if not exchange_codes:
+            exchange_codes = set(_DEFAULT_OVERSEAS_EXCHANGE_CODES)
+        return exchange_codes
+
+    @staticmethod
+    def _scan_result_from_overseas_position(position: OverseasHeldPosition) -> OverseasScanResult:
+        current_price = float(position.current_price or position.avg_price or 0.0)
+        return OverseasScanResult(
+            symbol=position.symbol.upper(),
+            exchange_code=(position.exchange_code or "NASD").upper(),
+            last_price=current_price,
+            bid=current_price,
+            ask=current_price,
+            spread_pct=0.0,
+            change_rate_pct=0.0,
+            volume=0,
+            orderable_qty=max(position.orderable_qty, position.quantity),
+            fx_rate_krw=0.0,
+            activity_score=0.0,
+        )
 
     async def _ensure_tv_diagnostics(self) -> None:
         if getattr(self, "_tv_diagnostic_ran", False):
@@ -701,6 +762,7 @@ class LiquidityLabService:
         manual_pool = getattr(self, "_manual_overseas_pool", None)
         if manual_pool:
             self._dynamic_overseas_pool = list(manual_pool)
+            self._awaiting_relist = False
             _logger.info("overseas_manual_pool_override count=%s", len(manual_pool))
             return
 
@@ -720,6 +782,7 @@ class LiquidityLabService:
                 )
                 if tv_rows:
                     self._dynamic_overseas_pool = list(tv_rows)
+                    self._awaiting_relist = False
                     preview = ", ".join(row["symbol"] for row in tv_rows[:5])
                     _logger.info(
                         "[TV] 해외 동적 풀 갱신: %s개 -> [%s]",
@@ -730,14 +793,21 @@ class LiquidityLabService:
             _logger.warning("[TV] scan_result_empty -> fallback")
             self._tv_available = False
 
-        self._dynamic_overseas_pool = [
-            {"symbol": candidate.symbol, "exchange_code": candidate.exchange_code}
-            for candidate in self.config.liquidity_lab.overseas_candidates
-        ]
-        _logger.info(
-            "[풀] Fallback 적용: overseas_candidates %s개",
-            len(self._dynamic_overseas_pool),
-        )
+        self._dynamic_overseas_pool = []
+        if not getattr(self, "_awaiting_relist", False):
+            self._awaiting_relist = True
+            _logger.warning("[풀] 해외 동적 풀 없음 — relist 요청")
+            notifier = getattr(self, "notifier", None)
+            if notifier is not None and getattr(notifier, "enabled", True):
+                try:
+                    await notifier.send(
+                        "⚠️ 해외 종목 풀이 비어 있습니다.\n"
+                        "TV Scanner 접근 불가 + 수동 목록 없음.\n\n"
+                        "아래 명령으로 직접 지정해주세요:\n"
+                        "/lab_relist NVDA TSLA AMD PLTR COIN"
+                    )
+                except Exception:  # noqa: BLE001
+                    _logger.debug("relist_notify_failed", exc_info=True)
 
     async def _apply_holiday_overrides(self, now_utc: datetime) -> tuple[bool, bool]:
         nyse_holiday = bool(getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday())
@@ -877,7 +947,7 @@ class LiquidityLabService:
         pool = (
             getattr(self, "_manual_overseas_pool", None)
             or self._dynamic_overseas_pool
-            or self.config.liquidity_lab.overseas_candidates
+            or []
         )
         await notifier.send(
             "\n".join(
@@ -989,12 +1059,18 @@ class LiquidityLabService:
             max_concurrent=getattr(config_ll, "max_concurrent_domestic_orders", 2),
         )
         domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
-        overseas_buy_targets = self._select_overseas_buy_targets(
-            overseas_ranked,
-            overseas_watch_targets,
-            max_concurrent=getattr(config_ll, "max_concurrent_overseas_orders", 3),
-        )
-        overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
+        _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
+        _real_os = sum(1 for position in overseas_positions if not position.is_virtual)
+        if _real_os >= _max_os:
+            overseas_buy_targets = []
+            overseas_buy_target = None
+        else:
+            overseas_buy_targets = self._select_overseas_buy_targets(
+                overseas_ranked,
+                overseas_watch_targets,
+                max_concurrent=max(1, _max_os - _real_os),
+            )
+            overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
         paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
         domestic_order: dict = {"skipped": True, "reason": "no_action"}
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
@@ -1386,10 +1462,7 @@ class LiquidityLabService:
         existing positions.
         """
         try:
-            exchange_codes = {
-                candidate.exchange_code.upper()
-                for candidate in self._active_overseas_pool()
-            }
+            exchange_codes = self._known_overseas_exchange_codes()
             held: set[str] = set(self._get_virtual_held_symbols())
             for exchange_code in sorted(exchange_codes):
                 balance = await self.client.get_overseas_balance(
@@ -1517,12 +1590,10 @@ class LiquidityLabService:
         held_symbols_cache: set[str] | None = None,
     ) -> list[OverseasHeldPosition]:
         quote_map = {item.symbol.upper(): item for item in overseas_ranked}
-        exchange_codes = {
-            item.exchange_code.upper() for item in overseas_ranked
-        } or {
-            candidate.exchange_code.upper()
-            for candidate in self._active_overseas_pool()
-        }
+        exchange_codes = (
+            {item.exchange_code.upper() for item in overseas_ranked if item.exchange_code.strip()}
+            or self._known_overseas_exchange_codes()
+        )
         positions_by_key: dict[tuple[str, str], OverseasHeldPosition] = {}
 
         for exchange_code in sorted(exchange_codes):
@@ -1682,10 +1753,15 @@ class LiquidityLabService:
 
         for symbol in symbols_to_check:
             quote = quote_map.get(symbol)
-            if quote is None:
-                continue
-
             real = real_by_symbol.get(symbol)
+            if quote is None:
+                fallback_position = real or next(
+                    (position for position in held_positions if position.symbol.upper() == symbol),
+                    None,
+                )
+                if fallback_position is None:
+                    continue
+                quote = self._scan_result_from_overseas_position(fallback_position)
             real_qty = 0 if real is None else real.quantity
             unified = (
                 tracker.get_unified(
@@ -1947,6 +2023,21 @@ class LiquidityLabService:
                         overseas=candidate,
                     )
                 )
+            ranked_symbols = {candidate.symbol.upper() for candidate in overseas_ranked}
+            for position in overseas_positions:
+                symbol = position.symbol.upper()
+                if symbol in ranked_symbols:
+                    continue
+                unified.append(
+                    UnifiedScanResult(
+                        market="overseas",
+                        code=symbol,
+                        exchange_code=position.exchange_code,
+                        activity_score=0.0,
+                        overseas=self._scan_result_from_overseas_position(position),
+                    )
+                )
+                ranked_symbols.add(symbol)
 
         unified.sort(key=lambda item: item.activity_score, reverse=True)
 

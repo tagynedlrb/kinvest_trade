@@ -555,3 +555,25 @@
 - `git_uploader.py` 신규: GitHub API 로그 업로드
 - `telegram_control.py`: `/lab_gitlog` 명령 추가
 - `fixed_config.json`: GitHub/휴장 스킵 키 추가
+
+## [2026-07-06] 지시문 #43 — 동시 관리 상향 / 동적 풀 하드코딩 제거 / 고정 감시
+
+### 변경 근거
+- `max_concurrent_overseas_orders=3`: 기술적 근거 없는 임의값. 실제 매수는 `[0]`번만 사용하므로 `unified_watch_top_n(20)` 수준으로 상향.
+- `overseas_candidates` 74개 하드코딩: TV scan 실패 시 저변동성 종목 fallback으로 단타 전략과 미스매치. 완전 제거.
+- 보유종목이 활성 풀 밖이면 watchlist에서 누락되는 갭 발견 -> 강제 포함.
+
+### 변경 사항
+- `fixed_config.json`
+  - `max_concurrent_overseas_orders: 3 -> 20`
+  - `max_concurrent_domestic_orders: 2 -> 5`
+  - `overseas_candidates: []`
+- `liquidity_lab.py`
+  - 실보유 수 체크 후 남은 슬롯만큼만 해외 신규 후보 선택
+  - TV 실패 시 fallback 제거 -> 빈 풀 알림 1회 발송
+  - `_active_overseas_pool()`은 manual/dynamic만 사용하고, 보유 종목은 강제 포함
+  - 보유 종목은 활성 풀 밖이어도 watchlist와 exit 경로에 계속 포함
+  - `_awaiting_relist` 상태로 중복 알림 방지
+- `telegram_control.py`
+  - `_handle_relist()`에서 `overseas_candidates` 참조 제거
+  - `SYMBOL:EXCHANGE` 형식 파싱 지원 (`GM:NYSE` 등)

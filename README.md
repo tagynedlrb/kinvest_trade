@@ -198,13 +198,13 @@ DRY_RUN=false python3 main.py overseas-order-test sell <종목코드> --exchange
 
 | | `auto-run` | `liquidity-lab` |
 |---|---|---|
-| 감시 대상 | `auto_trade.symbol`에 지정한 **고정 1종목** | `domestic_candidates`/`overseas_candidates` 중 **매 사이클 자동 선정** |
+| 감시 대상 | `auto_trade.symbol`에 지정한 **고정 1종목** | 국내는 `domestic_candidates`, 해외는 `TV scan` 또는 `/lab_relist` 목록에서 **매 사이클 자동 선정** |
 | 적합한 상황 | 이미 매매하고 싶은 종목이 정해져 있을 때 | 그날 가장 활발한 종목을 자동으로 찾고 싶을 때 |
 | 실행 | `python3 main.py` 또는 `python3 main.py auto-run` | `python3 main.py liquidity-lab` |
 | 국내/해외 | `exchange_code` 설정에 따라 한 시장만 | 국내·해외 동시 운용 |
-| 종목 변경 방법 | `config/fixed_config.json`의 `auto_trade.symbol` 수정 | 종목 변경 불필요(자동 선정) — 후보 풀만 `liquidity_lab.*_candidates`에서 조정 |
+| 종목 변경 방법 | `config/fixed_config.json`의 `auto_trade.symbol` 수정 | 국내는 `liquidity_lab.domestic_candidates`, 해외는 TV 스캔 또는 `/lab_relist`로 조정 |
 
-같은 종목을 두 모드 모두의 후보로 넣고 싶다면, `auto_trade.symbol`에 지정하면서 동시에 `overseas_candidates` 또는 `domestic_candidates` 목록에도 포함시키면 된다. `auto-run`은 그 종목을 무조건 보고, `liquidity-lab`은 그 종목을 포함한 전체 풀에서 활발한 것만 고른다. 서로 충돌하지 않는다.
+같은 종목을 두 모드 모두에서 보고 싶다면, `auto_trade.symbol`에 지정한 뒤 국내는 `domestic_candidates`에 넣고, 해외는 `/lab_relist`로 수동 고정하거나 TV 스캔으로 자동 선별되게 두면 된다. `auto-run`은 그 종목을 무조건 보고, `liquidity-lab`은 그날 활성 풀 안에서 더 활발한 종목을 우선 본다.
 
 ## 기본 자동 실행 (auto-run)
 아무 옵션 없이 아래처럼 실행하면 된다.
@@ -268,7 +268,7 @@ python3 main.py liquidity-lab
 - 국내 기본 제외 기준은 `3,000원 미만`, `당일 거래대금 500억 원 미만`, `최근 체결량 합계 10만 미만`, `스프레드 0.3% 초과`다.
 - 해외 기본 제외 기준은 `5달러 미만`, `거래량 50만 미만`, `스프레드 0.3% 초과`, `가격×거래량 근사 거래대금 부족`이다.
 - 현재 장이 열린 시장에서 `activity_score`가 높은 후보군을 먼저 뽑고, 그 안에서 `signal_score`가 가장 강한 종목을 우선 주문 대상으로 선택한다.
-- 해외 후보군은 고정 1종목만 보는 대신, 현재는 `74개` 전체 후보를 `25초`마다 전부 quote 스캔한다.
+- 해외 후보군은 고정 목록 fallback 대신 TradingView Scanner 기반 동적 풀을 우선 사용한다.
 - chart 기반 signal 계산은 `overseas_scan_top_n` 기준으로 우선 로드하며, 기본값은 `12`라 상위 12개와 보유 종목에만 signal 캐시를 붙인다.
 - 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
@@ -277,13 +277,13 @@ python3 main.py liquidity-lab
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
 - 국내장이 열려 있으면 매 사이클마다 보유 포지션 청산 신호를 먼저 확인하고, 없으면 진입 조건을 충족한 종목의 신규 매수를 진행한다.
-- 미국장이 열려 있으면 진입 조건을 충족한 해외 종목에 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_overseas_orders`(기본 3)개까지 가능하다.
-- 국내장이 열려 있으면 진입 조건을 충족한 국내 종목에도 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_domestic_orders`(기본 2)개까지 가능하다.
+- 미국장이 열려 있으면 진입 조건을 충족한 해외 종목에 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_overseas_orders`(기본 20)개까지 가능하다.
+- 국내장이 열려 있으면 진입 조건을 충족한 국내 종목에도 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_domestic_orders`(기본 5)개까지 가능하다.
 - 자동 사이클에서는 더 이상 국내 `paper-run` 25초 검증을 끼워 넣지 않는다. 수동 검증이 필요하면 텔레그램 `/lab_paper_test <종목코드>`를 사용한다.
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
 - 국내: `005930`, `000660`, `035420`, `419050`, `023410`, `010170`, `034940`
-- 해외: `NVDA`, `AMD`, `INTC`, `MU`, `AVGO`, `ARM`, `SMCI`, `QCOM`, `TXN`, `AAPL`, `MSFT`, `AMZN`, `META`, `GOOGL`, `TSLA`, `NFLX`, `ORCL`, `CRM`, `ADBE`, `PLTR`, `COIN`, `MSTR`, `PYPL`, `HOOD`, `SOFI`, `AFRM`, `SNAP`, `RBLX`, `DKNG`, `UBER`, `LYFT`, `SPOT`, `ROKU`, `SHOP`, `MELI`, `AAL`, `SQQQ`, `TQQQ`, `SOXL`, `SOXS`, `UVXY`, `JPM`, `BAC`, `C`, `WFC`, `GS`, `XOM`, `CVX`, `NEE`, `F`, `GM`, `GE`, `BA`, `CAT`, `DE`, `UPS`, `FDX`, `NKE`, `DIS`, `WMT`, `HD`, `T`, `VZ`, `PFE`, `JNJ`, `LLY`, `MRNA`, `ABBV`, `UNH`, `V`, `MA`, `KO`, `PEP`, `SQ`
+- 해외: 기본 고정 후보는 비워 두고, TradingView Scanner 결과 또는 `/lab_relist` 수동 목록을 사용한다.
 
 운영 메모:
 - `liquidity-lab` 테스트에서 작은 호가 차익만으로는 국내 mock 왕복 주문 순손익이 음수가 될 수 있었다.
@@ -348,7 +348,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
 - `/lab_status`에는 현재 장 상태, 다음 루프 간격, 연속 오류 횟수가 함께 표시된다.
 - 장 상태가 `krx_open`, `us_regular`, `both_closed` 등으로 바뀌면 텔레그램에 자동 알림을 보낸다.
-- 현재 기본 해외 감시는 `overseas_candidates=74`, `overseas_scan_top_n=12`, `loop_interval_sec=25` 기준이다. 매 사이클 전체 후보를 quote 스캔하고, signal은 상위 12개와 보유 종목에만 계산한다.
+- 현재 기본 해외 감시는 `TV scan -> dynamic pool`, `overseas_scan_top_n=12`, `loop_interval_sec=25` 기준이다. TV 스캔 실패 시에는 자동 fallback 대신 relist 요청 알림을 보내고, 보유 종목은 풀 상태와 무관하게 계속 감시한다.
 - 자동매매 SELL 알림은 `종목 / 매수·매도 / 가격 / 수량 / RSI·거래량 / 손익 / 보유시간` 위주로 짧게 보낸다.
 - 재시작 후 평균매입가 복구가 실패하면 `매입가=알수없음`, `수익률=알수없음`으로 명확히 표기한다.
 - `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.

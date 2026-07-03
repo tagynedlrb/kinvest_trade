@@ -435,21 +435,28 @@ class TelegramLiquidityLabController:
             )
             return
 
-        configured = {
-            item.symbol.upper(): item.exchange_code
-            for item in self.config.liquidity_lab.overseas_candidates
-        }
-        pool = [
-            {
-                "symbol": symbol,
-                "exchange_code": configured.get(symbol, "NASD"),
-            }
-            for symbol in symbols
-        ]
+        pool: list[dict[str, str]] = []
+        for token in symbols:
+            if ":" in token:
+                symbol, exchange_code = token.split(":", 1)
+                pool.append(
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "exchange_code": exchange_code.strip().upper(),
+                    }
+                )
+            else:
+                pool.append(
+                    {
+                        "symbol": token.upper(),
+                        "exchange_code": "NASD",
+                    }
+                )
         self.manual_overseas_pool = pool
         if self.lab_service is not None:
             self.lab_service._manual_overseas_pool = list(pool)
             self.lab_service._dynamic_overseas_pool = list(pool)
+            self.lab_service._awaiting_relist = False
             self.lab_service._overseas_scan_cycle_count = 0
             self.lab_service._signal_cache.clear()
         await self.notifier.send(
@@ -457,6 +464,8 @@ class TelegramLiquidityLabController:
                 [
                     f"🔄 [해외 relist 완료] {len(pool)}종목",
                     f"목록={', '.join(item['symbol'] for item in pool)}",
+                    "※ NYSE 종목은 SYMBOL:NYSE 형식으로 지정 가능",
+                    "예: /lab_relist NVDA TSLA GM:NYSE BA:NYSE",
                 ]
             )
         )
@@ -470,7 +479,12 @@ class TelegramLiquidityLabController:
         current_pool = (
             self.manual_overseas_pool
             if self.manual_overseas_pool is not None
-            else self.config.liquidity_lab.overseas_candidates
+            else (
+                getattr(self.lab_service, "_dynamic_overseas_pool", None)
+                if self.lab_service is not None
+                else None
+            )
+            or []
         )
         await self.notifier.send(
             "\n".join(

@@ -754,7 +754,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 )
                 for item in liquidity_lab_raw.get(
                     "overseas_candidates",
-                    [{"symbol": "NVDA", "exchange_code": "NASD"}],
+                    [],
                 )
                 if str(item.get("symbol", "")).strip()
             ],
@@ -807,10 +807,10 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             domestic_test_order_qty=int(liquidity_lab_raw.get("domestic_test_order_qty", 1)),
             overseas_test_order_qty=int(liquidity_lab_raw.get("overseas_test_order_qty", 1)),
             max_concurrent_overseas_orders=int(
-                liquidity_lab_raw.get("max_concurrent_overseas_orders", 3)
+                liquidity_lab_raw.get("max_concurrent_overseas_orders", 20)
             ),
             max_concurrent_domestic_orders=int(
-                liquidity_lab_raw.get("max_concurrent_domestic_orders", 2)
+                liquidity_lab_raw.get("max_concurrent_domestic_orders", 5)
             ),
             domestic_min_price_krw=int(liquidity_lab_raw.get("domestic_min_price_krw", 3000)),
             domestic_min_intraday_turnover_krw=int(

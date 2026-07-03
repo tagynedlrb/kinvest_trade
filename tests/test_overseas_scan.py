@@ -55,6 +55,8 @@ def _build_service() -> LiquidityLabService:
             unified_watch_top_n=15,
             unified_scan_top_n=2,
             overseas_scan_top_n=2,
+            vol_surge_threshold_strong=5.0,
+            vol_surge_threshold_mild=3.0,
             overseas_min_price_usd=10.0,
             overseas_min_volume=100,
             overseas_max_spread_pct=0.01,
@@ -70,6 +72,11 @@ def _build_service() -> LiquidityLabService:
     service._last_held_symbols = set()
     service._signal_cache = {}
     service._wait_cycles = {}
+    service._vol_history = {}
+    service._vol_history_maxlen = 12
+    service._dynamic_overseas_pool = None
+    service._overseas_relist_schedule = []
+    service._last_relist_kst = None
     return service
 
 

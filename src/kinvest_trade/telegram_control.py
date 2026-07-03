@@ -39,6 +39,8 @@ HELP_MESSAGE = "\n".join(
         "/lab_log - 최근 매매 내역 조회",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
+        "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
+        "/lab_relist_schedule - 해외 relist 알림 시간 확인",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
     ]
@@ -56,6 +58,8 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
+    {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
+    {"command": "lab_relist_schedule", "description": "해외 relist 알림 시간"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
 ]
@@ -158,6 +162,7 @@ class TelegramLiquidityLabController:
         self._last_market_state: str = ""
         self.active_session_id: str = ""
         self.lab_service: LiquidityLabService | None = None
+        self.manual_overseas_pool: list[dict[str, str]] | None = None
 
     async def run(self) -> None:
         if not self.notifier.enabled:
@@ -265,6 +270,13 @@ class TelegramLiquidityLabController:
             return
         if command_name == "reset_virtual_confirm":
             await self._execute_reset_virtual()
+            return
+        if command_name == "relist":
+            symbols_text = parsed_command[1] if isinstance(parsed_command, tuple) else None
+            await self._handle_relist(symbols_text)
+            return
+        if command_name == "relist_schedule":
+            await self._send_relist_schedule()
             return
         if command_name == "start":
             await self._handle_start_like_command("running", "started")
@@ -406,6 +418,61 @@ class TelegramLiquidityLabController:
         except Exception as exc:  # noqa: BLE001
             await self.notifier.send(f"❌ [가상거래 초기화 실패]\n오류={exc}")
 
+    async def _handle_relist(self, symbols_text: str | None) -> None:
+        raw_text = str(symbols_text or "").replace(",", " ")
+        symbols = [token.strip().upper() for token in raw_text.split() if token.strip()]
+        if not symbols:
+            await self.notifier.send(
+                "사용법: /lab_relist PLTR NVDA AMD TSLA"
+            )
+            return
+
+        configured = {
+            item.symbol.upper(): item.exchange_code
+            for item in self.config.liquidity_lab.overseas_candidates
+        }
+        pool = [
+            {
+                "symbol": symbol,
+                "exchange_code": configured.get(symbol, "NASD"),
+            }
+            for symbol in symbols
+        ]
+        self.manual_overseas_pool = pool
+        if self.lab_service is not None:
+            self.lab_service._dynamic_overseas_pool = list(pool)
+            self.lab_service._signal_cache.clear()
+        await self.notifier.send(
+            "\n".join(
+                [
+                    f"🔄 [해외 relist 완료] {len(pool)}종목",
+                    f"목록={', '.join(item['symbol'] for item in pool)}",
+                ]
+            )
+        )
+
+    async def _send_relist_schedule(self) -> None:
+        schedule_text = getattr(
+            self.config.liquidity_lab,
+            "overseas_relist_schedule_kst",
+            "22:35,01:00,03:30",
+        )
+        current_pool = (
+            self.manual_overseas_pool
+            if self.manual_overseas_pool is not None
+            else self.config.liquidity_lab.overseas_candidates
+        )
+        await self.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][RELIST_SCHEDULE]",
+                    f"시간(KST)={schedule_text}",
+                    f"현재풀={len(current_pool)}종목",
+                    "수동교체=/lab_relist PLTR NVDA AMD ...",
+                ]
+            )
+        )
+
     async def _restart_service_soon(self) -> None:
         await asyncio.sleep(0.5)
         subprocess.Popen(
@@ -483,7 +550,17 @@ class TelegramLiquidityLabController:
         """
         try:
             async with KisRestClient(self.config.credentials) as client:
-                service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+                service = self.lab_service
+                if service is None:
+                    service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+                    self.lab_service = service
+                else:
+                    service.config = self.config
+                    service.client = client
+                    service.repository = self.repository
+                    service.notifier = self.notifier
+                if self.manual_overseas_pool is not None:
+                    service._dynamic_overseas_pool = list(self.manual_overseas_pool)
                 self.lab_service = service
                 if self.active_session_id:
                     service._session_id = self.active_session_id
@@ -1198,6 +1275,11 @@ class TelegramLiquidityLabController:
         if stripped.lower().startswith("/lab_paper_test"):
             parts = stripped.split(maxsplit=1)
             return ("paper_test", parts[1].strip() if len(parts) > 1 else None)
+        if stripped.lower().startswith("/lab_relist_schedule"):
+            return "relist_schedule"
+        if stripped.lower().startswith("/lab_relist"):
+            parts = stripped.split(maxsplit=1)
+            return ("relist", parts[1].strip() if len(parts) > 1 else None)
 
         normalized = stripped.split()[0].lower()
         mapping = {
@@ -1213,6 +1295,7 @@ class TelegramLiquidityLabController:
             "/lab_portfolio": "portfolio",
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",
+            "/lab_relist_schedule": "relist_schedule",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",

@@ -54,6 +54,8 @@ class KisRestClient:
     DOMESTIC_ASKING_PATH = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
     DOMESTIC_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
     DOMESTIC_TIME_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+    DOMESTIC_RANKING_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
+    DOMESTIC_FLUCTUATION_PATH = "/uapi/domestic-stock/v1/quotations/fluctuation-rank"
     DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     DOMESTIC_POSSIBLE_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
     DOMESTIC_ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -417,6 +419,96 @@ class KisRestClient:
             },
         )
         return payload.get("output2", []) or []
+
+    async def get_domestic_volume_rank(
+        self,
+        market_code: str = "J",
+        top_n: int = 30,
+        min_price_krw: int = 5000,
+        min_volume: int = 100_000,
+    ) -> list[dict]:
+        """국내 거래량 순위 (FHPST01710000). 1~5분 집계 지연이 있을 수 있다."""
+        payload = await self._request(
+            "GET",
+            self.DOMESTIC_RANKING_PATH,
+            "FHPST01710000",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market_code,
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "0",
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "000000",
+                "FID_INPUT_PRICE_1": str(min_price_krw),
+                "FID_INPUT_PRICE_2": "0",
+                "FID_VOL_CNT": str(min_volume),
+                "FID_INPUT_DATE_1": "",
+            },
+        )
+        output = payload.get("output", []) or []
+        results: list[dict] = []
+        for row in output[:top_n]:
+            code = str(
+                row.get("mksc_shrn_iscd") or row.get("stck_shrn_iscd") or ""
+            ).strip()
+            if not code:
+                continue
+            results.append(
+                {
+                    "stock_code": code,
+                    "name": str(row.get("hts_kor_isnm", "")),
+                    "price": parse_kis_number(row.get("stck_prpr")),
+                    "change_rate": parse_kis_number(row.get("prdy_ctrt")),
+                    "volume": parse_kis_number(row.get("acml_vol")),
+                    "turnover_krw": parse_kis_number(row.get("acml_tr_pbmn")),
+                }
+            )
+        return results
+
+    async def get_domestic_fluctuation_rank(
+        self,
+        market_code: str = "J",
+        top_n: int = 15,
+        min_price_krw: int = 5000,
+        min_volume: int = 100_000,
+        ascending: bool = False,
+    ) -> list[dict]:
+        """국내 등락률 순위 (FHPST01720000). ascending=False 이면 상승률 순."""
+        payload = await self._request(
+            "GET",
+            self.DOMESTIC_FLUCTUATION_PATH,
+            "FHPST01720000",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market_code,
+                "FID_COND_SCR_DIV_CODE": "20172",
+                "FID_INPUT_ISCD": "0000",
+                "FID_RANK_SORT_CLS_CODE": "1" if ascending else "0",
+                "FID_INPUT_PRICE_1": str(min_price_krw),
+                "FID_INPUT_PRICE_2": "0",
+                "FID_VOL_CNT": str(min_volume),
+                "FID_INPUT_DATE_1": "",
+            },
+        )
+        output = payload.get("output", []) or []
+        results: list[dict] = []
+        for row in output[:top_n]:
+            code = str(
+                row.get("mksc_shrn_iscd") or row.get("stck_shrn_iscd") or ""
+            ).strip()
+            if not code:
+                continue
+            results.append(
+                {
+                    "stock_code": code,
+                    "name": str(row.get("hts_kor_isnm", "")),
+                    "price": parse_kis_number(row.get("stck_prpr")),
+                    "change_rate": parse_kis_number(row.get("prdy_ctrt")),
+                    "volume": parse_kis_number(row.get("acml_vol")),
+                    "turnover_krw": parse_kis_number(row.get("acml_tr_pbmn")),
+                }
+            )
+        return results
 
     async def get_balance(self) -> dict[str, Any]:
         cano, product_code = self.account_parts()

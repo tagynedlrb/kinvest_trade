@@ -1156,6 +1156,14 @@ def _build_run_service() -> LiquidityLabService:
             overseas_scan_top_n=3,
             max_wait_cycles_before_penalty=15,
             wait_penalty_decay=0.07,
+            domestic_dynamic_scan=False,
+            domestic_dynamic_top_n=20,
+            domestic_dynamic_rescan_cycles=20,
+            domestic_dynamic_min_price_krw=5000,
+            domestic_dynamic_min_volume=200000,
+            vol_surge_threshold_strong=5.0,
+            vol_surge_threshold_mild=3.0,
+            overseas_relist_schedule_kst="22:35,01:00,03:30",
             overseas_test_order_qty=1,
             overseas_max_position_qty=3,
             overseas_take_profit_pct=0.012,
@@ -1179,6 +1187,13 @@ def _build_run_service() -> LiquidityLabService:
     service._signal_cache = {}
     service._wait_cycles = {}
     service._exit_cooldown = {}
+    service._vol_history = {}
+    service._vol_history_maxlen = 12
+    service._dynamic_domestic_codes = None
+    service._domestic_scan_cycle_count = 0
+    service._dynamic_overseas_pool = None
+    service._overseas_relist_schedule = []
+    service._last_relist_kst = None
     return service
 
 
@@ -1453,6 +1468,18 @@ def test_strategy_buy_blocked_by_exit_cooldown() -> None:
 
     assert watch_target.action_bias == "WAIT"
     assert watch_target.note.startswith("재진입대기")
+
+
+def test_record_volume_and_get_surge_ratio_detects_spike() -> None:
+    service = _build_run_service()
+
+    ratios = [
+        service._record_volume_and_get_surge_ratio("SOXL", volume)
+        for volume in (1000, 1100, 1200, 1300, 1400, 2400)
+    ]
+
+    assert ratios[0] == 1.0
+    assert ratios[-1] >= 5.0
 
 
 def test_buy_target_excludes_hold_status() -> None:

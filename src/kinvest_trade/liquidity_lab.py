@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -543,6 +544,15 @@ class LiquidityLabService:
         self._session_id: str = uuid.uuid4().hex[:12]
         self._wait_cycles: dict[str, int] = {}
         self._exit_cooldown: dict[str, datetime] = {}
+        self._vol_history: dict[str, deque] = {}
+        self._vol_history_maxlen: int = 12
+        self._dynamic_domestic_codes: list[str] | None = None
+        self._domestic_scan_cycle_count: int = 0
+        self._dynamic_overseas_pool: list[dict[str, str]] | None = None
+        self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
+            getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
+        )
+        self._last_relist_kst: tuple[int, int] | None = None
         self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
 
@@ -609,9 +619,166 @@ class LiquidityLabService:
         budget = available_amount * min(slot_entry_pct, slot_max_pct)
         return max(int(math.floor(budget / price)), 0)
 
+    @staticmethod
+    def _parse_relist_schedule(schedule_text: str) -> list[tuple[int, int]]:
+        result: list[tuple[int, int]] = []
+        for token in str(schedule_text or "").split(","):
+            text = token.strip()
+            if not text or ":" not in text:
+                continue
+            hour_text, minute_text = text.split(":", 1)
+            try:
+                hour = int(hour_text)
+                minute = int(minute_text)
+            except ValueError:
+                continue
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                result.append((hour, minute))
+        return result
+
+    @staticmethod
+    def _coerce_overseas_candidate(item: object) -> OverseasCandidateConfig:
+        if isinstance(item, OverseasCandidateConfig):
+            return item
+        if hasattr(item, "symbol") and hasattr(item, "exchange_code"):
+            return OverseasCandidateConfig(
+                symbol=str(getattr(item, "symbol", "")),
+                exchange_code=str(getattr(item, "exchange_code", "NASD")),
+            )
+        if isinstance(item, dict):
+            return OverseasCandidateConfig(
+                symbol=str(item.get("symbol", "")),
+                exchange_code=str(item.get("exchange_code", "NASD")),
+            )
+        return OverseasCandidateConfig(symbol="", exchange_code="NASD")
+
+    def _active_overseas_pool(self) -> list[OverseasCandidateConfig]:
+        raw_pool = getattr(self, "_dynamic_overseas_pool", None) or self.config.liquidity_lab.overseas_candidates
+        return [
+            candidate
+            for candidate in (self._coerce_overseas_candidate(item) for item in raw_pool)
+            if candidate.symbol.strip()
+        ]
+
+    def _surge_bonus_from_ratio(self, surge_ratio: float) -> float:
+        strong = float(getattr(self.config.liquidity_lab, "vol_surge_threshold_strong", 5.0))
+        mild = float(getattr(self.config.liquidity_lab, "vol_surge_threshold_mild", 3.0))
+        if surge_ratio >= 10.0:
+            return 15.0
+        if surge_ratio >= strong:
+            return 8.0
+        if surge_ratio >= mild:
+            return 3.0
+        return 0.0
+
+    def _record_volume_and_get_surge_ratio(
+        self,
+        symbol: str,
+        acml_vol: int,
+        now_utc: datetime | None = None,
+    ) -> float:
+        if now_utc is None:
+            now_utc = datetime.now(timezone.utc)
+        history_map = getattr(self, "_vol_history", None)
+        if history_map is None:
+            history_map = {}
+            self._vol_history = history_map
+        history_maxlen = int(getattr(self, "_vol_history_maxlen", 12))
+        if symbol not in history_map:
+            history_map[symbol] = deque(maxlen=history_maxlen)
+        history = history_map[symbol]
+        history.append((now_utc, acml_vol))
+        if len(history) < 3:
+            return 1.0
+
+        deltas: list[float] = []
+        items = list(history)
+        for index in range(1, len(items)):
+            prev_vol = items[index - 1][1]
+            curr_vol = items[index][1]
+            deltas.append(float(max(0, curr_vol - prev_vol)))
+        if not deltas:
+            return 1.0
+        current_delta = deltas[-1]
+        past_deltas = deltas[:-1]
+        avg_past = sum(past_deltas) / len(past_deltas) if past_deltas else 0.0
+        if avg_past <= 0:
+            return 1.0
+        return current_delta / avg_past
+
+    async def _refresh_domestic_dynamic_pool(self) -> None:
+        ll_cfg = self.config.liquidity_lab
+        try:
+            vol_rows = await self.client.get_domestic_volume_rank(
+                market_code="J",
+                top_n=ll_cfg.domestic_dynamic_top_n,
+                min_price_krw=ll_cfg.domestic_dynamic_min_price_krw,
+                min_volume=ll_cfg.domestic_dynamic_min_volume,
+            )
+            flu_rows = await self.client.get_domestic_fluctuation_rank(
+                market_code="J",
+                top_n=max(1, ll_cfg.domestic_dynamic_top_n // 2),
+                min_price_krw=ll_cfg.domestic_dynamic_min_price_krw,
+                min_volume=ll_cfg.domestic_dynamic_min_volume,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("domestic_dynamic_scan_failed error=%s", exc)
+            return
+
+        seen: set[str] = set()
+        codes: list[str] = []
+        for row in [*vol_rows, *flu_rows]:
+            code = str(row.get("stock_code", "")).strip()
+            if code and code not in seen:
+                seen.add(code)
+                codes.append(code)
+        if not codes:
+            return
+        self._dynamic_domestic_codes = codes
+        _logger.info("domestic_dynamic_pool_refreshed count=%s", len(codes))
+        notifier = getattr(self, "notifier", None)
+        if notifier is not None and getattr(notifier, "enabled", True):
+            top_names = [str(row.get("name", "")).strip() for row in vol_rows[:5] if row.get("name")]
+            try:
+                await notifier.send(
+                    f"🔄 [국내 동적 풀 갱신] {len(codes)}종목\n거래량 상위: {', '.join(top_names)}"
+                )
+            except Exception:  # noqa: BLE001
+                _logger.debug("domestic_dynamic_pool_notify_failed", exc_info=True)
+
+    async def _maybe_send_overseas_relist_alert(self, now_utc: datetime) -> None:
+        now_kst = now_utc.astimezone(KST)
+        current_hm = (now_kst.hour, now_kst.minute)
+        schedule = getattr(self, "_overseas_relist_schedule", None)
+        if schedule is None:
+            schedule = self._parse_relist_schedule(
+                getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
+            )
+            self._overseas_relist_schedule = schedule
+        if current_hm not in schedule:
+            return
+        if current_hm == getattr(self, "_last_relist_kst", None):
+            return
+        self._last_relist_kst = current_hm
+        notifier = getattr(self, "notifier", None)
+        if notifier is None or not getattr(notifier, "enabled", True):
+            return
+        pool = self._dynamic_overseas_pool or self.config.liquidity_lab.overseas_candidates
+        await notifier.send(
+            "\n".join(
+                [
+                    f"⏰ [자동 relist 알림] {now_kst.strftime('%H:%M')} KST",
+                    f"현재 감시 풀: {len(pool)}종목",
+                    "교체: /lab_relist PLTR NVDA AMD ...",
+                    "유지: 무시",
+                ]
+            )
+        )
+
     async def run(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        await self._maybe_send_overseas_relist_alert(now)
         krx_open = is_krx_regular_session(now)
         us_open = is_us_regular_session(now)
         us_session = get_us_trading_session(now)
@@ -887,9 +1054,22 @@ class LiquidityLabService:
 
     async def scan_domestic(self) -> list[DomesticScanResult]:
         config = self.config.liquidity_lab
+        if getattr(config, "domestic_dynamic_scan", False):
+            self._domestic_scan_cycle_count = getattr(self, "_domestic_scan_cycle_count", 0) + 1
+            if (
+                getattr(self, "_dynamic_domestic_codes", None) is None
+                or self._domestic_scan_cycle_count >= max(1, config.domestic_dynamic_rescan_cycles)
+            ):
+                self._domestic_scan_cycle_count = 0
+                await self._refresh_domestic_dynamic_pool()
+        active_codes = (
+            list(getattr(self, "_dynamic_domestic_codes", None))
+            if getattr(self, "_dynamic_domestic_codes", None)
+            else list(config.domestic_candidates)
+        )
         quote_results: list[DomesticScanResult] = []
         excluded: list[ExcludedCandidate] = []
-        for stock_code in config.domestic_candidates:
+        for stock_code in active_codes:
             try:
                 candidate = await self._scan_single_domestic_quote(stock_code)
             except Exception:
@@ -959,6 +1139,7 @@ class LiquidityLabService:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
         orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
         intraday_turnover = int(current.get("turnover_krw", 0) or 0)
+        acml_vol = int(current.get("volume", 0) or 0)
         spread_pct = float(orderbook.get("spread_pct", 0.0) or 0.0)
         liquidity_score = math.log10(max(intraday_turnover, 1)) * 8.0
         spread_penalty = spread_pct * 3000.0
@@ -967,8 +1148,10 @@ class LiquidityLabService:
             turnover_surge_bonus = 4.0
         elif intraday_turnover >= self.config.liquidity_lab.domestic_min_intraday_turnover_krw * 1.5:
             turnover_surge_bonus = 2.0
+        surge_ratio = self._record_volume_and_get_surge_ratio(stock_code, acml_vol)
+        surge_bonus = self._surge_bonus_from_ratio(surge_ratio)
 
-        activity_score = liquidity_score + turnover_surge_bonus - spread_penalty
+        activity_score = liquidity_score + turnover_surge_bonus + surge_bonus - spread_penalty
         return DomesticScanResult(
             stock_code=stock_code,
             current_price=int(current["current_price"]),
@@ -977,7 +1160,7 @@ class LiquidityLabService:
             spread_pct=spread_pct,
             minute_change_pct=0.0,
             intraday_turnover_krw=intraday_turnover,
-            volume_sum=0,
+            volume_sum=acml_vol,
             activity_score=round(activity_score, 4),
         )
 
@@ -993,7 +1176,8 @@ class LiquidityLabService:
         quote_results: list[OverseasScanResult] = []
         excluded: list[ExcludedCandidate] = []
 
-        for candidate in config.overseas_candidates:
+        active_overseas_pool = self._active_overseas_pool()
+        for candidate in active_overseas_pool:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
             except Exception:
@@ -1076,7 +1260,7 @@ class LiquidityLabService:
         try:
             exchange_codes = {
                 candidate.exchange_code.upper()
-                for candidate in self.config.liquidity_lab.overseas_candidates
+                for candidate in self._active_overseas_pool()
             }
             held: set[str] = set(self._get_virtual_held_symbols())
             for exchange_code in sorted(exchange_codes):
@@ -1174,11 +1358,14 @@ class LiquidityLabService:
             volume_surge_bonus = 3.0
         elif volume >= self.config.liquidity_lab.overseas_min_volume * 2:
             volume_surge_bonus = 1.5
+        surge_ratio = self._record_volume_and_get_surge_ratio(candidate.symbol.upper(), int(volume))
+        surge_bonus = self._surge_bonus_from_ratio(surge_ratio)
         tight_spread_bonus = 1.0 if spread_pct < 0.001 else 0.0
         activity_score = (
             liquidity_score
             + momentum_score
             + volume_surge_bonus
+            + surge_bonus
             + tight_spread_bonus
             - spread_penalty
         )

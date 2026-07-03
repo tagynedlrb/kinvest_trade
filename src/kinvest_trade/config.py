@@ -239,6 +239,14 @@ class LiquidityLabConfig:
     overseas_scan_top_n: int
     max_wait_cycles_before_penalty: int
     wait_penalty_decay: float
+    domestic_dynamic_scan: bool
+    domestic_dynamic_top_n: int
+    domestic_dynamic_rescan_cycles: int
+    domestic_dynamic_min_price_krw: int
+    domestic_dynamic_min_volume: int
+    vol_surge_threshold_strong: float
+    vol_surge_threshold_mild: float
+    overseas_relist_schedule_kst: str
     domestic_test_order_qty: int
     overseas_test_order_qty: int
     max_concurrent_overseas_orders: int
@@ -748,6 +756,26 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 liquidity_lab_raw.get("max_wait_cycles_before_penalty", 15)
             ),
             wait_penalty_decay=float(liquidity_lab_raw.get("wait_penalty_decay", 0.07)),
+            domestic_dynamic_scan=bool(liquidity_lab_raw.get("domestic_dynamic_scan", True)),
+            domestic_dynamic_top_n=int(liquidity_lab_raw.get("domestic_dynamic_top_n", 20)),
+            domestic_dynamic_rescan_cycles=int(
+                liquidity_lab_raw.get("domestic_dynamic_rescan_cycles", 20)
+            ),
+            domestic_dynamic_min_price_krw=int(
+                liquidity_lab_raw.get("domestic_dynamic_min_price_krw", 5000)
+            ),
+            domestic_dynamic_min_volume=int(
+                liquidity_lab_raw.get("domestic_dynamic_min_volume", 200_000)
+            ),
+            vol_surge_threshold_strong=float(
+                liquidity_lab_raw.get("vol_surge_threshold_strong", 5.0)
+            ),
+            vol_surge_threshold_mild=float(
+                liquidity_lab_raw.get("vol_surge_threshold_mild", 3.0)
+            ),
+            overseas_relist_schedule_kst=str(
+                liquidity_lab_raw.get("overseas_relist_schedule_kst", "22:35,01:00,03:30")
+            ),
             domestic_test_order_qty=int(liquidity_lab_raw.get("domestic_test_order_qty", 1)),
             overseas_test_order_qty=int(liquidity_lab_raw.get("overseas_test_order_qty", 1)),
             max_concurrent_overseas_orders=int(

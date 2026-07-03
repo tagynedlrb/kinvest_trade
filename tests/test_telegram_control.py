@@ -28,6 +28,8 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
     assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
+    assert TelegramLiquidityLabController.parse_command("/lab_relist NVDA TSLA") == ("relist", "NVDA TSLA")
+    assert TelegramLiquidityLabController.parse_command("/lab_relist_schedule") == "relist_schedule"
     assert TelegramLiquidityLabController.parse_command("/lab_positions") is None
     assert TelegramLiquidityLabController.parse_command("/lab_virtual") is None
     assert TelegramLiquidityLabController.parse_command("/lab_paper_test 005930") == ("paper_test", "005930")
@@ -671,7 +673,14 @@ def _build_async_controller() -> TelegramLiquidityLabController:
                 profile_name="paper",
                 env="vps",
             ),
-            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                overseas_candidates=[
+                    SimpleNamespace(symbol="NVDA", exchange_code="NASD"),
+                    SimpleNamespace(symbol="TSLA", exchange_code="NASD"),
+                ],
+                overseas_relist_schedule_kst="22:35,01:00,03:30",
+            ),
             storage=SimpleNamespace(runtime_state_path=Path("/tmp/kinvest_trade_test_runtime_state.json")),
             auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
         ),
@@ -870,6 +879,29 @@ def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> Non
     assert "가상거래 초기화 완료" in controller.notifier.messages[-1]
     backups = sorted(tmp_path.glob("reset_virtual_backup_*_pre_reset.db"))
     assert backups
+
+
+def test_handle_relist_updates_manual_pool() -> None:
+    controller = _build_async_controller()
+    controller.lab_service = SimpleNamespace(_dynamic_overseas_pool=None, _signal_cache={"OLD": object()})
+
+    asyncio.run(controller._handle_relist("NVDA TSLA"))
+
+    assert controller.manual_overseas_pool == [
+        {"symbol": "NVDA", "exchange_code": "NASD"},
+        {"symbol": "TSLA", "exchange_code": "NASD"},
+    ]
+    assert controller.lab_service._dynamic_overseas_pool == controller.manual_overseas_pool
+    assert controller.lab_service._signal_cache == {}
+
+
+def test_send_relist_schedule_reports_configured_times() -> None:
+    controller = _build_async_controller()
+
+    asyncio.run(controller._send_relist_schedule())
+
+    assert "[KIS][RELIST_SCHEDULE]" in controller.notifier.messages[-1]
+    assert "22:35,01:00,03:30" in controller.notifier.messages[-1]
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

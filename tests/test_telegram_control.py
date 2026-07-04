@@ -1,11 +1,13 @@
 import asyncio
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import kinvest_trade.telegram_control as telegram_control_module
+import pytest
 from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.telegram_control import (
@@ -986,6 +988,33 @@ def test_run_continues_when_set_commands_raises() -> None:
 
     assert controller.notifier.command_calls == [BOT_COMMANDS]
     assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)
+
+
+def test_acquire_pid_lock_replaces_stale_file(tmp_path) -> None:
+    pid_file = tmp_path / "telegram_control.pid"
+    original_pid_file = telegram_control_module._PID_FILE
+    telegram_control_module._PID_FILE = str(pid_file)
+    pid_file.write_text("99999999", encoding="utf-8")
+    try:
+        telegram_control_module._acquire_pid_lock()
+        assert pid_file.read_text(encoding="utf-8").strip() == str(os.getpid())
+    finally:
+        telegram_control_module._release_pid_lock()
+        telegram_control_module._PID_FILE = original_pid_file
+
+
+def test_acquire_pid_lock_raises_when_process_alive(tmp_path) -> None:
+    pid_file = tmp_path / "telegram_control.pid"
+    original_pid_file = telegram_control_module._PID_FILE
+    telegram_control_module._PID_FILE = str(pid_file)
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            telegram_control_module._acquire_pid_lock()
+        assert exc_info.value.code == 1
+    finally:
+        telegram_control_module._release_pid_lock()
+        telegram_control_module._PID_FILE = original_pid_file
 
 
 def test_bot_commands_all_match_telegram_naming_rules() -> None:

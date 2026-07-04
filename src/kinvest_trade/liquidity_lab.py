@@ -943,7 +943,14 @@ class LiquidityLabService:
             except Exception:  # noqa: BLE001
                 _logger.debug("domestic_dynamic_pool_notify_failed", exc_info=True)
 
-    async def _maybe_send_overseas_relist_alert(self, now_utc: datetime) -> None:
+    async def _maybe_send_overseas_relist_alert(
+        self,
+        now_utc: datetime,
+        *,
+        nyse_holiday: bool = False,
+    ) -> None:
+        if nyse_holiday:
+            return
         now_kst = now_utc.astimezone(KST)
         current_hm = (now_kst.hour, now_kst.minute)
         schedule = getattr(self, "_overseas_relist_schedule", None)
@@ -981,7 +988,7 @@ class LiquidityLabService:
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
         await self._ensure_tv_diagnostics()
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
-        await self._maybe_send_overseas_relist_alert(now)
+        await self._maybe_send_overseas_relist_alert(now, nyse_holiday=nyse_holiday)
         krx_open = is_krx_regular_session(now) and not krx_holiday
         us_open = is_us_regular_session(now) and not nyse_holiday
         us_session = get_us_trading_session(now)

@@ -1231,6 +1231,19 @@ def test_is_trading_halted_when_consecutive_losses_reach_limit() -> None:
     assert service._is_trading_halted() is True
 
 
+def test_maybe_send_overseas_relist_alert_skips_on_nyse_holiday() -> None:
+    service = _build_run_service()
+    service.notifier = DummyNotifier()
+    service._overseas_relist_schedule = [(1, 0)]
+    service._last_relist_kst = None
+    service._dynamic_overseas_pool = []
+
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=timezone.utc)
+    asyncio.run(service._maybe_send_overseas_relist_alert(now, nyse_holiday=True))
+
+    assert service.notifier.messages == []
+
+
 def test_build_unified_watch_targets_merges_domestic_and_overseas() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.unified_watch_top_n = 4

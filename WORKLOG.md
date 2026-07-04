@@ -597,3 +597,19 @@
 - `_is_trading_halted()`로 `risk.max_consecutive_losses`, `risk.daily_loss_limit_pct` 반영
 - 국내/해외 SELL 완료 후 카운터 갱신
 - BUY 선택 직전 halt 체크를 넣어 발동 시 해당 사이클 신규 매수 전체 스킵
+
+## [2026-07-07] 지시문 #45 — 휴장일 relist 알림 차단 / 중복 프로세스 방지
+
+### 발생 사고 (2026-07-04)
+- 01:00, 03:30 KST: NYSE 휴장일임에도 자동 relist 알림 발송 (0종목)
+- 10:12 KST: `TELEGRAM_CONTROL_START` 메시지 3회 중복 발송
+- 05:00 KST `MARKET_STATE_CHANGE from=us_regular`은 이전 세션 상태 잔존에 따른 정상 전환으로 판단
+
+### 수정 사항
+- `liquidity_lab.py`
+  - `_maybe_send_overseas_relist_alert()`에 `nyse_holiday` 파라미터 추가
+  - `run()`에서 `nyse_holiday`를 전달해 휴장일/주말에는 relist 알림 자체를 건너뜀
+- `telegram_control.py`
+  - `_PID_FILE`, `_acquire_pid_lock()`, `_release_pid_lock()` 추가
+  - `run()` 진입 시 PID lock을 획득해 중복 인스턴스를 차단
+  - `SIGTERM` 핸들러와 `finally` 해제를 함께 넣어 비정상 종료 후 stale PID 파일 가능성 축소

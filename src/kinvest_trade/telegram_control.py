@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import asyncio
 import contextlib
 import json
+import os
+import signal
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -70,6 +73,40 @@ BOT_COMMANDS: list[dict[str, str]] = [
 
 ParsedCommand: TypeAlias = str | tuple[str, str | None]
 SERVICE_UNIT_NAME = "kinvest-telegram-control.service"
+_PID_FILE = "data/telegram_control.pid"
+
+
+def _release_pid_lock() -> None:
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE, encoding="utf-8") as handle:
+                pid = int(handle.read().strip())
+            if pid == os.getpid():
+                os.remove(_PID_FILE)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _acquire_pid_lock() -> None:
+    os.makedirs(os.path.dirname(_PID_FILE), exist_ok=True)
+
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE, encoding="utf-8") as handle:
+                old_pid = int(handle.read().strip())
+            os.kill(old_pid, 0)
+            print(
+                f"[WARN] 이미 실행 중인 인스턴스가 있습니다 (PID {old_pid}). 종료합니다.",
+                flush=True,
+            )
+            raise SystemExit(1)
+        except (OSError, ValueError):
+            pass
+
+    with open(_PID_FILE, "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+
+    atexit.register(_release_pid_lock)
 
 
 @dataclass(slots=True)
@@ -169,6 +206,14 @@ class TelegramLiquidityLabController:
         self.manual_overseas_pool: list[dict[str, str]] | None = None
 
     async def run(self) -> None:
+        _acquire_pid_lock()
+
+        def _on_sigterm(_sig: int, _frame: object) -> None:
+            _release_pid_lock()
+            raise SystemExit(0)
+
+        previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _on_sigterm)
         if not self.notifier.enabled:
             raise RuntimeError("Telegram bot token/chat id are required for telegram-control.")
         self._restore_runtime_state()
@@ -205,6 +250,8 @@ class TelegramLiquidityLabController:
                 await scheduler
             with contextlib.suppress(asyncio.CancelledError):
                 await command_loop
+            signal.signal(signal.SIGTERM, previous_sigterm_handler)
+            _release_pid_lock()
 
     async def _scheduler_loop(self) -> None:
         while True:

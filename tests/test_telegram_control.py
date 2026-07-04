@@ -50,7 +50,6 @@ def test_accumulate_session_performance_collects_realized_pnl_and_reasons() -> N
             primary_target="SOXL",
             primary_market="overseas",
             primary_selection_reason="highest_current_activity_in_open_market",
-            paper_run={"run_id": 1, "realized_pnl_krw": 1200},
             domestic_order={"submitted": True},
             overseas_order={"skipped": True, "reason": "mock_us_session_not_supported"},
         )
@@ -58,8 +57,8 @@ def test_accumulate_session_performance_collects_realized_pnl_and_reasons() -> N
 
     perf = controller.session_performance
     assert perf.cycles_completed == 1
-    assert perf.domestic_paper_runs == 1
-    assert perf.domestic_paper_realized_pnl_krw == 1200
+    assert perf.domestic_paper_runs == 0
+    assert perf.domestic_paper_realized_pnl_krw == 0
     assert perf.domestic_orders_submitted == 1
     assert perf.overseas_orders_submitted == 0
     assert perf.skip_reasons["mock_us_session_not_supported"] == 1
@@ -542,7 +541,6 @@ def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order=None,
     )
@@ -580,7 +578,6 @@ def test_liquidity_lab_send_summary_sends_when_action_raw_is_buy() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order=None,
     )
@@ -659,7 +656,6 @@ class DummyReport:
         self.primary_market = "none"
         self.primary_target = None
         self.primary_selection_reason = reason
-        self.paper_run = {"skipped": True, "reason": "market_closed"}
         self.domestic_order = {"skipped": True, "reason": "market_closed"}
         self.overseas_order = {"skipped": True, "reason": "market_closed"}
         self.domestic_positions: list[SimpleNamespace] = []
@@ -964,8 +960,15 @@ def test_run_calls_set_commands_before_start_message() -> None:
 
     controller._scheduler_loop = fake_scheduler_loop  # type: ignore[method-assign]
     controller._command_loop = fake_command_loop  # type: ignore[method-assign]
-
-    asyncio.run(controller.run())
+    original_acquire = telegram_control_module._acquire_pid_lock
+    original_release = telegram_control_module._release_pid_lock
+    telegram_control_module._acquire_pid_lock = lambda: None
+    telegram_control_module._release_pid_lock = lambda: None
+    try:
+        asyncio.run(controller.run())
+    finally:
+        telegram_control_module._acquire_pid_lock = original_acquire
+        telegram_control_module._release_pid_lock = original_release
 
     assert controller.notifier.command_calls == [BOT_COMMANDS]
     assert controller.notifier.messages[0].startswith("[KIS][TELEGRAM_CONTROL_START]")
@@ -983,8 +986,15 @@ def test_run_continues_when_set_commands_raises() -> None:
 
     controller._scheduler_loop = fake_scheduler_loop  # type: ignore[method-assign]
     controller._command_loop = fake_command_loop  # type: ignore[method-assign]
-
-    asyncio.run(controller.run())
+    original_acquire = telegram_control_module._acquire_pid_lock
+    original_release = telegram_control_module._release_pid_lock
+    telegram_control_module._acquire_pid_lock = lambda: None
+    telegram_control_module._release_pid_lock = lambda: None
+    try:
+        asyncio.run(controller.run())
+    finally:
+        telegram_control_module._acquire_pid_lock = original_acquire
+        telegram_control_module._release_pid_lock = original_release
 
     assert controller.notifier.command_calls == [BOT_COMMANDS]
     assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)

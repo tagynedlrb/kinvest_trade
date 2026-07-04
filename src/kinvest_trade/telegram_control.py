@@ -26,6 +26,7 @@ from .market_sessions import (
 )
 from .message_format import format_market_korean, format_pct, format_reason_korean, format_side_korean
 from .notifier import TelegramNotifier
+from .paper import PaperTradingService
 from .repository import SqliteRepository
 from .time_utils import format_display_times, format_kst, format_kst_korean, parse_datetime
 
@@ -365,8 +366,12 @@ class TelegramLiquidityLabController:
         code = stock_code.strip().upper()
         try:
             async with KisRestClient(self.config.credentials) as client:
-                service = LiquidityLabService(self.config, client, self.repository, self.notifier)
-                state = await service._run_domestic_paper_test([code])
+                service = PaperTradingService(self.config, client, self.repository, self.notifier)
+                state = await service.run(
+                    iterations=self.config.liquidity_lab.domestic_paper_iterations,
+                    interval_sec=self.config.liquidity_lab.domestic_paper_interval_sec,
+                    watchlist_override=[code],
+                )
         except Exception as exc:  # noqa: BLE001
             await self.notifier.send(
                 "\n".join(
@@ -1130,15 +1135,6 @@ class TelegramLiquidityLabController:
         primary_target = str(report.primary_target or report.primary_market or "none")
         perf.primary_targets[primary_target] = perf.primary_targets.get(primary_target, 0) + 1
 
-        if report.paper_run:
-            if not report.paper_run.get("skipped", False):
-                perf.domestic_paper_runs += 1
-                perf.domestic_paper_realized_pnl_krw += int(report.paper_run.get("realized_pnl_krw", 0) or 0)
-                self._accumulate_paper_symbol_stats(report.paper_run)
-            else:
-                reason = str(report.paper_run.get("reason", "paper_skipped"))
-                perf.skip_reasons[reason] = perf.skip_reasons.get(reason, 0) + 1
-
         self._accumulate_order_stats(report.domestic_order, market="domestic")
         self._accumulate_order_stats(report.overseas_order, market="overseas")
 
@@ -1177,15 +1173,6 @@ class TelegramLiquidityLabController:
         elif not is_submitted:
             reason = str(order_result.get("error", f"{market}_order_failed"))
             perf.skip_reasons[reason] = perf.skip_reasons.get(reason, 0) + 1
-
-    def _accumulate_paper_symbol_stats(self, paper_run: dict) -> None:
-        watchlist = paper_run.get("watchlist") or []
-        if not watchlist:
-            return
-        symbol = str(watchlist[0]).strip().upper()
-        stats = self._ensure_symbol_stats(symbol)
-        stats["paper_runs"] += 1
-        stats["confirmed_realized_pnl_krw"] += int(paper_run.get("realized_pnl_krw", 0) or 0)
 
     def _accumulate_symbol_order_stats(
         self,
@@ -1339,7 +1326,6 @@ class TelegramLiquidityLabController:
                 "primary_market": report.primary_market,
                 "primary_target": report.primary_target,
                 "primary_selection_reason": report.primary_selection_reason,
-                "paper_run": report.paper_run,
                 "domestic_order": report.domestic_order,
                 "overseas_order": report.overseas_order,
                 "watch_targets": report.to_dict().get("watch_targets", []),

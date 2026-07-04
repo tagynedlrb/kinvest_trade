@@ -613,3 +613,25 @@
   - `_PID_FILE`, `_acquire_pid_lock()`, `_release_pid_lock()` 추가
   - `run()` 진입 시 PID lock을 획득해 중복 인스턴스를 차단
   - `SIGTERM` 핸들러와 `finally` 해제를 함께 넣어 비정상 종료 후 stale PID 파일 가능성 축소
+
+## [2026-07-07] 지시문 #46 — 코드 구조 점검 기반 개선
+
+### 점검 결과
+- `liquidity_lab.py` 내부 dead 함수 3개 확인:
+  `_select_domestic_buy_target`, `_select_overseas_buy_target`, `_run_domestic_paper_test`
+- `evaluate_scale_in_setup`는 점검 결과 dead code가 아니라 `auto_trader.py`에서 실제 사용 중이라 유지
+- 해외/국내 잔고 조회가 동일 사이클 내 중복 호출되는 구간 확인
+- 해외 exit 경로의 take profit 기준이 `overseas_take_profit_pct`와 `auto_trade.take_profit_pct`로 갈라져 있던 부분 확인
+- `LiquidityLabReport.paper_run` 필드가 항상 skip 값만 담은 채 남아 있어 의미 없는 잔재로 판단
+
+### 변경 사항
+- `liquidity_lab.py`
+  - dead 함수 3개 제거
+  - `_overseas_balance_cache`, `_domestic_balance_cache` 추가
+  - 동일 사이클 잔고 재사용으로 국내/해외 잔고 API 중복 호출 감소
+  - `_build_exit_setup()`에 `take_profit_override` 추가
+  - 해외 보유 포지션 exit 판단 시 `overseas_take_profit_pct`를 일관 적용
+  - `LiquidityLabReport.paper_run` 및 관련 하드코딩 skip 제거
+- `telegram_control.py`
+  - 수동 페이퍼 테스트는 `PaperTradingService`를 직접 호출하도록 정리
+  - `paper_run` 누적/요약 참조 제거

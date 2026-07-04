@@ -713,6 +713,15 @@ class DummyDomesticBalanceClient:
         }
 
 
+class CountingDomesticBalanceClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_balance(self):
+        self.calls += 1
+        return {"summary": {"ord_psbl_cash": "2500000"}}
+
+
 def test_load_domestic_positions_reads_balance() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.client = DummyDomesticBalanceClient()
@@ -746,6 +755,20 @@ def test_load_domestic_positions_reads_balance() -> None:
     ]
 
 
+def test_get_domestic_available_krw_uses_cycle_cache() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service._cycle_count = 11
+    service._domestic_balance_cache = {}
+    service.client = CountingDomesticBalanceClient()
+
+    first = asyncio.run(service._get_domestic_available_krw())
+    second = asyncio.run(service._get_domestic_available_krw())
+
+    assert first == 2_500_000
+    assert second == 2_500_000
+    assert service.client.calls == 1
+
+
 class DummyDomesticSellClient:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
@@ -777,6 +800,16 @@ class DummyOverseasBalanceClient:
     async def get_overseas_balance(self, exchange_code: str, currency_code: str):
         del currency_code
         return {"positions": list(self.positions_by_exchange.get(exchange_code, []))}
+
+
+class CountingOverseasBalanceClient(DummyOverseasBalanceClient):
+    def __init__(self, positions_by_exchange: dict[str, list[dict[str, str]]]) -> None:
+        super().__init__(positions_by_exchange)
+        self.calls = 0
+
+    async def get_overseas_balance(self, exchange_code: str, currency_code: str):
+        self.calls += 1
+        return await super().get_overseas_balance(exchange_code, currency_code)
 
 
 def test_load_overseas_positions_includes_real_holdings_outside_ranked_candidates() -> None:
@@ -837,6 +870,50 @@ def test_load_overseas_positions_includes_real_holdings_outside_ranked_candidate
     assert fallback["SOFI"] == 21.0
     assert fallback["AAL"] == 11.0
     assert fallback["HOOD"] == 22.0
+
+
+def test_overseas_balance_cache_reused_within_cycle() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service._cycle_count = 7
+    service._overseas_balance_cache = {}
+    service._last_held_symbols = set()
+    service.virtual_trades = VirtualTradeManager(_build_repository())
+    service._manual_overseas_pool = None
+    service._dynamic_overseas_pool = [{"symbol": "SOFI", "exchange_code": "NASD"}]
+    service.client = CountingOverseasBalanceClient(
+        {
+            "NASD": [
+                {
+                    "ovrs_pdno": "SOFI",
+                    "ovrs_cblc_qty": "1",
+                    "ord_psbl_qty": "1",
+                    "pchs_avg_pric": "20.00",
+                }
+            ]
+        }
+    )
+    overseas_ranked = [
+        OverseasScanResult(
+            symbol="SOFI",
+            exchange_code="NASD",
+            last_price=21.0,
+            bid=20.9,
+            ask=21.1,
+            spread_pct=0.001,
+            change_rate_pct=1.0,
+            volume=500000,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=10.0,
+        )
+    ]
+
+    held_symbols = asyncio.run(service._get_held_symbols())
+    positions = asyncio.run(service._load_overseas_positions(overseas_ranked))
+
+    assert held_symbols == {"SOFI"}
+    assert {position.symbol for position in positions} == {"SOFI"}
+    assert service.client.calls == 1
 
 
 def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | None = None) -> LiquidityLabService:
@@ -2029,7 +2106,6 @@ def test_send_summary_skips_when_action_raw_is_wait() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order=None,
     )
@@ -2058,7 +2134,6 @@ def test_send_summary_skips_when_overseas_sell_already_notified() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order={
             "submitted": True,
@@ -2094,7 +2169,6 @@ def test_send_summary_still_sends_when_overseas_buy_not_pre_notified() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order={
             "submitted": True,
@@ -2131,7 +2205,6 @@ def test_send_summary_skips_when_domestic_buy_already_notified() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order={
             "submitted": True,
             "already_notified": True,
@@ -2167,7 +2240,6 @@ def test_send_summary_skips_when_domestic_sell_already_notified() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order={
             "submitted": True,
             "already_notified": True,
@@ -2204,7 +2276,6 @@ def test_send_summary_real_overseas_buy_without_pre_notification_still_sends_onc
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order={
             "submitted": True,
@@ -2274,7 +2345,6 @@ def test_send_summary_sends_message_for_sell_rejected() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order=None,
     )
@@ -2603,7 +2673,6 @@ def test_send_summary_skips_virtual_trade_messages() -> None:
         overseas_positions=[],
         watch_targets=[],
         estimated_api_calls_per_cycle=0,
-        paper_run=None,
         domestic_order=None,
         overseas_order=None,
     )

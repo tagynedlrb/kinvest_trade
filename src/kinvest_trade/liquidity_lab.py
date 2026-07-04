@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import math
 import uuid
@@ -34,7 +35,6 @@ from .momentum_policy import (
     evaluate_exit_setup,
 )
 from .notifier import TelegramNotifier
-from .paper import PaperTradingService, PaperRunState
 from .repository import SqliteRepository
 from .strategy import PriorityStrategyManager, STRATEGY_LABEL, StrategyID
 from .technical_signals import (
@@ -163,7 +163,6 @@ class LiquidityLabReport:
     overseas_positions: list[OverseasHeldPosition]
     watch_targets: list[WatchTargetStatus]
     estimated_api_calls_per_cycle: int
-    paper_run: dict | None
     domestic_order: dict | None
     overseas_order: dict | None
 
@@ -188,7 +187,6 @@ class LiquidityLabReport:
                 for item in self.watch_targets
             ],
             "estimated_api_calls_per_cycle": self.estimated_api_calls_per_cycle,
-            "paper_run": self.paper_run,
             "domestic_order": self.domestic_order,
             "overseas_order": self.overseas_order,
         }
@@ -555,6 +553,8 @@ class LiquidityLabService:
         self._awaiting_relist: bool = False
         self._manual_overseas_pool: list[dict[str, str]] | None = None
         self._overseas_scan_cycle_count: int = 0
+        self._overseas_balance_cache: dict = {}
+        self._domestic_balance_cache: dict = {}
         self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
             getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
         )
@@ -602,8 +602,21 @@ class LiquidityLabService:
         )
 
     async def _get_domestic_available_krw(self) -> float:
+        cycle = getattr(self, "_cycle_count", 0)
+        cache = getattr(self, "_domestic_balance_cache", {})
+        if cache.get("cycle") == cycle and cache.get("data"):
+            balance = cache["data"]
+        else:
+            try:
+                balance = await self.client.get_balance()
+                self._domestic_balance_cache = {
+                    "cycle": cycle,
+                    "data": balance,
+                }
+            except KisApiError as exc:
+                _logger.warning("domestic_balance_fetch_failed error=%s", exc)
+                return 0.0
         try:
-            balance = await self.client.get_balance()
             summary = balance.get("summary", {}) or {}
             result = max(
                 self._parse_float(summary.get("ord_psbl_cash")),
@@ -615,8 +628,8 @@ class LiquidityLabService:
                     list(summary.keys()),
                 )
             return result
-        except KisApiError as exc:
-            _logger.warning("domestic_balance_fetch_failed error=%s", exc)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("domestic_balance_parse_failed error=%s", exc)
             return 0.0
 
     def _slot_based_qty(self, *, available_amount: float, price: float) -> int:
@@ -1015,7 +1028,6 @@ class LiquidityLabService:
                 overseas_positions=[],
                 watch_targets=[],
                 estimated_api_calls_per_cycle=0,
-                paper_run={"skipped": True, "reason": "market_closed"},
                 domestic_order={"skipped": True, "reason": "market_closed"},
                 overseas_order={"skipped": True, "reason": "market_closed"},
             )
@@ -1106,7 +1118,6 @@ class LiquidityLabService:
                     max_concurrent=max(1, _max_os - _real_os),
                 )
                 overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
-        paper_summary = {"skipped": True, "reason": "paper_test_removed_for_speed"}
         domestic_order: dict = {"skipped": True, "reason": "no_action"}
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
         domestic_orders: list[dict] = []
@@ -1273,7 +1284,6 @@ class LiquidityLabService:
                 include_domestic_order=bool(domestic_exit_target or domestic_buy_target),
                 include_overseas_order=bool(overseas_exit_target or overseas_buy_target),
             ),
-            paper_run=paper_summary,
             domestic_order=domestic_order,
             overseas_order=overseas_order,
         )
@@ -1500,20 +1510,42 @@ class LiquidityLabService:
         existing positions.
         """
         try:
+            cycle = getattr(self, "_cycle_count", 0)
+            cache = getattr(self, "_overseas_balance_cache", {})
+            if cache.get("cycle") == cycle:
+                cached = cache.get("data", {})
+                held: set[str] = set(self._get_virtual_held_symbols())
+                for balance in cached.values():
+                    for row in balance.get("positions", []):
+                        qty = parse_kis_number(row.get("ovrs_cblc_qty"))
+                        if qty <= 0:
+                            continue
+                        symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                        if symbol:
+                            held.add(symbol)
+                self._last_held_symbols = held
+                return held
+
             exchange_codes = self._known_overseas_exchange_codes()
             held: set[str] = set(self._get_virtual_held_symbols())
+            raw_balances: dict[str, dict] = {}
             for exchange_code in sorted(exchange_codes):
                 balance = await self.client.get_overseas_balance(
                     exchange_code=exchange_code,
                     currency_code="USD",
                 )
+                raw_balances[exchange_code] = balance
                 for row in balance.get("positions", []):
-                    qty = int(float(str(row.get("ovrs_cblc_qty", 0) or 0)))
+                    qty = parse_kis_number(row.get("ovrs_cblc_qty"))
                     if qty <= 0:
                         continue
                     symbol = str(row.get("ovrs_pdno", "")).strip().upper()
                     if symbol:
                         held.add(symbol)
+            self._overseas_balance_cache = {
+                "cycle": cycle,
+                "data": raw_balances,
+            }
             self._last_held_symbols = held
             return held
         except Exception:
@@ -1633,16 +1665,27 @@ class LiquidityLabService:
             or self._known_overseas_exchange_codes()
         )
         positions_by_key: dict[tuple[str, str], OverseasHeldPosition] = {}
+        cycle = getattr(self, "_cycle_count", 0)
+        cache = getattr(self, "_overseas_balance_cache", {})
+        if cache.get("cycle") == cycle and cache.get("data"):
+            balance_map = cache["data"]
+        else:
+            balance_map: dict[str, dict] = {}
+            for exchange_code in sorted(exchange_codes):
+                try:
+                    balance = await self.client.get_overseas_balance(
+                        exchange_code=exchange_code,
+                        currency_code="USD",
+                    )
+                    balance_map[exchange_code] = balance
+                except Exception:
+                    continue
+            self._overseas_balance_cache = {
+                "cycle": cycle,
+                "data": balance_map,
+            }
 
-        for exchange_code in sorted(exchange_codes):
-            try:
-                balance = await self.client.get_overseas_balance(
-                    exchange_code=exchange_code,
-                    currency_code="USD",
-                )
-            except Exception:
-                continue
-
+        for exchange_code, balance in balance_map.items():
             for row in balance.get("positions", []):
                 symbol = str(row.get("ovrs_pdno", "")).strip().upper()
                 if not symbol:
@@ -1725,6 +1768,10 @@ class LiquidityLabService:
         quote_map = {item.stock_code: item for item in domestic_ranked}
         try:
             balance = await self.client.get_balance()
+            self._domestic_balance_cache = {
+                "cycle": getattr(self, "_cycle_count", 0),
+                "data": balance,
+            }
         except Exception:
             return []
 
@@ -2278,6 +2325,11 @@ class LiquidityLabService:
                 held_position.pnl_pct,
                 holding_qty,
                 symbol=code,
+                take_profit_override=(
+                    getattr(self.config.liquidity_lab, "overseas_take_profit_pct", None)
+                    if market == "overseas"
+                    else None
+                ),
             )
             if exit_setup.action in {"sell", "sell_partial"}:
                 return WatchTargetStatus(
@@ -2434,25 +2486,6 @@ class LiquidityLabService:
             entry_by=watch_target.entry_by,
         )
 
-    def _select_domestic_buy_target(
-        self,
-        domestic_ranked: list[DomesticScanResult],
-        watch_targets: list[WatchTargetStatus],
-    ) -> DomesticScanResult | None:
-        candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
-        ready_targets = [
-            watch_target
-            for watch_target in watch_targets
-            if watch_target.market == "domestic" and watch_target.action_bias == "BUY"
-        ]
-        if not ready_targets:
-            return None
-        best_target = max(
-            ready_targets,
-            key=lambda item: (item.signal_score, item.activity_score),
-        )
-        return candidate_map.get(best_target.code)
-
     def _select_domestic_buy_targets(
         self,
         domestic_ranked: list[DomesticScanResult],
@@ -2510,25 +2543,6 @@ class LiquidityLabService:
         if candidate is None or held is None:
             return None
         return candidate, held, best_target.note, None
-
-    def _select_overseas_buy_target(
-        self,
-        overseas_ranked: list[OverseasScanResult],
-        watch_targets: list[WatchTargetStatus],
-    ) -> OverseasScanResult | None:
-        candidate_map = {candidate.symbol.upper(): candidate for candidate in overseas_ranked}
-        ready_targets = [
-            watch_target
-            for watch_target in watch_targets
-            if watch_target.market == "overseas" and watch_target.action_bias == "BUY"
-        ]
-        if not ready_targets:
-            return None
-        best_target = max(
-            ready_targets,
-            key=lambda item: (item.signal_score, item.activity_score),
-        )
-        return candidate_map.get(best_target.code.upper())
 
     def _select_overseas_buy_targets(
         self,
@@ -2594,14 +2608,6 @@ class LiquidityLabService:
         if us_open:
             return "none", None, "us_open_but_mock_session_not_supported"
         return "none", None, "no_supported_market_open"
-
-    async def _run_domestic_paper_test(self, watchlist: list[str]) -> PaperRunState:
-        service = PaperTradingService(self.config, self.client, self.repository, self.notifier)
-        return await service.run(
-            iterations=self.config.liquidity_lab.domestic_paper_iterations,
-            interval_sec=self.config.liquidity_lab.domestic_paper_interval_sec,
-            watchlist_override=watchlist,
-        )
 
     async def _place_domestic_test_order(
         self,
@@ -3618,14 +3624,32 @@ class LiquidityLabService:
         snapshot: MovingAverageSnapshot,
         held: OverseasHeldPosition,
     ) -> tuple[bool, str]:
-        return self._should_exit_position(snapshot, held.pnl_pct)
+        return self._should_exit_position(
+            snapshot,
+            held.pnl_pct,
+            symbol=held.symbol,
+            take_profit_override=getattr(
+                self.config.liquidity_lab,
+                "overseas_take_profit_pct",
+                None,
+            ),
+        )
 
     def _should_exit_position(
         self,
         snapshot: MovingAverageSnapshot,
         pnl_pct: float,
+        *,
+        symbol: str = "",
+        take_profit_override: float | None = None,
     ) -> tuple[bool, str]:
-        exit_setup = self._build_exit_setup(snapshot, pnl_pct, 1)
+        exit_setup = self._build_exit_setup(
+            snapshot,
+            pnl_pct,
+            1,
+            symbol=symbol,
+            take_profit_override=take_profit_override,
+        )
         return exit_setup.action in {"sell", "sell_partial"}, exit_setup.reason
 
     @staticmethod
@@ -4140,9 +4164,13 @@ class LiquidityLabService:
         position_qty: int,
         *,
         symbol: str = "",
+        take_profit_override: float | None = None,
     ):
+        config = self.config.auto_trade
+        if take_profit_override is not None:
+            config = dataclasses.replace(config, take_profit_pct=take_profit_override)
         return evaluate_exit_setup(
-            self.config.auto_trade,
+            config,
             snapshot,
             pnl_pct,
             drawdown_from_peak=0.0,

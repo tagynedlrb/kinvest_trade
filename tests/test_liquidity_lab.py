@@ -2743,7 +2743,14 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     )
     service.client = DummyOverseasSlotClient()
     service.notifier = DummyNotifier()
-    service._signal_cache = {"SOXL": _snapshot(price=25.0)}
+    service._signal_cache = {
+        "SOXL": _snapshot(
+            price=25.0,
+            vwap=24.9,
+            macd_line=0.4,
+            macd_signal=0.2,
+        )
+    }
     candidate = OverseasScanResult(
         symbol="SOXL",
         exchange_code="AMEX",
@@ -2806,7 +2813,14 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     service.client = DummyOverseasSlotClient()
     service.repository = _build_repository()
     service.notifier = DummyNotifier()
-    service._signal_cache = {"SOXL": _snapshot(price=25.0)}
+    service._signal_cache = {
+        "SOXL": _snapshot(
+            price=25.0,
+            vwap=24.9,
+            macd_line=0.4,
+            macd_signal=0.2,
+        )
+    }
     service._session_id = "sess-overseas-buy"
     candidate = OverseasScanResult(
         symbol="SOXL",
@@ -2830,6 +2844,11 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     assert rows[0]["symbol"] == "SOXL"
     assert rows[0]["session_id"] == "sess-overseas-buy"
     assert rows[0]["action_reason"] == "strategy_buy_signal"
+    assert rows[0]["vwap"] is not None
+    assert rows[0]["macd_line"] is not None
+    assert rows[0]["macd_signal"] is not None
+    assert rows[0]["spread_pct"] is not None
+    assert rows[0]["consecutive_losses"] == 0
 
 
 def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:

@@ -98,6 +98,15 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         session_id="sess-a",
         strategy_flag="VWAP+VOL",
         entry_by="VWAP",
+        vwap=20.4,
+        macd_line=0.5,
+        macd_signal=0.3,
+        macd_golden=1,
+        breakout_distance_pct=0.002,
+        atr=0.4,
+        spread_pct=0.001,
+        consecutive_losses=2,
+        hold_cycles=6,
     )
     repository.save_cycle_log(
         logged_at="2026-07-01T00:01:00+00:00",
@@ -118,6 +127,15 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
     assert buy_rows[0]["cycle_no"] == 7
     assert buy_rows[0]["strategy_flag"] == "VWAP+VOL"
     assert buy_rows[0]["entry_by"] == "VWAP"
+    assert buy_rows[0]["vwap"] == 20.4
+    assert buy_rows[0]["macd_line"] == 0.5
+    assert buy_rows[0]["macd_signal"] == 0.3
+    assert buy_rows[0]["macd_golden"] == 1
+    assert buy_rows[0]["breakout_distance_pct"] == 0.002
+    assert buy_rows[0]["atr"] == 0.4
+    assert buy_rows[0]["spread_pct"] == 0.001
+    assert buy_rows[0]["consecutive_losses"] == 2
+    assert buy_rows[0]["hold_cycles"] == 6
     assert len(sell_rows) == 1
     assert sell_rows[0]["action_reason"] == "marginal_profit_exit"
 
@@ -131,6 +149,15 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     assert "strategy_flag" in columns
     assert "entry_by" in columns
     assert "is_session_trade" in columns
+    assert "vwap" in columns
+    assert "macd_line" in columns
+    assert "macd_signal" in columns
+    assert "macd_golden" in columns
+    assert "breakout_distance_pct" in columns
+    assert "atr" in columns
+    assert "spread_pct" in columns
+    assert "consecutive_losses" in columns
+    assert "hold_cycles" in columns
 
 
 def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:

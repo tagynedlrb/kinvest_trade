@@ -1,5 +1,30 @@
 # WORKLOG
 
+## [2026-07-06] 지시문 #51 — 전략 분석용 cycle_log 컬럼 보강
+
+### 배경
+- 전략 분석에 필요한 `vwap`, `macd_line`, `macd_signal`, `breakout_distance_pct`,
+  `atr`, `spread_pct` 등이 `cycle_log`에 누락되어 있었음
+- 특히 BUY_REAL 저장 경로는 `signal_snapshot`을 로그에 싣지 않아 진입 시점 기술 지표 분석이 불가능했음
+- CB 상태와 보유 기간을 함께 분석할 수 있도록 `consecutive_losses`, `hold_cycles`도 필요했음
+
+### 수정 사항
+- `src/kinvest_trade/repository.py`
+  - `cycle_log` 스키마에 `vwap`, `macd_line`, `macd_signal`, `macd_golden`,
+    `breakout_distance_pct`, `atr`, `spread_pct`, `consecutive_losses`, `hold_cycles` 추가
+  - `save_cycle_log()` 시그니처와 INSERT 구문 확장
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_save_cycle_log_from_watch_target()`에 신규 분석 컬럼 저장 추가
+  - 국내/해외 BUY_REAL에 `signal_snapshot` 기반 기술 지표 저장 추가
+  - 국내/해외 SELL_REAL에 기술 지표 + `consecutive_losses` + `hold_cycles` 저장 추가
+- `tests/`
+  - repository 스키마/저장 검증 강화
+  - 해외 BUY_REAL 로그에 기술 지표가 실제로 저장되는지 회귀 테스트 추가
+
+### 기대 효과
+- 매수/매도/대기 시점의 전략 지표를 DB에서 직접 분석 가능
+- CB 카운터와 보유 기간까지 함께 수집되어 사후 성과 해석이 쉬워짐
+
 ## [2026-07-06] 해외 quote 전실패 복원력 / paper 설정 분리
 
 ### 배경

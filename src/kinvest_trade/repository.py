@@ -293,6 +293,15 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "entry_by", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "is_session_trade", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "cycle_log", "vwap", "REAL")
+            self._ensure_column(conn, "cycle_log", "macd_line", "REAL")
+            self._ensure_column(conn, "cycle_log", "macd_signal", "REAL")
+            self._ensure_column(conn, "cycle_log", "macd_golden", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "breakout_distance_pct", "REAL")
+            self._ensure_column(conn, "cycle_log", "atr", "REAL")
+            self._ensure_column(conn, "cycle_log", "spread_pct", "REAL")
+            self._ensure_column(conn, "cycle_log", "consecutive_losses", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "hold_cycles", "INTEGER")
             self._ensure_column(conn, "lab_symbol_state", "entry_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
@@ -408,6 +417,15 @@ class SqliteRepository:
         strategy_flag: str = "",
         entry_by: str = "",
         is_session_trade: int = 1,
+        vwap: float | None = None,
+        macd_line: float | None = None,
+        macd_signal: float | None = None,
+        macd_golden: int | None = None,
+        breakout_distance_pct: float | None = None,
+        atr: float | None = None,
+        spread_pct: float | None = None,
+        consecutive_losses: int | None = None,
+        hold_cycles: int | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -417,8 +435,12 @@ class SqliteRepository:
                      price, pnl_pct, realized_pnl_usd, realized_pnl_krw, holding_qty,
                      rsi14, volume_ratio, intraday_momentum, intraday_bar_return,
                      minute_ma_fast, minute_ma_slow, activity_score, cycle_no, session_id,
-                     strategy_flag, entry_by, is_session_trade)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     strategy_flag, entry_by, is_session_trade,
+                     vwap, macd_line, macd_signal, macd_golden,
+                     breakout_distance_pct, atr, spread_pct,
+                     consecutive_losses, hold_cycles)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     logged_at,
@@ -444,6 +466,15 @@ class SqliteRepository:
                     strategy_flag,
                     entry_by,
                     is_session_trade,
+                    vwap,
+                    macd_line,
+                    macd_signal,
+                    macd_golden,
+                    breakout_distance_pct,
+                    atr,
+                    spread_pct,
+                    consecutive_losses,
+                    hold_cycles,
                 ),
             )
 

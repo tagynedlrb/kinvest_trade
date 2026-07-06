@@ -2967,6 +2967,16 @@ class LiquidityLabService:
             session_id=getattr(self, "_session_id", ""),
             strategy_flag=watch_target.strategy_flag,
             entry_by=watch_target.entry_by,
+            vwap=signal_snapshot.vwap if signal_snapshot else None,
+            macd_line=signal_snapshot.macd_line if signal_snapshot else None,
+            macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
+            macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
+            breakout_distance_pct=(
+                signal_snapshot.breakout_distance_pct if signal_snapshot else None
+            ),
+            atr=signal_snapshot.atr if signal_snapshot else None,
+            spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
+            consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
         )
         self._persist_watch_target_state(
             watch_target,
@@ -3189,10 +3199,26 @@ class LiquidityLabService:
                 realized_pnl_usd=None,
                 realized_pnl_krw=0.0,
                 holding_qty=qty,
+                rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
+                volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
+                intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
+                intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
+                minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
+                minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+                vwap=signal_snapshot.vwap if signal_snapshot else None,
+                macd_line=signal_snapshot.macd_line if signal_snapshot else None,
+                macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
+                macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
+                breakout_distance_pct=(
+                    signal_snapshot.breakout_distance_pct if signal_snapshot else None
+                ),
+                atr=signal_snapshot.atr if signal_snapshot else None,
+                spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
             )
         self._persist_trade_state(
             market="domestic",
@@ -3325,11 +3351,28 @@ class LiquidityLabService:
                 realized_pnl_usd=None,
                 realized_pnl_krw=float(gross_pnl),
                 holding_qty=sell_qty,
+                rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
+                volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
+                intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
+                intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
+                minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
+                minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+                vwap=signal_snapshot.vwap if signal_snapshot else None,
+                macd_line=signal_snapshot.macd_line if signal_snapshot else None,
+                macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
+                macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
+                breakout_distance_pct=(
+                    signal_snapshot.breakout_distance_pct if signal_snapshot else None
+                ),
+                atr=signal_snapshot.atr if signal_snapshot else None,
+                spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 is_session_trade=1 if self._is_session_owned(candidate.stock_code) else 0,
+                consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+                hold_cycles=self._estimate_hold_cycles(candidate.stock_code),
             )
         self._persist_trade_state(
             market="domestic",
@@ -3473,10 +3516,26 @@ class LiquidityLabService:
                 realized_pnl_usd=0.0,
                 realized_pnl_krw=0.0,
                 holding_qty=qty,
+                rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
+                volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
+                intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
+                intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
+                minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
+                minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+                vwap=signal_snapshot.vwap if signal_snapshot else None,
+                macd_line=signal_snapshot.macd_line if signal_snapshot else None,
+                macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
+                macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
+                breakout_distance_pct=(
+                    signal_snapshot.breakout_distance_pct if signal_snapshot else None
+                ),
+                atr=signal_snapshot.atr if signal_snapshot else None,
+                spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
             )
         self._commit_strategy_entry(
             candidate.symbol,
@@ -3902,11 +3961,28 @@ class LiquidityLabService:
                 realized_pnl_usd=gross_pnl_usd,
                 realized_pnl_krw=gross_pnl_krw,
                 holding_qty=real_qty_sold,
+                rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
+                volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
+                intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
+                intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
+                minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
+                minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+                vwap=signal_snapshot.vwap if signal_snapshot else None,
+                macd_line=signal_snapshot.macd_line if signal_snapshot else None,
+                macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
+                macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
+                breakout_distance_pct=(
+                    signal_snapshot.breakout_distance_pct if signal_snapshot else None
+                ),
+                atr=signal_snapshot.atr if signal_snapshot else None,
+                spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
                 cycle_no=getattr(self, "_cycle_count", 0),
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 is_session_trade=1 if self._is_session_owned(candidate.symbol) else 0,
+                consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+                hold_cycles=self._estimate_hold_cycles(candidate.symbol),
             )
         self._persist_trade_state(
             market="overseas",

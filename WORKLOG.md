@@ -1,5 +1,32 @@
 # WORKLOG
 
+## [2026-07-06] 지시문 #50 — 현황 검증 후 잔여 개선
+
+### 검증 결과
+- 지시문 #47~#49 적용 상태는 정상 확인
+- 잔여 이슈는 `risk` dead keys, watchlist 전략 과표시(`RSI`, `VWAP`) 두 축으로 정리됨
+
+### 수정 사항
+- `config/fixed_config.json`
+  - `risk` 섹션을 실제 사용 중인 4개 키만 남기도록 축소
+- `src/kinvest_trade/config.py`
+  - `RiskConfig`와 config 로더를 축소된 `risk` 스키마에 맞게 정리
+- `src/kinvest_trade/paper.py`
+  - 남아 있던 `config.risk.max_spread_pct`, `config.risk.trailing_stop_pct` 참조를 `auto_trade` 설정 참조로 변경
+- `src/kinvest_trade/strategy/rsi_macd.py`
+  - `is_watching()`에서 단순 `rsi14 <= 55` 조건 제거
+  - MACD 골든/상방 유지일 때만 monitoring flag를 표시하도록 정밀화
+- `src/kinvest_trade/strategy/vwap_pullback.py`
+  - `is_watching()`에서 넓은 RSI 범위 조건 제거
+  - VWAP 근접 여부만으로 monitoring flag를 표시하도록 정밀화
+- `tests/`
+  - 축소된 `risk` 키 집합 검증
+  - RSI/VWAP watch 조건 회귀 테스트 추가
+
+### 기대 효과
+- 실제로 쓰지 않는 `risk` 키가 설정과 로더에서 제거되어 운영 혼선을 줄임
+- watchlist의 `전략=RSI`, `전략=VWAP` 표기가 더 선별적으로 나타나 정보 가치가 올라감
+
 ## [2026-07-06] 지시문 #49 — TV 기반 동적 풀 검증 및 개선
 
 ### 검증 결과

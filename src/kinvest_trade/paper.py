@@ -161,7 +161,7 @@ class PaperTradingService:
         momentum = (latest.mid_price - earliest.mid_price) / earliest.mid_price
         bid_ask_ratio = latest.bid_size / latest.ask_size if latest.ask_size > 0 else 0.0
 
-        if latest.spread_pct > self.config.risk.max_spread_pct:
+        if latest.spread_pct > self.config.auto_trade.max_spread_pct:
             return
         if momentum < self.config.paper.entry_trigger_pct:
             return
@@ -238,7 +238,9 @@ class PaperTradingService:
             exit_reason = "take_profit"
         elif pnl_pct <= -self.config.paper.stop_loss_pct:
             exit_reason = "stop_loss"
-        elif snapshot.best_bid < position.peak_price * (1.0 - self.config.risk.trailing_stop_pct):
+        elif snapshot.best_bid < position.peak_price * (
+            1.0 - self.config.auto_trade.trailing_stop_pct
+        ):
             exit_reason = "trailing_stop"
 
         if not exit_reason:

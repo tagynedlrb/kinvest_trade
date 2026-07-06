@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from kinvest_trade.indicators import compute_macd
 from kinvest_trade.strategy import PriorityStrategyManager
+from kinvest_trade.strategy.rsi_macd import RSIMACDStrategy
+from kinvest_trade.strategy.vwap_pullback import VWAPPullbackStrategy
 from kinvest_trade.technical_signals import MovingAverageSnapshot
 
 
@@ -96,9 +98,43 @@ def test_priority_strategy_manager_hold_returns_monitoring_flag() -> None:
     )
 
     assert result.signal == "HOLD"
-    assert result.flag == "VWAP+VOL+RSI"
+    assert result.flag == "VOL+RSI"
     assert result.entry_by == ""
     assert manager.position is None
+
+
+def test_rsi_macd_is_watching_requires_macd_context() -> None:
+    strategy = RSIMACDStrategy()
+
+    assert (
+        strategy.is_watching(
+            _snapshot(
+                rsi14=40.0,
+                macd_line=None,
+                macd_signal=None,
+                macd_golden=False,
+            )
+        )
+        is False
+    )
+    assert (
+        strategy.is_watching(
+            _snapshot(
+                rsi14=60.0,
+                macd_line=0.5,
+                macd_signal=0.3,
+                macd_golden=False,
+            )
+        )
+        is True
+    )
+
+
+def test_vwap_pullback_is_watching_requires_vwap_proximity() -> None:
+    strategy = VWAPPullbackStrategy()
+
+    assert strategy.is_watching(_snapshot(price=100.0, vwap=110.0, rsi14=45.0)) is False
+    assert strategy.is_watching(_snapshot(price=100.0, vwap=101.0, rsi14=45.0)) is True
 
 
 def test_priority_strategy_manager_sell_uses_triggered_strategy_exit() -> None:

@@ -41,10 +41,9 @@ class RSIMACDStrategy:
         return StrategySignal()
 
     def is_watching(self, snapshot: MovingAverageSnapshot) -> bool:
-        macd_positive = snapshot.macd_golden or (
+        """Treat RSI strategy as active only when MACD is already constructive."""
+        return snapshot.macd_golden or (
             snapshot.macd_line is not None
             and snapshot.macd_signal is not None
             and snapshot.macd_line > snapshot.macd_signal
         )
-        rsi_momentum = snapshot.rsi14 is not None and snapshot.rsi14 <= 55.0
-        return macd_positive or rsi_momentum

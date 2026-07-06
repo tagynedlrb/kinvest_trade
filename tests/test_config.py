@@ -1,3 +1,5 @@
+import json
+
 from kinvest_trade.config import _normalize_kis_env, _split_account_fields, load_app_config
 
 
@@ -74,6 +76,22 @@ def test_load_app_config_includes_circuit_breaker_cooldown(monkeypatch) -> None:
 
     assert config.risk.circuit_breaker_cooldown_minutes == 30
     assert config.risk.operating_capital_krw == 50_000_000
+
+
+def test_fixed_config_risk_section_contains_only_live_keys() -> None:
+    with open(
+        "/home/ubuntu/kinvest_trade/config/fixed_config.json",
+        encoding="utf-8",
+    ) as fh:
+        payload = json.load(fh)
+
+    risk = payload["risk"]
+    assert set(risk) == {
+        "daily_loss_limit_pct",
+        "max_consecutive_losses",
+        "circuit_breaker_cooldown_minutes",
+        "operating_capital_krw",
+    }
 
 
 def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:

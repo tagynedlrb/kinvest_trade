@@ -134,16 +134,6 @@
     },
     "risk": {
         "daily_loss_limit_pct": 0.01,
-        "per_trade_risk_pct": 0.002,
-        "stop_loss_pct": 0.007,
-        "take_profit_1_pct": 0.008,
-        "take_profit_2_pct": 0.013,
-        "trailing_stop_pct": 0.005,
-        "block_buy_if_1m_move_abs_gt": 0.02,
-        "block_buy_if_3m_rise_gt": 0.04,
-        "emergency_exit_if_position_loss_gt": 0.012,
-        "max_spread_pct": 0.002,
-        "min_recent_turnover_krw": 1000000000,
         "max_consecutive_losses": 3,
         "circuit_breaker_cooldown_minutes": 30,
         "operating_capital_krw": 50000000

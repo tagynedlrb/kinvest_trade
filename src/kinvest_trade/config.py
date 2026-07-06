@@ -187,16 +187,6 @@ class StrategyConfig:
 @dataclass(slots=True)
 class RiskConfig:
     daily_loss_limit_pct: float
-    per_trade_risk_pct: float
-    stop_loss_pct: float
-    take_profit_1_pct: float
-    take_profit_2_pct: float
-    trailing_stop_pct: float
-    block_buy_if_1m_move_abs_gt: float
-    block_buy_if_3m_rise_gt: float
-    emergency_exit_if_position_loss_gt: float
-    max_spread_pct: float
-    min_recent_turnover_krw: int
     max_consecutive_losses: int
     circuit_breaker_cooldown_minutes: int = 30
     operating_capital_krw: int = 50_000_000
@@ -719,18 +709,6 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
         ),
         risk=RiskConfig(
             daily_loss_limit_pct=float(risk_raw["daily_loss_limit_pct"]),
-            per_trade_risk_pct=float(risk_raw["per_trade_risk_pct"]),
-            stop_loss_pct=float(risk_raw["stop_loss_pct"]),
-            take_profit_1_pct=float(risk_raw["take_profit_1_pct"]),
-            take_profit_2_pct=float(risk_raw["take_profit_2_pct"]),
-            trailing_stop_pct=float(risk_raw["trailing_stop_pct"]),
-            block_buy_if_1m_move_abs_gt=float(risk_raw["block_buy_if_1m_move_abs_gt"]),
-            block_buy_if_3m_rise_gt=float(risk_raw["block_buy_if_3m_rise_gt"]),
-            emergency_exit_if_position_loss_gt=float(
-                risk_raw["emergency_exit_if_position_loss_gt"]
-            ),
-            max_spread_pct=float(risk_raw["max_spread_pct"]),
-            min_recent_turnover_krw=int(risk_raw["min_recent_turnover_krw"]),
             max_consecutive_losses=int(risk_raw["max_consecutive_losses"]),
             circuit_breaker_cooldown_minutes=int(
                 risk_raw.get("circuit_breaker_cooldown_minutes", 30)

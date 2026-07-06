@@ -1402,7 +1402,7 @@ def test_build_watch_target_status_preserves_ready_signal_state() -> None:
 
     assert watch_target.action_bias == "READY"
     assert watch_target.signal_state == "READY"
-    assert watch_target.strategy_flag == "VWAP+VOL+RSI"
+    assert watch_target.strategy_flag == "VOL+RSI"
     assert watch_target.entry_by == ""
 
 

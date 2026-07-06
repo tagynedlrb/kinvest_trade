@@ -47,6 +47,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
         "/lab_relist_schedule - 해외 relist 알림 시간 확인",
+        "/lab_cb_reset - 서킷브레이커 강제 해제 (연속손절 카운터 초기화)",
         "/lab_gitlog [날짜] - 오늘(또는 지정 날짜) 거래 로그를 GitHub에 업로드",
         "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
         "/lab_help - 명령 목록",
@@ -67,6 +68,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
     {"command": "lab_relist_schedule", "description": "해외 relist 알림 시간"},
+    {"command": "lab_cb_reset", "description": "서킷브레이커 강제 해제"},
     {"command": "lab_gitlog", "description": "거래 로그 GitHub 업로드"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_help", "description": "명령 목록 보기"},
@@ -329,6 +331,9 @@ class TelegramLiquidityLabController:
             return
         if command_name == "relist_schedule":
             await self._send_relist_schedule()
+            return
+        if command_name == "cb_reset":
+            await self._handle_cb_reset()
             return
         if command_name == "gitlog":
             date_kst = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -603,12 +608,28 @@ class TelegramLiquidityLabController:
         elif not self.active_session_id:
             self.active_session_id = uuid.uuid4().hex[:12]
         self.mode = target_mode
+        if verb == "resumed" and self.lab_service is not None:
+            setattr(self.lab_service, "_consecutive_losses", 0)
+            setattr(self.lab_service, "_halted_at", None)
         self.next_run_at = datetime.now(timezone.utc)
         self.last_error = None
         self._consecutive_errors = 0
         self._write_runtime_state()
         await self.notifier.send(
             f"[KIS][TELEGRAM_CONTROL]\nmode={self.mode}\ncommand={verb}\nnext_run=immediate"
+        )
+
+    async def _handle_cb_reset(self) -> None:
+        if self.lab_service is None:
+            await self.notifier.send("⚠️ lab 인스턴스에 접근할 수 없습니다.")
+            return
+        previous = int(getattr(self.lab_service, "_consecutive_losses", 0) or 0)
+        setattr(self.lab_service, "_consecutive_losses", 0)
+        setattr(self.lab_service, "_halted_at", None)
+        await self.notifier.send(
+            f"✅ 서킷브레이커 수동 해제\n"
+            f"연속손절 카운터: {previous} → 0\n"
+            f"다음 사이클부터 매수 재개"
         )
 
     async def _handle_pause(self) -> None:
@@ -1393,6 +1414,7 @@ class TelegramLiquidityLabController:
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",
             "/lab_relist_schedule": "relist_schedule",
+            "/lab_cb_reset": "cb_reset",
             "/lab_gitlog": "gitlog",
             "/lab_help": "help",
             "/start": "help",
@@ -1433,6 +1455,8 @@ class TelegramLiquidityLabController:
             "SELL": "매도신호",
             "HOLD": format_side_korean("HOLD"),
             "WAIT": format_side_korean("WAIT"),
+            "READY": "📊진입준비",
+            "WARMUP": "⏳준비중",
         }
         parts = [
             f"{market} {code}",

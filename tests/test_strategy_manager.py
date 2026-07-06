@@ -78,6 +78,29 @@ def test_priority_strategy_manager_buy_score_sums_buy_signals() -> None:
     assert score == 179.0
 
 
+def test_priority_strategy_manager_hold_returns_monitoring_flag() -> None:
+    manager = PriorityStrategyManager()
+
+    result = manager.evaluate(
+        "SOXL",
+        _snapshot(
+            vwap=105.0,
+            volume_ratio=1.7,
+            breakout_distance_pct=-0.01,
+            rsi14=52.0,
+            macd_golden=False,
+            macd_line=0.2,
+            macd_signal=0.1,
+        ),
+        commit=False,
+    )
+
+    assert result.signal == "HOLD"
+    assert result.flag == "VWAP+VOL+RSI"
+    assert result.entry_by == ""
+    assert manager.position is None
+
+
 def test_priority_strategy_manager_sell_uses_triggered_strategy_exit() -> None:
     manager = PriorityStrategyManager()
     manager.open_position(

@@ -562,6 +562,7 @@ class LiquidityLabService:
         self._tv_available: bool = False
         self._consecutive_losses: int = 0
         self._session_realised_krw: float = 0.0
+        self._halted_at: datetime | None = None
         self._tv_diagnostic_ran: bool = False
         self._last_holiday_notice_key: tuple[bool, bool, str] | None = None
         self._session_owned_symbols: set[str] = set()
@@ -2446,7 +2447,7 @@ class LiquidityLabService:
             price=price,
             activity_score=activity_score,
             signal_score=entry_setup.score,
-            action_bias="WAIT",
+            action_bias=signal_state,
             signal_state=signal_state,
             ma_summary=self._ma_relation_summary(signal_snapshot),
             note=note,
@@ -2795,6 +2796,8 @@ class LiquidityLabService:
             else:
                 self._consecutive_losses = 0
             if self._is_trading_halted():
+                if getattr(self, "_halted_at", None) is None:
+                    self._halted_at = datetime.now(timezone.utc)
                 _logger.warning(
                     "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
                     self._consecutive_losses,
@@ -3326,6 +3329,8 @@ class LiquidityLabService:
             else:
                 self._consecutive_losses = 0
             if self._is_trading_halted():
+                if getattr(self, "_halted_at", None) is None:
+                    self._halted_at = datetime.now(timezone.utc)
                 _logger.warning(
                     "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
                     self._consecutive_losses,
@@ -4045,6 +4050,38 @@ class LiquidityLabService:
         consecutive_losses = int(getattr(self, "_consecutive_losses", 0) or 0)
         max_consecutive = int(getattr(risk, "max_consecutive_losses", 0) or 0)
         if max_consecutive > 0 and consecutive_losses >= max_consecutive:
+            cooldown_minutes = int(
+                getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0
+            )
+            if cooldown_minutes > 0:
+                halted_at = getattr(self, "_halted_at", None)
+                if halted_at is None:
+                    self._halted_at = datetime.now(timezone.utc)
+                else:
+                    elapsed_minutes = (
+                        datetime.now(timezone.utc) - ensure_timezone(halted_at)
+                    ).total_seconds() / 60
+                    if elapsed_minutes >= cooldown_minutes:
+                        _logger.info(
+                            "[CB] 서킷브레이커 자동 해제 (%.0f분 경과)",
+                            elapsed_minutes,
+                        )
+                        self._consecutive_losses = 0
+                        self._halted_at = None
+                        notifier = getattr(self, "notifier", None)
+                        if notifier is not None and getattr(notifier, "enabled", True):
+                            try:
+                                loop = asyncio.get_running_loop()
+                            except RuntimeError:
+                                loop = None
+                            if loop is not None:
+                                loop.create_task(
+                                    notifier.send(
+                                        f"✅ 서킷브레이커 자동 해제\n"
+                                        f"쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
+                                    )
+                                )
+                        return False
             return True
 
         daily_limit = float(getattr(risk, "daily_loss_limit_pct", 0.0) or 0.0)

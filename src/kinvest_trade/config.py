@@ -198,6 +198,7 @@ class RiskConfig:
     max_spread_pct: float
     min_recent_turnover_krw: int
     max_consecutive_losses: int
+    circuit_breaker_cooldown_minutes: int = 30
 
 
 @dataclass(slots=True)
@@ -730,6 +731,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             max_spread_pct=float(risk_raw["max_spread_pct"]),
             min_recent_turnover_krw=int(risk_raw["min_recent_turnover_krw"]),
             max_consecutive_losses=int(risk_raw["max_consecutive_losses"]),
+            circuit_breaker_cooldown_minutes=int(
+                risk_raw.get("circuit_breaker_cooldown_minutes", 30)
+            ),
         ),
         storage=storage,
         notifications=NotificationConfig(

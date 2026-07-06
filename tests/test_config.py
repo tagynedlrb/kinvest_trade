@@ -59,6 +59,18 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.loop_interval_sec > 0
 
 
+def test_load_app_config_includes_circuit_breaker_cooldown(monkeypatch) -> None:
+    monkeypatch.setenv("KIS_ENV", "vps")
+    monkeypatch.setenv("KIS_VPS_APPKEY", "paper-key")
+    monkeypatch.setenv("KIS_VPS_APPSECRET", "paper-secret")
+    monkeypatch.setenv("KIS_VPS_ACCOUNT_NO", "8765432101")
+    monkeypatch.delenv("KIS_VPS_ACCOUNT_PRODUCT_CODE", raising=False)
+
+    config = load_app_config()
+
+    assert config.risk.circuit_breaker_cooldown_minutes == 30
+
+
 def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:
     monkeypatch.setenv("KIS_ENV", "prod")
     monkeypatch.setenv("KIS_PROD_APPKEY", "live-key")

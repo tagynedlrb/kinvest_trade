@@ -39,3 +39,12 @@ class RSIMACDStrategy:
             reason = "macd_dead" if snapshot.macd_dead else "rsi_overbought"
             return StrategySignal(sell=True, note=reason)
         return StrategySignal()
+
+    def is_watching(self, snapshot: MovingAverageSnapshot) -> bool:
+        macd_positive = snapshot.macd_golden or (
+            snapshot.macd_line is not None
+            and snapshot.macd_signal is not None
+            and snapshot.macd_line > snapshot.macd_signal
+        )
+        rsi_momentum = snapshot.rsi14 is not None and snapshot.rsi14 <= 55.0
+        return macd_positive or rsi_momentum

@@ -102,7 +102,18 @@ class PriorityStrategyManager:
             strategy_id for strategy_id, signal in signals.items() if signal.buy
         )
         if not triggered:
-            return StrategyResult("HOLD", "", "", "", None)
+            watching_ids = [
+                strategy_id
+                for strategy_id in PRIORITY_ORDER
+                if hasattr(self._strategies[strategy_id], "is_watching")
+                and self._strategies[strategy_id].is_watching(snapshot)  # type: ignore[attr-defined]
+            ]
+            monitoring_flag = (
+                "+".join(STRATEGY_LABEL[strategy_id] for strategy_id in watching_ids)
+                if watching_ids
+                else ""
+            )
+            return StrategyResult("HOLD", monitoring_flag, "", "", None)
 
         preview_position = Position(
             symbol=symbol,

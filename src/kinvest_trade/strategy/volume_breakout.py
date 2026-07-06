@@ -30,3 +30,8 @@ class VolumeBreakoutStrategy:
         if snapshot.price <= trail_stop:
             return StrategySignal(sell=True, note="trail_stop")
         return StrategySignal()
+
+    def is_watching(self, snapshot: MovingAverageSnapshot) -> bool:
+        vol_elevated = snapshot.volume_ratio >= 1.5
+        near_breakout = snapshot.breakout_distance_pct >= -0.015
+        return vol_elevated or near_breakout

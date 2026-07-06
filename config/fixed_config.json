@@ -144,7 +144,8 @@
         "emergency_exit_if_position_loss_gt": 0.012,
         "max_spread_pct": 0.002,
         "min_recent_turnover_krw": 1000000000,
-        "max_consecutive_losses": 3
+        "max_consecutive_losses": 3,
+        "circuit_breaker_cooldown_minutes": 30
     },
     "storage": {
         "db_path": "data/trading.db",

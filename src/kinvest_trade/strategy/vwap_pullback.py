@@ -44,3 +44,11 @@ class VWAPPullbackStrategy:
             reason = "target_hit" if gain >= self.TARGET_PCT else "vwap_break"
             return StrategySignal(sell=True, note=reason)
         return StrategySignal()
+
+    def is_watching(self, snapshot: MovingAverageSnapshot) -> bool:
+        vwap = snapshot.vwap
+        if vwap is None or vwap <= 0:
+            return False
+        near_vwap = abs(snapshot.price - vwap) / vwap <= self.VWAP_TOLERANCE * 2
+        rsi_range = snapshot.rsi14 is not None and 30.0 <= snapshot.rsi14 <= 70.0
+        return near_vwap or rsi_range

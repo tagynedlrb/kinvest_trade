@@ -32,6 +32,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
     assert TelegramLiquidityLabController.parse_command("/lab_relist NVDA TSLA") == ("relist", "NVDA TSLA")
     assert TelegramLiquidityLabController.parse_command("/lab_relist_schedule") == "relist_schedule"
+    assert TelegramLiquidityLabController.parse_command("/lab_cb_reset") == "cb_reset"
     assert TelegramLiquidityLabController.parse_command("/lab_gitlog 2026-07-03") == ("gitlog", "2026-07-03")
     assert TelegramLiquidityLabController.parse_command("/lab_positions") is None
     assert TelegramLiquidityLabController.parse_command("/lab_virtual") is None
@@ -513,6 +514,25 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
     assert "전략=-" in line
 
 
+def test_format_watch_target_line_ready_status_is_readable() -> None:
+    line = TelegramLiquidityLabController._format_watch_target_line(
+        {
+            "market": "overseas",
+            "action_bias": "READY",
+            "code": "SOXL",
+            "signal_state": "READY",
+            "ma_summary": "20d>60d 5>20",
+            "strategy_flag": "VOL",
+            "note": "near_breakout",
+            "price": 19.75,
+            "holding_qty": 0,
+        }
+    )
+
+    assert "상태=📊진입준비" in line
+    assert "전략=VOL" in line
+
+
 def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.notifier = DummyNotifier()
@@ -697,6 +717,46 @@ def _build_async_controller() -> TelegramLiquidityLabController:
     controller.mode = "running"
     controller.current_task_started_at = datetime.now(timezone.utc)
     return controller
+
+
+def test_handle_cb_reset_resets_circuit_breaker_state() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.notifier = DummyNotifier()
+    controller.lab_service = SimpleNamespace(
+        _consecutive_losses=4,
+        _halted_at=datetime.now(timezone.utc),
+    )
+
+    asyncio.run(controller._handle_cb_reset())
+
+    assert controller.lab_service._consecutive_losses == 0
+    assert controller.lab_service._halted_at is None
+    assert "서킷브레이커 수동 해제" in controller.notifier.messages[-1]
+
+
+def test_handle_start_like_command_resume_resets_circuit_breaker() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.mode = "paused"
+    controller.active_session_id = "sess-1"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+    )
+    controller.lab_service = SimpleNamespace(
+        _consecutive_losses=3,
+        _halted_at=datetime.now(timezone.utc),
+    )
+    controller.notifier = DummyNotifier()
+    controller._consecutive_errors = 2
+    controller.last_error = "boom"
+    controller._write_runtime_state = lambda: None
+
+    asyncio.run(controller._handle_start_like_command("running", "resumed"))
+
+    assert controller.mode == "running"
+    assert controller.lab_service._consecutive_losses == 0
+    assert controller.lab_service._halted_at is None
+    assert controller._consecutive_errors == 0
+    assert controller.last_error is None
 
 
 def test_run_cycle_does_not_stop_on_market_closed() -> None:

@@ -1308,6 +1308,64 @@ def test_is_trading_halted_when_consecutive_losses_reach_limit() -> None:
     assert service._is_trading_halted() is True
 
 
+def test_is_trading_halted_auto_releases_after_cooldown() -> None:
+    service = _build_run_service()
+    service.notifier = DummyNotifier()
+    service._consecutive_losses = 3
+    service._halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    service.config.risk.circuit_breaker_cooldown_minutes = 30
+
+    assert service._is_trading_halted() is False
+    assert service._consecutive_losses == 0
+    assert service._halted_at is None
+
+
+def test_build_watch_target_status_preserves_ready_signal_state() -> None:
+    service = _build_run_service()
+    snapshot = _snapshot(
+        price=20.0,
+        vwap=25.0,
+        volume_ratio=1.7,
+        breakout_distance_pct=-0.01,
+        rsi14=52.0,
+        macd_golden=False,
+        macd_line=0.2,
+        macd_signal=0.1,
+    )
+    original_entry_setup = liquidity_lab_module.evaluate_entry_setup
+    original_derive_watch_state = liquidity_lab_module.derive_watch_state
+
+    liquidity_lab_module.evaluate_entry_setup = lambda *args, **kwargs: SimpleNamespace(
+        ready=False,
+        score=12.5,
+        reason="near_breakout",
+    )
+    liquidity_lab_module.derive_watch_state = lambda *args, **kwargs: (
+        "READY",
+        "near_breakout",
+    )
+
+    try:
+        watch_target = service._build_watch_target_status(
+            market="overseas",
+            code="SOXL",
+            exchange_code="AMEX",
+            price=20.0,
+            activity_score=12.0,
+            signal_snapshot=snapshot,
+            held_position=None,
+            holding_qty=0,
+        )
+    finally:
+        liquidity_lab_module.evaluate_entry_setup = original_entry_setup
+        liquidity_lab_module.derive_watch_state = original_derive_watch_state
+
+    assert watch_target.action_bias == "READY"
+    assert watch_target.signal_state == "READY"
+    assert watch_target.strategy_flag == "VWAP+VOL+RSI"
+    assert watch_target.entry_by == ""
+
+
 def test_maybe_send_overseas_relist_alert_skips_on_nyse_holiday() -> None:
     service = _build_run_service()
     service.notifier = DummyNotifier()

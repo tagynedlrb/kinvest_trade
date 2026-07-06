@@ -1,5 +1,25 @@
 # WORKLOG
 
+## [2026-07-06] 지시문 #47 — 전략 표시 / CB 자동 해제 / 구조 수정
+
+### 발견 문제
+- watchlist에서 BUY 직전 종목은 전략 컨텍스트가 비어 `전략=-`로 보였고, `READY` 상태도 `WAIT`로 눌려 보였다.
+- 서킷브레이커는 연속 손절 후 발동만 있고 자동 해제 시점이 없어, 재개 전까지 사실상 영구 정지에 가까웠다.
+- risk 설정 정리 후보가 있었지만, 확인 결과 `paper.py`가 `max_spread_pct`, `trailing_stop_pct` 등을 실제 사용하고 있어 삭제하면 안 되는 상태였다.
+
+### 수정 사항
+- `strategy/*`에 `is_watching()`를 추가해 BUY 전 감시 단계에서도 `VWAP`, `VOL`, `RSI` 전략 컨텍스트가 표시되도록 보강.
+- `PriorityStrategyManager`가 HOLD 시에도 monitoring flag를 반환하도록 수정.
+- `liquidity_lab.py`에서 watch target의 `action_bias`가 `signal_state`를 그대로 반영하도록 바꿔 `READY`, `WARMUP` 상태를 유지.
+- `RiskConfig`와 `fixed_config.json`에 `circuit_breaker_cooldown_minutes`를 연결하고, `LiquidityLabService`에 `_halted_at` 타임스탬프를 도입.
+- `_is_trading_halted()`가 쿨다운 경과 후 자동 해제하고 텔레그램 알림을 보내도록 보강.
+- 텔레그램 명령 `/lab_cb_reset`을 추가하고, `/lab_resume` 시에도 서킷브레이커 카운터를 초기화하도록 정리.
+- `telegram_control.py`의 watchlist 상태 표시를 `READY=📊진입준비`, `WARMUP=⏳준비중`으로 개선.
+
+### 주의 사항
+- 지시문 초안에는 risk dead key 제거가 포함되어 있었지만, 실제 코드 사용처 확인 결과 현재는 보류가 맞다.
+- 따라서 이번 작업에서는 risk 키를 삭제하지 않고, 쿨다운 설정만 추가했다.
+
 ## [2026-07-01] 고정 후보 풀 도입 원인 기록
 
 커밋 7dbafca (2026-06-29): overseas_candidates 74개 최초 정의

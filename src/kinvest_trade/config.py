@@ -74,6 +74,8 @@ class PaperConfig:
     entry_trigger_pct: float
     take_profit_pct: float
     stop_loss_pct: float
+    trailing_stop_pct: float
+    max_spread_pct: float
     min_bid_ask_ratio: float
     max_iterations: int
 
@@ -532,6 +534,8 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             entry_trigger_pct=float(paper_raw["entry_trigger_pct"]),
             take_profit_pct=float(paper_raw["take_profit_pct"]),
             stop_loss_pct=float(paper_raw["stop_loss_pct"]),
+            trailing_stop_pct=float(paper_raw.get("trailing_stop_pct", 0.004)),
+            max_spread_pct=float(paper_raw.get("max_spread_pct", 0.003)),
             min_bid_ask_ratio=float(paper_raw["min_bid_ask_ratio"]),
             max_iterations=int(paper_raw["max_iterations"]),
         ),

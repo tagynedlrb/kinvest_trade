@@ -1481,11 +1481,15 @@ class LiquidityLabService:
 
         self._overseas_excluded = excluded
         if not quote_results:
-            self._signal_cache.clear()
-            updated_map = getattr(self, "_signal_cache_updated_at", None)
-            if updated_map is not None:
-                updated_map.clear()
-            return [], set()
+            # Keep held symbols and existing cached signals alive when quote fetches
+            # temporarily fail so exit/watch logic can continue using last-good
+            # balance data and persisted signal context.
+            if not held_symbols:
+                self._signal_cache.clear()
+                updated_map = getattr(self, "_signal_cache_updated_at", None)
+                if updated_map is not None:
+                    updated_map.clear()
+            return [], held_symbols
 
         ll_cfg = self.config.liquidity_lab
         threshold = getattr(ll_cfg, "max_wait_cycles_before_penalty", 15)

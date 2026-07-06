@@ -1,5 +1,29 @@
 # WORKLOG
 
+## [2026-07-06] 해외 quote 전실패 복원력 / paper 설정 분리
+
+### 배경
+- 해외 quote API가 한 사이클에서 전부 실패하면 `scan_overseas()`가 held symbol 집합과 signal cache를 같이 비워 보유 종목 감시/청산 문맥이 약해질 수 있었음
+- `paper.py`는 dead `risk` 키 제거 후 `auto_trade.max_spread_pct`, `auto_trade.trailing_stop_pct`를 참조하게 되어 paper 테스트와 실거래 전략이 불필요하게 결합된 상태였음
+
+### 수정 사항
+- `src/kinvest_trade/liquidity_lab.py`
+  - 해외 스캔 결과가 비더라도 held 종목이 있으면 `held_symbols`를 유지해 반환
+  - held 종목이 있는 경우 기존 `_signal_cache`와 timestamp cache를 보존해 일시적 quote 장애 시 최근 유효 신호 문맥을 유지
+- `src/kinvest_trade/config.py`
+  - `PaperConfig`에 `trailing_stop_pct`, `max_spread_pct` 필드 추가
+- `config/fixed_config.json`
+  - `paper.trailing_stop_pct`, `paper.max_spread_pct` 추가
+- `src/kinvest_trade/paper.py`
+  - spread / trailing stop 판단을 `config.paper.*` 기준으로 다시 분리
+- `tests/`
+  - paper 설정 로드 회귀 테스트 추가
+  - 해외 quote 전실패 시 held symbol과 signal cache 유지 테스트 추가
+
+### 기대 효과
+- 해외 시세 API가 일시적으로 흔들려도 held 종목의 watch/exit 문맥이 더 잘 유지됨
+- paper 테스트가 auto_trade 파라미터 변경에 덜 흔들리고 독립성이 회복됨
+
 ## [2026-07-06] 지시문 #50 — 현황 검증 후 잔여 개선
 
 ### 검증 결과

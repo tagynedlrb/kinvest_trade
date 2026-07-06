@@ -432,6 +432,26 @@ def test_scan_overseas_sets_empty_pool_when_tv_returns_empty() -> None:
     assert ranked == []
 
 
+def test_scan_overseas_keeps_held_symbols_and_signal_cache_when_quotes_all_fail() -> None:
+    service = _build_service()
+    service._signal_cache = {"GM": _snapshot(price=18.0)}
+
+    async def fake_held_map():
+        return {"GM": "NYSE"}
+
+    async def fake_scan(_candidate):
+        raise RuntimeError("quote failed")
+
+    service._get_held_symbol_map = fake_held_map
+    service._scan_single_overseas = fake_scan
+
+    ranked, held_symbols = asyncio.run(service.scan_overseas())
+
+    assert ranked == []
+    assert held_symbols == {"GM"}
+    assert "GM" in service._signal_cache
+
+
 def test_get_held_symbol_map_uses_cached_exchange_codes() -> None:
     service = _build_service()
     service._cycle_count = 7

@@ -29,6 +29,8 @@
         "entry_trigger_pct": 0.003,
         "take_profit_pct": 0.008,
         "stop_loss_pct": 0.007,
+        "trailing_stop_pct": 0.004,
+        "max_spread_pct": 0.003,
         "min_bid_ask_ratio": 1.05,
         "max_iterations": 20
     },

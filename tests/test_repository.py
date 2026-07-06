@@ -133,6 +133,64 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     assert "is_session_trade" in columns
 
 
+def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    snapshot = {"price": 170.0, "volume_ratio": 2.1}
+
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="vr=2.1x mom=+0.42%",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        holding_qty=57,
+        last_price=170.0,
+        pnl_pct=0.028,
+        entry_price=165.03,
+        peak_price=171.5,
+        has_position=1,
+        snapshot_json=snapshot,
+        updated_at="2026-07-06T09:00:00+00:00",
+    )
+
+    state = repository.get_lab_symbol_state("overseas", "COIN")
+
+    assert state is not None
+    assert state["strategy_flag"] == "VWAP+VOL"
+    assert state["entry_by"] == "VWAP"
+    assert state["has_position"] == 1
+    assert state["snapshot_json"]["price"] == 170.0
+
+
+def test_get_lab_symbol_state_falls_back_to_cycle_log(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-06T07:00:36+00:00",
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        action_reason="vr=3.9x mom=+0.42%",
+        price=170.29,
+        pnl_pct=0.0027,
+        holding_qty=57,
+        cycle_no=10,
+        session_id="sess-1",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+    )
+
+    state = repository.get_lab_symbol_state("overseas", "COIN")
+
+    assert state is not None
+    assert state["strategy_flag"] == "VWAP+VOL"
+    assert state["entry_by"] == "VWAP"
+    assert state["holding_qty"] == 57
+
+
 def test_backup_db_creates_copy(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
 

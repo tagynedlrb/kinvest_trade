@@ -251,6 +251,29 @@ class SqliteRepository:
                     ON cycle_log(symbol);
                 CREATE INDEX IF NOT EXISTS idx_cycle_log_action
                     ON cycle_log(action_bias);
+
+                CREATE TABLE IF NOT EXISTS lab_symbol_state (
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    action_bias TEXT NOT NULL DEFAULT '',
+                    signal_state TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    exit_by TEXT NOT NULL DEFAULT '',
+                    holding_qty INTEGER NOT NULL DEFAULT 0,
+                    last_price REAL,
+                    pnl_pct REAL,
+                    entry_price REAL,
+                    peak_price REAL,
+                    has_position INTEGER NOT NULL DEFAULT 0,
+                    snapshot_json TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (market, symbol)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_symbol_state_updated_at
+                    ON lab_symbol_state(updated_at);
                 """
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
@@ -270,6 +293,10 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "entry_by", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "is_session_trade", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "lab_symbol_state", "entry_price", "REAL")
+            self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
+            self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "lab_symbol_state", "snapshot_json", "TEXT")
 
     @staticmethod
     def _ensure_column(
@@ -442,6 +469,170 @@ class SqliteRepository:
                 [*params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_lab_symbol_state(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        action_bias: str,
+        signal_state: str,
+        note: str,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        exit_by: str = "",
+        holding_qty: int = 0,
+        last_price: float | None = None,
+        pnl_pct: float | None = None,
+        entry_price: float | None = None,
+        peak_price: float | None = None,
+        has_position: int = 0,
+        snapshot_json: dict | None = None,
+        updated_at: str = "",
+    ) -> None:
+        if not updated_at:
+            from datetime import datetime, timezone
+
+            updated_value = datetime.now(timezone.utc).isoformat()
+        else:
+            updated_value = updated_at
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO lab_symbol_state (
+                    market, symbol, exchange_code, action_bias, signal_state, note,
+                    strategy_flag, entry_by, exit_by, holding_qty, last_price, pnl_pct,
+                    entry_price, peak_price, has_position, snapshot_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(market, symbol) DO UPDATE SET
+                    exchange_code = excluded.exchange_code,
+                    action_bias = excluded.action_bias,
+                    signal_state = excluded.signal_state,
+                    note = excluded.note,
+                    strategy_flag = excluded.strategy_flag,
+                    entry_by = excluded.entry_by,
+                    exit_by = excluded.exit_by,
+                    holding_qty = excluded.holding_qty,
+                    last_price = excluded.last_price,
+                    pnl_pct = excluded.pnl_pct,
+                    entry_price = COALESCE(excluded.entry_price, lab_symbol_state.entry_price),
+                    peak_price = COALESCE(excluded.peak_price, lab_symbol_state.peak_price),
+                    has_position = excluded.has_position,
+                    snapshot_json = COALESCE(excluded.snapshot_json, lab_symbol_state.snapshot_json),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    market,
+                    symbol,
+                    exchange_code,
+                    action_bias,
+                    signal_state,
+                    note,
+                    strategy_flag,
+                    entry_by,
+                    exit_by,
+                    holding_qty,
+                    last_price,
+                    pnl_pct,
+                    entry_price,
+                    peak_price,
+                    has_position,
+                    None
+                    if snapshot_json is None
+                    else json.dumps(snapshot_json, ensure_ascii=False, default=str),
+                    updated_value,
+                ),
+            )
+
+    def get_lab_symbol_state(self, market: str, symbol: str) -> dict | None:
+        symbol_upper = symbol.strip().upper()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM lab_symbol_state
+                WHERE market = ? AND symbol = ?
+                """,
+                (market, symbol_upper),
+            ).fetchone()
+        if row is None:
+            return self.get_latest_strategy_context(market, symbol_upper)
+        result = dict(row)
+        snapshot_text = result.get("snapshot_json")
+        if snapshot_text:
+            try:
+                result["snapshot_json"] = json.loads(str(snapshot_text))
+            except json.JSONDecodeError:
+                result["snapshot_json"] = None
+        return result
+
+    def list_lab_symbol_states(
+        self,
+        *,
+        market: str | None = None,
+        only_positions: bool = False,
+    ) -> list[dict]:
+        where_parts: list[str] = []
+        params: list[object] = []
+        if market:
+            where_parts.append("market = ?")
+            params.append(market)
+        if only_positions:
+            where_parts.append("has_position = 1")
+        clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM lab_symbol_state {clause} ORDER BY updated_at DESC",
+                params,
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            snapshot_text = item.get("snapshot_json")
+            if snapshot_text:
+                try:
+                    item["snapshot_json"] = json.loads(str(snapshot_text))
+                except json.JSONDecodeError:
+                    item["snapshot_json"] = None
+            result.append(item)
+        return result
+
+    def get_latest_strategy_context(self, market: str, symbol: str) -> dict | None:
+        symbol_upper = symbol.strip().upper()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT market,
+                       symbol,
+                       exchange_code,
+                       action_bias,
+                       action_reason AS note,
+                       strategy_flag,
+                       entry_by,
+                       '' AS exit_by,
+                       holding_qty,
+                       price AS last_price,
+                       pnl_pct,
+                       NULL AS entry_price,
+                       NULL AS peak_price,
+                       CASE WHEN holding_qty > 0 THEN 1 ELSE 0 END AS has_position,
+                       NULL AS snapshot_json,
+                       logged_at AS updated_at
+                FROM cycle_log
+                WHERE market = ?
+                  AND symbol = ?
+                  AND (
+                    strategy_flag != ''
+                    OR entry_by != ''
+                    OR holding_qty > 0
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (market, symbol_upper),
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def get_session_pnl_summary(
         self,

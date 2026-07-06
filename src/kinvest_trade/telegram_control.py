@@ -516,6 +516,9 @@ class TelegramLiquidityLabController:
             self.lab_service._awaiting_relist = False
             self.lab_service._overseas_scan_cycle_count = 0
             self.lab_service._signal_cache.clear()
+            signal_updated_at = getattr(self.lab_service, "_signal_cache_updated_at", None)
+            if signal_updated_at is not None:
+                signal_updated_at.clear()
         await self.notifier.send(
             "\n".join(
                 [

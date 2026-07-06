@@ -1,5 +1,31 @@
 # WORKLOG
 
+## [2026-07-06] 보유전략 복원 / 시그널 폴백 / 해외 차트 TTL 캐시
+
+### 배경
+- 서비스 재시작 후 held 종목 watchlist가 `전략=-`, `signal_unavailable`로 반복되는 문제가 확인됨.
+- `COIN`처럼 이미 수익권에서 `SELL_READY`가 떠야 하는 종목도 평가 실패로 매도 판단을 놓치는 케이스가 발생함.
+- 원인상 `watchlist 표시`, `매도 판단`, `재시작 복원`, `과도한 해외 차트 재조회`가 서로 연결되어 있었음.
+
+### 수정 사항
+- `repository.py`
+  - `lab_symbol_state` 테이블 추가.
+  - 종목별 최신 전략/보유 상태/스냅샷을 서버(DB)에 영속 저장하도록 확장.
+  - state가 없을 때는 `cycle_log`의 마지막 전략 문맥으로 fallback 복원 가능하게 보강.
+- `liquidity_lab.py`
+  - 해외 시그널 조회를 `intraday_chart_refresh_sec` 기반 TTL 재사용 구조로 변경.
+  - 차트 조회 실패 시 마지막 유효 메모리 캐시 또는 DB 저장 스냅샷으로 fallback 평가하도록 보강.
+  - held 종목은 재시작 후에도 DB state를 읽어 strategy manager를 복원하도록 추가.
+  - 매수/매도/가상매매 직후 전략 상태를 즉시 state 테이블에 반영하도록 변경.
+  - 국내 fluctuation-rank 404가 반복될 때 해당 보조 스캔을 세션에서 자동 비활성화해 로그 폭주를 줄임.
+- `telegram_control.py`
+  - relist 시 해외 signal cache timestamp도 함께 초기화하도록 보강.
+
+### 효과
+- 예기치 못한 종료 후 다음 실행에서도 held 종목의 전략 문맥 복원이 가능해짐.
+- 차트 API 일시 실패/호출량 제한 상황에서도 최근 유효 스냅샷으로 매도 판단 지속 가능.
+- `signal_unavailable` 때문에 전략 표시와 매도 판단이 동시에 붕괴하던 문제가 완화됨.
+
 ## [2026-07-06] 지시문 #47 — 전략 표시 / CB 자동 해제 / 구조 수정
 
 ### 발견 문제

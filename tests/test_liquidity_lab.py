@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1364,6 +1365,128 @@ def test_build_watch_target_status_preserves_ready_signal_state() -> None:
     assert watch_target.signal_state == "READY"
     assert watch_target.strategy_flag == "VWAP+VOL+RSI"
     assert watch_target.entry_by == ""
+
+
+def test_restore_strategy_contexts_recovers_held_position_after_restart() -> None:
+    service = _build_run_service()
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="vr=3.9x mom=+0.42%",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        holding_qty=57,
+        last_price=170.29,
+        pnl_pct=0.028,
+        entry_price=165.03,
+        peak_price=171.0,
+        has_position=1,
+        updated_at="2026-07-06T07:00:36+00:00",
+    )
+    held = OverseasHeldPosition(
+        symbol="COIN",
+        exchange_code="NASD",
+        quantity=57,
+        orderable_qty=57,
+        avg_price=165.03,
+        current_price=170.29,
+        pnl_pct=0.028,
+    )
+
+    service._restore_strategy_contexts(domestic_positions=[], overseas_positions=[held])
+
+    manager = service._get_strategy_manager("COIN")
+    assert manager.position is not None
+    assert manager.position.flag == "VWAP+VOL"
+    assert manager.position.entry_by == "VWAP"
+    assert manager.position.entry_price == 165.03
+
+
+def test_build_watch_target_status_uses_persisted_snapshot_when_signal_unavailable() -> None:
+    service = _build_run_service()
+    persisted_snapshot = _snapshot(
+        price=170.29,
+        volume_ratio=0.5,
+        intraday_momentum=-0.001,
+        intraday_bar_return=-0.0005,
+        rsi14=69.0,
+    )
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="cached_signal",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        holding_qty=57,
+        last_price=170.29,
+        pnl_pct=0.03,
+        entry_price=165.03,
+        peak_price=171.0,
+        has_position=1,
+        snapshot_json=asdict(persisted_snapshot),
+        updated_at="2026-07-06T07:00:36+00:00",
+    )
+    held = OverseasHeldPosition(
+        symbol="COIN",
+        exchange_code="NASD",
+        quantity=57,
+        orderable_qty=57,
+        avg_price=165.03,
+        current_price=170.29,
+        pnl_pct=(170.29 - 165.03) / 165.03,
+    )
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="COIN",
+        exchange_code="NASD",
+        price=170.29,
+        activity_score=0.0,
+        signal_snapshot=None,
+        held_position=held,
+        holding_qty=57,
+    )
+
+    assert watch_target.action_bias == "SELL"
+    assert watch_target.signal_state == "SELL_READY"
+    assert watch_target.strategy_flag == "VWAP+VOL"
+    assert watch_target.entry_by == "VWAP"
+
+
+def test_get_overseas_signal_for_candidate_reuses_recent_cache_without_reload() -> None:
+    service = _build_run_service()
+    service._signal_cache["COIN"] = _snapshot(price=165.0)
+    service._signal_cache_updated_at = {}
+    service._signal_cache_updated_at["COIN"] = datetime.now(timezone.utc)
+
+    async def fail_if_called(candidate):  # noqa: ANN001
+        raise AssertionError("reload should not be called for fresh cache")
+
+    service._load_overseas_signal = fail_if_called  # type: ignore[method-assign]
+    candidate = OverseasScanResult(
+        symbol="COIN",
+        exchange_code="NASD",
+        last_price=170.29,
+        bid=170.28,
+        ask=170.30,
+        spread_pct=0.0001,
+        change_rate_pct=0.0,
+        volume=0,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=0.0,
+    )
+
+    snapshot = asyncio.run(service._get_overseas_signal_for_candidate(candidate))
+
+    assert snapshot is not None
+    assert snapshot.price == 170.29
 
 
 def test_maybe_send_overseas_relist_alert_skips_on_nyse_holiday() -> None:

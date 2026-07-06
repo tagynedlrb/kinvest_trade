@@ -145,7 +145,8 @@
         "max_spread_pct": 0.002,
         "min_recent_turnover_krw": 1000000000,
         "max_consecutive_losses": 3,
-        "circuit_breaker_cooldown_minutes": 30
+        "circuit_breaker_cooldown_minutes": 30,
+        "operating_capital_krw": 50000000
     },
     "storage": {
         "db_path": "data/trading.db",

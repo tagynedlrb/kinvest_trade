@@ -69,6 +69,7 @@ def test_load_app_config_includes_circuit_breaker_cooldown(monkeypatch) -> None:
     config = load_app_config()
 
     assert config.risk.circuit_breaker_cooldown_minutes == 30
+    assert config.risk.operating_capital_krw == 50_000_000
 
 
 def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:

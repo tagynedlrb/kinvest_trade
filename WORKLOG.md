@@ -1,5 +1,37 @@
 # WORKLOG
 
+## [2026-07-06] 지시문 #48 — CB·정책·계산 오류 수정
+
+### 점검 결과
+1. 연속손절 CB (30분 자동해제): 정상 동작 확인
+2. `daily_loss_limit` CB: 운용 자본 대신 `domestic_min_intraday_turnover_krw`(200억)를 기준으로 써서 발동 임계가 2억원이 되어 사실상 비활성 상태였음
+3. 해외 `activity_score`: `change_rate^1.5` 수식 때문에 모멘텀 점수가 지나치게 작아 거래량 편중 선발이 발생했음
+4. `slot_max_pct`: `min(slot_entry_pct, slot_max_pct)` 구조상 현재 기본 설정에서는 dead config 상태였음
+5. `derive_watch_state()`: `if entry.ready` 분기 양쪽이 동일 반환이라 dead branch였음
+6. 국내/해외 SELL 경로의 `_halted_at` 재설정 분기: `_is_trading_halted()` 내부에서 이미 처리되어 dead code였음
+
+### 변경 사항
+- `config/fixed_config.json`
+  - `risk.operating_capital_krw = 50000000` 추가
+- `src/kinvest_trade/config.py`
+  - `RiskConfig.operating_capital_krw` 필드 및 로더 연결
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_is_trading_halted()`의 `daily_loss_limit` 기준을 실제 운용 자본(`operating_capital_krw`)으로 수정
+  - `_daily_halted_at`를 도입해 일일손실한도 CB도 30분 쿨다운 후 자동 해제되도록 보강
+  - `_scan_single_overseas()`의 `momentum_score`를 `change_rate * 200.0` 선형 스케일로 조정
+  - `_slot_based_qty()`를 `slot_entry_pct` 기준으로 단순화
+  - 국내/해외 SELL 경로의 `_halted_at` dead code 제거
+- `src/kinvest_trade/momentum_policy.py`
+  - `derive_watch_state()` dead branch 제거
+- `tests/`
+  - config 로더와 `daily_loss_limit` CB 발동/자동해제 회귀 테스트 추가
+
+### 기대 효과
+- 일일 손실 한도가 실제 계좌 자본 규모에 맞춰 정상 발동
+- CB 발동 후 영구 정지처럼 보이던 상태를 자동 복구
+- 미장 스캔에서 가격 모멘텀이 종목 랭킹에 실제로 반영
+- 불필요한 분기 제거로 코드 추적성과 유지보수성 개선
+
 ## [2026-07-06] 보유전략 복원 / 시그널 폴백 / 해외 차트 TTL 캐시
 
 ### 배경

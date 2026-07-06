@@ -1231,6 +1231,8 @@ def _build_run_service() -> LiquidityLabService:
         risk=SimpleNamespace(
             daily_loss_limit_pct=0.01,
             max_consecutive_losses=3,
+            circuit_breaker_cooldown_minutes=30,
+            operating_capital_krw=50_000_000,
         ),
         liquidity_lab=SimpleNamespace(
             unified_watch_top_n=3,
@@ -1284,6 +1286,7 @@ def _build_run_service() -> LiquidityLabService:
     service._tv_available = False
     service._consecutive_losses = 0
     service._session_realised_krw = 0.0
+    service._daily_halted_at = None
     service._tv_diagnostic_ran = True
     service._last_holiday_notice_key = None
     return service
@@ -1319,6 +1322,26 @@ def test_is_trading_halted_auto_releases_after_cooldown() -> None:
     assert service._is_trading_halted() is False
     assert service._consecutive_losses == 0
     assert service._halted_at is None
+
+
+def test_is_trading_halted_when_daily_loss_limit_exceeded() -> None:
+    service = _build_run_service()
+    service._session_realised_krw = -600_000.0
+
+    assert service._is_trading_halted() is True
+    assert service._daily_halted_at is not None
+
+
+def test_is_trading_halted_daily_limit_auto_releases_after_cooldown() -> None:
+    service = _build_run_service()
+    service.notifier = DummyNotifier()
+    service._session_realised_krw = -600_000.0
+    service._daily_halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    service.config.risk.circuit_breaker_cooldown_minutes = 30
+
+    assert service._is_trading_halted() is False
+    assert service._session_realised_krw == 0.0
+    assert service._daily_halted_at is None
 
 
 def test_build_watch_target_status_preserves_ready_signal_state() -> None:

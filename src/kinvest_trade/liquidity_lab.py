@@ -564,6 +564,7 @@ class LiquidityLabService:
         self._consecutive_losses: int = 0
         self._session_realised_krw: float = 0.0
         self._halted_at: datetime | None = None
+        self._daily_halted_at: datetime | None = None
         self._tv_diagnostic_ran: bool = False
         self._last_holiday_notice_key: tuple[bool, bool, str] | None = None
         self._session_owned_symbols: set[str] = set()
@@ -644,7 +645,7 @@ class LiquidityLabService:
         slot_entry_pct = max(float(config.slot_entry_pct), 0.0)
         if slot_max_pct <= 0 or slot_entry_pct <= 0:
             return 0
-        budget = available_amount * min(slot_entry_pct, slot_max_pct)
+        budget = available_amount * slot_entry_pct
         return max(int(math.floor(budget / price)), 0)
 
     @staticmethod
@@ -1650,7 +1651,7 @@ class LiquidityLabService:
         if bid > 0 and ask > 0 and mid_price > 0:
             spread_pct = (ask - bid) / mid_price
         liquidity_score = math.log10(max(volume, 1)) * 6.0
-        momentum_score = math.copysign(abs(change_rate) ** 1.5, change_rate) * 5.0
+        momentum_score = change_rate * 200.0
         spread_penalty = spread_pct * 2500.0
         volume_surge_bonus = 0.0
         if volume >= self.config.liquidity_lab.overseas_min_volume * 5:
@@ -3260,8 +3261,6 @@ class LiquidityLabService:
             else:
                 self._consecutive_losses = 0
             if self._is_trading_halted():
-                if getattr(self, "_halted_at", None) is None:
-                    self._halted_at = datetime.now(timezone.utc)
                 _logger.warning(
                     "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
                     self._consecutive_losses,
@@ -3839,8 +3838,6 @@ class LiquidityLabService:
             else:
                 self._consecutive_losses = 0
             if self._is_trading_halted():
-                if getattr(self, "_halted_at", None) is None:
-                    self._halted_at = datetime.now(timezone.utc)
                 _logger.warning(
                     "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
                     self._consecutive_losses,
@@ -4636,15 +4633,41 @@ class LiquidityLabService:
         session_realised_krw = float(getattr(self, "_session_realised_krw", 0.0) or 0.0)
         if daily_limit > 0 and session_realised_krw < 0:
             try:
+                # operating_capital_krw: 실제 운용 자본 (risk config)
+                # fallback: 500만원 (보수적 기본값)
                 est_capital = float(
-                    getattr(
-                        self.config.liquidity_lab,
-                        "domestic_min_intraday_turnover_krw",
-                        0,
-                    )
-                    or 500_000_000
+                    getattr(self.config.risk, "operating_capital_krw", 0) or 5_000_000
                 )
                 if est_capital > 0 and abs(session_realised_krw) / est_capital > daily_limit:
+                    cooldown_min = int(
+                        getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0
+                    )
+                    if cooldown_min > 0:
+                        daily_halted_at = getattr(self, "_daily_halted_at", None)
+                        if daily_halted_at is None:
+                            self._daily_halted_at = datetime.now(timezone.utc)
+                        else:
+                            elapsed = (
+                                datetime.now(timezone.utc) - ensure_timezone(daily_halted_at)
+                            ).total_seconds() / 60
+                            if elapsed >= cooldown_min:
+                                _logger.info("[CB] daily_limit 자동 해제 (%.0f분 경과)", elapsed)
+                                self._session_realised_krw = 0.0
+                                self._daily_halted_at = None
+                                notifier = getattr(self, "notifier", None)
+                                if notifier is not None and getattr(notifier, "enabled", True):
+                                    try:
+                                        loop = asyncio.get_running_loop()
+                                    except RuntimeError:
+                                        loop = None
+                                    if loop is not None:
+                                        loop.create_task(
+                                            notifier.send(
+                                                f"✅ 일일손실한도 CB 자동 해제\n"
+                                                f"쿨다운 {cooldown_min}분 완료 → 매수 재개"
+                                            )
+                                        )
+                                return False
                     return True
             except Exception:
                 pass

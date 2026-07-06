@@ -295,8 +295,6 @@ def derive_watch_state(
         inverse_etf_symbols=inverse_etf_symbols,
         leveraged_etf_symbols=leveraged_etf_symbols,
     )
-    if entry.ready:
-        return entry.state, entry.reason
     return entry.state, entry.reason
 
 

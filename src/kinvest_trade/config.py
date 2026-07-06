@@ -199,6 +199,7 @@ class RiskConfig:
     min_recent_turnover_krw: int
     max_consecutive_losses: int
     circuit_breaker_cooldown_minutes: int = 30
+    operating_capital_krw: int = 50_000_000
 
 
 @dataclass(slots=True)
@@ -734,6 +735,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             circuit_breaker_cooldown_minutes=int(
                 risk_raw.get("circuit_breaker_cooldown_minutes", 30)
             ),
+            operating_capital_krw=int(risk_raw.get("operating_capital_krw", 50_000_000)),
         ),
         storage=storage,
         notifications=NotificationConfig(

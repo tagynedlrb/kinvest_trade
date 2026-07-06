@@ -685,6 +685,7 @@ class LiquidityLabService:
         self,
         held_positions: list | None = None,
         held_symbols: set[str] | None = None,
+        held_symbol_map: dict[str, str] | None = None,
     ) -> list[OverseasCandidateConfig]:
         raw_pool: list = (
             getattr(self, "_manual_overseas_pool", None)
@@ -724,7 +725,9 @@ class LiquidityLabService:
                         self._coerce_overseas_candidate(
                             {
                                 "symbol": symbol_upper,
-                                "exchange_code": "NASD",
+                                "exchange_code": (
+                                    (held_symbol_map or {}).get(symbol_upper, "NASD")
+                                ),
                             }
                         )
                     )
@@ -767,6 +770,8 @@ class LiquidityLabService:
         )
 
     async def _ensure_tv_diagnostics(self) -> None:
+        if getattr(self, "_tv_available", False):
+            return
         if getattr(self, "_tv_diagnostic_ran", False):
             return
         self._tv_diagnostic_ran = True
@@ -824,8 +829,7 @@ class LiquidityLabService:
                         preview,
                     )
                     return
-            _logger.warning("[TV] scan_result_empty -> fallback")
-            self._tv_available = False
+            _logger.warning("[TV] scan_result_empty; will retry next rescan cycle")
 
         self._dynamic_overseas_pool = []
         if not getattr(self, "_awaiting_relist", False):
@@ -1446,12 +1450,15 @@ class LiquidityLabService:
             )
         ):
             self._overseas_scan_cycle_count = 0
+            self._tv_diagnostic_ran = False
             await self._refresh_overseas_dynamic_pool()
 
-        held_symbols = await self._get_held_symbols()
+        held_symbol_map = await self._get_held_symbol_map()
         active_overseas_pool = self._active_overseas_pool(
-            held_symbols=held_symbols | self._get_virtual_held_symbols()
+            held_symbol_map=held_symbol_map,
+            held_symbols=set(held_symbol_map.keys()),
         )
+        held_symbols = set(held_symbol_map.keys())
         for candidate in active_overseas_pool:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
@@ -1579,6 +1586,32 @@ class LiquidityLabService:
             return held
         except Exception:
             return self._last_held_symbols or self._get_virtual_held_symbols()
+
+    async def _get_held_symbol_map(self) -> dict[str, str]:
+        """
+        Return current overseas holdings as symbol -> exchange_code mapping.
+
+        Reuses the balance cache populated by `_get_held_symbols()` to avoid
+        extra API calls. Virtual holdings default to NASD when no exchange
+        context exists.
+        """
+        _ = await self._get_held_symbols()
+        cache = getattr(self, "_overseas_balance_cache", {})
+        result: dict[str, str] = {}
+        for balance in cache.get("data", {}).values():
+            for row in balance.get("positions", []):
+                qty = parse_kis_number(row.get("ovrs_cblc_qty"))
+                if qty <= 0:
+                    continue
+                symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                raw_exch = str(row.get("ovrs_excg_cd", "")).strip().upper()
+                if symbol:
+                    result[symbol] = raw_exch or "NASD"
+        for sym in self._get_virtual_held_symbols():
+            symbol = sym.upper()
+            if symbol not in result:
+                result[symbol] = "NASD"
+        return result
 
     def _get_virtual_held_symbols(self) -> set[str]:
         manager = getattr(self, "virtual_trades", None)

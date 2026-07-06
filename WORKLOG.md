@@ -1,5 +1,31 @@
 # WORKLOG
 
+## [2026-07-06] 지시문 #49 — TV 기반 동적 풀 검증 및 개선
+
+### 검증 결과
+- TV 동적 풀 갱신 주기, 보유 종목 강제 포함, 신호 캐시, 수동 relist override는 정상 동작 확인
+- `tv_min_price_usd`($1)와 `overseas_min_price_usd`($5) 불일치로 TV가 고른 일부 종목이 즉시 제외되고 있었음
+- held 종목을 active pool에 보강할 때 `exchange_code`를 항상 `NASD`로 넣어 NYSE 보유 종목에서 KIS 가격 조회 오류 가능성이 있었음
+- TV 빈 결과 시 `_tv_available=False`로 영구 전환되어 재시작 전까지 자동 복구가 불가능했음
+
+### 변경 사항
+- `config/fixed_config.json`
+  - `tv_min_price_usd`를 `5.0`으로 조정해 해외 스캔 가격 필터와 일치시킴
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_get_held_symbol_map()` 추가로 balance cache에서 `symbol -> exchange_code`를 복원하도록 확장
+  - `_active_overseas_pool()`에 `held_symbol_map` 파라미터를 추가해 held 종목 보강 시 실제 거래소 코드를 우선 사용
+  - `scan_overseas()`가 `held_symbol_map` 기반으로 active pool과 held symbol set을 구성하도록 변경
+  - `_refresh_overseas_dynamic_pool()`에서 TV 빈 결과 시 `_tv_available`을 영구 비활성화하지 않도록 수정
+  - 해외 rescan 시 `_tv_diagnostic_ran=False`로 리셋해 다음 주기에 TV 재진단/자동 복구가 가능하도록 보강
+  - `_ensure_tv_diagnostics()`는 이미 TV 사용 가능 상태면 재진단을 생략하도록 정리
+- `tests/`
+  - held 종목 거래소 코드 보존, TV 빈 결과 후 재시도 가능 상태 유지, held symbol map 복원, rescan 진단 플래그 리셋 회귀 테스트 추가
+
+### 기대 효과
+- TV 스크리너 결과와 실제 해외 스캔 필터가 일치해 불필요한 종목 폐기가 줄어듦
+- NYSE 보유 종목도 정확한 거래소 코드로 가격 조회/감시 가능
+- TV 일시 장애 후 서비스 재시작 없이 자동 복구될 수 있는 경로 확보
+
 ## [2026-07-06] 지시문 #48 — CB·정책·계산 오류 수정
 
 ### 점검 결과

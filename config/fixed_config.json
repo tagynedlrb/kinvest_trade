@@ -166,7 +166,7 @@
         "tv_scan_enabled": true,
         "tv_top_n": 30,
         "tv_min_rel_volume": 2.0,
-        "tv_min_price_usd": 1.0,
+        "tv_min_price_usd": 5.0,
         "tv_min_volume": 500000,
         "tv_min_market_cap": 300000000,
         "tv_max_market_cap": 2000000000000,

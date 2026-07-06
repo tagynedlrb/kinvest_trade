@@ -62,7 +62,7 @@ def _build_service() -> LiquidityLabService:
             tv_scan_enabled=True,
             tv_top_n=30,
             tv_min_rel_volume=2.0,
-            tv_min_price_usd=1.0,
+            tv_min_price_usd=5.0,
             tv_min_volume=500_000,
             tv_min_market_cap=3e8,
             tv_max_market_cap=2e12,
@@ -426,7 +426,55 @@ def test_scan_overseas_sets_empty_pool_when_tv_returns_empty() -> None:
     finally:
         liquidity_lab_module.scan_top_volume_surge = original
 
-    assert service._tv_available is False
+    assert service._tv_available is True
     assert service._dynamic_overseas_pool == []
     assert service._awaiting_relist is True
     assert ranked == []
+
+
+def test_get_held_symbol_map_uses_cached_exchange_codes() -> None:
+    service = _build_service()
+    service._cycle_count = 7
+    service._overseas_balance_cache = {
+        "cycle": 7,
+        "data": {
+            "NYSE": {
+                "positions": [
+                    {"ovrs_pdno": "GM", "ovrs_cblc_qty": "2", "ovrs_excg_cd": "NYSE"},
+                ]
+            },
+            "NASD": {
+                "positions": [
+                    {"ovrs_pdno": "HOOD", "ovrs_cblc_qty": "1", "ovrs_excg_cd": "NASD"},
+                ]
+            },
+        },
+    }
+    service._get_virtual_held_symbols = lambda: {"SOFI"}
+
+    held_map = asyncio.run(service._get_held_symbol_map())
+
+    assert held_map == {"GM": "NYSE", "HOOD": "NASD", "SOFI": "NASD"}
+
+
+def test_scan_overseas_rescan_resets_tv_diagnostic_flag() -> None:
+    service = _build_service()
+    service._tv_available = False
+    service._tv_diagnostic_ran = True
+    service._dynamic_overseas_pool = None
+    service._overseas_scan_cycle_count = 20
+
+    async def _held_map():
+        return {}
+
+    async def fake_refresh():
+        service._dynamic_overseas_pool = []
+
+    service._get_held_symbol_map = _held_map
+    service._refresh_overseas_dynamic_pool = fake_refresh
+
+    ranked, held = asyncio.run(service.scan_overseas())
+
+    assert service._tv_diagnostic_ran is False
+    assert ranked == []
+    assert held == set()

@@ -1305,6 +1305,22 @@ def test_active_overseas_pool_includes_held_symbols_without_positions() -> None:
     ]
 
 
+def test_active_overseas_pool_uses_held_symbol_exchange_map() -> None:
+    service = _build_run_service()
+    service._dynamic_overseas_pool = [{"symbol": "NVDA", "exchange_code": "NASD"}]
+
+    pool = service._active_overseas_pool(
+        held_symbols={"GM", "hood"},
+        held_symbol_map={"GM": "NYSE", "HOOD": "NASD"},
+    )
+
+    assert sorted((candidate.symbol, candidate.exchange_code) for candidate in pool) == [
+        ("GM", "NYSE"),
+        ("HOOD", "NASD"),
+        ("NVDA", "NASD"),
+    ]
+
+
 def test_is_trading_halted_when_consecutive_losses_reach_limit() -> None:
     service = _build_run_service()
     service._consecutive_losses = 3

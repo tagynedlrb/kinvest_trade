@@ -15,6 +15,7 @@ from kinvest_trade.liquidity_lab import (
     OverseasHeldPosition,
     OverseasScanResult,
     UnifiedPositionTracker,
+    VirtualPosition,
     VirtualTradeManager,
     WatchTargetStatus,
 )
@@ -357,6 +358,87 @@ def test_select_overseas_exit_targets_returns_multiple_candidates() -> None:
 
     assert [item[0].symbol for item in results] == ["PFE", "AAL"]
     assert [item[2] for item in results] == ["stop_loss", "take_profit"]
+
+
+def test_select_overseas_exit_targets_includes_virtual_only_stop_loss() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.025,
+                    "overseas_stop_loss_pct": 0.015,
+                },
+            )()
+        },
+    )()
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service._signal_cache = {}
+    service.virtual_trades = type(
+        "VirtualTrades",
+        (),
+        {
+            "list_positions": lambda self, market=None: [
+                VirtualPosition(
+                    market="overseas",
+                    symbol="SOLS",
+                    exchange_code="NASD",
+                    qty=441,
+                    avg_price=68.70,
+                    currency="USD",
+                )
+            ],
+            "get_position": lambda self, market, symbol: VirtualPosition(
+                market="overseas",
+                symbol="SOLS",
+                exchange_code="NASD",
+                qty=441,
+                avg_price=68.70,
+                currency="USD",
+            ) if symbol.upper() == "SOLS" else None,
+        },
+    )()
+    ranked = [
+        OverseasScanResult(
+            symbol="SOLS",
+            exchange_code="NASD",
+            last_price=61.75,
+            bid=61.70,
+            ask=61.80,
+            spread_pct=0.0016,
+            change_rate_pct=-5.0,
+            volume=900_000,
+            orderable_qty=0,
+            fx_rate_krw=1350.0,
+            activity_score=8.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="SOLS",
+            exchange_code="NASD",
+            quantity=441,
+            orderable_qty=441,
+            avg_price=68.70,
+            current_price=61.75,
+            pnl_pct=(61.75 - 68.70) / 68.70,
+            is_virtual=True,
+        )
+    ]
+
+    results = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert len(results) == 1
+    candidate, held, reason, signal_snapshot = results[0]
+    assert candidate.symbol == "SOLS"
+    assert held.is_virtual is True
+    assert held.orderable_qty == 441
+    assert reason == "stop_loss"
+    assert signal_snapshot is None
 
 
 def test_manage_overseas_position_waits_when_already_holding_max_qty() -> None:

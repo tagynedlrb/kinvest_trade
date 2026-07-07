@@ -1930,17 +1930,25 @@ class LiquidityLabService:
 
             avg_price = 0.0
             pnl_pct = 0.0
+            virtual_buy = None if virtual_manager is None else virtual_manager.get_position("overseas", symbol)
             if real is not None and real.avg_price > 0:
                 avg_price = real.avg_price
                 pnl_pct = real.pnl_pct
             else:
-                virtual_buy = None if virtual_manager is None else virtual_manager.get_position("overseas", symbol)
                 if virtual_buy is not None and virtual_buy.avg_price > 0:
                     avg_price = virtual_buy.avg_price
                     pnl_pct = (quote.last_price - avg_price) / avg_price
 
-            if avg_price <= 0 or remaining_real_orderable <= 0:
+            is_virtual_only = real is None and virtual_buy is not None
+            if avg_price <= 0:
                 continue
+            if not is_virtual_only and remaining_real_orderable <= 0:
+                continue
+            effective_orderable = (
+                (virtual_buy.qty if virtual_buy is not None else 0)
+                if is_virtual_only
+                else remaining_real_orderable
+            )
 
             exit_reason: str | None = None
             priority: tuple[int, float] | None = None
@@ -1958,7 +1966,7 @@ class LiquidityLabService:
                 symbol=symbol,
                 exchange_code=real.exchange_code if real else quote.exchange_code,
                 quantity=real.quantity if real else 0,
-                orderable_qty=remaining_real_orderable,
+                orderable_qty=effective_orderable,
                 avg_price=avg_price,
                 current_price=quote.last_price,
                 pnl_pct=pnl_pct,

@@ -866,3 +866,22 @@
 
 ### 검증 결과
 - `python3 -m pytest tests/test_momentum_policy.py tests/test_git_uploader.py tests/test_telegram_control.py -q` 통과
+
+## [2026-07-08] 지시문 #54 — Virtual position exit 버그 수정
+
+### 발견 사고
+- SOLS 가상 매수 포지션이 손절 기준을 크게 초과했는데도 장시간 미청산 상태로 남아 있었음
+- 원인: `_select_overseas_exit_targets()` 1차 pass에서
+  `remaining_real_orderable <= 0` 조건이 virtual-only 포지션에도 동일 적용됨
+- 가상 포지션은 실보유가 없으므로 `remaining_real_orderable=0`이 정상인데,
+  이 값 때문에 stop_loss / take_profit 평가 이전에 무조건 skip되고 있었음
+
+### 수정 사항
+- `liquidity_lab.py`
+  - virtual-only 포지션(`real is None and virtual_buy exists`)은
+    `remaining_real_orderable == 0`이어도 exit 평가를 계속 진행하도록 분기 추가
+  - `effective_orderable`을 도입해 virtual-only 포지션의 `orderable_qty`에
+    `virtual_buy.qty`를 설정
+  - 이후 `_place_overseas_sell_order()`가 virtual sell 경로를 정상 진입할 수 있게 연결
+- `tests/test_liquidity_lab.py`
+  - virtual-only 해외 포지션이 stop_loss 조건 충족 시 exit 후보로 반환되는 회귀 테스트 추가

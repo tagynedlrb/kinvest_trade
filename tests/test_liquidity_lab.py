@@ -633,6 +633,10 @@ def _build_sell_service(*, dry_run: bool = False, error: Exception | None = None
     service.notifier = DummyNotifier()
     service._signal_cache = {}
     service._session_id = "sess-test"
+    service._pending_trade_notifications = []
+    service._pending_trade_notification_started_at = None
+    service._trade_notification_window_sec = 0
+    service._trade_notification_max_batch_size = 8
     return service
 
 
@@ -668,9 +672,10 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert result["submitted"] is True
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
-    assert "[KIS][LAB_SELL]" in message
-    assert "매수전략=-" in message
-    assert "청산전략=긴급 손절" in message
+    assert message.startswith("[KIS][LAB_TRADE_BATCH]")
+    assert "해외 TSLA 매도 +$282.00 x2" in message
+    assert "매수=-" in message
+    assert "청산=긴급 손절" in message
     assert "수익률=+0.71%" in message
     assert "수익률=+0.71%" in message
 
@@ -860,8 +865,8 @@ def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
         liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
 
     assert result["submitted"] is True
-    assert any("[KIS][VIRTUAL_TRADE]" in message for message in service.notifier.messages)
-    assert "실보유정산대기=1주" in service.notifier.messages[-1]
+    assert any(message.startswith("[KIS][LAB_TRADE_BATCH]") for message in service.notifier.messages)
+    assert "NVDA(가상) 매도" in service.notifier.messages[-1]
 
 
 def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
@@ -894,8 +899,8 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
 
     assert result["submitted"] is True
-    assert "매수전략=-" in service.notifier.messages[0]
-    assert "수익률=알수없음" in service.notifier.messages[0]
+    assert "매수=-" in service.notifier.messages[0]
+    assert "수익률=-" in service.notifier.messages[0]
 
 
 class DummyDomesticBalanceClient:
@@ -1131,6 +1136,10 @@ def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | No
     service.notifier = DummyNotifier()
     service._signal_cache = {}
     service._session_id = "sess-domestic"
+    service._pending_trade_notifications = []
+    service._pending_trade_notification_started_at = None
+    service._trade_notification_window_sec = 0
+    service._trade_notification_max_batch_size = 8
     return service
 
 
@@ -1162,10 +1171,10 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
 
     assert result["submitted"] is True
     message = service.notifier.messages[0]
-    assert "[KIS][LAB_SELL]" in message
-    assert "시장=국내" in message
-    assert "매수전략=-" in message
-    assert "청산전략=손절" in message
+    assert message.startswith("[KIS][LAB_TRADE_BATCH]")
+    assert "국내 005930 매도 +81,950원 x2" in message
+    assert "매수=-" in message
+    assert "청산=손절" in message
     assert "수익률=+2.44%" in message
     assert "수익률=+2.44%" in message
 
@@ -1487,6 +1496,10 @@ def _build_run_service() -> LiquidityLabService:
     service._daily_halted_at = None
     service._tv_diagnostic_ran = True
     service._last_holiday_notice_key = None
+    service._pending_trade_notifications = []
+    service._pending_trade_notification_started_at = None
+    service._trade_notification_window_sec = 0
+    service._trade_notification_max_batch_size = 8
     return service
 
 
@@ -2901,7 +2914,7 @@ def test_virtual_overseas_sell_uses_existing_virtual_position() -> None:
     assert result["submitted"] is True
     assert result["virtual"] is True
     assert service.virtual_trades.get_position("overseas", "SOXL") is None
-    assert any("구분=매도 (virtual)" in message for message in service.notifier.messages)
+    assert any("SOXL(가상) 매도" in message for message in service.notifier.messages)
 
 
 def test_virtual_buy_does_not_touch_real_broker_balance() -> None:
@@ -3051,6 +3064,10 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
             macd_signal=0.2,
         )
     }
+    service._pending_trade_notifications = []
+    service._pending_trade_notification_started_at = None
+    service._trade_notification_window_sec = 0
+    service._trade_notification_max_batch_size = 8
     service._session_id = "sess-overseas-buy"
     candidate = OverseasScanResult(
         symbol="SOXL",
@@ -3068,11 +3085,16 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
 
     result = asyncio.run(service._place_overseas_test_order(candidate))
     rows = service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5)
+    broker_rows = service.repository.list_broker_order_events(limit=5)
 
     assert result["submitted"] is True
     assert len(rows) == 1
     assert rows[0]["symbol"] == "SOXL"
     assert rows[0]["session_id"] == "sess-overseas-buy"
+    assert len(broker_rows) == 1
+    assert broker_rows[0]["symbol"] == "SOXL"
+    assert broker_rows[0]["requested_price"] == 25.0
+    assert service.notifier.messages[0].startswith("[KIS][LAB_TRADE_BATCH]")
     assert rows[0]["action_reason"] == "strategy_buy_signal"
     assert rows[0]["vwap"] is not None
     assert rows[0]["macd_line"] is not None

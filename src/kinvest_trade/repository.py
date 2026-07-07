@@ -274,6 +274,30 @@ class SqliteRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_lab_symbol_state_updated_at
                     ON lab_symbol_state(updated_at);
+
+                CREATE TABLE IF NOT EXISTS broker_order_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    side TEXT NOT NULL,
+                    order_kind TEXT NOT NULL,
+                    requested_qty INTEGER NOT NULL DEFAULT 0,
+                    requested_price REAL,
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    exit_by TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    broker_order_no TEXT,
+                    is_virtual INTEGER NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_broker_order_events_created_at
+                    ON broker_order_events(created_at);
+                CREATE INDEX IF NOT EXISTS idx_broker_order_events_symbol
+                    ON broker_order_events(symbol);
                 """
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
@@ -500,6 +524,78 @@ class SqliteRepository:
                 [*params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def save_broker_order_event(
+        self,
+        *,
+        created_at: str,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        side: str,
+        order_kind: str,
+        requested_qty: int,
+        requested_price: float | None = None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        exit_by: str = "",
+        status: str = "",
+        reason: str = "",
+        broker_order_no: str | None = None,
+        is_virtual: int = 0,
+        payload: dict | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO broker_order_events (
+                    created_at, market, symbol, exchange_code, side, order_kind,
+                    requested_qty, requested_price, strategy_flag, entry_by, exit_by,
+                    status, reason, broker_order_no, is_virtual, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    market,
+                    symbol,
+                    exchange_code,
+                    side,
+                    order_kind,
+                    requested_qty,
+                    requested_price,
+                    strategy_flag,
+                    entry_by,
+                    exit_by,
+                    status,
+                    reason,
+                    broker_order_no,
+                    is_virtual,
+                    json.dumps(payload or {}, ensure_ascii=False, default=str),
+                ),
+            )
+
+    def list_broker_order_events(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM broker_order_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            payload_text = item.get("payload_json")
+            if payload_text:
+                try:
+                    item["payload_json"] = json.loads(str(payload_text))
+                except json.JSONDecodeError:
+                    item["payload_json"] = {}
+            result.append(item)
+        return result
 
     def upsert_lab_symbol_state(
         self,

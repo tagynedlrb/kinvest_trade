@@ -573,6 +573,10 @@ class LiquidityLabService:
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
         self._persisted_symbol_state: dict[tuple[str, str], dict] = {}
         self._domestic_fluctuation_rank_disabled: bool = False
+        self._pending_trade_notifications: list[str] = []
+        self._pending_trade_notification_started_at: datetime | None = None
+        self._trade_notification_window_sec: int = 60
+        self._trade_notification_max_batch_size: int = 8
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -649,6 +653,118 @@ class LiquidityLabService:
             return 0
         budget = available_amount * slot_entry_pct
         return max(int(math.floor(budget / price)), 0)
+
+    @staticmethod
+    def _extract_broker_order_no(response: object) -> str:
+        if not isinstance(response, dict):
+            return ""
+        nested_response = response.get("response")
+        if isinstance(nested_response, dict):
+            nested_value = LiquidityLabService._extract_broker_order_no(nested_response)
+            if nested_value:
+                return nested_value
+        output = response.get("output")
+        if isinstance(output, dict):
+            for key in ("ODNO", "odno", "ORD_NO", "ord_no"):
+                value = output.get(key)
+                if value:
+                    return str(value)
+        for key in ("ODNO", "odno", "ORD_NO", "ord_no"):
+            value = response.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    def _record_broker_order_event(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        side: str,
+        order_kind: str,
+        requested_qty: int,
+        requested_price: float | None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        exit_by: str = "",
+        status: str = "",
+        reason: str = "",
+        is_virtual: bool = False,
+        payload: dict | None = None,
+    ) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return
+        broker_order_no = self._extract_broker_order_no(payload)
+        repository.save_broker_order_event(
+            created_at=datetime.now(timezone.utc).isoformat(),
+            market=market,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            side=side.upper(),
+            order_kind=order_kind,
+            requested_qty=requested_qty,
+            requested_price=requested_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            status=status,
+            reason=reason,
+            broker_order_no=broker_order_no or None,
+            is_virtual=1 if is_virtual else 0,
+            payload=payload,
+        )
+
+    def _queue_trade_notification(self, line: str) -> None:
+        if not line:
+            return
+        queue = getattr(self, "_pending_trade_notifications", None)
+        if queue is None:
+            queue = []
+            self._pending_trade_notifications = queue
+        if not queue:
+            self._pending_trade_notification_started_at = datetime.now(timezone.utc)
+        queue.append(line)
+
+    def _trade_notification_window_seconds(self) -> int:
+        value = getattr(self, "_trade_notification_window_sec", 60)
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return 60
+
+    def _trade_notification_force_immediate(self) -> bool:
+        return self._trade_notification_window_seconds() <= 0
+
+    async def _flush_trade_notifications(self, *, force: bool = False) -> None:
+        queue = getattr(self, "_pending_trade_notifications", None)
+        if not queue:
+            return
+        now = datetime.now(timezone.utc)
+        started_at = getattr(self, "_pending_trade_notification_started_at", None) or now
+        batch_size = len(queue)
+        age_sec = max((now - started_at).total_seconds(), 0.0)
+        if (
+            not force
+            and age_sec < float(self._trade_notification_window_seconds())
+            and batch_size < int(getattr(self, "_trade_notification_max_batch_size", 8) or 8)
+        ):
+            return
+        lines = [
+            "[KIS][LAB_TRADE_BATCH]",
+            f"시각={format_kst_korean(now)}",
+            f"건수={batch_size}",
+            *queue,
+        ]
+        try:
+            await self.notifier.send("\n".join(lines))
+        finally:
+            self._pending_trade_notifications = []
+            self._pending_trade_notification_started_at = None
+
+    async def flush_pending_trade_notifications(self, *, force: bool = True) -> None:
+        await self._flush_trade_notifications(force=force)
 
     @staticmethod
     def _parse_relist_schedule(schedule_text: str) -> list[tuple[int, int]]:
@@ -3236,21 +3352,34 @@ class LiquidityLabService:
                 "reason": "order_rejected",
                 "error": str(exc),
             }
-        await self.notifier.send(
-            "\n".join(
+        self._record_broker_order_event(
+            market="domestic",
+            symbol=candidate.stock_code,
+            exchange_code=None,
+            side="BUY",
+            order_kind="limit",
+            requested_qty=qty,
+            requested_price=float(candidate.best_ask or candidate.current_price),
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            status="SUBMITTED",
+            reason="domestic_buy",
+            payload=response if isinstance(response, dict) else {"response": response},
+        )
+        self._queue_trade_notification(
+            " ".join(
                 [
-                    "[KIS][LIQUIDITY_LAB]",
-                    f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-                    f"시장={format_market_korean('domestic')}",
-                    f"종목={candidate.stock_code}",
-                    f"동작={format_side_korean('buy')}",
-                    f"가격={int(candidate.best_ask or candidate.current_price):,}원",
-                    f"수량={qty}주",
+                    format_market_korean("domestic"),
+                    candidate.stock_code,
+                    "매수",
+                    f"{int(candidate.best_ask or candidate.current_price):,}원",
+                    f"x{qty}",
                     f"전략={strategy_flag or '-'}",
                     f"주도={entry_by or '-'}",
                 ]
             )
         )
+        await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         self._commit_strategy_entry(
             candidate.stock_code,
             signal_snapshot,
@@ -3387,7 +3516,36 @@ class LiquidityLabService:
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
             lines.append("수익률=알수없음")
-        await self.notifier.send("\n".join(lines))
+        self._record_broker_order_event(
+            market="domestic",
+            symbol=candidate.stock_code,
+            exchange_code=None,
+            side="SELL",
+            order_kind="limit",
+            requested_qty=sell_qty,
+            requested_price=sell_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            status="SUBMITTED",
+            reason=exit_reason,
+            payload=response if isinstance(response, dict) else {"response": response},
+        )
+        self._queue_trade_notification(
+            " ".join(
+                [
+                    format_market_korean("domestic"),
+                    candidate.stock_code,
+                    "매도",
+                    format_krw(sell_price),
+                    f"x{sell_qty}",
+                    f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
+                    f"매수={entry_label}",
+                    f"청산={exit_label}",
+                ]
+            )
+        )
+        await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         self._reset_strategy_position(candidate.stock_code)
         self._register_exit_cooldown("domestic", candidate.stock_code, exit_reason)
         if held.avg_price > 0:
@@ -3610,6 +3768,34 @@ class LiquidityLabService:
                 entry_by=entry_by,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
             )
+        self._record_broker_order_event(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            side="BUY",
+            order_kind="limit",
+            requested_qty=qty,
+            requested_price=candidate.last_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            status="SUBMITTED",
+            reason=buy_reason,
+            payload=response if isinstance(response, dict) else {"response": response},
+        )
+        self._queue_trade_notification(
+            " ".join(
+                [
+                    format_market_korean("overseas"),
+                    candidate.symbol,
+                    "매수",
+                    format_usd(candidate.last_price),
+                    f"x{qty}",
+                    f"전략={strategy_flag or '-'}",
+                    f"주도={entry_by or '-'}",
+                ]
+            )
+        )
+        await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         self._commit_strategy_entry(
             candidate.symbol,
             signal_snapshot,
@@ -3634,6 +3820,7 @@ class LiquidityLabService:
         self._mark_session_owned(candidate.symbol)
         return {
             "submitted": True,
+            "already_notified": True,
             "market": "overseas",
             "side": "buy",
             "candidate": asdict(candidate),
@@ -3789,7 +3976,38 @@ class LiquidityLabService:
         ]
         if rejected_error:
             lines.append(f"참고={rejected_error}")
-        await self.notifier.send("\n".join(lines))
+        self._record_broker_order_event(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            side="BUY",
+            order_kind="virtual_limit",
+            requested_qty=qty,
+            requested_price=candidate.last_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            status="RECORDED",
+            reason="session_not_orderable_in_profile",
+            is_virtual=True,
+            payload={
+                "rejected_error": rejected_error,
+                "virtual_position": asdict(position),
+            },
+        )
+        self._queue_trade_notification(
+            " ".join(
+                [
+                    format_market_korean("overseas"),
+                    f"{candidate.symbol}(가상)",
+                    "매수",
+                    format_usd(candidate.last_price),
+                    f"x{qty}",
+                    f"전략={strategy_flag or '-'}",
+                    f"주도={entry_by or '-'}",
+                ]
+            )
+        )
+        await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         self._commit_strategy_entry(
             candidate.symbol,
             snapshot,
@@ -3992,7 +4210,40 @@ class LiquidityLabService:
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
             lines.append("수익률=알수없음")
-        await self.notifier.send("\n".join(lines))
+        self._record_broker_order_event(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            side="SELL",
+            order_kind="limit",
+            requested_qty=real_sell_qty,
+            requested_price=candidate.last_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            status="SUBMITTED",
+            reason=exit_reason,
+            payload={
+                "response": response,
+                "sell_result": sell_result,
+                "requested_qty": target_sell_qty,
+            },
+        )
+        self._queue_trade_notification(
+            " ".join(
+                [
+                    format_market_korean("overseas"),
+                    candidate.symbol,
+                    "매도",
+                    format_usd(candidate.last_price),
+                    f"x{int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}",
+                    f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
+                    f"매수={entry_label}",
+                    f"청산={exit_label}",
+                ]
+            )
+        )
+        await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         self._reset_strategy_position(candidate.symbol)
         self._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
         if held.avg_price > 0:
@@ -4178,7 +4429,41 @@ class LiquidityLabService:
             lines.append(f"실보유정산대기={pending_real_qty}주")
         if rejected_error:
             lines.append("참고=실매도거부를 가상체결로 전환")
-        await self.notifier.send("\n".join(lines))
+        self._record_broker_order_event(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            side="SELL",
+            order_kind="virtual_limit",
+            requested_qty=sell_qty,
+            requested_price=candidate.last_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            status="RECORDED",
+            reason="session_not_orderable_in_profile" if rejected_error else exit_reason,
+            is_virtual=True,
+            payload={
+                "rejected_error": rejected_error,
+                "sell_result": sell_result,
+                "held_position": asdict(held),
+            },
+        )
+        self._queue_trade_notification(
+            " ".join(
+                [
+                    format_market_korean("overseas"),
+                    f"{candidate.symbol}(가상)",
+                    "매도",
+                    format_usd(candidate.last_price),
+                    f"x{sell_qty}",
+                    f"수익률={format_pct(realized_pnl_pct)}",
+                    f"매수={entry_label}",
+                    f"청산={exit_label}",
+                ]
+            )
+        )
+        await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         self._reset_strategy_position(candidate.symbol)
         self._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
         self._persist_trade_state(
@@ -4470,6 +4755,7 @@ class LiquidityLabService:
                 )
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:
+        await self._flush_trade_notifications(force=False)
         action = self._build_action_summary(report)
         if action["action_raw"] in {"WAIT", "VIRTUAL_BUY", "VIRTUAL_SELL"}:
             return

@@ -669,6 +669,9 @@ class TelegramLiquidityLabController:
             self.current_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.current_task
+        if self.lab_service is not None:
+            with contextlib.suppress(Exception):
+                await self.lab_service.flush_pending_trade_notifications(force=True)
         self.current_task = None
         self.current_task_started_at = None
         self.next_run_at = None
@@ -684,6 +687,9 @@ class TelegramLiquidityLabController:
             self.current_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.current_task
+        if self.lab_service is not None:
+            with contextlib.suppress(Exception):
+                await self.lab_service.flush_pending_trade_notifications(force=True)
         self.current_task = None
         self.current_task_started_at = None
         self.next_run_at = None

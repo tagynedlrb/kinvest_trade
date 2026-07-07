@@ -160,6 +160,34 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     assert "hold_cycles" in columns
 
 
+def test_broker_order_events_table_and_save(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-08T04:50:00+00:00",
+        market="overseas",
+        symbol="PLBL",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=100,
+        requested_price=10.1234,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no="12345678",
+        is_virtual=0,
+        payload={"output": {"ODNO": "12345678"}},
+    )
+
+    rows = repository.list_broker_order_events(limit=5)
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "PLBL"
+    assert rows[0]["broker_order_no"] == "12345678"
+    assert rows[0]["payload_json"]["output"]["ODNO"] == "12345678"
+
+
 def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     snapshot = {"price": 170.0, "volume_ratio": 2.1}

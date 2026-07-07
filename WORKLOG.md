@@ -955,3 +955,28 @@
 - `tests`
   - portfolio 가상보유 현재가/손익 표시 테스트 추가
   - TV 저거래량 fallback 재시도 테스트 추가
+
+## [2026-07-08] 알림 집계 + 주문 응답 감사로그 보강
+
+### 확인된 현상
+- 한 사이클에 복수 종목 매매가 발생해도 텔레그램에서는 일부만 보이는 것처럼 보일 수 있었음
+- 원인 1: 실제 코드는 복수 주문을 처리하지만, 사용자가 보는 알림은 주문별 즉시 발송과 사이클 요약이 혼재되어 추적성이 떨어졌음
+- 원인 2: 해외 실매수는 summary 경로 의존, 국내/매도/가상매매는 즉시 알림 경로 의존이라 경로가 비대칭이었음
+- 추가 확인: 현재 해외/국내 실주문은 모두 `order_division="00"` 지정가이며, 코드상 `0.000` 주문가를 의도적으로 보내는 경로는 없었음
+
+### 수정 사항
+- `liquidity_lab.py`
+  - 성공한 매수/매도/가상매매 알림을 `[KIS][LAB_TRADE_BATCH]` 형태로 집계하도록 변경
+  - 기본 60초 윈도우 또는 일정 건수 이상 시 묶어서 발송
+  - 테스트에서는 즉시 flush 가능하도록 window 0 지원
+  - stop/terminate 시 미발송 집계 알림 강제 flush 추가
+  - 주문 응답에서 broker order no를 추출하는 helper 추가
+  - 실주문/가상주문 모두 broker audit 저장 연동
+- `repository.py`
+  - `broker_order_events` 테이블 추가
+  - 요청 수량/가격, 전략 태그, 실/가상 여부, broker order no, raw payload 저장
+- `telegram_control.py`
+  - `/lab_stop`, `/lab_terminate` 시 pending trade batch 강제 발송
+- `tests`
+  - broker order event 저장 테스트 추가
+  - batch notification 포맷 반영 후 전체 테스트 통과 확인

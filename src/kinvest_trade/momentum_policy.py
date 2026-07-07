@@ -260,7 +260,14 @@ def evaluate_exit_setup(
     small_profit = marginal_threshold <= pnl_pct < config.take_profit_pct
     volume_fading = snapshot.volume_ratio <= (config.volume_fade_ratio or 0.8)
     momentum_fading = snapshot.intraday_momentum <= 0
-    if small_profit and volume_fading and momentum_fading and min_hold_ok:
+    commission_floor = getattr(config, "commission_rate", 0.0025) * 2 + 0.003
+    if (
+        small_profit
+        and volume_fading
+        and momentum_fading
+        and min_hold_ok
+        and pnl_pct >= commission_floor
+    ):
         return ExitSetup("sell", "marginal_profit_exit", "SELL_READY", note)
 
     if hold_cycles >= config.max_hold_cycles:

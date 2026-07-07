@@ -232,14 +232,14 @@ def test_momentum_loss_cut_triggers_when_two_conditions_align() -> None:
 
 def test_marginal_profit_exit_triggers() -> None:
     result = evaluate_exit_setup(
-        _build_config(),
+        replace(_build_config(), max_hold_cycles=100),
         _snapshot(
             volume_ratio=0.7,
             intraday_momentum=-0.0002,
         ),
         0.012,
         drawdown_from_peak=0.0,
-        hold_cycles=10,
+        hold_cycles=30,
         position_qty=1,
         partial_exit_done=False,
     )
@@ -376,7 +376,7 @@ def test_marginal_profit_exit_requires_minimum_pnl() -> None:
         _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
         0.012,
         drawdown_from_peak=0.0,
-        hold_cycles=10,
+        hold_cycles=30,
         position_qty=1,
         partial_exit_done=False,
     )
@@ -398,6 +398,36 @@ def test_marginal_profit_exit_requires_min_hold_cycles() -> None:
     )
 
     assert result.action == "hold"
+
+
+def test_marginal_profit_exit_respects_commission_floor() -> None:
+    config = replace(
+        _build_config(),
+        max_hold_cycles=100,
+        take_profit_pct=0.009,
+        commission_rate=0.0025,
+    )
+    below_floor = evaluate_exit_setup(
+        config,
+        _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
+        0.0075,
+        drawdown_from_peak=0.0,
+        hold_cycles=30,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+    above_floor = evaluate_exit_setup(
+        config,
+        _snapshot(volume_ratio=0.7, intraday_momentum=-0.0002),
+        0.0085,
+        drawdown_from_peak=0.0,
+        hold_cycles=30,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert below_floor.action == "hold"
+    assert above_floor.reason == "marginal_profit_exit"
 
 
 def test_rsi_85_blocks_entry() -> None:

@@ -840,3 +840,29 @@
 
 ### 검증 결과
 - `python3 -m pytest tests/test_liquidity_lab.py tests/test_telegram_control.py -q` 통과
+
+## [2026-07-07] 지시문 #53 — 매매 성과 분석 기반 개선
+
+### 분석 결과
+- 전체 75건 gross 기댓값은 플러스였지만, KIS 왕복 수수료 0.5% 차감 후 net 기댓값은 음수
+- 국내 전략은 순기댓값이 유지되었고, 해외 전략 전체가 순손실 구간으로 확인됨
+- `marginal_profit_exit` 평균 gross 수익이 수수료 미만이라 순손실 청산의 핵심 원인으로 판단됨
+- GitHub 로그 업로드는 타임스탬프 파일명 때문에 동일 일자 데이터가 중복 업로드될 수 있었음
+- 서비스 재시작 원인 추적을 위해 최상위 크래시 가시성이 더 필요했음
+
+### 변경 사항
+- `fixed_config.json`
+  - `liquidity_lab.overseas_take_profit_pct`: `0.012 -> 0.025`
+  - `liquidity_lab.overseas_stop_loss_pct`: `0.008 -> 0.015`
+  - `auto_trade.min_hold_before_marginal_exit`: `10 -> 30`
+- `momentum_policy.py`
+  - `marginal_profit_exit`에 `commission_floor = commission_rate * 2 + 0.003` 조건 추가
+  - 수수료를 커버하지 못하는 얕은 익절은 조기 청산하지 않도록 보정
+- `git_uploader.py`
+  - 업로드 파일명을 `YYYYMMDD_session.csv`로 고정해 같은 날 재업로드 시 중복 파일 생성 방지
+- `telegram_control.py`
+  - 메인 루프 fatal 예외 시 스택 트레이스 `critical` 로깅 추가
+  - 텔레그램으로 fatal 예외 요약 알림 전송 후 예외 재상승
+
+### 검증 결과
+- `python3 -m pytest tests/test_momentum_policy.py tests/test_git_uploader.py tests/test_telegram_control.py -q` 통과

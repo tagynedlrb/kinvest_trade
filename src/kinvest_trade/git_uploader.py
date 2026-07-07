@@ -91,7 +91,7 @@ async def upload_log(
 
     csv_content = _rows_to_csv(rows)
     now_kst = datetime.now(_KST)
-    filename = now_kst.strftime("%Y%m%d_%H%M%S_session.csv")
+    filename = now_kst.strftime("%Y%m%d_session.csv")
     repo_path = f"logs/trades/{filename}"
     sha = None
     try:

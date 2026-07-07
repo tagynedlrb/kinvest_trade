@@ -879,6 +879,37 @@ def test_run_cycle_resets_consecutive_errors_on_success() -> None:
     assert controller.last_error is None
 
 
+def test_run_sends_fatal_notification_and_reraises() -> None:
+    controller = _build_async_controller()
+    controller._restore_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+
+    async def failing_scheduler_loop() -> None:
+        raise RuntimeError("fatal boom")
+
+    async def idle_command_loop() -> None:
+        await asyncio.sleep(60)
+
+    original_acquire = telegram_control_module._acquire_pid_lock
+    original_release = telegram_control_module._release_pid_lock
+    original_signal = telegram_control_module.signal.signal
+    telegram_control_module._acquire_pid_lock = lambda: None
+    telegram_control_module._release_pid_lock = lambda: None
+    telegram_control_module.signal.signal = lambda *_args, **_kwargs: None
+    controller._scheduler_loop = failing_scheduler_loop  # type: ignore[method-assign]
+    controller._command_loop = idle_command_loop  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="fatal boom"):
+            asyncio.run(controller.run())
+    finally:
+        telegram_control_module._acquire_pid_lock = original_acquire
+        telegram_control_module._release_pid_lock = original_release
+        telegram_control_module.signal.signal = original_signal
+
+    assert any("TELEGRAM_CONTROL_START" in message for message in controller.notifier.messages)
+    assert any("FATAL" in message and "fatal boom" in message for message in controller.notifier.messages)
+
+
 def test_restore_runtime_state_recovers_update_offset() -> None:
     controller = _build_async_controller()
     controller.config.storage.runtime_state_path.write_text(

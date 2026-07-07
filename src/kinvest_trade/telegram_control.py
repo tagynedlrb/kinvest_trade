@@ -4,9 +4,11 @@ import atexit
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import subprocess
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -77,6 +79,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
 ParsedCommand: TypeAlias = str | tuple[str, str | None]
 SERVICE_UNIT_NAME = "kinvest-telegram-control.service"
 _PID_FILE = "data/telegram_control.pid"
+_logger = logging.getLogger(__name__)
 
 
 def _release_pid_lock() -> None:
@@ -242,6 +245,23 @@ class TelegramLiquidityLabController:
             await asyncio.gather(scheduler, command_loop)
         except asyncio.CancelledError:
             self.mode = "stopped"
+        except Exception as exc:  # noqa: BLE001
+            tb_str = traceback.format_exc()
+            _logger.critical(
+                "[FATAL] 메인 루프 예외 종료: %s\n%s",
+                exc,
+                tb_str,
+            )
+            try:
+                await self.notifier.send(
+                    f"💥 [FATAL] 서비스 크래시\n"
+                    f"오류: {type(exc).__name__}: {exc}\n"
+                    f"스택(마지막 3줄):\n"
+                    f"{''.join(tb_str.splitlines(keepends=True)[-3:])}"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         finally:
             if self.current_task is not None and not self.current_task.done():
                 self.current_task.cancel()

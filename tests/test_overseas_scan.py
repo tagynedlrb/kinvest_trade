@@ -40,6 +40,15 @@ class DummyClient:
         return {"positions": list(self.positions_by_exchange.get(exchange_code, []))}
 
 
+class DummyNotifier:
+    def __init__(self) -> None:
+        self.enabled = True
+        self.messages: list[str] = []
+
+    async def send(self, message: str) -> None:
+        self.messages.append(message)
+
+
 def _build_service() -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     candidates = [
@@ -495,6 +504,86 @@ def test_scan_overseas_rescan_resets_tv_diagnostic_flag() -> None:
 
     ranked, held = asyncio.run(service.scan_overseas())
 
+    assert service._tv_diagnostic_ran is False
+    assert ranked == []
+    assert held == set()
+
+
+def test_scan_overseas_includes_virtual_held_symbols_in_scan_pool() -> None:
+    service = _build_service()
+    service._dynamic_overseas_pool = []
+    service._get_virtual_held_symbols = lambda: {"SOFI"}
+
+    async def fake_held_map():
+        return {}
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, 11.0)
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    service._get_held_symbol_map = fake_held_map
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    ranked, held_symbols = asyncio.run(service.scan_overseas())
+
+    assert held_symbols == {"SOFI"}
+    assert [item.symbol for item in ranked] == ["SOFI"]
+    assert "SOFI" in service._signal_cache
+
+
+def test_refresh_overseas_dynamic_pool_auto_restores_from_manual_pool_when_tv_recovers() -> None:
+    service = _build_service()
+    service._manual_overseas_pool = [{"symbol": "NVDA", "exchange_code": "NASD"}]
+    service._dynamic_overseas_pool = list(service._manual_overseas_pool)
+    service._tv_available = True
+    service.client._client = object()
+    service.notifier = DummyNotifier()
+
+    async def fake_scan_top_volume_surge(**kwargs):
+        return [
+            {"symbol": "PLTR", "exchange_code": "NASD"},
+            {"symbol": "COIN", "exchange_code": "NASD"},
+        ]
+
+    original = liquidity_lab_module.scan_top_volume_surge
+    liquidity_lab_module.scan_top_volume_surge = fake_scan_top_volume_surge
+    try:
+        asyncio.run(service._refresh_overseas_dynamic_pool())
+    finally:
+        liquidity_lab_module.scan_top_volume_surge = original
+
+    assert service._manual_overseas_pool is None
+    assert service._dynamic_overseas_pool == [
+        {"symbol": "PLTR", "exchange_code": "NASD"},
+        {"symbol": "COIN", "exchange_code": "NASD"},
+    ]
+    assert any("TV 동적 풀 자동 복귀" in message for message in service.notifier.messages)
+
+
+def test_scan_overseas_retries_dynamic_refresh_even_with_manual_pool() -> None:
+    service = _build_service()
+    service._manual_overseas_pool = [{"symbol": "NVDA", "exchange_code": "NASD"}]
+    service._dynamic_overseas_pool = list(service._manual_overseas_pool)
+    service._overseas_scan_cycle_count = 20
+
+    refresh_calls: list[str] = []
+
+    async def fake_refresh():
+        refresh_calls.append("called")
+        service._dynamic_overseas_pool = list(service._manual_overseas_pool)
+
+    async def fake_held_map():
+        return {}
+
+    service._refresh_overseas_dynamic_pool = fake_refresh
+    service._get_held_symbol_map = fake_held_map
+
+    ranked, held = asyncio.run(service.scan_overseas())
+
+    assert refresh_calls == ["called"]
     assert service._tv_diagnostic_ran is False
     assert ranked == []
     assert held == set()

@@ -885,3 +885,28 @@
   - 이후 `_place_overseas_sell_order()`가 virtual sell 경로를 정상 진입할 수 있게 연결
 - `tests/test_liquidity_lab.py`
   - virtual-only 해외 포지션이 stop_loss 조건 충족 시 exit 후보로 반환되는 회귀 테스트 추가
+
+## [2026-07-08] 지시문 #55 — 가상보유 종목 감시 복구 / TV 자동 복귀
+
+### 발견 문제
+- 지시문 #49 이후 `scan_overseas()`가 실보유 심볼만 풀에 강제 포함하고,
+  가상보유 심볼은 제외하는 회귀가 발생했음
+- 결과적으로 virtual position은 현재가/손익 갱신이 끊기고,
+  해외 exit 로직에서도 quote 부재로 처리 품질이 떨어질 수 있었음
+- 또한 manual relist가 설정된 상태에서는 `scan_overseas()`가
+  `_refresh_overseas_dynamic_pool()`를 다시 호출하지 않아,
+  TV가 복구되어도 자동 복귀 로직이 실행될 수 없었음
+
+### 수정 사항
+- `liquidity_lab.py`
+  - `scan_overseas()`에 `_get_virtual_held_symbols()` 복구
+  - `held_symbols`와 `active_overseas_pool` 모두 real + virtual 심볼을 포함하도록 수정
+  - 해외 풀 refresh 조건에서 `manual_overseas_pool is None` 가드를 제거해
+    rescan 주기마다 manual pool 상태에서도 TV 복구를 재시도하도록 수정
+  - `_refresh_overseas_dynamic_pool()`에서
+    manual pool + TV available 시 TV 스캔 재시도
+    성공하면 manual pool 자동 해제 후 TV 동적 풀로 복귀, 텔레그램 알림 발송
+- `tests/test_overseas_scan.py`
+  - virtual held symbol이 스캔 풀과 signal cache에 복구되는 테스트 추가
+  - manual pool 상태에서 TV 복구 시 자동 전환되는 테스트 추가
+  - manual pool 상태에서도 rescan 시 dynamic refresh가 재호출되는 테스트 추가

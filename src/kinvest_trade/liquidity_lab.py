@@ -800,6 +800,42 @@ class LiquidityLabService:
     async def _refresh_overseas_dynamic_pool(self) -> None:
         manual_pool = getattr(self, "_manual_overseas_pool", None)
         if manual_pool:
+            if getattr(self, "_tv_available", False):
+                client = getattr(self.client, "_client", None)
+                if client is not None:
+                    ll_cfg = self.config.liquidity_lab
+                    tv_rows = await scan_top_volume_surge(
+                        client=client,
+                        top_n=max(1, getattr(ll_cfg, "tv_top_n", 30)),
+                        min_rel_volume=float(getattr(ll_cfg, "tv_min_rel_volume", 2.0)),
+                        min_price_usd=float(getattr(ll_cfg, "tv_min_price_usd", 5.0)),
+                        min_volume=int(getattr(ll_cfg, "tv_min_volume", 500_000)),
+                        min_market_cap=float(getattr(ll_cfg, "tv_min_market_cap", 3e8)),
+                        max_market_cap=float(getattr(ll_cfg, "tv_max_market_cap", 2e12)),
+                        max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
+                    )
+                    if tv_rows:
+                        self._manual_overseas_pool = None
+                        self._dynamic_overseas_pool = list(tv_rows)
+                        self._awaiting_relist = False
+                        preview = ", ".join(row["symbol"] for row in tv_rows[:5])
+                        _logger.info(
+                            "[TV] 수동 풀 자동 해제 -> TV 동적 풀 복귀 (%s개) [%s]",
+                            len(tv_rows),
+                            preview,
+                        )
+                        notifier = getattr(self, "notifier", None)
+                        if notifier is not None and getattr(notifier, "enabled", True):
+                            try:
+                                await notifier.send(
+                                    "✅ TV 동적 풀 자동 복귀\n"
+                                    "수동 relist 해제 -> TV 스캔 결과 적용\n"
+                                    f"대표: {preview} (총 {len(tv_rows)}개)"
+                                )
+                            except Exception:  # noqa: BLE001
+                                _logger.debug("tv_auto_restore_notify_failed", exc_info=True)
+                        return
+
             self._dynamic_overseas_pool = list(manual_pool)
             self._awaiting_relist = False
             _logger.info("overseas_manual_pool_override count=%s", len(manual_pool))
@@ -1448,23 +1484,21 @@ class LiquidityLabService:
         excluded: list[ExcludedCandidate] = []
         self._overseas_scan_cycle_count = getattr(self, "_overseas_scan_cycle_count", 0) + 1
         if (
-            getattr(self, "_manual_overseas_pool", None) is None
-            and (
-                getattr(self, "_dynamic_overseas_pool", None) is None
-                or self._overseas_scan_cycle_count
-                >= max(1, int(getattr(config, "overseas_rescan_cycles", 20)))
-            )
+            getattr(self, "_dynamic_overseas_pool", None) is None
+            or self._overseas_scan_cycle_count
+            >= max(1, int(getattr(config, "overseas_rescan_cycles", 20)))
         ):
             self._overseas_scan_cycle_count = 0
             self._tv_diagnostic_ran = False
             await self._refresh_overseas_dynamic_pool()
 
         held_symbol_map = await self._get_held_symbol_map()
+        virtual_symbols = self._get_virtual_held_symbols()
         active_overseas_pool = self._active_overseas_pool(
             held_symbol_map=held_symbol_map,
-            held_symbols=set(held_symbol_map.keys()),
+            held_symbols=set(held_symbol_map.keys()) | virtual_symbols,
         )
-        held_symbols = set(held_symbol_map.keys())
+        held_symbols = set(held_symbol_map.keys()) | virtual_symbols
         for candidate in active_overseas_pool:
             try:
                 scan_result = await self._scan_single_overseas(candidate)

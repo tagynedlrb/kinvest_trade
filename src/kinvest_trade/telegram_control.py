@@ -868,6 +868,26 @@ class TelegramLiquidityLabController:
             code = str(pos.get("symbol") or pos.get("stock_code") or "").upper()
             if code:
                 pnl_map[code] = float(pos.get("pnl_pct", 0) or 0)
+        lab = self.lab_service
+        if lab is not None:
+            balance_cache = getattr(lab, "_overseas_balance_cache", {})
+            for balance in balance_cache.get("data", {}).values():
+                for row in balance.get("positions", []):
+                    qty_raw = row.get("ovrs_cblc_qty") or "0"
+                    try:
+                        qty = int(float(str(qty_raw).replace(",", "")))
+                    except (ValueError, TypeError):
+                        qty = 0
+                    if qty <= 0:
+                        continue
+                    sym = str(row.get("ovrs_pdno", "")).strip().upper()
+                    if sym and sym not in pnl_map:
+                        try:
+                            avg = float(str(row.get("pchs_avg_pric", "0") or "0").replace(",", ""))
+                            cur = float(str(row.get("now_pric2", "0") or "0").replace(",", ""))
+                            pnl_map[sym] = (cur - avg) / avg if avg > 0 else 0.0
+                        except (ValueError, TypeError):
+                            pass
         lines = [
             "[KIS][TELEGRAM_CONTROL_WATCHLIST]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
@@ -1442,16 +1462,6 @@ class TelegramLiquidityLabController:
         else:
             price_text = str(price)
         holding_qty = int(watch_target.get("holding_qty", 0) or 0)
-        if action_bias == "HOLD" and holding_qty > 0:
-            parts = [
-                f"{market} {code}",
-                f"상태={format_side_korean('HOLD')}",
-                f"보유={holding_qty}주",
-                f"전략={strategy_flag or '-'}",
-            ]
-            if pnl_pct is not None:
-                parts.append(f"손익={format_pct(pnl_pct)}")
-            return " ".join(parts)
 
         status_map = {
             "BUY": "매수신호",

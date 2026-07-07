@@ -491,6 +491,8 @@ def test_format_watch_target_line_includes_pnl_when_holding() -> None:
 
     assert "상태=보유중" in line
     assert "전략=VWAP" in line
+    assert "가격=$19.7500" in line
+    assert "보유=3주" in line
     assert "손익=+1.20%" in line
 
 
@@ -512,6 +514,49 @@ def test_format_watch_target_line_no_pnl_when_not_holding() -> None:
     assert "손익=" not in line
     assert "상태=대기" in line
     assert "전략=-" in line
+
+
+def test_build_watchlist_message_uses_balance_cache_for_held_pnl() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.last_report_summary = {
+        "watch_targets": [
+            {
+                "market": "overseas",
+                "code": "HOOD",
+                "action_bias": "HOLD",
+                "signal_state": "HOLD",
+                "strategy_flag": "VWAP",
+                "note": "trend_holding",
+                "price": 28.5,
+                "holding_qty": 2,
+            }
+        ],
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "estimated_api_calls_per_cycle": 12,
+    }
+    controller.current_cycle_no = 11
+    controller.mode = "running"
+    controller.lab_service = SimpleNamespace(
+        _overseas_balance_cache={
+            "data": {
+                "NASD": {
+                    "positions": [
+                        {
+                            "ovrs_pdno": "HOOD",
+                            "ovrs_cblc_qty": "2",
+                            "pchs_avg_pric": "25.00",
+                            "now_pric2": "28.50",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    message = controller._build_watchlist_message()
+
+    assert "해외 HOOD 상태=보유중 전략=VWAP 가격=$28.5000 보유=2주 손익=+14.00%" in message
 
 
 def test_format_watch_target_line_ready_status_is_readable() -> None:

@@ -244,6 +244,121 @@ def test_select_overseas_exit_target_prioritizes_stop_loss() -> None:
     assert signal_snapshot is None
 
 
+def test_select_overseas_exit_target_works_with_empty_ranked_list() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.012,
+                    "overseas_stop_loss_pct": 0.008,
+                },
+            )()
+        },
+    )()
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="PFE",
+            exchange_code="NYSE",
+            quantity=3,
+            orderable_qty=3,
+            avg_price=26.0,
+            current_price=25.3,
+            pnl_pct=-0.0269,
+        )
+    ]
+
+    candidate, held, reason, signal_snapshot = asyncio.run(
+        service._select_overseas_exit_target([], held_positions)
+    )
+
+    assert candidate.symbol == "PFE"
+    assert held.symbol == "PFE"
+    assert reason == "stop_loss"
+    assert signal_snapshot is None
+
+
+def test_select_overseas_exit_targets_returns_multiple_candidates() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.012,
+                    "overseas_stop_loss_pct": 0.008,
+                },
+            )()
+        },
+    )()
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    ranked = [
+        OverseasScanResult(
+            symbol="PFE",
+            exchange_code="NYSE",
+            last_price=25.3,
+            bid=25.29,
+            ask=25.31,
+            spread_pct=0.0008,
+            change_rate_pct=-1.0,
+            volume=500_000,
+            orderable_qty=3,
+            fx_rate_krw=1350.0,
+            activity_score=10.0,
+        ),
+        OverseasScanResult(
+            symbol="AAL",
+            exchange_code="NASD",
+            last_price=14.5,
+            bid=14.49,
+            ask=14.51,
+            spread_pct=0.0010,
+            change_rate_pct=2.0,
+            volume=600_000,
+            orderable_qty=2,
+            fx_rate_krw=1350.0,
+            activity_score=9.0,
+        ),
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="PFE",
+            exchange_code="NYSE",
+            quantity=3,
+            orderable_qty=3,
+            avg_price=26.0,
+            current_price=25.3,
+            pnl_pct=-0.0269,
+        ),
+        OverseasHeldPosition(
+            symbol="AAL",
+            exchange_code="NASD",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=14.0,
+            current_price=14.5,
+            pnl_pct=0.0357,
+        ),
+    ]
+
+    results = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert [item[0].symbol for item in results] == ["PFE", "AAL"]
+    assert [item[2] for item in results] == ["stop_loss", "take_profit"]
+
+
 def test_manage_overseas_position_waits_when_already_holding_max_qty() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -1941,15 +2056,15 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     async def fake_send_summary(report):
         return None
 
-    async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
-        return None
+    async def fake_select_overseas_exit_targets(overseas_ranked, overseas_positions, max_exits=5):
+        return None if max_exits < 0 else []
 
     service.scan_domestic = lambda: []  # type: ignore[method-assign]
     service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
-    service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
     service._manage_overseas_position = fake_manage_overseas_position  # type: ignore[method-assign]
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
@@ -2012,8 +2127,8 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     async def fake_build_unified_watch_targets(**kwargs):
         return []
 
-    async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
-        return candidate, held, "stop_loss", None
+    async def fake_select_overseas_exit_targets(overseas_ranked, overseas_positions, max_exits=5):
+        return [(candidate, held, "stop_loss", None)]
 
     async def fake_place_overseas_sell_order(candidate, held, exit_reason, signal_snapshot=None):
         sell_calls.append(candidate.symbol)
@@ -2027,7 +2142,7 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
-    service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
     service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
@@ -3044,8 +3159,8 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     async def fake_build_unified_watch_targets(**kwargs):
         return []
 
-    async def fake_select_overseas_exit_target(overseas_ranked, overseas_positions):
-        return candidate, held, "stop_loss", None
+    async def fake_select_overseas_exit_targets(overseas_ranked, overseas_positions, max_exits=5):
+        return [(candidate, held, "stop_loss", None)]
 
     async def fake_place_overseas_sell_order(candidate, held, exit_reason, signal_snapshot=None):
         await service.notifier.send(
@@ -3078,7 +3193,7 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
     service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
-    service._select_overseas_exit_target = fake_select_overseas_exit_target  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
     service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session

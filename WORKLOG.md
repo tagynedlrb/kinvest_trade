@@ -815,3 +815,28 @@
 - `telegram_control.py`
   - 수동 페이퍼 테스트는 `PaperTradingService`를 직접 호출하도록 정리
   - `paper_run` 누적/요약 참조 제거
+
+## [2026-07-07] 지시문 #52 — 해외 매도 차단 버그 수정 / 다중 exit / watchlist 형식
+
+### 버그 분석
+- PFE -2.39% 장시간 미청산 원인:
+  `_select_overseas_exit_target()`의 `not overseas_ranked` 조건
+  -> `overseas_ranked=[]`일 때 즉시 `None` 반환, fallback 로직 미작동
+  -> TV 차단 / KIS 잔고 조회 실패 / relist 미입력 중 하나 발생 시
+     stop_loss 초과 포지션이어도 청산 불가
+- `1 exit per cycle`은 기술적 제한이 아니라 설계 잔재
+- watchlist HOLD 분기는 가격이 빠지고 행 형식이 어긋나는 문제를 만들고 있었음
+
+### 수정 사항
+- `liquidity_lab.py`
+  - `_select_overseas_exit_targets()` 복수형 추가
+  - `overseas_ranked=[]`여도 fallback quote로 TP/SL 및 신호 기반 exit 평가
+  - `run()`에서 해외 exit를 `max_exits=5`로 한 사이클에 순차 처리
+  - 하위 호환을 위해 `_select_overseas_exit_target()`은 첫 번째 결과만 반환하도록 유지
+- `telegram_control.py`
+  - `_format_watch_target_line()`의 HOLD 전용 분기 제거
+  - `_build_watchlist_message()`에서 `_overseas_balance_cache`를 사용해
+    스캔 제외 보유 종목의 손익률을 보완
+
+### 검증 결과
+- `python3 -m pytest tests/test_liquidity_lab.py tests/test_telegram_control.py -q` 통과

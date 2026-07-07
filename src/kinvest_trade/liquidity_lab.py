@@ -1100,11 +1100,16 @@ class LiquidityLabService:
         ]
         domestic_watch_map = {watch_target.code: watch_target for watch_target in domestic_watch_targets}
         overseas_watch_map = {watch_target.code: watch_target for watch_target in overseas_watch_targets}
-        overseas_exit_target = (
-            await self._select_overseas_exit_target(overseas_ranked, monitored_overseas_positions)
+        overseas_exit_targets = (
+            await self._select_overseas_exit_targets(
+                overseas_ranked,
+                monitored_overseas_positions,
+                max_exits=5,
+            )
             if us_open
-            else None
+            else []
         )
+        overseas_exit_target = overseas_exit_targets[0] if overseas_exit_targets else None
         domestic_exit_target = (
             self._select_domestic_exit_target(
                 domestic_ranked,
@@ -1171,15 +1176,16 @@ class LiquidityLabService:
         else:
             domestic_orders = [domestic_order]
 
-        if overseas_exit_target is not None:
-            exit_candidate, exit_position, exit_reason, exit_signal = overseas_exit_target
-            overseas_order = await self._place_overseas_sell_order(
-                exit_candidate,
-                exit_position,
-                exit_reason,
-                signal_snapshot=exit_signal,
-            )
-            overseas_orders = [overseas_order]
+        if overseas_exit_targets:
+            for exit_candidate, exit_position, exit_reason, exit_signal in overseas_exit_targets:
+                _order = await self._place_overseas_sell_order(
+                    exit_candidate,
+                    exit_position,
+                    exit_reason,
+                    signal_snapshot=exit_signal,
+                )
+                overseas_orders.append(_order)
+            overseas_order = overseas_orders[0]
         elif overseas_buy_targets and us_orderable_in_profile:
             for buy_candidate in overseas_buy_targets:
                 overseas_orders.append(
@@ -1871,95 +1877,69 @@ class LiquidityLabService:
             )
         return positions
 
-    async def _select_overseas_exit_target(
+    async def _select_overseas_exit_targets(
         self,
         overseas_ranked: list[OverseasScanResult],
         held_positions: list[OverseasHeldPosition],
-    ) -> tuple[OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot | None] | None:
-        if not overseas_ranked or not held_positions:
-            return None
+        *,
+        max_exits: int = 10,
+    ) -> list[tuple[OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot | None]]:
+        if not held_positions:
+            return []
 
         config = self.config.liquidity_lab
         tracker = self._get_position_tracker()
         quote_map = {item.symbol.upper(): item for item in overseas_ranked}
-        real_by_symbol: dict[str, OverseasHeldPosition] = {}
-        for held in held_positions:
-            if held.is_virtual:
-                continue
-            real_by_symbol[held.symbol.upper()] = held
+        real_by_symbol: dict[str, OverseasHeldPosition] = {
+            held.symbol.upper(): held
+            for held in held_positions
+            if not held.is_virtual
+        }
 
-        symbols_to_check: set[str] = set(real_by_symbol.keys())
+        results: list[
+            tuple[
+                tuple[int, float],
+                OverseasScanResult,
+                OverseasHeldPosition,
+                str,
+                MovingAverageSnapshot | None,
+            ]
+        ] = []
+
+        symbols_to_check = set(real_by_symbol.keys())
         virtual_manager = getattr(self, "virtual_trades", None)
         if virtual_manager is not None:
             for position in virtual_manager.list_positions("overseas"):
                 symbols_to_check.add(position.symbol.upper())
 
-        selected: tuple[
-            tuple[int, float],
-            OverseasScanResult,
-            OverseasHeldPosition,
-            str,
-            MovingAverageSnapshot | None,
-        ] | None = None
-
         for symbol in symbols_to_check:
             quote = quote_map.get(symbol)
             real = real_by_symbol.get(symbol)
             if quote is None:
-                fallback_position = real or next(
+                fallback = real or next(
                     (position for position in held_positions if position.symbol.upper() == symbol),
                     None,
                 )
-                if fallback_position is None:
+                if fallback is None:
                     continue
-                quote = self._scan_result_from_overseas_position(fallback_position)
-            real_qty = 0 if real is None else real.quantity
-            unified = (
-                tracker.get_unified(
-                    market="overseas",
-                    symbol=symbol,
-                    real_qty=real_qty,
-                    currency="USD",
-                    exchange_code=quote.exchange_code,
-                )
-                if tracker is not None
-                else UnifiedPosition(
-                    market="overseas",
-                    symbol=symbol,
-                    exchange_code=quote.exchange_code,
-                    real_qty=real_qty,
-                    virtual_buy_qty=0,
-                    virtual_sell_qty=0,
-                    currency="USD",
-                )
-            )
-            if unified.total_qty <= 0:
-                continue
+                quote = self._scan_result_from_overseas_position(fallback)
+
             pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
             already_pending_qty = 0 if pending is None else pending[0]
+            remaining_real_orderable = max(0, (real.orderable_qty if real else 0) - already_pending_qty)
 
-            virtual_buy = None if virtual_manager is None else virtual_manager.get_position("overseas", symbol)
             avg_price = 0.0
             pnl_pct = 0.0
-            remaining_real_orderable = 0
             if real is not None and real.avg_price > 0:
                 avg_price = real.avg_price
                 pnl_pct = real.pnl_pct
-                remaining_real_orderable = max(0, real.orderable_qty - already_pending_qty)
-            elif virtual_buy is not None and virtual_buy.avg_price > 0:
-                avg_price = virtual_buy.avg_price
-                pnl_pct = (
-                    (quote.last_price - avg_price) / avg_price
-                    if avg_price > 0
-                    else 0.0
-                )
+            else:
+                virtual_buy = None if virtual_manager is None else virtual_manager.get_position("overseas", symbol)
+                if virtual_buy is not None and virtual_buy.avg_price > 0:
+                    avg_price = virtual_buy.avg_price
+                    pnl_pct = (quote.last_price - avg_price) / avg_price
 
-            remaining_total = unified.total_qty
-            if remaining_total <= 0:
-                continue
-            if remaining_real_orderable <= 0 and unified.virtual_buy_qty <= 0:
-                continue
-            if avg_price <= 0:
+            if avg_price <= 0 or remaining_real_orderable <= 0:
                 continue
 
             exit_reason: str | None = None
@@ -1974,38 +1954,22 @@ class LiquidityLabService:
             if exit_reason is None or priority is None:
                 continue
 
-            held_for_return = (
-                OverseasHeldPosition(
-                    symbol=symbol,
-                    exchange_code=real.exchange_code,
-                    quantity=real.quantity,
-                    orderable_qty=remaining_real_orderable,
-                    avg_price=real.avg_price,
-                    current_price=quote.last_price,
-                    pnl_pct=pnl_pct,
-                    is_virtual=False,
-                )
-                if real is not None
-                else OverseasHeldPosition(
-                    symbol=symbol,
-                    exchange_code=quote.exchange_code,
-                    quantity=remaining_total,
-                    orderable_qty=remaining_total,
-                    avg_price=avg_price,
-                    current_price=quote.last_price,
-                    pnl_pct=pnl_pct,
-                    is_virtual=True,
-                )
+            held_for_return = OverseasHeldPosition(
+                symbol=symbol,
+                exchange_code=real.exchange_code if real else quote.exchange_code,
+                quantity=real.quantity if real else 0,
+                orderable_qty=remaining_real_orderable,
+                avg_price=avg_price,
+                current_price=quote.last_price,
+                pnl_pct=pnl_pct,
+                is_virtual=(real is None),
             )
-            if selected is None or priority < selected[0]:
-                selected = (priority, quote, held_for_return, exit_reason, None)
+            results.append((priority, quote, held_for_return, exit_reason, None))
 
-        if selected is not None:
-            _, quote, held, exit_reason, signal_snapshot = selected
-            return quote, held, exit_reason, signal_snapshot
-
-        signal_candidates: list[tuple[float, OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot]] = []
+        already_exiting = {item[2].symbol.upper() for item in results}
         for symbol, held in real_by_symbol.items():
+            if symbol in already_exiting:
+                continue
             quote = quote_map.get(symbol)
             if quote is None:
                 continue
@@ -2020,31 +1984,38 @@ class LiquidityLabService:
             should_exit, exit_reason = self._should_exit_overseas_position(signal_snapshot, held)
             if not should_exit:
                 continue
-            signal_candidates.append(
-                (
-                    held.pnl_pct,
-                    quote,
-                    OverseasHeldPosition(
-                        symbol=held.symbol,
-                        exchange_code=held.exchange_code,
-                        quantity=held.quantity,
-                        orderable_qty=remaining_real_orderable,
-                        avg_price=held.avg_price,
-                        current_price=held.current_price,
-                        pnl_pct=held.pnl_pct,
-                        is_virtual=False,
-                    ),
-                    exit_reason,
-                    signal_snapshot,
-                )
+            held_copy = OverseasHeldPosition(
+                symbol=held.symbol,
+                exchange_code=held.exchange_code,
+                quantity=held.quantity,
+                orderable_qty=remaining_real_orderable,
+                avg_price=held.avg_price,
+                current_price=held.current_price,
+                pnl_pct=held.pnl_pct,
+                is_virtual=False,
             )
+            results.append(((2, held.pnl_pct), quote, held_copy, exit_reason, signal_snapshot))
 
-        if not signal_candidates:
-            return None
+        if not results:
+            return []
 
-        signal_candidates.sort(key=lambda item: item[0])
-        _, quote, held, exit_reason, signal_snapshot = signal_candidates[0]
-        return quote, held, exit_reason, signal_snapshot
+        results.sort(key=lambda item: item[0])
+        return [
+            (quote, held, exit_reason, signal_snapshot)
+            for _, quote, held, exit_reason, signal_snapshot in results[:max_exits]
+        ]
+
+    async def _select_overseas_exit_target(
+        self,
+        overseas_ranked: list[OverseasScanResult],
+        held_positions: list[OverseasHeldPosition],
+    ) -> tuple[OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot | None] | None:
+        selected = await self._select_overseas_exit_targets(
+            overseas_ranked,
+            held_positions,
+            max_exits=1,
+        )
+        return selected[0] if selected else None
 
     def _domestic_speculative_reasons(self, candidate: DomesticScanResult) -> list[str]:
         config = self.config.liquidity_lab

@@ -9,6 +9,8 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
+import httpx
+
 from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
 from .market_sessions import (
@@ -1056,6 +1058,41 @@ class LiquidityLabService:
         )
 
     async def run(self) -> LiquidityLabReport:
+        try:
+            return await self._run_cycle()
+        except (
+            KisApiError,
+            httpx.ConnectTimeout,
+            httpx.NetworkError,
+            httpx.ReadTimeout,
+        ) as exc:
+            _logger.warning(
+                "[CYCLE] 일시적 네트워크/API 오류 - 사이클 스킵 (error=%s)",
+                exc,
+            )
+            now = datetime.now(timezone.utc)
+            return LiquidityLabReport(
+                scanned_at=format_kst(now) or "",
+                krx_market_open=False,
+                us_market_open=False,
+                us_market_session="",
+                us_orderable_in_profile=False,
+                primary_market="none",
+                primary_target=None,
+                primary_selection_reason="network_error",
+                domestic_ranked=[],
+                overseas_ranked=[],
+                domestic_excluded=[],
+                overseas_excluded=[],
+                domestic_positions=[],
+                overseas_positions=[],
+                watch_targets=[],
+                estimated_api_calls_per_cycle=0,
+                domestic_order=None,
+                overseas_order=None,
+            )
+
+    async def _run_cycle(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
         await self._ensure_tv_diagnostics()

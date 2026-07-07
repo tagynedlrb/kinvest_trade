@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import httpx
+
 from kinvest_trade.client import KisRestClient
 from kinvest_trade.config import KisCredentials
 
@@ -36,6 +38,21 @@ class FakeAsyncClient:
             }
         )
         return self.responses.pop(0)
+
+    async def post(self, url: str, headers: dict, json: dict | None):
+        self.calls.append(
+            {
+                "method": "POST",
+                "url": url,
+                "headers": headers,
+                "params": None,
+                "json": json,
+            }
+        )
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def aclose(self) -> None:
         return None
@@ -146,3 +163,72 @@ def test_get_overseas_minute_chart_reads_output2_head_when_present(tmp_path: Pat
     rows = asyncio.run(client.get_overseas_minute_chart("SOXL", "AMEX"))
 
     assert rows == [{"xymd": "20260626", "xhms": "110000", "last": "219.53"}]
+
+
+def test_ensure_token_retries_after_connect_timeout(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    client._client = FakeAsyncClient(
+        [
+            httpx.ConnectTimeout("timeout-1"),
+            httpx.ConnectTimeout("timeout-2"),
+            FakeResponse(
+                200,
+                {
+                    "access_token": "fresh-token",
+                    "access_token_token_expired": "",
+                },
+            ),
+        ]
+    )
+
+    token = asyncio.run(client.ensure_token())
+
+    assert token == "fresh-token"
+    assert len(client._client.calls) == 3
+
+
+def test_ensure_token_raises_kis_api_error_after_retries(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    client._client = FakeAsyncClient(
+        [
+            httpx.ConnectTimeout("timeout-1"),
+            httpx.ConnectTimeout("timeout-2"),
+            httpx.ConnectTimeout("timeout-3"),
+        ]
+    )
+
+    try:
+        asyncio.run(client.ensure_token())
+    except Exception as exc:  # noqa: BLE001
+        error = exc
+    else:
+        error = None
+
+    assert error is not None
+    assert "token_request_failed" in str(error)

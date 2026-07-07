@@ -910,3 +910,25 @@
   - virtual held symbol이 스캔 풀과 signal cache에 복구되는 테스트 추가
   - manual pool 상태에서 TV 복구 시 자동 전환되는 테스트 추가
   - manual pool 상태에서도 rescan 시 dynamic refresh가 재호출되는 테스트 추가
+
+## [2026-07-08] 지시문 #56 — ConnectTimeout 크래시 방지
+
+### 사고 내용
+- `/lab_start` 직후 KIS token 요청에서 `httpx.ConnectTimeout`이 발생하면
+  `ensure_token()`에서 예외가 그대로 전파되어 서비스가 fatal 종료될 수 있었음
+- 원인: `ensure_token()`은 `_request()` 재시도 루프 바깥에서 직접 `httpx.post()`를 호출하고,
+  자체 재시도나 예외 래핑이 없었음
+
+### 수정 사항
+- `client.py`
+  - `httpx.AsyncClient` timeout을 `connect/read/write/pool = 10s`로 상향
+  - `ensure_token()`에 `httpx.HTTPError` 기준 3회 재시도 추가
+  - 최종 실패 시 `KisApiError("token_request_failed: ...")`로 래핑해 상위에서 일관 처리
+- `liquidity_lab.py`
+  - 기존 `run()` 본문을 `_run_cycle()`로 분리
+  - `run()`에서 `KisApiError`, `httpx.ConnectTimeout`, `httpx.NetworkError`, `httpx.ReadTimeout`
+    을 잡아 `primary_selection_reason="network_error"` 빈 보고서로 사이클 스킵 처리
+  - 일시적 네트워크 오류가 서비스 크래시로 번지지 않도록 완충
+- `tests`
+  - token 요청 timeout 재시도 성공/실패 테스트 추가
+  - `LiquidityLabService.run()`의 network_error fallback 테스트 추가

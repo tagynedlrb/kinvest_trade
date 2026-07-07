@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import kinvest_trade.liquidity_lab as liquidity_lab_module
 from kinvest_trade.config import load_app_config
 from kinvest_trade.liquidity_lab import (
@@ -2823,6 +2824,38 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
         liquidity_lab_module.is_nyse_holiday = original_is_nyse_holiday
 
     assert report.krx_market_open is True
+
+
+def test_run_returns_network_error_report_on_connect_timeout() -> None:
+    service = _build_run_service()
+
+    async def fake_run_cycle():
+        raise httpx.ConnectTimeout("connect timeout")
+
+    service._run_cycle = fake_run_cycle  # type: ignore[method-assign]
+
+    report = asyncio.run(service.run())
+
+    assert report.primary_selection_reason == "network_error"
+    assert report.primary_market == "none"
+    assert report.domestic_order is None
+    assert report.overseas_order is None
+    assert report.estimated_api_calls_per_cycle == 0
+
+
+def test_run_returns_network_error_report_on_kis_api_error() -> None:
+    service = _build_run_service()
+
+    async def fake_run_cycle():
+        raise KisApiError("token_request_failed: timeout")
+
+    service._run_cycle = fake_run_cycle  # type: ignore[method-assign]
+
+    report = asyncio.run(service.run())
+
+    assert report.primary_selection_reason == "network_error"
+    assert report.primary_market == "none"
+    assert report.watch_targets == []
     assert report.us_market_open is False
 
 

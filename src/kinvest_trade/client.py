@@ -73,7 +73,7 @@ class KisRestClient:
         self._token: str | None = None
         self._expires_at: float = 0.0
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=3.0, read=8.0, write=8.0, pool=8.0)
+            timeout=httpx.Timeout(connect=10.0, read=10.0, write=10.0, pool=10.0)
         )
 
     async def __aenter__(self) -> "KisRestClient":
@@ -141,17 +141,32 @@ class KisRestClient:
         if self._load_cached_token():
             return self._token or ""
 
-        response = await self._client.post(
-            f"{self.credentials.base_url}{self.TOKEN_PATH}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "grant_type": "client_credentials",
-                "appkey": self.credentials.appkey,
-                "appsecret": self.credentials.appsecret,
-            },
-        )
-        response.raise_for_status()
-        body = response.json()
+        last_exc: Exception | None = None
+        body: dict[str, Any] | None = None
+        for attempt in range(3):
+            try:
+                response = await self._client.post(
+                    f"{self.credentials.base_url}{self.TOKEN_PATH}",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "grant_type": "client_credentials",
+                        "appkey": self.credentials.appkey,
+                        "appsecret": self.credentials.appsecret,
+                    },
+                )
+                response.raise_for_status()
+                body = response.json()
+                last_exc = None
+                break
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                    continue
+        if last_exc is not None:
+            raise KisApiError(f"token_request_failed: {last_exc}") from last_exc
+        if body is None:
+            raise KisApiError("token_request_failed: empty_response")
 
         token = body.get("access_token", "")
         if not token:

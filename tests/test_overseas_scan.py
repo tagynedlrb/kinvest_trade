@@ -563,6 +563,43 @@ def test_refresh_overseas_dynamic_pool_auto_restores_from_manual_pool_when_tv_re
     assert any("TV 동적 풀 자동 복귀" in message for message in service.notifier.messages)
 
 
+def test_refresh_overseas_dynamic_pool_relaxes_relative_volume_when_results_are_thin() -> None:
+    service = _build_service()
+    service._tv_available = True
+    service._dynamic_overseas_pool = None
+    service.client._client = object()
+    calls: list[float] = []
+
+    async def fake_scan_top_volume_surge(**kwargs):
+        calls.append(float(kwargs["min_rel_volume"]))
+        if len(calls) == 1:
+            return [
+                {"symbol": "AAA", "exchange_code": "NASD"},
+                {"symbol": "BBB", "exchange_code": "NASD"},
+            ]
+        return [
+            {"symbol": "AAA", "exchange_code": "NASD"},
+            {"symbol": "BBB", "exchange_code": "NASD"},
+            {"symbol": "CCC", "exchange_code": "NASD"},
+            {"symbol": "DDD", "exchange_code": "NASDAQ"},
+            {"symbol": "EEE", "exchange_code": "NYSE"},
+            {"symbol": "FFF", "exchange_code": "NYSE"},
+            {"symbol": "GGG", "exchange_code": "NYSE"},
+            {"symbol": "HHH", "exchange_code": "NYSE"},
+            {"symbol": "III", "exchange_code": "NYSE"},
+        ]
+
+    original = liquidity_lab_module.scan_top_volume_surge
+    liquidity_lab_module.scan_top_volume_surge = fake_scan_top_volume_surge
+    try:
+        asyncio.run(service._refresh_overseas_dynamic_pool())
+    finally:
+        liquidity_lab_module.scan_top_volume_surge = original
+
+    assert calls == [2.0, 1.2]
+    assert len(service._dynamic_overseas_pool) == 9
+
+
 def test_scan_overseas_retries_dynamic_refresh_even_with_manual_pool() -> None:
     service = _build_service()
     service._manual_overseas_pool = [{"symbol": "NVDA", "exchange_code": "NASD"}]

@@ -1031,6 +1031,30 @@ class TelegramLiquidityLabController:
 
         last_report = self.last_report_summary or {}
         real_positions = self._combined_positions(last_report)
+        price_lookup: dict[str, float] = {}
+        for wt in last_report.get("watch_targets", []):
+            code = str(wt.get("code", "")).upper()
+            price = float(wt.get("price", 0) or 0)
+            if code and price > 0:
+                price_lookup[code] = price
+        for pos in real_positions:
+            code = str(pos.get("symbol") or pos.get("stock_code") or "").upper()
+            current_price = float(pos.get("current_price", 0) or 0)
+            if code and current_price > 0 and code not in price_lookup:
+                price_lookup[code] = current_price
+        lab = self.lab_service
+        if lab is not None:
+            balance_cache = getattr(lab, "_overseas_balance_cache", {})
+            for balance in balance_cache.get("data", {}).values():
+                for row in balance.get("positions", []):
+                    sym = str(row.get("ovrs_pdno", "")).strip().upper()
+                    if sym and sym not in price_lookup:
+                        try:
+                            cur = float(str(row.get("now_pric2", "0") or "0").replace(",", ""))
+                            if cur > 0:
+                                price_lookup[sym] = cur
+                        except (ValueError, TypeError):
+                            pass
         lines.append("─── 실보유 종목 ───")
         if not real_positions:
             lines.append("보유종목=없음")
@@ -1065,12 +1089,30 @@ class TelegramLiquidityLabController:
         else:
             for position in effective_positions:
                 market = format_market_korean(str(position["market"]))
-                price_text = self._format_price(float(position["avg_price"]), str(position["currency"]))
-                lines.append(
-                    f"{market} {position['symbol']} "
-                    f"수량={int(position['qty'])} "
-                    f"평균단가={price_text}"
-                )
+                symbol = str(position["symbol"]).upper()
+                currency = str(position["currency"])
+                avg_price = float(position["avg_price"])
+                qty = int(position["qty"])
+                cur_price = price_lookup.get(symbol, 0.0)
+
+                avg_text = self._format_price(avg_price, currency)
+                if cur_price > 0 and avg_price > 0:
+                    pnl_pct = (cur_price - avg_price) / avg_price
+                    cur_text = self._format_price(cur_price, currency)
+                    lines.append(
+                        f"{market} {symbol} "
+                        f"수량={qty} "
+                        f"매입={avg_text} "
+                        f"현재={cur_text} "
+                        f"손익={format_pct(pnl_pct)}"
+                    )
+                else:
+                    lines.append(
+                        f"{market} {symbol} "
+                        f"수량={qty} "
+                        f"평균단가={avg_text} "
+                        f"(현재가 없음)"
+                    )
 
         pending_sells = self.repository.list_virtual_sell_pending(market="overseas")
         lines.append("─── 정산 대기 매도 ───")

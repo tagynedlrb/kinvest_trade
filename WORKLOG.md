@@ -932,3 +932,26 @@
 - `tests`
   - token 요청 timeout 재시도 성공/실패 테스트 추가
   - `LiquidityLabService.run()`의 network_error fallback 테스트 추가
+
+## [2026-07-08] 지시문 #57 — Portfolio 가상보유 현재가 표시 / TV 저거래량 fallback
+
+### 진단 결과
+- 가상보유 종목 스캔 자체는 지시문 #55로 복구되어 정상 동작 중이었음
+- 남은 문제는 `telegram_control.py`의 `_build_portfolio_message()`가
+  가상보유 섹션에서 평균단가만 표시하고 현재가/손익을 렌더링하지 않는 것이었음
+- 또 TV 동적 풀은 거래량 기준이 빡빡한 날 결과가 지나치게 적어
+  보유 종목 위주 watchlist만 남는 경우가 있었음
+
+### 수정 사항
+- `telegram_control.py`
+  - portfolio용 `price_lookup` 추가: `watch_targets`, 실보유 `current_price`,
+    `_overseas_balance_cache` 순으로 현재가 보완
+  - 가상보유 섹션에 `매입 / 현재 / 손익` 표시 추가
+  - 현재가를 찾지 못하면 `(현재가 없음)` 문구 유지
+- `liquidity_lab.py`
+  - TV 스캔 호출을 helper로 정리
+  - 결과가 `tv_top_n * 0.3` 미만이면 `min_rel_volume * 0.6`으로 완화 재시도
+  - 이 fallback은 일반 TV 갱신과 manual pool 자동 복귀 경로 모두에 동일 적용
+- `tests`
+  - portfolio 가상보유 현재가/손익 표시 테스트 추가
+  - TV 저거래량 fallback 재시도 테스트 추가

@@ -799,74 +799,97 @@ class LiquidityLabService:
             except Exception:  # noqa: BLE001
                 _logger.debug("tv_diagnostic_notify_failed", exc_info=True)
 
+    async def _scan_tv_dynamic_pool(
+        self,
+        *,
+        min_rel_volume: float | None = None,
+    ) -> list[dict[str, str]]:
+        client = getattr(self.client, "_client", None)
+        if client is None:
+            return []
+        ll_cfg = self.config.liquidity_lab
+        return await scan_top_volume_surge(
+            client=client,
+            top_n=max(1, getattr(ll_cfg, "tv_top_n", 30)),
+            min_rel_volume=(
+                float(min_rel_volume)
+                if min_rel_volume is not None
+                else float(getattr(ll_cfg, "tv_min_rel_volume", 2.0))
+            ),
+            min_price_usd=float(getattr(ll_cfg, "tv_min_price_usd", 5.0)),
+            min_volume=int(getattr(ll_cfg, "tv_min_volume", 500_000)),
+            min_market_cap=float(getattr(ll_cfg, "tv_min_market_cap", 3e8)),
+            max_market_cap=float(getattr(ll_cfg, "tv_max_market_cap", 2e12)),
+            max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
+        )
+
+    async def _scan_tv_dynamic_pool_with_fallback(self) -> list[dict[str, str]]:
+        ll_cfg = self.config.liquidity_lab
+        target_n = max(1, getattr(ll_cfg, "tv_top_n", 30))
+        min_fallback_n = max(1, int(target_n * 0.3))
+        tv_rows = await self._scan_tv_dynamic_pool()
+        if tv_rows and len(tv_rows) >= min_fallback_n:
+            return tv_rows
+
+        fallback_rel_vol = max(
+            1.0,
+            float(getattr(ll_cfg, "tv_min_rel_volume", 2.0)) * 0.6,
+        )
+        _logger.info(
+            "[TV] 결과 부족 (%s개 < %s) -> min_rel_volume=%.1f 완화 재시도",
+            len(tv_rows),
+            min_fallback_n,
+            fallback_rel_vol,
+        )
+        fallback_rows = await self._scan_tv_dynamic_pool(
+            min_rel_volume=fallback_rel_vol,
+        )
+        return fallback_rows or tv_rows or []
+
     async def _refresh_overseas_dynamic_pool(self) -> None:
         manual_pool = getattr(self, "_manual_overseas_pool", None)
         if manual_pool:
             if getattr(self, "_tv_available", False):
-                client = getattr(self.client, "_client", None)
-                if client is not None:
-                    ll_cfg = self.config.liquidity_lab
-                    tv_rows = await scan_top_volume_surge(
-                        client=client,
-                        top_n=max(1, getattr(ll_cfg, "tv_top_n", 30)),
-                        min_rel_volume=float(getattr(ll_cfg, "tv_min_rel_volume", 2.0)),
-                        min_price_usd=float(getattr(ll_cfg, "tv_min_price_usd", 5.0)),
-                        min_volume=int(getattr(ll_cfg, "tv_min_volume", 500_000)),
-                        min_market_cap=float(getattr(ll_cfg, "tv_min_market_cap", 3e8)),
-                        max_market_cap=float(getattr(ll_cfg, "tv_max_market_cap", 2e12)),
-                        max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
+                tv_rows = await self._scan_tv_dynamic_pool_with_fallback()
+                if tv_rows:
+                    self._manual_overseas_pool = None
+                    self._dynamic_overseas_pool = list(tv_rows)
+                    self._awaiting_relist = False
+                    preview = ", ".join(row["symbol"] for row in tv_rows[:5])
+                    _logger.info(
+                        "[TV] 수동 풀 자동 해제 -> TV 동적 풀 복귀 (%s개) [%s]",
+                        len(tv_rows),
+                        preview,
                     )
-                    if tv_rows:
-                        self._manual_overseas_pool = None
-                        self._dynamic_overseas_pool = list(tv_rows)
-                        self._awaiting_relist = False
-                        preview = ", ".join(row["symbol"] for row in tv_rows[:5])
-                        _logger.info(
-                            "[TV] 수동 풀 자동 해제 -> TV 동적 풀 복귀 (%s개) [%s]",
-                            len(tv_rows),
-                            preview,
-                        )
-                        notifier = getattr(self, "notifier", None)
-                        if notifier is not None and getattr(notifier, "enabled", True):
-                            try:
-                                await notifier.send(
-                                    "✅ TV 동적 풀 자동 복귀\n"
-                                    "수동 relist 해제 -> TV 스캔 결과 적용\n"
-                                    f"대표: {preview} (총 {len(tv_rows)}개)"
-                                )
-                            except Exception:  # noqa: BLE001
-                                _logger.debug("tv_auto_restore_notify_failed", exc_info=True)
-                        return
+                    notifier = getattr(self, "notifier", None)
+                    if notifier is not None and getattr(notifier, "enabled", True):
+                        try:
+                            await notifier.send(
+                                "✅ TV 동적 풀 자동 복귀\n"
+                                "수동 relist 해제 -> TV 스캔 결과 적용\n"
+                                f"대표: {preview} (총 {len(tv_rows)}개)"
+                            )
+                        except Exception:  # noqa: BLE001
+                            _logger.debug("tv_auto_restore_notify_failed", exc_info=True)
+                    return
 
             self._dynamic_overseas_pool = list(manual_pool)
             self._awaiting_relist = False
             _logger.info("overseas_manual_pool_override count=%s", len(manual_pool))
             return
 
-        ll_cfg = self.config.liquidity_lab
         if getattr(self, "_tv_available", False):
-            client = getattr(self.client, "_client", None)
-            if client is not None:
-                tv_rows = await scan_top_volume_surge(
-                    client=client,
-                    top_n=max(1, getattr(ll_cfg, "tv_top_n", 30)),
-                    min_rel_volume=float(getattr(ll_cfg, "tv_min_rel_volume", 2.0)),
-                    min_price_usd=float(getattr(ll_cfg, "tv_min_price_usd", 1.0)),
-                    min_volume=int(getattr(ll_cfg, "tv_min_volume", 500_000)),
-                    min_market_cap=float(getattr(ll_cfg, "tv_min_market_cap", 3e8)),
-                    max_market_cap=float(getattr(ll_cfg, "tv_max_market_cap", 2e12)),
-                    max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
+            tv_rows = await self._scan_tv_dynamic_pool_with_fallback()
+            if tv_rows:
+                self._dynamic_overseas_pool = list(tv_rows)
+                self._awaiting_relist = False
+                preview = ", ".join(row["symbol"] for row in tv_rows[:5])
+                _logger.info(
+                    "[TV] 해외 동적 풀 갱신: %s개 -> [%s]",
+                    len(tv_rows),
+                    preview,
                 )
-                if tv_rows:
-                    self._dynamic_overseas_pool = list(tv_rows)
-                    self._awaiting_relist = False
-                    preview = ", ".join(row["symbol"] for row in tv_rows[:5])
-                    _logger.info(
-                        "[TV] 해외 동적 풀 갱신: %s개 -> [%s]",
-                        len(tv_rows),
-                        preview,
-                    )
-                    return
+                return
             _logger.warning("[TV] scan_result_empty; will retry next rescan cycle")
 
         self._dynamic_overseas_pool = []

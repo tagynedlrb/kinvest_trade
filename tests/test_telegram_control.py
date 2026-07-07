@@ -249,6 +249,9 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
                 "currency": "USD",
             }
         ],
+        "watch_targets": [
+            {"code": "AAPL", "price": 210.0},
+        ],
     }
 
     message = controller._build_portfolio_message()
@@ -258,9 +261,9 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
     assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
     assert "─── 가상보유 종목 ───" in message
-    assert "국내 005930 수량=3 평균단가=80,000원" in message
-    assert "해외 SOXL 수량=1 평균단가=$19.2500" in message
-    assert "해외 AAPL 수량=2 평균단가=$200.0000" in message
+    assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
+    assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
+    assert "해외 AAPL 수량=2 매입=$200.0000 현재=$210.0000 손익=+5.00%" in message
     assert "─── 정산 대기 매도 ───" in message
     assert "해외 TSLA(v) 수량=-1 가상매도가=$250.0000" in message
     assert "─── 누적 성과 (virtual) ───" in message
@@ -304,7 +307,42 @@ def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path)
 
     message = controller._build_portfolio_message()
 
-    assert "해외 SOXL 수량=2 평균단가=$19.2500" in message
+    assert "해외 SOXL 수량=2 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
+
+
+def test_build_portfolio_message_marks_virtual_position_without_price(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_missing_price.db")
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        qty=3,
+        fill_price=68.7,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 20:10:00 KST",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "watch_targets": [],
+    }
+
+    message = controller._build_portfolio_message()
+
+    assert "해외 SOLS 수량=3 평균단가=$68.7000 (현재가 없음)" in message
 
 
 def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:

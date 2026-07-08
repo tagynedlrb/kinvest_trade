@@ -980,3 +980,28 @@
 - `tests`
   - broker order event 저장 테스트 추가
   - batch notification 포맷 반영 후 전체 테스트 통과 확인
+
+## [2026-07-08] 지시문 #58 — 종목명 / 알림 형식 / 쿨다운 / A/B 아키텍처
+
+### 분석 (07/08 세션 22.8h, 49건)
+- 승률 36%, 손익비 4.44, Gross +0.47%, Net -0.03%
+- 해외 Net +0.29% (개선 중), 국내 Net -0.51% (계속 문제)
+- FHTX +3.5%, PLBL +3.7%, CMPS +2.88% — TP 2.5% 효과 확인
+- SKIP 57건: CMPS RSI=81.5 재진입 차단 = 정상
+- 거래 공백 4.1h(US마감~KRX개장) = 정상, 11.1h = 시스템 미실행 (CB+크래시)
+- 6% 초과 손실: 이 세션 없음, 이전 WULF/SOLS는 virtual/T+2 문제
+- RIVN 재매수: exit_cooldown=8분으로 짧아 손절 직후 재진입 허용됨
+
+### 수정
+- `DomesticScanResult`에 `stock_name` 필드 추가
+- `_refresh_domestic_dynamic_pool()`에서 `_dynamic_domestic_names` 저장
+- `_scan_single_domestic_quote()`, `_scan_single_domestic()`에서 이름 주입
+- `telegram_control.py`에 `_format_symbol_label()` 추가, 국내 watchlist/positions/portfolio에 종목명 표기
+- 거래 알림 헤더를 `[KIS][거래알림]`으로 통일
+- 사이클 summary에 SKIP/주문거부 건수와 상위 사유 포함
+- `_register_exit_cooldown()`을 손절 25분, 추세이탈 12분, 미미익절 15분, 기본 8분으로 조정
+
+### 설계 문서 (구현 보류)
+- 복수 정책 A/B 아키텍처: `shadow_trade_log` 스키마 설계
+- `PolicyOrchestrator` 인터페이스 정의
+- `/lab_policy_compare` 리포트 형식 정의

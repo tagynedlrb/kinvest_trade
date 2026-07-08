@@ -672,7 +672,7 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert result["submitted"] is True
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
-    assert message.startswith("[KIS][LAB_TRADE_BATCH]")
+    assert message.startswith("[KIS][거래알림]")
     assert "해외 TSLA 매도 +$282.00 x2" in message
     assert "매수=-" in message
     assert "청산=긴급 손절" in message
@@ -865,7 +865,7 @@ def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
         liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
 
     assert result["submitted"] is True
-    assert any(message.startswith("[KIS][LAB_TRADE_BATCH]") for message in service.notifier.messages)
+    assert any(message.startswith("[KIS][거래알림]") for message in service.notifier.messages)
     assert "NVDA(가상) 매도" in service.notifier.messages[-1]
 
 
@@ -1171,7 +1171,7 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
 
     assert result["submitted"] is True
     message = service.notifier.messages[0]
-    assert message.startswith("[KIS][LAB_TRADE_BATCH]")
+    assert message.startswith("[KIS][거래알림]")
     assert "국내 005930 매도 +81,950원 x2" in message
     assert "매수=-" in message
     assert "청산=손절" in message
@@ -2787,6 +2787,79 @@ def test_send_summary_sends_message_for_sell_rejected() -> None:
     assert "참고=주문이 거부되어 실제로 체결되지 않았습니다" in service.notifier.messages[0]
 
 
+def test_send_summary_reports_skip_counts_when_trade_already_notified() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-06-30 22:05:00 KST",
+        krx_market_open=True,
+        us_market_open=False,
+        us_market_session="closed",
+        us_orderable_in_profile=False,
+        primary_market="domestic",
+        primary_target="005930",
+        primary_selection_reason="watchlist_buy_signal",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        domestic_order={
+            "submitted": True,
+            "already_notified": True,
+            "side": "buy",
+            "candidate": {"stock_code": "005930", "current_price": 82000},
+            "qty": 1,
+            "batched_orders": [
+                {
+                    "submitted": True,
+                    "already_notified": True,
+                    "side": "buy",
+                    "candidate": {"stock_code": "005930", "current_price": 82000},
+                    "qty": 1,
+                },
+                {
+                    "skipped": True,
+                    "side": "buy",
+                    "candidate": {"stock_code": "000660", "current_price": 210000},
+                    "reason": "entry_rsi_too_high",
+                },
+            ],
+        },
+        overseas_order=None,
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert len(service.notifier.messages) == 1
+    assert service.notifier.messages[0].startswith("[KIS][거래알림]")
+    assert "동작=주문거부" in service.notifier.messages[0]
+    assert "주문거부=1건" in service.notifier.messages[0]
+
+
+def test_register_exit_cooldown_uses_reason_specific_minutes() -> None:
+    service = _build_run_service()
+    service._exit_cooldown = {}
+    before = datetime.now(timezone.utc)
+
+    service._register_exit_cooldown("overseas", "RIVN", "stop_loss")
+    service._register_exit_cooldown("overseas", "SOXL", "momentum_loss_cut")
+    service._register_exit_cooldown("overseas", "PLBL", "marginal_profit_exit")
+    service._register_exit_cooldown("overseas", "AAPL", "other_exit")
+
+    stop_loss_delta = (service._exit_cooldown["overseas:RIVN"] - before).total_seconds() / 60.0
+    momentum_delta = (service._exit_cooldown["overseas:SOXL"] - before).total_seconds() / 60.0
+    marginal_delta = (service._exit_cooldown["overseas:PLBL"] - before).total_seconds() / 60.0
+    default_delta = (service._exit_cooldown["overseas:AAPL"] - before).total_seconds() / 60.0
+
+    assert 24.5 <= stop_loss_delta <= 25.5
+    assert 11.5 <= momentum_delta <= 12.5
+    assert 14.5 <= marginal_delta <= 15.5
+    assert 7.5 <= default_delta <= 8.5
+
+
 def test_overseas_buy_stays_skipped_when_market_closed() -> None:
     service = _build_run_service()
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
@@ -3094,7 +3167,7 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     assert len(broker_rows) == 1
     assert broker_rows[0]["symbol"] == "SOXL"
     assert broker_rows[0]["requested_price"] == 25.0
-    assert service.notifier.messages[0].startswith("[KIS][LAB_TRADE_BATCH]")
+    assert service.notifier.messages[0].startswith("[KIS][거래알림]")
     assert rows[0]["action_reason"] == "strategy_buy_signal"
     assert rows[0]["vwap"] is not None
     assert rows[0]["macd_line"] is not None

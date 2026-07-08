@@ -929,7 +929,17 @@ class TelegramLiquidityLabController:
 
         for watch_target in watch_targets:
             symbol = str(watch_target.get("code", "")).upper()
-            lines.append(self._format_watch_target_line(watch_target, pnl_pct=pnl_map.get(symbol)))
+            lines.append(
+                self._format_watch_target_line(
+                    watch_target,
+                    pnl_pct=pnl_map.get(symbol),
+                    symbol_label=self._format_symbol_label(
+                        str(watch_target.get("market", "overseas")),
+                        symbol,
+                        last_report=last_report,
+                    ),
+                )
+            )
         return "\n".join(lines)
 
     def _build_positions_message(self) -> str:
@@ -948,8 +958,13 @@ class TelegramLiquidityLabController:
 
         total_pnl_pct_sum = 0.0
         for pos in positions:
-            symbol = str(pos.get("symbol") or pos.get("stock_code") or "-")
-            market = format_market_korean(str(pos.get("market", "overseas")))
+            market_key = str(pos.get("market", "overseas"))
+            symbol = self._format_symbol_label(
+                market_key,
+                str(pos.get("symbol") or pos.get("stock_code") or "-"),
+                last_report=last_report,
+            )
+            market = format_market_korean(market_key)
             qty = int(pos.get("quantity", 0) or 0)
             avg_price = float(pos.get("avg_price", 0) or 0)
             current_price = float(pos.get("current_price", 0) or 0)
@@ -1066,12 +1081,16 @@ class TelegramLiquidityLabController:
             lines.append("보유종목=없음")
         else:
             for pos in real_positions:
-                symbol = str(pos.get("symbol") or pos.get("stock_code") or "-")
                 market_key = str(
                     pos.get(
                         "market",
                         "domestic" if pos.get("stock_code") else "overseas",
                     )
+                )
+                symbol = self._format_symbol_label(
+                    market_key,
+                    str(pos.get("symbol") or pos.get("stock_code") or "-"),
+                    last_report=last_report,
                 )
                 market = format_market_korean(market_key)
                 qty = int(pos.get("quantity", 0) or 0)
@@ -1094,8 +1113,13 @@ class TelegramLiquidityLabController:
             lines.append("가상보유=없음")
         else:
             for position in effective_positions:
-                market = format_market_korean(str(position["market"]))
-                symbol = str(position["symbol"]).upper()
+                market_key = str(position["market"])
+                market = format_market_korean(market_key)
+                symbol = self._format_symbol_label(
+                    market_key,
+                    str(position["symbol"]).upper(),
+                    last_report=last_report,
+                )
                 currency = str(position["currency"])
                 avg_price = float(position["avg_price"])
                 qty = int(position["qty"])
@@ -1513,10 +1537,45 @@ class TelegramLiquidityLabController:
         }
         return mapping.get(normalized)
 
+    def _domestic_name_map(self, last_report: dict | None = None) -> dict[str, str]:
+        result: dict[str, str] = {}
+        lab = getattr(self, "lab_service", None)
+        if lab is not None:
+            for code, name in getattr(lab, "_dynamic_domestic_names", {}).items():
+                code_text = str(code).strip().upper()
+                name_text = str(name or "").strip()
+                if code_text and name_text:
+                    result[code_text] = name_text
+        report_data = last_report or getattr(self, "last_report_summary", {}) or {}
+        for row in report_data.get("domestic_ranked", []) or []:
+            code = str(row.get("stock_code", "") or "").strip().upper()
+            name = str(row.get("stock_name", "") or row.get("name", "") or "").strip()
+            if code and name and code not in result:
+                result[code] = name
+        return result
+
+    def _format_symbol_label(
+        self,
+        market: str,
+        code: str,
+        *,
+        last_report: dict | None = None,
+    ) -> str:
+        code_text = str(code or "").strip().upper()
+        if str(market).strip().lower() == "domestic":
+            name = self._domestic_name_map(last_report=last_report).get(code_text, "")
+            return f"{code_text}({name})" if code_text and name else code_text
+        return code_text or "-"
+
     @staticmethod
-    def _format_watch_target_line(watch_target: dict, pnl_pct: float | None = None) -> str:
+    def _format_watch_target_line(
+        watch_target: dict,
+        pnl_pct: float | None = None,
+        *,
+        symbol_label: str | None = None,
+    ) -> str:
         market = format_market_korean(str(watch_target.get("market", "overseas")))
-        code = str(watch_target.get("code", "-"))
+        code = str(symbol_label or watch_target.get("code", "-"))
         action_bias = str(watch_target.get("action_bias", "WAIT")).upper()
         strategy_flag = str(watch_target.get("strategy_flag", "") or "")
         note_raw = str(watch_target.get("note", "-"))

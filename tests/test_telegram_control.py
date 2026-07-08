@@ -129,6 +129,33 @@ def test_build_positions_message_formats_held_positions() -> None:
     assert "평균손익=+1.62%" in message
 
 
+def test_build_positions_message_uses_domestic_name_when_available() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.last_report_summary = {
+        "domestic_positions": [
+            {
+                "market": "domestic",
+                "stock_code": "005930",
+                "quantity": 3,
+                "avg_price": 80000.0,
+                "current_price": 82400.0,
+                "pnl_pct": 0.03,
+                "currency": "KRW",
+            }
+        ],
+        "overseas_positions": [],
+        "domestic_ranked": [
+            {"stock_code": "005930", "stock_name": "삼성전자"},
+        ],
+    }
+    controller.current_cycle_no = 7
+    controller.lab_service = SimpleNamespace(_dynamic_domestic_names={"005930": "삼성전자"})
+
+    message = controller._build_positions_message()
+
+    assert "국내 005930(삼성전자) 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
+
+
 def test_build_positions_message_returns_none_when_no_positions() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
     controller.last_report_summary = {"domestic_positions": [], "overseas_positions": []}
@@ -308,6 +335,43 @@ def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path)
     message = controller._build_portfolio_message()
 
     assert "해외 SOXL 수량=2 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
+
+
+def test_build_portfolio_message_uses_domestic_name_when_available(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_name.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [
+            {
+                "market": "domestic",
+                "stock_code": "005930",
+                "quantity": 3,
+                "avg_price": 80000.0,
+                "current_price": 82400.0,
+                "pnl_pct": 0.03,
+                "currency": "KRW",
+            }
+        ],
+        "overseas_positions": [],
+        "watch_targets": [],
+        "domestic_ranked": [
+            {"stock_code": "005930", "stock_name": "삼성전자"},
+        ],
+    }
+    controller.lab_service = SimpleNamespace(_dynamic_domestic_names={"005930": "삼성전자"})
+
+    message = controller._build_portfolio_message()
+
+    assert "국내 005930(삼성전자) 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
 
 
 def test_build_portfolio_message_marks_virtual_position_without_price(tmp_path) -> None:
@@ -595,6 +659,37 @@ def test_build_watchlist_message_uses_balance_cache_for_held_pnl() -> None:
     message = controller._build_watchlist_message()
 
     assert "해외 HOOD 상태=보유중 전략=VWAP 가격=$28.5000 보유=2주 손익=+14.00%" in message
+
+
+def test_build_watchlist_message_uses_domestic_name_when_available() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.last_report_summary = {
+        "watch_targets": [
+            {
+                "market": "domestic",
+                "code": "005930",
+                "action_bias": "BUY",
+                "signal_state": "BUY",
+                "strategy_flag": "VWAP",
+                "note": "volume_breakout_entry",
+                "price": 82400,
+                "holding_qty": 0,
+            }
+        ],
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "estimated_api_calls_per_cycle": 12,
+        "domestic_ranked": [
+            {"stock_code": "005930", "stock_name": "삼성전자"},
+        ],
+    }
+    controller.current_cycle_no = 11
+    controller.mode = "running"
+    controller.lab_service = SimpleNamespace(_dynamic_domestic_names={"005930": "삼성전자"})
+
+    message = controller._build_watchlist_message()
+
+    assert "국내 005930(삼성전자) 상태=매수신호 전략=VWAP 가격=82,400원" in message
 
 
 def test_format_watch_target_line_ready_status_is_readable() -> None:

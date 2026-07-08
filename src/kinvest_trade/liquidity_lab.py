@@ -62,6 +62,7 @@ class DomesticScanResult:
     intraday_turnover_krw: int
     volume_sum: int
     activity_score: float
+    stock_name: str = ""
 
 
 @dataclass(slots=True)
@@ -551,6 +552,7 @@ class LiquidityLabService:
         self._vol_history: dict[str, deque] = {}
         self._vol_history_maxlen: int = 12
         self._dynamic_domestic_codes: list[str] | None = None
+        self._dynamic_domestic_names: dict[str, str] = {}
         self._domestic_scan_cycle_count: int = 0
         self._dynamic_overseas_pool: list[dict[str, str]] | None = None
         self._awaiting_relist: bool = False
@@ -737,6 +739,34 @@ class LiquidityLabService:
     def _trade_notification_force_immediate(self) -> bool:
         return self._trade_notification_window_seconds() <= 0
 
+    def _format_domestic_symbol_label(self, stock_code: str) -> str:
+        code = str(stock_code or "").strip().upper()
+        if not code:
+            return "-"
+        name = str(getattr(self, "_dynamic_domestic_names", {}).get(code, "") or "").strip()
+        return f"{code}({name})" if name else code
+
+    def _format_trade_symbol_label(self, market: str, code: str) -> str:
+        if str(market).strip().lower() == "domestic":
+            return self._format_domestic_symbol_label(code)
+        return str(code or "").strip().upper() or "-"
+
+    def _get_domestic_stock_name(self, stock_code: str, *sources: object) -> str:
+        code = str(stock_code or "").strip().upper()
+        if not code:
+            return ""
+        name_map = getattr(self, "_dynamic_domestic_names", {})
+        if code in name_map and str(name_map.get(code) or "").strip():
+            return str(name_map[code]).strip()
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for field_name in ("hts_kor_isnm", "name", "prdt_name", "stck_shrn_iscd_name"):
+                value = str(source.get(field_name, "") or "").strip()
+                if value:
+                    return value
+        return ""
+
     async def _flush_trade_notifications(self, *, force: bool = False) -> None:
         queue = getattr(self, "_pending_trade_notifications", None)
         if not queue:
@@ -752,7 +782,7 @@ class LiquidityLabService:
         ):
             return
         lines = [
-            "[KIS][LAB_TRADE_BATCH]",
+            "[KIS][거래알림]",
             f"시각={format_kst_korean(now)}",
             f"건수={batch_size}",
             *queue,
@@ -1137,18 +1167,28 @@ class LiquidityLabService:
 
         seen: set[str] = set()
         codes: list[str] = []
+        name_map: dict[str, str] = {}
         for row in [*vol_rows, *flu_rows]:
             code = str(row.get("stock_code", "")).strip()
+            name = str(row.get("hts_kor_isnm", "") or row.get("name", "")).strip()
+            if code and name:
+                name_map[code] = name
             if code and code not in seen:
                 seen.add(code)
                 codes.append(code)
         if not codes:
+            self._dynamic_domestic_names = {}
             return
         self._dynamic_domestic_codes = codes
+        self._dynamic_domestic_names = name_map
         _logger.info("domestic_dynamic_pool_refreshed count=%s", len(codes))
         notifier = getattr(self, "notifier", None)
         if notifier is not None and getattr(notifier, "enabled", True):
-            top_names = [str(row.get("name", "")).strip() for row in vol_rows[:5] if row.get("name")]
+            top_names = [
+                str(row.get("hts_kor_isnm", "") or row.get("name", "")).strip()
+                for row in vol_rows[:5]
+                if row.get("hts_kor_isnm") or row.get("name")
+            ]
             try:
                 await notifier.send(
                     f"🔄 [국내 동적 풀 갱신] {len(codes)}종목\n거래량 상위: {', '.join(top_names)}"
@@ -1621,6 +1661,7 @@ class LiquidityLabService:
     async def _scan_single_domestic_quote(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
         orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
+        stock_name = self._get_domestic_stock_name(stock_code, current, orderbook)
         intraday_turnover = int(current.get("turnover_krw", 0) or 0)
         acml_vol = int(current.get("volume", 0) or 0)
         spread_pct = float(orderbook.get("spread_pct", 0.0) or 0.0)
@@ -1645,6 +1686,7 @@ class LiquidityLabService:
             intraday_turnover_krw=intraday_turnover,
             volume_sum=acml_vol,
             activity_score=round(activity_score, 4),
+            stock_name=stock_name,
         )
 
     async def scan_overseas(self) -> tuple[list[OverseasScanResult], set[str]]:
@@ -1846,6 +1888,7 @@ class LiquidityLabService:
     async def _scan_single_domestic(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
         orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
+        stock_name = self._get_domestic_stock_name(stock_code, current, orderbook)
         target_date = datetime.now(timezone.utc).astimezone(KST).strftime("%Y%m%d")
         bars = await self.client.get_time_daily_chart(
             stock_code=stock_code,
@@ -1887,6 +1930,7 @@ class LiquidityLabService:
             intraday_turnover_krw=intraday_turnover,
             volume_sum=volume_sum,
             activity_score=round(activity_score, 4),
+            stock_name=stock_name,
         )
 
     async def _scan_single_overseas(
@@ -3370,7 +3414,7 @@ class LiquidityLabService:
             " ".join(
                 [
                     format_market_korean("domestic"),
-                    candidate.stock_code,
+                    self._format_trade_symbol_label("domestic", candidate.stock_code),
                     "매수",
                     f"{int(candidate.best_ask or candidate.current_price):,}원",
                     f"x{qty}",
@@ -3535,7 +3579,7 @@ class LiquidityLabService:
             " ".join(
                 [
                     format_market_korean("domestic"),
-                    candidate.stock_code,
+                    self._format_trade_symbol_label("domestic", candidate.stock_code),
                     "매도",
                     format_krw(sell_price),
                     f"x{sell_qty}",
@@ -4757,7 +4801,8 @@ class LiquidityLabService:
     async def _send_summary(self, report: LiquidityLabReport) -> None:
         await self._flush_trade_notifications(force=False)
         action = self._build_action_summary(report)
-        if action["action_raw"] in {"WAIT", "VIRTUAL_BUY", "VIRTUAL_SELL"}:
+        skip_count, skip_top_reasons = self._summarize_skipped_orders(report)
+        if action["action_raw"] in {"WAIT", "VIRTUAL_BUY", "VIRTUAL_SELL"} and skip_count <= 0:
             return
         overseas_order = report.overseas_order or {}
         domestic_order = report.domestic_order or {}
@@ -4771,17 +4816,34 @@ class LiquidityLabService:
         # Some execution paths already send an immediate fill notification.
         # Real overseas buys do not, so do not blanket-suppress BUY/SELL here.
         # Instead, skip only the paths that explicitly mark themselves as already notified.
-        if submitted_order and submitted_order.get("already_notified"):
+        if submitted_order and submitted_order.get("already_notified") and skip_count <= 0:
             return
         session_note = ""
         if report.primary_market == "overseas" and not report.us_orderable_in_profile:
             session_note = " (거래불가 세션)"
+        primary_market_key = (
+            report.primary_market
+            if report.primary_market in {"domestic", "overseas"}
+            else "overseas"
+        )
+        primary_target = self._format_trade_symbol_label(primary_market_key, report.primary_target or "-")
+        if submitted_order and submitted_order.get("already_notified") and skip_count > 0:
+            lines = [
+                "[KIS][거래알림]",
+                f"시각={self._format_report_time(report.scanned_at)}",
+                f"시장={format_market_korean(report.primary_market)}{session_note}",
+                f"종목={primary_target}",
+                "동작=주문거부",
+                f"주문거부={skip_count}건 ({skip_top_reasons})",
+            ]
+            await self.notifier.send("\n".join(lines))
+            return
         lines = [
-            "[KIS][LIQUIDITY_LAB]",
+            "[KIS][거래알림]",
             f"시각={self._format_report_time(report.scanned_at)}",
             f"시장={format_market_korean(report.primary_market)}{session_note}",
-            f"종목={report.primary_target or '-'}",
-            f"동작={action['action']}",
+            f"종목={primary_target}",
+            f"동작={'주문거부' if action['action_raw'] == 'WAIT' and skip_count > 0 else action['action']}",
             f"가격={action['price']}",
             f"수량={action['qty']}",
         ]
@@ -4810,9 +4872,51 @@ class LiquidityLabService:
         else:
             lines.append(f"지표={action['indicator']}")
             lines.append(f"사유={action['reason']}")
+        if skip_count > 0:
+            lines.append(f"주문거부={skip_count}건 ({skip_top_reasons})")
         if action["action_raw"] == "SELL_REJECTED":
             lines.append("참고=주문이 거부되어 실제로 체결되지 않았습니다")
         await self.notifier.send("\n".join(lines))
+
+    def _iter_leaf_orders(self, order_result: dict | None):
+        if not order_result:
+            return
+        batched_orders = order_result.get("batched_orders")
+        if isinstance(batched_orders, list) and batched_orders:
+            for item in batched_orders:
+                yield from self._iter_leaf_orders(item)
+            return
+        yield order_result
+
+    def _summarize_skipped_orders(self, report: LiquidityLabReport) -> tuple[int, str]:
+        reason_counts: dict[str, int] = {}
+        ignored_reasons = {
+            "",
+            "no_action",
+            "market_closed",
+            "no_overseas_candidate",
+            "krx_open_but_no_candidate",
+            "us_open_but_no_candidate",
+            "us_open_but_mock_session_not_supported",
+        }
+        for root in (report.domestic_order or {}, report.overseas_order or {}):
+            for order in self._iter_leaf_orders(root):
+                if order.get("submitted"):
+                    continue
+                if not order.get("skipped") and not order.get("error"):
+                    continue
+                reason = str(order.get("reason") or order.get("error") or "unknown")
+                if reason in ignored_reasons:
+                    continue
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if not reason_counts:
+            return 0, "-"
+        total = sum(reason_counts.values())
+        top_reasons = ", ".join(
+            format_reason_korean(reason)
+            for reason, _count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:3]
+        )
+        return total, top_reasons or "-"
 
     def _build_action_summary(self, report: LiquidityLabReport) -> dict[str, str]:
         overseas_order = report.overseas_order or {}
@@ -5054,7 +5158,14 @@ class LiquidityLabService:
         if exit_cooldown is None:
             exit_cooldown = {}
             self._exit_cooldown = exit_cooldown
-        cooldown_minutes = 15 if exit_reason == "marginal_profit_exit" else 8
+        if exit_reason in ("stop_loss", "atr_hard_stop"):
+            cooldown_minutes = 25
+        elif exit_reason in ("momentum_loss_cut", "trend_filter_lost"):
+            cooldown_minutes = 12
+        elif exit_reason == "marginal_profit_exit":
+            cooldown_minutes = 15
+        else:
+            cooldown_minutes = 8
         exit_cooldown[f"{market}:{symbol.strip().upper()}"] = (
             datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
         )

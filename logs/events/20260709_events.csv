@@ -1,0 +1,6 @@
+﻿id,logged_at,session_id,event_type,market,symbol,detail,cycle_no
+3,2026-07-08T15:02:50.474275+00:00,050120bd1cf8,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",17
+4,2026-07-08T15:04:14.053488+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": true}",21
+5,2026-07-08T15:15:18.893576+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": true}",41
+6,2026-07-08T15:25:56.808431+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": true}",61
+7,2026-07-08T15:37:25.345810+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 9, ""threshold"": 2.0, ""fallback_used"": false}",81

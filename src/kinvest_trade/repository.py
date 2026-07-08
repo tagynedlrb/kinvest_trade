@@ -252,6 +252,21 @@ class SqliteRepository:
                 CREATE INDEX IF NOT EXISTS idx_cycle_log_action
                     ON cycle_log(action_bias);
 
+                CREATE TABLE IF NOT EXISTS event_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    logged_at TEXT NOT NULL,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    event_type TEXT NOT NULL,
+                    market TEXT DEFAULT '',
+                    symbol TEXT DEFAULT '',
+                    detail TEXT DEFAULT '',
+                    cycle_no INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_event_log_logged_at
+                    ON event_log(logged_at);
+                CREATE INDEX IF NOT EXISTS idx_event_log_type
+                    ON event_log(event_type);
+
                 CREATE TABLE IF NOT EXISTS lab_symbol_state (
                     market TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -326,6 +341,20 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "spread_pct", "REAL")
             self._ensure_column(conn, "cycle_log", "consecutive_losses", "INTEGER")
             self._ensure_column(conn, "cycle_log", "hold_cycles", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "entry_price", "REAL")
+            self._ensure_column(conn, "cycle_log", "qty_executed", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "net_pnl_usd", "REAL")
+            self._ensure_column(conn, "cycle_log", "net_pnl_krw", "REAL")
+            self._ensure_column(conn, "cycle_log", "commission_usd", "REAL")
+            self._ensure_column(conn, "cycle_log", "commission_krw", "REAL")
+            self._ensure_column(conn, "cycle_log", "is_virtual", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "orderable_qty", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "stock_name", "TEXT")
+            self._ensure_column(conn, "cycle_log", "hold_duration_min", "REAL")
+            self._ensure_column(conn, "cycle_log", "entry_time", "TEXT")
+            self._ensure_column(conn, "cycle_log", "exit_cooldown_remaining", "REAL")
+            self._ensure_column(conn, "cycle_log", "cb_active", "INTEGER")
+            self._ensure_column(conn, "cycle_log", "pool_size", "INTEGER")
             self._ensure_column(conn, "lab_symbol_state", "entry_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
@@ -450,55 +479,158 @@ class SqliteRepository:
         spread_pct: float | None = None,
         consecutive_losses: int | None = None,
         hold_cycles: int | None = None,
+        entry_price: float | None = None,
+        qty_executed: int | None = None,
+        net_pnl_usd: float | None = None,
+        net_pnl_krw: float | None = None,
+        commission_usd: float | None = None,
+        commission_krw: float | None = None,
+        is_virtual: int | None = None,
+        orderable_qty: int | None = None,
+        stock_name: str | None = None,
+        hold_duration_min: float | None = None,
+        entry_time: str | None = None,
+        exit_cooldown_remaining: float | None = None,
+        cb_active: int | None = None,
+        pool_size: int | None = None,
     ) -> None:
+        with self._connect() as conn:
+            columns = [
+                "logged_at",
+                "market",
+                "symbol",
+                "exchange_code",
+                "action_bias",
+                "action_reason",
+                "price",
+                "pnl_pct",
+                "realized_pnl_usd",
+                "realized_pnl_krw",
+                "holding_qty",
+                "rsi14",
+                "volume_ratio",
+                "intraday_momentum",
+                "intraday_bar_return",
+                "minute_ma_fast",
+                "minute_ma_slow",
+                "activity_score",
+                "cycle_no",
+                "session_id",
+                "strategy_flag",
+                "entry_by",
+                "is_session_trade",
+                "vwap",
+                "macd_line",
+                "macd_signal",
+                "macd_golden",
+                "breakout_distance_pct",
+                "atr",
+                "spread_pct",
+                "consecutive_losses",
+                "hold_cycles",
+                "entry_price",
+                "qty_executed",
+                "net_pnl_usd",
+                "net_pnl_krw",
+                "commission_usd",
+                "commission_krw",
+                "is_virtual",
+                "orderable_qty",
+                "stock_name",
+                "hold_duration_min",
+                "entry_time",
+                "exit_cooldown_remaining",
+                "cb_active",
+                "pool_size",
+            ]
+            values = (
+                logged_at,
+                market,
+                symbol,
+                exchange_code,
+                action_bias,
+                action_reason,
+                price,
+                pnl_pct,
+                realized_pnl_usd,
+                realized_pnl_krw,
+                holding_qty,
+                rsi14,
+                volume_ratio,
+                intraday_momentum,
+                intraday_bar_return,
+                minute_ma_fast,
+                minute_ma_slow,
+                activity_score,
+                cycle_no,
+                session_id,
+                strategy_flag,
+                entry_by,
+                is_session_trade,
+                vwap,
+                macd_line,
+                macd_signal,
+                macd_golden,
+                breakout_distance_pct,
+                atr,
+                spread_pct,
+                consecutive_losses,
+                hold_cycles,
+                entry_price,
+                qty_executed,
+                net_pnl_usd,
+                net_pnl_krw,
+                commission_usd,
+                commission_krw,
+                is_virtual,
+                orderable_qty,
+                stock_name,
+                hold_duration_min,
+                entry_time,
+                exit_cooldown_remaining,
+                cb_active,
+                pool_size,
+            )
+            conn.execute(
+                f"""
+                INSERT INTO cycle_log ({', '.join(columns)})
+                VALUES ({', '.join(['?'] * len(columns))})
+                """,
+                values,
+            )
+
+    def save_event(
+        self,
+        *,
+        event_type: str,
+        market: str = "",
+        symbol: str = "",
+        detail: dict | str = "",
+        cycle_no: int = 0,
+        session_id: str = "",
+    ) -> None:
+        from datetime import datetime, timezone
+
+        detail_str = (
+            json.dumps(detail, ensure_ascii=False, default=str)
+            if isinstance(detail, dict)
+            else str(detail)
+        )
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO cycle_log
-                    (logged_at, market, symbol, exchange_code, action_bias, action_reason,
-                     price, pnl_pct, realized_pnl_usd, realized_pnl_krw, holding_qty,
-                     rsi14, volume_ratio, intraday_momentum, intraday_bar_return,
-                     minute_ma_fast, minute_ma_slow, activity_score, cycle_no, session_id,
-                     strategy_flag, entry_by, is_session_trade,
-                     vwap, macd_line, macd_signal, macd_golden,
-                     breakout_distance_pct, atr, spread_pct,
-                     consecutive_losses, hold_cycles)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO event_log
+                    (logged_at, session_id, event_type, market, symbol, detail, cycle_no)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    logged_at,
+                    datetime.now(timezone.utc).isoformat(),
+                    session_id,
+                    event_type,
                     market,
                     symbol,
-                    exchange_code,
-                    action_bias,
-                    action_reason,
-                    price,
-                    pnl_pct,
-                    realized_pnl_usd,
-                    realized_pnl_krw,
-                    holding_qty,
-                    rsi14,
-                    volume_ratio,
-                    intraday_momentum,
-                    intraday_bar_return,
-                    minute_ma_fast,
-                    minute_ma_slow,
-                    activity_score,
+                    detail_str,
                     cycle_no,
-                    session_id,
-                    strategy_flag,
-                    entry_by,
-                    is_session_trade,
-                    vwap,
-                    macd_line,
-                    macd_signal,
-                    macd_golden,
-                    breakout_distance_pct,
-                    atr,
-                    spread_pct,
-                    consecutive_losses,
-                    hold_cycles,
                 ),
             )
 
@@ -521,6 +653,24 @@ class SqliteRepository:
             clause = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
             rows = conn.execute(
                 f"SELECT * FROM cycle_log {clause} ORDER BY id DESC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_event_log(
+        self,
+        *,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        with self._connect() as conn:
+            params: list[object] = []
+            clause = ""
+            if event_type:
+                clause = "WHERE event_type = ?"
+                params.append(event_type)
+            rows = conn.execute(
+                f"SELECT * FROM event_log {clause} ORDER BY id DESC LIMIT ?",
                 [*params, limit],
             ).fetchall()
         return [dict(row) for row in rows]

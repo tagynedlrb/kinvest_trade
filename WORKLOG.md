@@ -1005,3 +1005,33 @@
 - 복수 정책 A/B 아키텍처: `shadow_trade_log` 스키마 설계
 - `PolicyOrchestrator` 인터페이스 정의
 - `/lab_policy_compare` 리포트 형식 정의
+
+## [2026-07-08] 지시문 #59 — gitlog 기록 정보 재구성
+
+### 진단 결과
+- 기존 `logs/trades/YYYYMMDD_session.csv`는 WAIT/HOLD가 대부분이라 실거래 분석에 노이즈가 컸음
+- 실거래 행에도 `entry_price`, `qty_executed`, `net_pnl`, `commission`,
+  `is_virtual`, `orderable_qty`, `stock_name`, `hold_duration_min`, `cb_active`,
+  `pool_size` 같은 핵심 정보가 비어 있었음
+- CB 발동/해제, session crash, TV 스캔/풀 갱신, 쿨다운 차단 같은 시스템 이벤트는
+  별도 테이블이 없어 사후 원인 추적이 어려웠음
+
+### 변경 사항
+- `repository.py`
+  - `event_log` 테이블 및 `save_event()` / `list_event_log()` 추가
+  - `cycle_log`에 실거래 분석용 컬럼 확장:
+    `entry_price`, `qty_executed`, `net_pnl_*`, `commission_*`, `is_virtual`,
+    `orderable_qty`, `stock_name`, `hold_duration_min`, `entry_time`,
+    `exit_cooldown_remaining`, `cb_active`, `pool_size`
+- `liquidity_lab.py`
+  - BUY_REAL / SELL_REAL 저장 시 수수료, 순손익, 주문가능수량, 보유시간,
+    CB 상태, 풀 크기, `activity_score`까지 함께 저장
+  - 주문 거부/예산 부족/신호 부족은 `SKIP` cycle_log + `trade_skip` event로 동시 기록
+  - `session_start`, `session_crash`, `cb_fired`, `cb_released`,
+    `tv_scan`, `pool_refresh`, `cooldown_blocked` 자동 기록
+- `git_uploader.py`
+  - 단일 session CSV 대신
+    `logs/trades/YYYYMMDD_trades.csv` 와 `logs/events/YYYYMMDD_events.csv` 로 분리 업로드
+  - 공통 `_upload_csv()` helper 추가
+- `telegram_control.py`
+  - `/lab_gitlog` 결과 메시지를 trade / event 파일별로 구분해 표시

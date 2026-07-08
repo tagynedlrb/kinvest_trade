@@ -592,15 +592,24 @@ class TelegramLiquidityLabController:
             await self.notifier.send(f"❌ 업로드 실패\n`{type(exc).__name__}: {exc}`")
             return
         if success:
-            filename = result.rsplit("/", 1)[-1] if result else "-"
-            await self.notifier.send(
-                "\n".join(
+            uploaded = result if isinstance(result, dict) else {}
+            lines = ["✅ 업로드 완료"]
+            for key in ("trades", "events"):
+                info = uploaded.get(key)
+                if not isinstance(info, dict):
+                    continue
+                path = str(info.get("path") or "-")
+                filename = path.rsplit("/", 1)[-1]
+                rows = info.get("rows", 0)
+                url = str(info.get("url") or "-")
+                lines.extend(
                     [
-                        "✅ 업로드 완료",
-                        f"파일={filename}",
-                        f"URL={result}",
+                        f"{key}={filename} ({rows}건)",
+                        f"URL={url}",
                     ]
                 )
+            await self.notifier.send(
+                "\n".join(lines)
             )
         else:
             await self.notifier.send(f"❌ 업로드 실패\n{result}")

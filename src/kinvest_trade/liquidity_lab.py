@@ -565,6 +565,7 @@ class LiquidityLabService:
         )
         self._last_relist_kst: tuple[int, int] | None = None
         self._tv_available: bool = False
+        self._last_tv_scan_used_fallback: bool = False
         self._consecutive_losses: int = 0
         self._session_realised_krw: float = 0.0
         self._halted_at: datetime | None = None
@@ -579,6 +580,7 @@ class LiquidityLabService:
         self._pending_trade_notification_started_at: datetime | None = None
         self._trade_notification_window_sec: int = 60
         self._trade_notification_max_batch_size: int = 8
+        self._session_start_logged: bool = False
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -975,6 +977,7 @@ class LiquidityLabService:
         min_fallback_n = max(1, int(target_n * 0.3))
         tv_rows = await self._scan_tv_dynamic_pool()
         if tv_rows and len(tv_rows) >= min_fallback_n:
+            self._last_tv_scan_used_fallback = False
             return tv_rows
 
         fallback_rel_vol = max(
@@ -990,6 +993,7 @@ class LiquidityLabService:
         fallback_rows = await self._scan_tv_dynamic_pool(
             min_rel_volume=fallback_rel_vol,
         )
+        self._last_tv_scan_used_fallback = bool(fallback_rows)
         return fallback_rows or tv_rows or []
 
     async def _refresh_overseas_dynamic_pool(self) -> None:
@@ -1001,6 +1005,19 @@ class LiquidityLabService:
                     self._manual_overseas_pool = None
                     self._dynamic_overseas_pool = list(tv_rows)
                     self._awaiting_relist = False
+                    self._save_event(
+                        event_type="tv_scan",
+                        market="overseas",
+                        detail={
+                            "pool_size": len(tv_rows),
+                            "threshold": float(
+                                getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)
+                            ),
+                            "fallback_used": bool(
+                                getattr(self, "_last_tv_scan_used_fallback", False)
+                            ),
+                        },
+                    )
                     preview = ", ".join(row["symbol"] for row in tv_rows[:5])
                     _logger.info(
                         "[TV] 수동 풀 자동 해제 -> TV 동적 풀 복귀 (%s개) [%s]",
@@ -1021,6 +1038,11 @@ class LiquidityLabService:
 
             self._dynamic_overseas_pool = list(manual_pool)
             self._awaiting_relist = False
+            self._save_event(
+                event_type="pool_refresh",
+                market="overseas",
+                detail={"pool_size": len(manual_pool), "source": "manual"},
+            )
             _logger.info("overseas_manual_pool_override count=%s", len(manual_pool))
             return
 
@@ -1029,6 +1051,19 @@ class LiquidityLabService:
             if tv_rows:
                 self._dynamic_overseas_pool = list(tv_rows)
                 self._awaiting_relist = False
+                self._save_event(
+                    event_type="tv_scan",
+                    market="overseas",
+                    detail={
+                        "pool_size": len(tv_rows),
+                        "threshold": float(
+                            getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)
+                        ),
+                        "fallback_used": bool(
+                            getattr(self, "_last_tv_scan_used_fallback", False)
+                        ),
+                    },
+                )
                 preview = ", ".join(row["symbol"] for row in tv_rows[:5])
                 _logger.info(
                     "[TV] 해외 동적 풀 갱신: %s개 -> [%s]",
@@ -1041,6 +1076,11 @@ class LiquidityLabService:
         self._dynamic_overseas_pool = []
         if not getattr(self, "_awaiting_relist", False):
             self._awaiting_relist = True
+            self._save_event(
+                event_type="tv_scan",
+                market="overseas",
+                detail={"pool_size": 0, "threshold": float(getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)), "fallback_used": bool(getattr(self, "_last_tv_scan_used_fallback", False))},
+            )
             _logger.warning("[풀] 해외 동적 풀 없음 — relist 요청")
             notifier = getattr(self, "notifier", None)
             if notifier is not None and getattr(notifier, "enabled", True):
@@ -1178,17 +1218,27 @@ class LiquidityLabService:
                 codes.append(code)
         if not codes:
             self._dynamic_domestic_names = {}
+            self._save_event(
+                event_type="pool_refresh",
+                market="domestic",
+                detail={"pool_size": 0, "top_names": []},
+            )
             return
         self._dynamic_domestic_codes = codes
         self._dynamic_domestic_names = name_map
+        top_names = [
+            str(row.get("hts_kor_isnm", "") or row.get("name", "")).strip()
+            for row in vol_rows[:5]
+            if row.get("hts_kor_isnm") or row.get("name")
+        ]
+        self._save_event(
+            event_type="pool_refresh",
+            market="domestic",
+            detail={"pool_size": len(codes), "top_names": top_names[:5]},
+        )
         _logger.info("domestic_dynamic_pool_refreshed count=%s", len(codes))
         notifier = getattr(self, "notifier", None)
         if notifier is not None and getattr(notifier, "enabled", True):
-            top_names = [
-                str(row.get("hts_kor_isnm", "") or row.get("name", "")).strip()
-                for row in vol_rows[:5]
-                if row.get("hts_kor_isnm") or row.get("name")
-            ]
             try:
                 await notifier.send(
                     f"🔄 [국내 동적 풀 갱신] {len(codes)}종목\n거래량 상위: {', '.join(top_names)}"
@@ -1249,6 +1299,13 @@ class LiquidityLabService:
                 "[CYCLE] 일시적 네트워크/API 오류 - 사이클 스킵 (error=%s)",
                 exc,
             )
+            self._save_event(
+                event_type="session_crash",
+                detail={
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:200],
+                },
+            )
             now = datetime.now(timezone.utc)
             return LiquidityLabReport(
                 scanned_at=format_kst(now) or "",
@@ -1274,6 +1331,18 @@ class LiquidityLabService:
     async def _run_cycle(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        if not getattr(self, "_session_start_logged", False):
+            self._session_start_logged = True
+            self._save_event(
+                event_type="session_start",
+                detail={
+                    "profile": getattr(
+                        self.config.credentials,
+                        "profile_name",
+                        getattr(self.config.credentials, "env", ""),
+                    )
+                },
+            )
         await self._ensure_tv_diagnostics()
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
         await self._maybe_send_overseas_relist_alert(now, nyse_holiday=nyse_holiday)
@@ -3105,6 +3174,15 @@ class LiquidityLabService:
                         1,
                         int((cooldown_until - now_utc).total_seconds() / 60),
                     )
+                    self._save_event(
+                        event_type="cooldown_blocked",
+                        market=market,
+                        symbol=code,
+                        detail={
+                            "reason": "reentry_cooldown",
+                            "remaining_min": remaining_min,
+                        },
+                    )
                     return WatchTargetStatus(
                         market=market,
                         code=code,
@@ -3348,6 +3426,7 @@ class LiquidityLabService:
         strategy_flag = "" if watch_target is None else watch_target.strategy_flag
         entry_by = "" if watch_target is None else watch_target.entry_by
         signal_snapshot = None if watch_target is None else watch_target.signal_snapshot
+        buy_price = float(candidate.best_ask or candidate.current_price)
         config = self.config.liquidity_lab
         qty = config.domestic_test_order_qty
         if config.use_slot_sizing:
@@ -3362,6 +3441,20 @@ class LiquidityLabService:
             if slot_qty > 0:
                 qty = slot_qty
             elif available_krw > 0:
+                self._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason="slot_budget_insufficient",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=qty,
+                )
                 return {
                     "skipped": True,
                     "market": "domestic",
@@ -3387,6 +3480,20 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            self._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason="order_rejected",
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+                orderable_qty=qty,
+            )
             return {
                 "submitted": False,
                 "skipped": True,
@@ -3433,14 +3540,16 @@ class LiquidityLabService:
         self._mark_session_owned(candidate.stock_code)
         repository = getattr(self, "repository", None)
         if repository is not None:
+            commission_krw = round(buy_price * qty * self._commission_rate(), 2)
+            now_iso = datetime.now(timezone.utc).isoformat()
             repository.save_cycle_log(
-                logged_at=datetime.now(timezone.utc).isoformat(),
+                logged_at=now_iso,
                 market="domestic",
                 symbol=candidate.stock_code,
                 exchange_code=None,
                 action_bias="BUY_REAL",
                 action_reason="domestic_buy",
-                price=float(candidate.current_price),
+                price=buy_price,
                 pnl_pct=0.0,
                 realized_pnl_usd=None,
                 realized_pnl_krw=0.0,
@@ -3451,6 +3560,7 @@ class LiquidityLabService:
                 intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
                 minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
                 minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+                activity_score=candidate.activity_score,
                 vwap=signal_snapshot.vwap if signal_snapshot else None,
                 macd_line=signal_snapshot.macd_line if signal_snapshot else None,
                 macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
@@ -3465,6 +3575,20 @@ class LiquidityLabService:
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+                entry_price=buy_price,
+                qty_executed=qty,
+                net_pnl_usd=None,
+                net_pnl_krw=0.0,
+                commission_usd=None,
+                commission_krw=commission_krw,
+                is_virtual=0,
+                orderable_qty=qty,
+                stock_name=candidate.stock_name,
+                hold_duration_min=0.0,
+                entry_time=now_iso,
+                exit_cooldown_remaining=0.0,
+                cb_active=self._cb_active_flag(),
+                pool_size=self._pool_size_for_market("domestic"),
             )
         self._persist_trade_state(
             market="domestic",
@@ -3520,8 +3644,34 @@ class LiquidityLabService:
             }
 
         sell_price = float(candidate.best_bid or candidate.current_price)
+        sell_qty = min(held.quantity, max(held.orderable_qty, 0))
+        if sell_qty <= 0:
+            self._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason="no_orderable_qty",
+                side="sell",
+                price=sell_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+            )
+            return {
+                "skipped": True,
+                "market": "domestic",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                "reason": "no_orderable_qty",
+                "exit_reason": exit_reason,
+            }
         try:
-            sell_qty = min(held.quantity, max(held.orderable_qty, 0))
             response = await self.client.place_cash_order(
                 side="sell",
                 stock_code=candidate.stock_code,
@@ -3530,6 +3680,21 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            self._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason="order_rejected",
+                side="sell",
+                price=sell_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+            )
             return {
                 "submitted": False,
                 "skipped": True,
@@ -3590,6 +3755,11 @@ class LiquidityLabService:
             )
         )
         await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
+        entry_price, entry_time_iso, hold_duration_min = self._get_entry_context(
+            "domestic",
+            candidate.stock_code,
+            fallback_price=held.avg_price,
+        )
         self._reset_strategy_position(candidate.stock_code)
         self._register_exit_cooldown("domestic", candidate.stock_code, exit_reason)
         if held.avg_price > 0:
@@ -3614,6 +3784,12 @@ class LiquidityLabService:
                             f"신규 매수를 중단합니다."
                         )
                     )
+            sell_commission_krw = round(sell_price * sell_qty * self._commission_rate(), 2)
+            buy_commission_krw = round(
+                float(entry_price or held.avg_price or 0.0) * sell_qty * self._commission_rate(),
+                2,
+            )
+            net_pnl_krw = float(gross_pnl) - sell_commission_krw - buy_commission_krw
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
                 market="domestic",
@@ -3648,6 +3824,20 @@ class LiquidityLabService:
                 is_session_trade=1 if self._is_session_owned(candidate.stock_code) else 0,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
                 hold_cycles=self._estimate_hold_cycles(candidate.stock_code),
+                entry_price=entry_price,
+                qty_executed=sell_qty,
+                net_pnl_usd=None,
+                net_pnl_krw=net_pnl_krw,
+                commission_usd=None,
+                commission_krw=sell_commission_krw,
+                is_virtual=0,
+                orderable_qty=held.orderable_qty,
+                stock_name=candidate.stock_name,
+                hold_duration_min=hold_duration_min,
+                entry_time=entry_time_iso,
+                cb_active=self._cb_active_flag(),
+                pool_size=self._pool_size_for_market("domestic"),
+                activity_score=candidate.activity_score,
             )
         self._persist_trade_state(
             market="domestic",
@@ -3694,6 +3884,18 @@ class LiquidityLabService:
             signal_snapshot = await self._load_overseas_signal(candidate)
             self._signal_cache[candidate.symbol.upper()] = signal_snapshot
         if signal_snapshot is None:
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="signal_snapshot_unavailable",
+                side="buy",
+                price=candidate.last_price,
+                strategy_flag="" if watch_target is None else watch_target.strategy_flag,
+                entry_by="" if watch_target is None else watch_target.entry_by,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+            )
             return {
                 "skipped": True,
                 "market": "overseas",
@@ -3733,6 +3935,20 @@ class LiquidityLabService:
             if slot_qty > 0:
                 qty = slot_qty
             elif available_usd > 0:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="slot_budget_insufficient",
+                    side="buy",
+                    price=candidate.last_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                )
                 return {
                     "skipped": True,
                     "market": "overseas",
@@ -3768,6 +3984,20 @@ class LiquidityLabService:
                     signal_snapshot=signal_snapshot,
                     rejected_error=str(exc),
                 )
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="order_rejected",
+                side="buy",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+            )
             return {
                 "submitted": False,
                 "market": "overseas",
@@ -3779,8 +4009,11 @@ class LiquidityLabService:
             }
         repository = getattr(self, "repository", None)
         if repository is not None:
+            commission_usd = round(candidate.last_price * qty * self._commission_rate(), 6)
+            commission_krw = round(commission_usd * float(candidate.fx_rate_krw or 0.0), 2)
+            now_iso = datetime.now(timezone.utc).isoformat()
             repository.save_cycle_log(
-                logged_at=datetime.now(timezone.utc).isoformat(),
+                logged_at=now_iso,
                 market="overseas",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
@@ -3797,6 +4030,7 @@ class LiquidityLabService:
                 intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
                 minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
                 minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+                activity_score=candidate.activity_score,
                 vwap=signal_snapshot.vwap if signal_snapshot else None,
                 macd_line=signal_snapshot.macd_line if signal_snapshot else None,
                 macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
@@ -3811,6 +4045,20 @@ class LiquidityLabService:
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+                entry_price=candidate.last_price,
+                qty_executed=qty,
+                net_pnl_usd=0.0,
+                net_pnl_krw=0.0,
+                commission_usd=commission_usd,
+                commission_krw=commission_krw,
+                is_virtual=0,
+                orderable_qty=candidate.orderable_qty,
+                stock_name=candidate.symbol,
+                hold_duration_min=0.0,
+                entry_time=now_iso,
+                exit_cooldown_remaining=0.0,
+                cb_active=self._cb_active_flag(),
+                pool_size=self._pool_size_for_market("overseas"),
             )
         self._record_broker_order_event(
             market="overseas",
@@ -4148,6 +4396,21 @@ class LiquidityLabService:
                 "exit_reason": exit_reason,
             }
         if target_sell_qty <= 0:
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="no_orderable_qty",
+                side="sell",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+            )
             return {
                 "skipped": True,
                 "market": "overseas",
@@ -4190,6 +4453,21 @@ class LiquidityLabService:
                     rejected_error=str(exc),
                     sell_qty_override=target_sell_qty,
                 )
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="session_not_orderable_in_profile" if is_session_blocked else "order_rejected",
+                side="sell",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+            )
             return {
                 "submitted": False,
                 "skipped": True,
@@ -4288,6 +4566,11 @@ class LiquidityLabService:
             )
         )
         await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
+        entry_price, entry_time_iso, hold_duration_min = self._get_entry_context(
+            "overseas",
+            candidate.symbol,
+            fallback_price=held.avg_price,
+        )
         self._reset_strategy_position(candidate.symbol)
         self._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
         if held.avg_price > 0:
@@ -4317,6 +4600,14 @@ class LiquidityLabService:
                             f"신규 매수를 중단합니다."
                         )
                     )
+            roundtrip_commission_usd = (
+                float(candidate.last_price + float(entry_price or held.avg_price or 0.0))
+                * real_qty_sold
+                * self._commission_rate()
+            )
+            sell_commission_usd = candidate.last_price * real_qty_sold * self._commission_rate()
+            net_pnl_usd = gross_pnl_usd - roundtrip_commission_usd
+            net_pnl_krw = net_pnl_usd * fx_rate
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
                 market="overseas",
@@ -4351,6 +4642,20 @@ class LiquidityLabService:
                 is_session_trade=1 if self._is_session_owned(candidate.symbol) else 0,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
                 hold_cycles=self._estimate_hold_cycles(candidate.symbol),
+                entry_price=entry_price,
+                qty_executed=real_qty_sold,
+                net_pnl_usd=net_pnl_usd,
+                net_pnl_krw=net_pnl_krw,
+                commission_usd=sell_commission_usd,
+                commission_krw=round(sell_commission_usd * fx_rate, 2),
+                is_virtual=0,
+                orderable_qty=held.orderable_qty,
+                stock_name=candidate.symbol,
+                hold_duration_min=hold_duration_min,
+                entry_time=entry_time_iso,
+                cb_active=self._cb_active_flag(),
+                pool_size=self._pool_size_for_market("overseas"),
+                activity_score=candidate.activity_score,
             )
         self._persist_trade_state(
             market="overseas",
@@ -5148,6 +5453,180 @@ class LiquidityLabService:
         )
         return max(0, int(elapsed_sec // loop_interval_sec))
 
+    def _commission_rate(self) -> float:
+        auto_trade = getattr(self.config, "auto_trade", None)
+        return float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
+
+    def _cb_active_flag(self) -> int:
+        return int(
+            getattr(self, "_halted_at", None) is not None
+            or getattr(self, "_daily_halted_at", None) is not None
+        )
+
+    def _pool_size_for_market(self, market: str) -> int:
+        market_key = market.strip().lower()
+        if market_key == "domestic":
+            return len(getattr(self, "_dynamic_domestic_codes", None) or [])
+        if market_key == "overseas":
+            return len(getattr(self, "_dynamic_overseas_pool", None) or [])
+        return 0
+
+    def _save_event(
+        self,
+        *,
+        event_type: str,
+        market: str = "",
+        symbol: str = "",
+        detail: dict | str = "",
+        cycle_no: int | None = None,
+    ) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "save_event"):
+            return
+        repository.save_event(
+            event_type=event_type,
+            market=market,
+            symbol=symbol,
+            detail=detail,
+            cycle_no=getattr(self, "_cycle_count", 0) if cycle_no is None else cycle_no,
+            session_id=getattr(self, "_session_id", ""),
+        )
+
+    def _cooldown_remaining_minutes(
+        self,
+        market: str,
+        symbol: str,
+    ) -> float:
+        exit_cooldown = getattr(self, "_exit_cooldown", None) or {}
+        cooldown_until = exit_cooldown.get(f"{market}:{symbol.strip().upper()}")
+        if cooldown_until is None:
+            return 0.0
+        remaining = (
+            ensure_timezone(cooldown_until) - datetime.now(timezone.utc)
+        ).total_seconds() / 60
+        return max(0.0, round(remaining, 2))
+
+    def _get_entry_context(
+        self,
+        market: str,
+        symbol: str,
+        *,
+        fallback_price: float | None = None,
+    ) -> tuple[float | None, str | None, float | None]:
+        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+        entry_price: float | None = None
+        entry_time_iso: str | None = None
+        hold_duration_min: float | None = None
+        if manager is not None and manager.position is not None:
+            entry_price = float(manager.position.entry_price)
+            entry_dt = ensure_timezone(manager.position.entry_time)
+            entry_time_iso = entry_dt.isoformat()
+            hold_duration_min = round(
+                max(
+                    0.0,
+                    (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60,
+                ),
+                2,
+            )
+        else:
+            persisted = self._get_persisted_symbol_state(market, symbol)
+            if persisted is not None:
+                raw_entry_price = persisted.get("entry_price")
+                if raw_entry_price is not None:
+                    try:
+                        entry_price = float(raw_entry_price)
+                    except (TypeError, ValueError):
+                        entry_price = None
+                parsed = parse_datetime(str(persisted.get("updated_at", "") or ""))
+                if parsed is not None:
+                    entry_dt = ensure_timezone(parsed)
+                    entry_time_iso = entry_dt.isoformat()
+                    hold_duration_min = round(
+                        max(
+                            0.0,
+                            (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60,
+                        ),
+                        2,
+                    )
+        if entry_price is None and fallback_price is not None and fallback_price > 0:
+            entry_price = float(fallback_price)
+        return entry_price, entry_time_iso, hold_duration_min
+
+    def _record_trade_skip(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        reason: str,
+        side: str,
+        price: float | None = None,
+        signal_snapshot: MovingAverageSnapshot | None = None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        stock_name: str = "",
+        activity_score: float | None = None,
+        orderable_qty: int | None = None,
+        holding_qty: int = 0,
+    ) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return
+        repository.save_cycle_log(
+            logged_at=datetime.now(timezone.utc).isoformat(),
+            market=market,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            action_bias="SKIP",
+            action_reason=f"{side}:{reason}",
+            price=price,
+            pnl_pct=None,
+            holding_qty=holding_qty,
+            rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
+            volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
+            intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
+            intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
+            minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
+            minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
+            activity_score=activity_score,
+            cycle_no=getattr(self, "_cycle_count", 0),
+            session_id=getattr(self, "_session_id", ""),
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            vwap=signal_snapshot.vwap if signal_snapshot else None,
+            macd_line=signal_snapshot.macd_line if signal_snapshot else None,
+            macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
+            macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
+            breakout_distance_pct=(
+                signal_snapshot.breakout_distance_pct if signal_snapshot else None
+            ),
+            atr=signal_snapshot.atr if signal_snapshot else None,
+            spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
+            consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+            orderable_qty=orderable_qty,
+            stock_name=stock_name,
+            exit_cooldown_remaining=self._cooldown_remaining_minutes(market, symbol),
+            cb_active=self._cb_active_flag(),
+            pool_size=self._pool_size_for_market(market),
+        )
+        self._save_event(
+            event_type="trade_skip",
+            market=market,
+            symbol=symbol,
+            detail={
+                "reason": reason,
+                "side": side,
+                "rsi14": round(signal_snapshot.rsi14, 2)
+                if signal_snapshot and signal_snapshot.rsi14 is not None
+                else None,
+                "volume_ratio": round(signal_snapshot.volume_ratio, 3)
+                if signal_snapshot and signal_snapshot.volume_ratio is not None
+                else None,
+                "exit_cooldown_remaining": self._cooldown_remaining_minutes(market, symbol),
+                "cb_active": self._cb_active_flag(),
+            },
+        )
+
     def _register_exit_cooldown(
         self,
         market: str,
@@ -5185,6 +5664,13 @@ class LiquidityLabService:
                 halted_at = getattr(self, "_halted_at", None)
                 if halted_at is None:
                     self._halted_at = datetime.now(timezone.utc)
+                    self._save_event(
+                        event_type="cb_fired",
+                        detail={
+                            "consecutive_losses": consecutive_losses,
+                            "type": "consecutive",
+                        },
+                    )
                 else:
                     elapsed_minutes = (
                         datetime.now(timezone.utc) - ensure_timezone(halted_at)
@@ -5196,6 +5682,14 @@ class LiquidityLabService:
                         )
                         self._consecutive_losses = 0
                         self._halted_at = None
+                        self._save_event(
+                            event_type="cb_released",
+                            detail={
+                                "elapsed_min": round(elapsed_minutes, 1),
+                                "trigger": "auto_cooldown",
+                                "type": "consecutive",
+                            },
+                        )
                         notifier = getattr(self, "notifier", None)
                         if notifier is not None and getattr(notifier, "enabled", True):
                             try:
@@ -5229,6 +5723,14 @@ class LiquidityLabService:
                         daily_halted_at = getattr(self, "_daily_halted_at", None)
                         if daily_halted_at is None:
                             self._daily_halted_at = datetime.now(timezone.utc)
+                            self._save_event(
+                                event_type="cb_fired",
+                                detail={
+                                    "daily_loss_limit_pct": daily_limit,
+                                    "session_realised_krw": round(session_realised_krw, 2),
+                                    "type": "daily_limit",
+                                },
+                            )
                         else:
                             elapsed = (
                                 datetime.now(timezone.utc) - ensure_timezone(daily_halted_at)
@@ -5237,6 +5739,14 @@ class LiquidityLabService:
                                 _logger.info("[CB] daily_limit 자동 해제 (%.0f분 경과)", elapsed)
                                 self._session_realised_krw = 0.0
                                 self._daily_halted_at = None
+                                self._save_event(
+                                    event_type="cb_released",
+                                    detail={
+                                        "elapsed_min": round(elapsed, 1),
+                                        "trigger": "auto_cooldown",
+                                        "type": "daily_limit",
+                                    },
+                                )
                                 notifier = getattr(self, "notifier", None)
                                 if notifier is not None and getattr(notifier, "enabled", True):
                                     try:

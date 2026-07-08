@@ -1202,7 +1202,18 @@ def test_handle_gitlog_reports_success() -> None:
     controller = _build_async_controller()
 
     async def fake_upload_log(**kwargs):
-        return True, "https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/trades/test.csv"
+        return True, {
+            "trades": {
+                "url": "https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/trades/test.csv",
+                "path": "logs/trades/test.csv",
+                "rows": 12,
+            },
+            "events": {
+                "url": "https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/events/test.csv",
+                "path": "logs/events/test.csv",
+                "rows": 5,
+            },
+        }
 
     original_client = telegram_control_module.KisRestClient
     original_upload = telegram_control_module.upload_log
@@ -1216,6 +1227,8 @@ def test_handle_gitlog_reports_success() -> None:
 
     assert "📤 GitHub 로그 업로드 중..." in controller.notifier.messages[0]
     assert "✅ 업로드 완료" in controller.notifier.messages[-1]
+    assert "trades=test.csv (12건)" in controller.notifier.messages[-1]
+    assert "events=test.csv (5건)" in controller.notifier.messages[-1]
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

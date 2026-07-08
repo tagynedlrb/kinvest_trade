@@ -107,6 +107,20 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         spread_pct=0.001,
         consecutive_losses=2,
         hold_cycles=6,
+        entry_price=20.1,
+        qty_executed=1,
+        net_pnl_usd=0.0,
+        net_pnl_krw=0.0,
+        commission_usd=0.1,
+        commission_krw=138.0,
+        is_virtual=0,
+        orderable_qty=1,
+        stock_name="SOXL",
+        hold_duration_min=0.0,
+        entry_time="2026-07-01T00:00:00+00:00",
+        exit_cooldown_remaining=0.0,
+        cb_active=0,
+        pool_size=12,
     )
     repository.save_cycle_log(
         logged_at="2026-07-01T00:01:00+00:00",
@@ -136,6 +150,11 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
     assert buy_rows[0]["spread_pct"] == 0.001
     assert buy_rows[0]["consecutive_losses"] == 2
     assert buy_rows[0]["hold_cycles"] == 6
+    assert buy_rows[0]["entry_price"] == 20.1
+    assert buy_rows[0]["qty_executed"] == 1
+    assert buy_rows[0]["commission_usd"] == 0.1
+    assert buy_rows[0]["stock_name"] == "SOXL"
+    assert buy_rows[0]["pool_size"] == 12
     assert len(sell_rows) == 1
     assert sell_rows[0]["action_reason"] == "marginal_profit_exit"
 
@@ -158,6 +177,40 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     assert "spread_pct" in columns
     assert "consecutive_losses" in columns
     assert "hold_cycles" in columns
+    assert "entry_price" in columns
+    assert "qty_executed" in columns
+    assert "net_pnl_usd" in columns
+    assert "net_pnl_krw" in columns
+    assert "commission_usd" in columns
+    assert "commission_krw" in columns
+    assert "is_virtual" in columns
+    assert "orderable_qty" in columns
+    assert "stock_name" in columns
+    assert "hold_duration_min" in columns
+    assert "entry_time" in columns
+    assert "exit_cooldown_remaining" in columns
+    assert "cb_active" in columns
+    assert "pool_size" in columns
+
+
+def test_event_log_can_be_saved_and_queried(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+
+    repository.save_event(
+        event_type="trade_skip",
+        market="overseas",
+        symbol="PLTR",
+        detail={"reason": "entry_rsi_too_high"},
+        cycle_no=12,
+        session_id="sess-event",
+    )
+
+    rows = repository.list_event_log(limit=5)
+
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "trade_skip"
+    assert rows[0]["symbol"] == "PLTR"
+    assert "entry_rsi_too_high" in rows[0]["detail"]
 
 
 def test_broker_order_events_table_and_save(tmp_path) -> None:

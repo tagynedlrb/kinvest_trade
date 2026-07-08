@@ -4,3 +4,8 @@
 5,2026-07-08T15:15:18.893576+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": true}",41
 6,2026-07-08T15:25:56.808431+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": true}",61
 7,2026-07-08T15:37:25.345810+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 9, ""threshold"": 2.0, ""fallback_used"": false}",81
+8,2026-07-08T15:45:37.821621+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",101
+9,2026-07-08T15:54:39.620451+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",121
+10,2026-07-08T16:03:45.199644+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",141
+11,2026-07-08T16:12:21.785447+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",161
+12,2026-07-08T16:20:05.429148+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 12, ""threshold"": 2.0, ""fallback_used"": false}",181

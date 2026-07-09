@@ -1,0 +1,86 @@
+﻿id,logged_at,session_id,event_type,market,symbol,detail,cycle_no
+209,2026-07-09T15:05:05.160451+00:00,80c833411326,cb_fired,,,"{""daily_loss_limit_pct"": 0.01, ""session_realised_krw"": -573166.8, ""type"": ""daily_limit""}",359
+210,2026-07-09T15:05:28.158645+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 11}",360
+211,2026-07-09T15:05:29.689754+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 8, ""threshold"": 2.0, ""fallback_used"": true}",361
+212,2026-07-09T15:05:55.631330+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 11}",361
+213,2026-07-09T15:06:20.795556+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",362
+214,2026-07-09T15:06:43.632448+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",363
+215,2026-07-09T15:07:09.931552+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",364
+216,2026-07-09T15:07:34.429366+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",365
+217,2026-07-09T15:07:55.733334+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",366
+218,2026-07-09T15:08:21.009605+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 8}",367
+219,2026-07-09T15:08:45.722105+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 8}",368
+220,2026-07-09T15:09:06.743367+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",369
+221,2026-07-09T15:09:34.380879+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",370
+222,2026-07-09T15:09:58.377609+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",371
+223,2026-07-09T15:10:21.052051+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 6}",372
+224,2026-07-09T15:10:47.340006+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 6}",373
+225,2026-07-09T15:11:10.818265+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 5}",374
+226,2026-07-09T15:11:30.776389+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 5}",375
+227,2026-07-09T15:11:57.647344+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 5}",376
+228,2026-07-09T15:12:23.022190+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",377
+229,2026-07-09T15:12:45.336899+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",378
+230,2026-07-09T15:13:12.897659+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 3}",379
+231,2026-07-09T15:13:35.956125+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 3}",380
+232,2026-07-09T15:13:37.271795+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 9, ""threshold"": 2.0, ""fallback_used"": true}",381
+233,2026-07-09T15:14:00.502301+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 3}",381
+234,2026-07-09T15:14:28.000808+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 2}",382
+235,2026-07-09T15:14:53.329267+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 2}",383
+236,2026-07-09T15:15:18.111561+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",384
+237,2026-07-09T15:15:43.600375+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",385
+238,2026-07-09T15:16:08.824173+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",386
+239,2026-07-09T15:16:31.404936+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",387
+240,2026-07-09T15:17:00.236089+00:00,80c833411326,cooldown_blocked,overseas,BBIO,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",388
+241,2026-07-09T15:22:06.144895+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 11, ""threshold"": 2.0, ""fallback_used"": true}",401
+242,2026-07-09T15:32:14.329441+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": true}",421
+243,2026-07-09T15:35:35.791016+00:00,80c833411326,cb_released,,,"{""elapsed_min"": 30.5, ""trigger"": ""auto_cooldown"", ""type"": ""daily_limit""}",426
+244,2026-07-09T15:43:23.050858+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 16, ""threshold"": 2.0, ""fallback_used"": true}",441
+245,2026-07-09T15:54:28.131997+00:00,80c833411326,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",457
+246,2026-07-09T15:55:06.324135+00:00,80c833411326,trade_skip,overseas,BBIO,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 354, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",458
+247,2026-07-09T15:56:25.799365+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 11}",460
+248,2026-07-09T15:56:29.086179+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 17, ""threshold"": 2.0, ""fallback_used"": true}",461
+249,2026-07-09T15:57:10.173160+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",461
+250,2026-07-09T15:57:10.200300+00:00,80c833411326,trade_skip,overseas,PSKY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2284, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",461
+251,2026-07-09T15:57:10.206091+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",461
+252,2026-07-09T15:57:47.445973+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",462
+253,2026-07-09T15:58:29.722930+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",463
+254,2026-07-09T15:59:05.416820+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 8}",464
+255,2026-07-09T15:59:48.046604+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 8}",465
+256,2026-07-09T16:00:25.697675+00:00,80c833411326,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",466
+257,2026-07-09T16:02:25.136531+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",469
+258,2026-07-09T16:07:35.673478+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",477
+259,2026-07-09T16:09:31.237334+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 9, ""threshold"": 2.0, ""fallback_used"": false}",481
+260,2026-07-09T16:12:54.344273+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",488
+261,2026-07-09T16:17:56.773027+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",500
+262,2026-07-09T16:17:57.931224+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",501
+263,2026-07-09T16:23:12.434609+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",512
+264,2026-07-09T16:24:34.219140+00:00,80c833411326,cb_released,,,"{""elapsed_min"": 30.1, ""trigger"": ""auto_cooldown"", ""type"": ""consecutive""}",515
+265,2026-07-09T16:25:51.162126+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""net_profit_below_cost"", ""side"": ""sell"", ""rsi14"": 51.1, ""volume_ratio"": 0.001, ""exit_cooldown_remaining"": 8.0, ""cb_active"": 0}",518
+266,2026-07-09T16:26:19.727471+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",519
+267,2026-07-09T16:26:46.960988+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",521
+268,2026-07-09T16:28:30.153023+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",524
+269,2026-07-09T16:31:40.108464+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",531
+270,2026-07-09T16:33:30.225465+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",535
+271,2026-07-09T16:35:41.457837+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 11, ""threshold"": 2.0, ""fallback_used"": false}",541
+272,2026-07-09T16:37:05.712113+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",543
+273,2026-07-09T16:38:54.709597+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",547
+274,2026-07-09T16:42:12.610031+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",554
+275,2026-07-09T16:44:06.038103+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",558
+276,2026-07-09T16:45:02.215157+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 11, ""threshold"": 2.0, ""fallback_used"": false}",561
+277,2026-07-09T16:47:25.020554+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",565
+278,2026-07-09T16:49:13.485741+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",569
+279,2026-07-09T16:52:37.389312+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",576
+280,2026-07-09T16:54:32.113137+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",580
+281,2026-07-09T16:54:32.959953+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 11, ""threshold"": 2.0, ""fallback_used"": false}",581
+282,2026-07-09T16:57:59.390911+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",587
+283,2026-07-09T16:59:53.301672+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",591
+284,2026-07-09T17:03:09.602872+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",598
+285,2026-07-09T17:04:07.697840+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",601
+286,2026-07-09T17:05:14.717997+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",602
+287,2026-07-09T17:08:32.609460+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",608
+288,2026-07-09T17:10:17.383418+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",611
+289,2026-07-09T17:13:34.319211+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",617
+290,2026-07-09T17:15:12.909842+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",621
+291,2026-07-09T17:15:49.813855+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",621
+292,2026-07-09T17:19:08.353120+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",627
+293,2026-07-09T17:20:52.341856+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",630

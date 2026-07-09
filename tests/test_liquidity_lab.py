@@ -3183,6 +3183,54 @@ def test_send_summary_sends_message_for_sell_rejected() -> None:
     assert "참고=주문이 거부되어 실제로 체결되지 않았습니다" in service.notifier.messages[0]
 
 
+def test_send_summary_uses_rejected_order_symbol_instead_of_primary_target() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-07-10 02:54:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target="BBIO",
+        primary_selection_reason="existing_position_stop_loss",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        domestic_order=None,
+        overseas_order={
+            "submitted": False,
+            "skipped": True,
+            "market": "overseas",
+            "side": "sell",
+            "candidate": {"symbol": "ALNY", "last_price": 318.12},
+            "held_position": {
+                "symbol": "ALNY",
+                "quantity": 61,
+                "current_price": 318.12,
+                "pnl_pct": -0.06,
+            },
+            "qty": 61,
+            "reason": "no_orderable_qty",
+            "error": "mock balance missing",
+            "exit_reason": "stop_loss",
+        },
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert len(service.notifier.messages) == 1
+    assert "종목=ALNY" in service.notifier.messages[0]
+    assert "종목=BBIO" not in service.notifier.messages[0]
+    assert "수량=61" in service.notifier.messages[0]
+    assert "동작=매도거부" in service.notifier.messages[0]
+
+
 def test_send_summary_reports_skip_counts_when_trade_already_notified() -> None:
     service = _build_run_service()
     report = LiquidityLabReport(

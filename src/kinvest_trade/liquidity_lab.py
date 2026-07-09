@@ -5375,13 +5375,21 @@ class LiquidityLabService:
             if report.primary_market in {"domestic", "overseas"}
             else "overseas"
         )
-        primary_target = self._format_trade_symbol_label(primary_market_key, report.primary_target or "-")
+        action_market_key = str(action.get("market_raw") or "").strip().lower()
+        display_market_key = (
+            action_market_key
+            if action_market_key in {"domestic", "overseas"}
+            else primary_market_key
+        )
+        display_target = str(action.get("symbol_label") or "").strip() or self._format_trade_symbol_label(
+            primary_market_key, report.primary_target or "-"
+        )
         if submitted_order and submitted_order.get("already_notified") and skip_count > 0:
             lines = [
                 "[KIS][거래알림]",
                 f"시각={self._format_report_time(report.scanned_at)}",
-                f"시장={format_market_korean(report.primary_market)}{session_note}",
-                f"종목={primary_target}",
+                f"시장={format_market_korean(display_market_key)}{session_note}",
+                f"종목={display_target}",
                 "동작=주문거부",
                 f"주문거부={skip_count}건 ({skip_top_reasons})",
             ]
@@ -5390,8 +5398,8 @@ class LiquidityLabService:
         lines = [
             "[KIS][거래알림]",
             f"시각={self._format_report_time(report.scanned_at)}",
-            f"시장={format_market_korean(report.primary_market)}{session_note}",
-            f"종목={primary_target}",
+            f"시장={format_market_korean(display_market_key)}{session_note}",
+            f"종목={display_target}",
             f"동작={'주문거부' if action['action_raw'] == 'WAIT' and skip_count > 0 else action['action']}",
             f"가격={action['price']}",
             f"수량={action['qty']}",
@@ -5495,6 +5503,16 @@ class LiquidityLabService:
         candidate = order.get("candidate") or {}
         held = order.get("held_position") or {}
         signal_snapshot = order.get("signal_snapshot") or {}
+        market = str(order.get("market") or "").strip().lower()
+        if market not in {"domestic", "overseas"}:
+            market = "domestic" if candidate.get("stock_code") or held.get("stock_code") else "overseas"
+        symbol = str(
+            candidate.get("stock_code")
+            or candidate.get("symbol")
+            or held.get("stock_code")
+            or held.get("symbol")
+            or "-"
+        ).strip().upper() or "-"
         side = str(order.get("side", "wait")).upper()
         if order.get("virtual") and side == "BUY":
             action = "VIRTUAL_BUY"
@@ -5563,6 +5581,9 @@ class LiquidityLabService:
                 or order.get("error")
                 or "watching"
             ),
+            "market_raw": market,
+            "symbol_raw": symbol,
+            "symbol_label": self._format_trade_symbol_label(market, symbol),
             "strategy_flag": str(order.get("strategy_flag") or "-"),
             "entry_by": str(order.get("entry_by") or "-"),
             "exit_by": str(order.get("exit_by") or "-"),

@@ -704,8 +704,16 @@ def _snapshot(**overrides) -> MovingAverageSnapshot:
 
 
 class DummySellClient:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        pending_orders: list[dict] | None = None,
+    ) -> None:
         self.error = error
+        self.pending_orders = pending_orders or []
+        self.order_calls: list[dict] = []
+        self.cancel_calls: list[dict] = []
 
     async def place_overseas_order_for_current_session(
         self,
@@ -719,7 +727,7 @@ class DummySellClient:
     ):
         if self.error is not None:
             raise self.error
-        return {
+        payload = {
             "side": side,
             "symbol": symbol,
             "exchange_code": exchange_code,
@@ -727,18 +735,38 @@ class DummySellClient:
             "price": price,
             "order_division": order_division,
         }
+        self.order_calls.append(payload)
+        return payload
+
+    async def get_overseas_order_history(self, **kwargs):
+        del kwargs
+        return {"orders": list(self.pending_orders)}
+
+    async def revise_or_cancel_overseas_order(self, **kwargs):
+        self.cancel_calls.append(kwargs)
+        return {
+            "rt_cd": "0",
+            "msg_cd": "00000000",
+            "msg1": "취소 완료",
+            "output": {"ODNO": kwargs.get("original_order_no", "")},
+        }
 
 
-def _build_sell_service(*, dry_run: bool = False, error: Exception | None = None) -> LiquidityLabService:
+def _build_sell_service(
+    *,
+    dry_run: bool = False,
+    error: Exception | None = None,
+    pending_orders: list[dict] | None = None,
+) -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
         "Config",
         (),
         {
-            "credentials": type("Creds", (), {"dry_run": dry_run})(),
+            "credentials": type("Creds", (), {"dry_run": dry_run, "env": "vps"})(),
         },
     )()
-    service.client = DummySellClient(error=error)
+    service.client = DummySellClient(error=error, pending_orders=pending_orders)
     service.repository = _build_repository()
     service.virtual_trades = VirtualTradeManager(service.repository)
     service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
@@ -785,11 +813,11 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
     assert message.startswith("[KIS][거래알림]")
-    assert "해외 TSLA 매도 +$282.00 x2" in message
+    assert "해외 TSLA 매도 +$281.90 x2" in message
     assert "매수=-" in message
     assert "청산=긴급 손절" in message
-    assert "수익률=+0.71%" in message
-    assert "수익률=+0.71%" in message
+    assert "수익률=+0.68%" in message
+    assert service.client.order_calls[0]["price"] == "281.9000"
 
 
 def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
@@ -823,8 +851,8 @@ def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert len(rows) == 1
     assert rows[0]["symbol"] == "TSLA"
     assert rows[0]["session_id"] == "sess-test"
-    assert rows[0]["realized_pnl_usd"] == 4.0
-    assert rows[0]["realized_pnl_krw"] == 5520.0
+    assert abs(rows[0]["realized_pnl_usd"] - 3.8) < 1e-9
+    assert abs(rows[0]["realized_pnl_krw"] - 5244.0) < 1e-6
 
 
 def test_real_sell_clears_virtual_sell_pending() -> None:
@@ -1048,6 +1076,87 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     assert result["submitted"] is True
     assert "매수=-" in service.notifier.messages[0]
     assert "수익률=-" in service.notifier.messages[0]
+
+
+def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            {
+                "pdno": "ALNY",
+                "sll_buy_dvsn_cd": "01",
+                "nccs_qty": "61",
+                "odno": "52821",
+                "ft_ord_unpr3": "337.57000000",
+                "dmst_ord_dt": "20260710",
+                "thco_ord_tmd": "000000",
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="ALNY",
+        exchange_code="NASD",
+        last_price=317.0,
+        bid=316.9,
+        ask=317.1,
+        spread_pct=0.0006,
+        change_rate_pct=-2.0,
+        volume=1_500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=9.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="ALNY",
+        exchange_code="NASD",
+        quantity=61,
+        orderable_qty=61,
+        avg_price=338.41,
+        current_price=317.0,
+        pnl_pct=(317.0 - 338.41) / 338.41,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    assert service.client.cancel_calls[0]["original_order_no"] == "52821"
+    assert service.client.order_calls[0]["price"] == "316.9000"
+
+
+def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None:
+    service = _build_run_service()
+    service.client = DummySellClient(
+        pending_orders=[
+            {
+                "pdno": "PLTR",
+                "sll_buy_dvsn_cd": "02",
+                "nccs_qty": "3",
+                "odno": "60001",
+                "ft_ord_unpr3": "23.15000000",
+                "dmst_ord_dt": datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).strftime("%Y%m%d"),
+                "thco_ord_tmd": datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).strftime("%H%M%S"),
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NASD",
+        last_price=23.10,
+        bid=23.09,
+        ask=23.11,
+        spread_pct=0.0008,
+        change_rate_pct=1.1,
+        volume=1_200_000,
+        orderable_qty=5,
+        fx_rate_krw=0.0,
+        activity_score=11.0,
+    )
+    service._signal_cache["PLTR"] = _snapshot(price=23.10)
+
+    result = asyncio.run(service._place_overseas_test_order(candidate))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "pending_buy_order"
 
 
 class DummyDomesticBalanceClient:
@@ -3610,7 +3719,7 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     assert rows[0]["session_id"] == "sess-overseas-buy"
     assert len(broker_rows) == 1
     assert broker_rows[0]["symbol"] == "SOXL"
-    assert broker_rows[0]["requested_price"] == 25.0
+    assert broker_rows[0]["requested_price"] == 25.01
     assert service.notifier.messages[0].startswith("[KIS][거래알림]")
     assert rows[0]["action_reason"] == "strategy_buy_signal"
     assert rows[0]["vwap"] is not None

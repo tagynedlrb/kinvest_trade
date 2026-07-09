@@ -743,6 +743,139 @@ class LiquidityLabService:
     def _trade_notification_force_immediate(self) -> bool:
         return self._trade_notification_window_seconds() <= 0
 
+    def _overseas_buy_order_price(self, candidate: OverseasScanResult) -> float:
+        return float(candidate.ask or candidate.last_price)
+
+    def _overseas_sell_order_price(
+        self,
+        candidate: OverseasScanResult,
+        *,
+        exit_reason: str,
+    ) -> float:
+        protective_reasons = {
+            "stop_loss",
+            "atr_hard_stop",
+            "momentum_loss_cut",
+            "trend_filter_lost",
+            "time_exit_loss",
+        }
+        if exit_reason in protective_reasons:
+            return float(candidate.bid or candidate.last_price)
+        return float(candidate.bid or candidate.last_price or candidate.ask)
+
+    def _overseas_order_history_exchange_param(self, exchange_code: str) -> str:
+        env = str(getattr(self.config.credentials, "env", "vps") or "vps")
+        if env != "prod":
+            return ""
+        return exchange_code
+
+    @staticmethod
+    def _parse_overseas_order_history_timestamp(row: dict) -> datetime | None:
+        ord_dt = str(row.get("dmst_ord_dt") or row.get("ord_dt") or "").strip()
+        ord_tmd = str(row.get("thco_ord_tmd") or row.get("ord_tmd") or "").strip()
+        if not ord_dt or not ord_tmd:
+            return None
+        ord_tmd = ord_tmd.zfill(6)[:6]
+        try:
+            parsed = datetime.strptime(f"{ord_dt}{ord_tmd}", "%Y%m%d%H%M%S")
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=KST).astimezone(timezone.utc)
+
+    async def _find_open_overseas_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        exchange_code: str,
+    ) -> dict | None:
+        now_kst = datetime.now(timezone.utc).astimezone(KST)
+        start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
+        end_date = now_kst.strftime("%Y%m%d")
+        env = str(getattr(self.config.credentials, "env", "vps") or "vps")
+        side_filter = "00" if env != "prod" else ("01" if side.upper() == "SELL" else "02")
+        fill_filter = "00" if env != "prod" else "02"
+        try:
+            history = await self.client.get_overseas_order_history(
+                symbol="" if env != "prod" else symbol.upper(),
+                start_date=start_date,
+                end_date=end_date,
+                side_filter=side_filter,
+                fill_filter=fill_filter,
+                exchange_code=self._overseas_order_history_exchange_param(exchange_code),
+                sort_sqn="DS",
+            )
+        except Exception:
+            return None
+        best_row: dict | None = None
+        best_ts: datetime | None = None
+        side_code = "01" if side.upper() == "SELL" else "02"
+        for row in history.get("orders", []):
+            row_symbol = str(row.get("pdno") or row.get("ovrs_pdno") or "").strip().upper()
+            if row_symbol != symbol.upper():
+                continue
+            if str(row.get("sll_buy_dvsn_cd") or "").strip() != side_code:
+                continue
+            open_qty = parse_kis_number(row.get("nccs_qty"))
+            if open_qty <= 0:
+                continue
+            row_ts = self._parse_overseas_order_history_timestamp(row)
+            if row_ts is None:
+                row_ts = datetime.min.replace(tzinfo=timezone.utc)
+            if best_ts is None or row_ts > best_ts:
+                best_row = row
+                best_ts = row_ts
+        if best_row is None:
+            return None
+        result = dict(best_row)
+        result["open_qty"] = parse_kis_number(best_row.get("nccs_qty"))
+        result["order_no"] = str(best_row.get("odno") or "").strip()
+        result["order_price"] = self._parse_float(best_row.get("ft_ord_unpr3"))
+        result["created_at"] = self._parse_overseas_order_history_timestamp(best_row)
+        return result
+
+    async def _cancel_open_overseas_order(
+        self,
+        *,
+        symbol: str,
+        exchange_code: str,
+        pending_order: dict,
+    ) -> dict:
+        order_no = str(pending_order.get("order_no") or "").strip()
+        if not order_no:
+            raise KisApiError("pending_overseas_order_missing_order_no")
+        qty = int(pending_order.get("open_qty") or 0)
+        if qty <= 0:
+            raise KisApiError("pending_overseas_order_missing_open_qty")
+        return await self.client.revise_or_cancel_overseas_order(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            original_order_no=order_no,
+            rvse_cncl_dvsn_cd="02",
+            qty=qty,
+            price="0",
+        )
+
+    @staticmethod
+    def _pending_order_age_seconds(pending_order: dict | None, *, now: datetime | None = None) -> float:
+        if pending_order is None:
+            return 0.0
+        created_at = pending_order.get("created_at")
+        if not isinstance(created_at, datetime):
+            return 0.0
+        ref = now or datetime.now(timezone.utc)
+        return max((ref - created_at).total_seconds(), 0.0)
+
+    @staticmethod
+    def _protective_exit_reasons() -> set[str]:
+        return {
+            "stop_loss",
+            "atr_hard_stop",
+            "momentum_loss_cut",
+            "trend_filter_lost",
+            "time_exit_loss",
+        }
+
     def _format_domestic_symbol_label(self, stock_code: str) -> str:
         code = str(stock_code or "").strip().upper()
         if not code:
@@ -4117,13 +4250,78 @@ class LiquidityLabService:
                 "candidate": asdict(candidate),
                 "signal_snapshot": asdict(signal_snapshot),
             }
+        buy_price = self._overseas_buy_order_price(candidate)
+        pending_buy_order = await self._find_open_overseas_order(
+            symbol=candidate.symbol,
+            side="BUY",
+            exchange_code=candidate.exchange_code,
+        )
+        if pending_buy_order is not None:
+            pending_age_sec = self._pending_order_age_seconds(pending_buy_order)
+            if pending_age_sec < 120:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_buy_order",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "signal_snapshot": asdict(signal_snapshot),
+                    "qty": qty,
+                    "reason": "pending_buy_order",
+                }
+            try:
+                await self._cancel_open_overseas_order(
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    pending_order=pending_buy_order,
+                )
+            except KisApiError as exc:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_buy_cancel_failed",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "signal_snapshot": asdict(signal_snapshot),
+                    "qty": qty,
+                    "reason": "pending_buy_cancel_failed",
+                    "error": str(exc),
+                }
         try:
             response = await self.client.place_overseas_order_for_current_session(
                 side="buy",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 qty=qty,
-                price=f"{candidate.last_price:.4f}",
+                price=f"{buy_price:.4f}",
                 order_division="00",
             )
         except KisApiError as exc:
@@ -4139,7 +4337,7 @@ class LiquidityLabService:
                 exchange_code=candidate.exchange_code,
                 reason="order_rejected",
                 side="buy",
-                price=candidate.last_price,
+                price=buy_price,
                 signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
@@ -4159,7 +4357,7 @@ class LiquidityLabService:
         repository = getattr(self, "repository", None)
         if repository is not None:
             commission_usd = round(
-                candidate.last_price * qty * self._overseas_commission_rate(),
+                buy_price * qty * self._overseas_commission_rate(),
                 6,
             )
             commission_krw = round(commission_usd * float(candidate.fx_rate_krw or 0.0), 2)
@@ -4171,7 +4369,7 @@ class LiquidityLabService:
                 exchange_code=candidate.exchange_code,
                 action_bias="BUY_REAL",
                 action_reason=buy_reason,
-                price=candidate.last_price,
+                price=buy_price,
                 pnl_pct=0.0,
                 realized_pnl_usd=0.0,
                 realized_pnl_krw=0.0,
@@ -4197,7 +4395,7 @@ class LiquidityLabService:
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
-                entry_price=candidate.last_price,
+                entry_price=buy_price,
                 qty_executed=qty,
                 net_pnl_usd=0.0,
                 net_pnl_krw=0.0,
@@ -4219,7 +4417,7 @@ class LiquidityLabService:
             side="BUY",
             order_kind="limit",
             requested_qty=qty,
-            requested_price=candidate.last_price,
+            requested_price=buy_price,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             status="SUBMITTED",
@@ -4232,7 +4430,7 @@ class LiquidityLabService:
                     format_market_korean("overseas"),
                     candidate.symbol,
                     "매수",
-                    format_usd(candidate.last_price),
+                    format_usd(buy_price),
                     f"x{qty}",
                     f"전략={strategy_flag or '-'}",
                     f"주도={entry_by or '-'}",
@@ -4254,7 +4452,7 @@ class LiquidityLabService:
             signal_state="BUY",
             note=buy_reason,
             holding_qty=qty,
-            last_price=candidate.last_price,
+            last_price=buy_price,
             pnl_pct=0.0,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
@@ -4584,6 +4782,90 @@ class LiquidityLabService:
                 signal_snapshot=signal_snapshot,
                 sell_qty_override=target_sell_qty,
             )
+        sell_price = self._overseas_sell_order_price(candidate, exit_reason=exit_reason)
+        pending_sell_order = await self._find_open_overseas_order(
+            symbol=candidate.symbol,
+            side="SELL",
+            exchange_code=candidate.exchange_code,
+        )
+        if pending_sell_order is not None:
+            pending_age_sec = self._pending_order_age_seconds(pending_sell_order, now=now)
+            if exit_reason not in self._protective_exit_reasons() or pending_age_sec < 45:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_exit_order",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "pending_exit_order",
+                }
+            try:
+                cancel_response = await self._cancel_open_overseas_order(
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    pending_order=pending_sell_order,
+                )
+            except KisApiError as exc:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_exit_cancel_failed",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "pending_exit_cancel_failed",
+                    "error": str(exc),
+                }
+            self._record_broker_order_event(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                side="SELL",
+                order_kind="cancel",
+                requested_qty=int(pending_sell_order.get("open_qty") or 0),
+                requested_price=float(pending_sell_order.get("order_price") or 0.0),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                status="CANCELED",
+                reason="stale_exit_replace",
+                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+            )
 
         try:
             response = await self.client.place_overseas_order_for_current_session(
@@ -4591,7 +4873,7 @@ class LiquidityLabService:
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 qty=real_sell_qty,
-                price=f"{candidate.last_price:.4f}",
+                price=f"{sell_price:.4f}",
                 order_division="00",
             )
         except KisApiError as exc:
@@ -4618,7 +4900,7 @@ class LiquidityLabService:
                     exchange_code=candidate.exchange_code,
                     reason="no_orderable_qty",
                     side="sell",
-                    price=candidate.last_price,
+                    price=sell_price,
                     signal_snapshot=signal_snapshot,
                     strategy_flag=strategy_flag,
                     entry_by=entry_by,
@@ -4645,7 +4927,7 @@ class LiquidityLabService:
                 exchange_code=candidate.exchange_code,
                 reason="session_not_orderable_in_profile" if is_session_blocked else "order_rejected",
                 side="sell",
-                price=candidate.last_price,
+                price=sell_price,
                 signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
@@ -4680,7 +4962,7 @@ class LiquidityLabService:
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 sell_qty=target_sell_qty,
-                price=candidate.last_price,
+                price=sell_price,
                 currency="USD",
                 session=session,
                 reason=exit_reason,
@@ -4702,7 +4984,7 @@ class LiquidityLabService:
             f"시장={format_market_korean('overseas')}",
             f"종목={candidate.symbol}",
             "구분=매도",
-            f"가격={format_usd(candidate.last_price)}",
+            f"가격={format_usd(sell_price)}",
             f"수량={int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}주",
             f"매수전략={entry_label}",
             f"청산전략={exit_label}",
@@ -4711,10 +4993,10 @@ class LiquidityLabService:
         if virtual_closed_qty > 0:
             lines.append(f"참고=가상매수 {virtual_closed_qty}주 우선 차감")
         if held.avg_price > 0:
-            gross_pnl = (candidate.last_price - held.avg_price) * int(
+            gross_pnl = (sell_price - held.avg_price) * int(
                 sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty
             )
-            pnl_pct = (candidate.last_price - held.avg_price) / held.avg_price
+            pnl_pct = (sell_price - held.avg_price) / held.avg_price
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
             lines.append("수익률=알수없음")
@@ -4725,7 +5007,7 @@ class LiquidityLabService:
             side="SELL",
             order_kind="limit",
             requested_qty=real_sell_qty,
-            requested_price=candidate.last_price,
+            requested_price=sell_price,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             exit_by=exit_by,
@@ -4743,7 +5025,7 @@ class LiquidityLabService:
                     format_market_korean("overseas"),
                     candidate.symbol,
                     "매도",
-                    format_usd(candidate.last_price),
+                    format_usd(sell_price),
                     f"x{int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}",
                     f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
                     f"매수={entry_label}",
@@ -4763,7 +5045,7 @@ class LiquidityLabService:
             real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
             auto_trade_cfg = getattr(self.config, "auto_trade", None)
             fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
-            gross_pnl_usd = (candidate.last_price - held.avg_price) * real_qty_sold
+            gross_pnl_usd = (sell_price - held.avg_price) * real_qty_sold
             gross_pnl_krw = gross_pnl_usd * fx_rate
             self._session_realised_krw = getattr(self, "_session_realised_krw", 0.0) + float(gross_pnl_krw)
             if gross_pnl_krw < 0:
@@ -4791,7 +5073,7 @@ class LiquidityLabService:
             if self._is_profit_exit_reason(exit_reason):
                 estimated_net_usd, estimated_net_krw, _, _ = self._estimate_overseas_net_pnl(
                     entry_price=float(entry_price or 0.0),
-                    exit_price=candidate.last_price,
+                    exit_price=sell_price,
                     qty=real_qty_sold,
                     fx_rate=fx_rate,
                 )
@@ -4802,7 +5084,7 @@ class LiquidityLabService:
                         exchange_code=candidate.exchange_code,
                         reason="net_profit_below_cost",
                         side="sell",
-                        price=candidate.last_price,
+                        price=sell_price,
                         signal_snapshot=signal_snapshot,
                         strategy_flag=strategy_flag,
                         entry_by=entry_by,
@@ -4819,7 +5101,7 @@ class LiquidityLabService:
                         signal_state="HOLD",
                         note="net_profit_below_cost",
                         holding_qty=held.quantity,
-                        last_price=candidate.last_price,
+                        last_price=sell_price,
                         pnl_pct=pnl_pct,
                         strategy_flag=strategy_flag,
                         entry_by=entry_by,
@@ -4840,7 +5122,7 @@ class LiquidityLabService:
             net_pnl_usd, net_pnl_krw, sell_commission_usd, sell_commission_krw = (
                 self._estimate_overseas_net_pnl(
                     entry_price=float(entry_price or 0.0),
-                    exit_price=candidate.last_price,
+                    exit_price=sell_price,
                     qty=real_qty_sold,
                     fx_rate=fx_rate,
                 )
@@ -4852,7 +5134,7 @@ class LiquidityLabService:
                 exchange_code=candidate.exchange_code,
                 action_bias="SELL_REAL",
                 action_reason=exit_reason,
-                price=candidate.last_price,
+                price=sell_price,
                 pnl_pct=pnl_pct,
                 realized_pnl_usd=gross_pnl_usd,
                 realized_pnl_krw=gross_pnl_krw,
@@ -4902,7 +5184,7 @@ class LiquidityLabService:
             signal_state="SELL_READY",
             note=exit_reason,
             holding_qty=0,
-            last_price=candidate.last_price,
+            last_price=sell_price,
             pnl_pct=pnl_pct if held.avg_price > 0 else None,
             strategy_flag=strategy_flag,
             entry_by=entry_by,

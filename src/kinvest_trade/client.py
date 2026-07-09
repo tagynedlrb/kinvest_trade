@@ -65,6 +65,8 @@ class KisRestClient:
     OVERSEAS_SEARCH_INFO_PATH = "/uapi/overseas-price/v1/quotations/search-info"
     OVERSEAS_BALANCE_PATH = "/uapi/overseas-stock/v1/trading/inquire-balance"
     OVERSEAS_POSSIBLE_ORDER_PATH = "/uapi/overseas-stock/v1/trading/inquire-psamount"
+    OVERSEAS_ORDER_HISTORY_PATH = "/uapi/overseas-stock/v1/trading/inquire-ccnl"
+    OVERSEAS_REVISE_CANCEL_PATH = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
     OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
     OVERSEAS_DAYTIME_ORDER_PATH = "/uapi/overseas-stock/v1/trading/daytime-order"
 
@@ -784,6 +786,99 @@ class KisRestClient:
             "cash_available": output.get("frcr_dncl_amt_2"),
             "raw": output,
         }
+
+    async def get_overseas_order_history(
+        self,
+        *,
+        symbol: str = "",
+        start_date: str,
+        end_date: str,
+        side_filter: str = "00",
+        fill_filter: str = "00",
+        exchange_code: str = "",
+        sort_sqn: str = "DS",
+        order_date: str = "",
+        order_branch_no: str = "",
+        order_no: str = "",
+        fk200: str = "",
+        nk200: str = "",
+    ) -> dict[str, Any]:
+        cano, product_code = self.account_parts()
+        tr_id = "TTTS3035R" if self.credentials.env == "prod" else "VTTS3035R"
+        payload = await self._request(
+            "GET",
+            self.OVERSEAS_ORDER_HISTORY_PATH,
+            tr_id,
+            params={
+                "CANO": cano,
+                "ACNT_PRDT_CD": product_code,
+                "PDNO": symbol,
+                "ORD_STRT_DT": start_date,
+                "ORD_END_DT": end_date,
+                "SLL_BUY_DVSN": side_filter,
+                "CCLD_NCCS_DVSN": fill_filter,
+                "OVRS_EXCG_CD": exchange_code,
+                "SORT_SQN": sort_sqn,
+                "ORD_DT": order_date,
+                "ORD_GNO_BRNO": order_branch_no,
+                "ODNO": order_no,
+                "CTX_AREA_NK200": nk200,
+                "CTX_AREA_FK200": fk200,
+            },
+        )
+        output = payload.get("output", []) or []
+        rows = output if isinstance(output, list) else [output]
+        return {
+            "orders": rows,
+            "ctx_area_fk200": payload.get("ctx_area_fk200", ""),
+            "ctx_area_nk200": payload.get("ctx_area_nk200", ""),
+            "raw": payload,
+        }
+
+    async def revise_or_cancel_overseas_order(
+        self,
+        *,
+        symbol: str,
+        exchange_code: str,
+        original_order_no: str,
+        rvse_cncl_dvsn_cd: str,
+        qty: int,
+        price: str,
+        mgco_aptm_odno: str = "",
+        ord_svr_dvsn_cd: str = "0",
+    ) -> dict[str, Any]:
+        cano, product_code = self.account_parts()
+        exchange_upper = self.overseas_order_exchange_code(exchange_code)
+        tr_ids = {
+            "NASD": "TTTT1004U",
+            "NYSE": "TTTT1004U",
+            "AMEX": "TTTT1004U",
+            "SEHK": "TTTS1003U",
+            "SHAA": "TTTS0302U",
+            "SZAA": "TTTS0306U",
+            "TKSE": "TTTS0309U",
+            "HASE": "TTTS0312U",
+            "VNSE": "TTTS0312U",
+        }
+        if exchange_upper not in tr_ids:
+            raise KisApiError(f"unsupported overseas exchange code: {exchange_code}")
+        tr_id = tr_ids[exchange_upper]
+        if self.credentials.env != "prod":
+            tr_id = f"V{tr_id[1:]}"
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": product_code,
+            "OVRS_EXCG_CD": exchange_upper,
+            "PDNO": symbol,
+            "ORGN_ODNO": original_order_no,
+            "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,
+            "ORD_QTY": str(qty),
+            "OVRS_ORD_UNPR": price,
+            "MGCO_APTM_ODNO": mgco_aptm_odno,
+            "ORD_SVR_DVSN_CD": ord_svr_dvsn_cd,
+        }
+        return await self._request("POST", self.OVERSEAS_REVISE_CANCEL_PATH, tr_id, body=body)
 
     async def place_overseas_order(
         self,

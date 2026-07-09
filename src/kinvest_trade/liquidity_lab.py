@@ -782,18 +782,17 @@ class LiquidityLabService:
             return None
         return parsed.replace(tzinfo=KST).astimezone(timezone.utc)
 
-    async def _find_open_overseas_order(
+    async def _list_open_overseas_orders(
         self,
         *,
         symbol: str,
-        side: str,
         exchange_code: str,
-    ) -> dict | None:
+    ) -> list[dict]:
         now_kst = datetime.now(timezone.utc).astimezone(KST)
         start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
         end_date = now_kst.strftime("%Y%m%d")
         env = str(getattr(self.config.credentials, "env", "vps") or "vps")
-        side_filter = "00" if env != "prod" else ("01" if side.upper() == "SELL" else "02")
+        side_filter = "00"
         fill_filter = "00" if env != "prod" else "02"
         try:
             history = await self.client.get_overseas_order_history(
@@ -806,33 +805,52 @@ class LiquidityLabService:
                 sort_sqn="DS",
             )
         except Exception:
-            return None
-        best_row: dict | None = None
-        best_ts: datetime | None = None
-        side_code = "01" if side.upper() == "SELL" else "02"
+            return []
+        results: list[dict] = []
         for row in history.get("orders", []):
             row_symbol = str(row.get("pdno") or row.get("ovrs_pdno") or "").strip().upper()
             if row_symbol != symbol.upper():
                 continue
-            if str(row.get("sll_buy_dvsn_cd") or "").strip() != side_code:
-                continue
             open_qty = parse_kis_number(row.get("nccs_qty"))
             if open_qty <= 0:
                 continue
-            row_ts = self._parse_overseas_order_history_timestamp(row)
-            if row_ts is None:
-                row_ts = datetime.min.replace(tzinfo=timezone.utc)
-            if best_ts is None or row_ts > best_ts:
-                best_row = row
-                best_ts = row_ts
-        if best_row is None:
-            return None
-        result = dict(best_row)
-        result["open_qty"] = parse_kis_number(best_row.get("nccs_qty"))
-        result["order_no"] = str(best_row.get("odno") or "").strip()
-        result["order_price"] = self._parse_float(best_row.get("ft_ord_unpr3"))
-        result["created_at"] = self._parse_overseas_order_history_timestamp(best_row)
-        return result
+            result = dict(row)
+            result["open_qty"] = open_qty
+            result["order_no"] = str(row.get("odno") or "").strip()
+            result["order_price"] = self._parse_float(row.get("ft_ord_unpr3"))
+            result["created_at"] = self._parse_overseas_order_history_timestamp(row)
+            results.append(result)
+        results.sort(
+            key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        return results
+
+    async def _find_open_overseas_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        exchange_code: str,
+    ) -> dict | None:
+        side_code = "01" if side.upper() == "SELL" else "02"
+        for row in await self._list_open_overseas_orders(symbol=symbol, exchange_code=exchange_code):
+            if str(row.get("sll_buy_dvsn_cd") or "").strip() == side_code:
+                return row
+        return None
+
+    async def _find_conflicting_overseas_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        exchange_code: str,
+    ) -> dict | None:
+        conflicting_side = "02" if side.upper() == "SELL" else "01"
+        for row in await self._list_open_overseas_orders(symbol=symbol, exchange_code=exchange_code):
+            if str(row.get("sll_buy_dvsn_cd") or "").strip() == conflicting_side:
+                return row
+        return None
 
     async def _cancel_open_overseas_order(
         self,
@@ -4251,6 +4269,84 @@ class LiquidityLabService:
                 "signal_snapshot": asdict(signal_snapshot),
             }
         buy_price = self._overseas_buy_order_price(candidate)
+        conflicting_sell_order = await self._find_conflicting_overseas_order(
+            symbol=candidate.symbol,
+            side="BUY",
+            exchange_code=candidate.exchange_code,
+        )
+        if conflicting_sell_order is not None:
+            conflicting_age_sec = self._pending_order_age_seconds(conflicting_sell_order)
+            if conflicting_age_sec < 60:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_conflicting_sell_order",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "signal_snapshot": asdict(signal_snapshot),
+                    "qty": qty,
+                    "reason": "pending_conflicting_sell_order",
+                }
+            try:
+                cancel_response = await self._cancel_open_overseas_order(
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    pending_order=conflicting_sell_order,
+                )
+            except KisApiError as exc:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_conflicting_sell_cancel_failed",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "signal_snapshot": asdict(signal_snapshot),
+                    "qty": qty,
+                    "reason": "pending_conflicting_sell_cancel_failed",
+                    "error": str(exc),
+                }
+            self._record_broker_order_event(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                side="SELL",
+                order_kind="cancel",
+                requested_qty=int(conflicting_sell_order.get("open_qty") or 0),
+                requested_price=float(conflicting_sell_order.get("order_price") or 0.0),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                status="CANCELED",
+                reason="conflicting_pending_sell_cleared",
+                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+            )
         pending_buy_order = await self._find_open_overseas_order(
             symbol=candidate.symbol,
             side="BUY",
@@ -4783,6 +4879,89 @@ class LiquidityLabService:
                 sell_qty_override=target_sell_qty,
             )
         sell_price = self._overseas_sell_order_price(candidate, exit_reason=exit_reason)
+        conflicting_buy_order = await self._find_conflicting_overseas_order(
+            symbol=candidate.symbol,
+            side="SELL",
+            exchange_code=candidate.exchange_code,
+        )
+        if conflicting_buy_order is not None:
+            conflicting_age_sec = self._pending_order_age_seconds(conflicting_buy_order, now=now)
+            if exit_reason not in self._protective_exit_reasons() and conflicting_age_sec < 30:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_conflicting_buy_order",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "pending_conflicting_buy_order",
+                }
+            try:
+                cancel_response = await self._cancel_open_overseas_order(
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    pending_order=conflicting_buy_order,
+                )
+            except KisApiError as exc:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="pending_conflicting_buy_cancel_failed",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "pending_conflicting_buy_cancel_failed",
+                    "error": str(exc),
+                }
+            self._record_broker_order_event(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                side="BUY",
+                order_kind="cancel",
+                requested_qty=int(conflicting_buy_order.get("open_qty") or 0),
+                requested_price=float(conflicting_buy_order.get("order_price") or 0.0),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                status="CANCELED",
+                reason="conflicting_pending_buy_cleared",
+                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+            )
         pending_sell_order = await self._find_open_overseas_order(
             symbol=candidate.symbol,
             side="SELL",

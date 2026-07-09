@@ -1123,6 +1123,44 @@ def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() ->
     assert service.client.order_calls[0]["price"] == "316.9000"
 
 
+def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None:
+    service = _build_run_service()
+    service.client = DummySellClient(
+        pending_orders=[
+            {
+                "pdno": "PLTR",
+                "sll_buy_dvsn_cd": "01",
+                "nccs_qty": "2",
+                "odno": "61001",
+                "ft_ord_unpr3": "23.50000000",
+                "dmst_ord_dt": "20260710",
+                "thco_ord_tmd": "000000",
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NASD",
+        last_price=23.10,
+        bid=23.09,
+        ask=23.11,
+        spread_pct=0.0008,
+        change_rate_pct=1.1,
+        volume=1_200_000,
+        orderable_qty=5,
+        fx_rate_krw=0.0,
+        activity_score=11.0,
+    )
+    service._signal_cache["PLTR"] = _snapshot(price=23.10)
+
+    result = asyncio.run(service._place_overseas_test_order(candidate))
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    assert service.client.cancel_calls[0]["original_order_no"] == "61001"
+    assert service.client.order_calls[0]["price"] == "23.1100"
+
+
 def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None:
     service = _build_run_service()
     service.client = DummySellClient(
@@ -1157,6 +1195,51 @@ def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None
 
     assert result["skipped"] is True
     assert result["reason"] == "pending_buy_order"
+
+
+def test_place_overseas_sell_order_cancels_conflicting_buy_order_before_stop_loss() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            {
+                "pdno": "ALNY",
+                "sll_buy_dvsn_cd": "02",
+                "nccs_qty": "1",
+                "odno": "62001",
+                "ft_ord_unpr3": "339.00000000",
+                "dmst_ord_dt": datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).strftime("%Y%m%d"),
+                "thco_ord_tmd": datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).strftime("%H%M%S"),
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="ALNY",
+        exchange_code="NASD",
+        last_price=317.0,
+        bid=316.9,
+        ask=317.1,
+        spread_pct=0.0006,
+        change_rate_pct=-2.0,
+        volume=1_500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=9.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="ALNY",
+        exchange_code="NASD",
+        quantity=61,
+        orderable_qty=61,
+        avg_price=338.41,
+        current_price=317.0,
+        pnl_pct=(317.0 - 338.41) / 338.41,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    assert service.client.cancel_calls[0]["original_order_no"] == "62001"
+    assert service.client.order_calls[0]["price"] == "316.9000"
 
 
 class DummyDomesticBalanceClient:

@@ -1,7 +1,7 @@
 import asyncio
 import tempfile
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -438,6 +438,64 @@ def test_select_overseas_exit_targets_includes_virtual_only_stop_loss() -> None:
     assert candidate.symbol == "SOLS"
     assert held.is_virtual is True
     assert held.orderable_qty == 441
+    assert reason == "stop_loss"
+    assert signal_snapshot is None
+
+
+def test_select_overseas_exit_targets_uses_held_qty_when_orderable_is_zero() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.025,
+                    "overseas_stop_loss_pct": 0.015,
+                },
+            )()
+        },
+    )()
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    service._defer_no_orderable_position = lambda **kwargs: None  # type: ignore[method-assign]
+    service._clear_no_orderable_retry = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    ranked = [
+        OverseasScanResult(
+            symbol="PCAP",
+            exchange_code="NASD",
+            last_price=9.5,
+            bid=9.49,
+            ask=9.51,
+            spread_pct=0.0010,
+            change_rate_pct=-3.0,
+            volume=600_000,
+            orderable_qty=0,
+            fx_rate_krw=1350.0,
+            activity_score=8.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="PCAP",
+            exchange_code="NASD",
+            quantity=2763,
+            orderable_qty=0,
+            avg_price=10.0,
+            current_price=9.5,
+            pnl_pct=-0.05,
+        )
+    ]
+
+    results = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert len(results) == 1
+    candidate, held, reason, signal_snapshot = results[0]
+    assert candidate.symbol == "PCAP"
+    assert held.orderable_qty == 2763
     assert reason == "stop_loss"
     assert signal_snapshot is None
 
@@ -1634,6 +1692,7 @@ def test_is_trading_halted_still_blocks_when_daily_loss_remains_after_consecutiv
     service.notifier = DummyNotifier()
     service._consecutive_losses = 3
     service._halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    service._daily_loss_date = datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).date()
     service._session_realised_krw = -600_000.0
     service.config.risk.circuit_breaker_cooldown_minutes = 30
 
@@ -1645,6 +1704,7 @@ def test_is_trading_halted_still_blocks_when_daily_loss_remains_after_consecutiv
 
 def test_is_trading_halted_when_daily_loss_limit_exceeded() -> None:
     service = _build_run_service()
+    service._daily_loss_date = datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).date()
     service._session_realised_krw = -600_000.0
 
     assert service._is_trading_halted() is True
@@ -1659,6 +1719,31 @@ def test_is_trading_halted_daily_limit_auto_releases_after_cooldown() -> None:
     service.config.risk.circuit_breaker_cooldown_minutes = 30
 
     assert service._is_trading_halted() is False
+    assert service._session_realised_krw == 0.0
+    assert service._daily_halted_at is None
+
+
+def test_is_trading_halted_resets_daily_loss_on_new_kst_day() -> None:
+    service = _build_run_service()
+    service._daily_loss_date = date(2026, 7, 9)
+    service._session_realised_krw = -600_000.0
+    service._daily_halted_at = datetime.now(timezone.utc)
+
+    original_datetime = liquidity_lab_module.datetime
+
+    class _FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 7, 10, 0, 5, tzinfo=timezone.utc)
+            return base if tz is None else base.astimezone(tz)
+
+    liquidity_lab_module.datetime = _FakeDateTime
+    try:
+        assert service._is_trading_halted() is False
+    finally:
+        liquidity_lab_module.datetime = original_datetime
+
+    assert service._daily_loss_date == date(2026, 7, 10)
     assert service._session_realised_krw == 0.0
     assert service._daily_halted_at is None
 

@@ -106,7 +106,7 @@
         "trend_chase_limit_pct": 0.02,
         "max_entry_rsi14": 80.0,
         "trend_require_price_above_slow": true,
-        "min_hold_before_trend_exit": 5,
+        "min_hold_before_trend_exit": 12,
         "max_hold_cycles": 120,
         "force_reentry_after_cycles": 3,
         "startup_buy_if_flat": false,
@@ -138,7 +138,7 @@
         "max_ret_3m": 0.04
     },
     "risk": {
-        "daily_loss_limit_pct": 0.01,
+        "daily_loss_limit_pct": 0.02,
         "max_consecutive_losses": 3,
         "circuit_breaker_cooldown_minutes": 30,
         "operating_capital_krw": 50000000
@@ -160,7 +160,7 @@
         "enabled": true,
         "tv_scan_enabled": true,
         "tv_top_n": 30,
-        "tv_min_rel_volume": 2.0,
+        "tv_min_rel_volume": 1.8,
         "tv_min_price_usd": 5.0,
         "tv_min_volume": 500000,
         "tv_min_market_cap": 300000000,
@@ -184,7 +184,7 @@
         "domestic_paper_interval_sec": 5,
         "unified_watch_top_n": 20,
         "unified_scan_top_n": 22,
-        "overseas_scan_top_n": 22,
+        "overseas_scan_top_n": 25,
         "overseas_rescan_cycles": 20,
         "max_wait_cycles_before_penalty": 15,
         "wait_penalty_decay": 0.07,

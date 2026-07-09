@@ -1,5 +1,33 @@
 # WORKLOG
 
+## [2026-07-10] 지시문 #61 — 매매 빈도 저하 핵심 원인 수정
+
+### 분석 (07/07~07/10 통합)
+- `trend_filter_lost` 비율이 86% / 40% / 57% / 100%로 높아, 진입 직후 노이즈성 손절이 과도했음
+- `daily_loss`가 KST 날짜 기준으로 초기화되지 않아 전날 손실이 다음 세션으로 이월되며
+  07/10 00:05 KST에 즉시 CB가 발동했음
+- `orderable_qty=0`인 해외 포지션이 실제 보유 수량이 있어도 SELL 후보에서 빠져
+  자본 동결이 누적됐음
+- `daily_loss_limit_pct=1%`는 수수료/단기 변동만으로도 쉽게 초과되어 CB가 과잉 발동했음
+
+### 수정
+- `liquidity_lab.py`
+  - `__init__`에 `_daily_loss_date` 추가
+  - `_is_trading_halted()`에서 KST 날짜 전환 시 `_session_realised_krw`, `_daily_halted_at` 자동 초기화
+  - `_select_overseas_exit_targets()`에서 `orderable_qty=0`이어도 `holding_qty > 0`이면
+    실보유 수량 기준으로 매도 시도를 허용하고, 실제 주문 실패는 KIS API 응답에 맡기도록 변경
+- `config/fixed_config.json`
+  - `daily_loss_limit_pct: 0.01 -> 0.02`
+  - `tv_min_rel_volume: 2.0 -> 1.8`
+  - `overseas_scan_top_n: 22 -> 25`
+  - `auto_trade.min_hold_before_trend_exit: 5 -> 12`
+
+### 기대 효과
+- 날짜 이월 손실로 인한 장 시작 직후 CB 오작동 제거
+- `no_orderable_qty` 반복으로 막히던 해외 매도 재시도 활성화
+- 진입 직후 `trend_filter_lost` 노이즈 손절 감소
+- TV 후보 풀 확장으로 동일 종목 반복 감시 완화
+
 ## [2026-07-06] 지시문 #51 — 전략 분석용 cycle_log 컬럼 보강
 
 ### 배경

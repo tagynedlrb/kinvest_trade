@@ -7,7 +7,7 @@ import math
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
@@ -568,6 +568,7 @@ class LiquidityLabService:
         self._last_tv_scan_used_fallback: bool = False
         self._consecutive_losses: int = 0
         self._session_realised_krw: float = 0.0
+        self._daily_loss_date: date | None = None
         self._halted_at: datetime | None = None
         self._daily_halted_at: datetime | None = None
         self._tv_diagnostic_ran: bool = False
@@ -2284,20 +2285,34 @@ class LiquidityLabService:
                     pnl_pct = (quote.last_price - avg_price) / avg_price
 
             is_virtual_only = real is None and virtual_buy is not None
+            effective_orderable = remaining_real_orderable
+            if (
+                effective_orderable <= 0
+                and real is not None
+                and real.quantity > already_pending_qty
+            ):
+                # KIS orderable_qty reflects unsettled state inconsistently, so
+                # fall back to held quantity and let the actual sell API decide.
+                effective_orderable = max(0, real.quantity - already_pending_qty)
+                if effective_orderable > 0:
+                    _logger.warning(
+                        "[EXIT] orderable_qty=0이지만 holding_qty=%d → 실주문 시도",
+                        real.quantity,
+                    )
             if avg_price <= 0:
                 continue
-            if not is_virtual_only and remaining_real_orderable <= 0:
+            if not is_virtual_only and effective_orderable <= 0:
                 self._defer_no_orderable_position(
                     market="overseas",
                     symbol=symbol,
                     holding_qty=0 if real is None else real.quantity,
-                    orderable_qty=remaining_real_orderable,
+                    orderable_qty=effective_orderable,
                 )
                 continue
             effective_orderable = (
                 (virtual_buy.qty if virtual_buy is not None else 0)
                 if is_virtual_only
-                else remaining_real_orderable
+                else effective_orderable
             )
             self._clear_no_orderable_retry("overseas", symbol)
 
@@ -2335,12 +2350,20 @@ class LiquidityLabService:
             pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
             already_pending_qty = 0 if pending is None else pending[0]
             remaining_real_orderable = max(0, held.orderable_qty - already_pending_qty)
-            if remaining_real_orderable <= 0:
+            effective_orderable = remaining_real_orderable
+            if effective_orderable <= 0 and held.quantity > already_pending_qty:
+                effective_orderable = max(0, held.quantity - already_pending_qty)
+                if effective_orderable > 0:
+                    _logger.warning(
+                        "[EXIT] orderable_qty=0이지만 holding_qty=%d → 실주문 시도",
+                        held.quantity,
+                    )
+            if effective_orderable <= 0:
                 self._defer_no_orderable_position(
                     market="overseas",
                     symbol=symbol,
                     holding_qty=held.quantity,
-                    orderable_qty=remaining_real_orderable,
+                    orderable_qty=effective_orderable,
                 )
                 continue
             self._clear_no_orderable_retry("overseas", symbol)
@@ -2354,7 +2377,7 @@ class LiquidityLabService:
                 symbol=held.symbol,
                 exchange_code=held.exchange_code,
                 quantity=held.quantity,
-                orderable_qty=remaining_real_orderable,
+                orderable_qty=effective_orderable,
                 avg_price=held.avg_price,
                 current_price=held.current_price,
                 pnl_pct=held.pnl_pct,
@@ -5929,6 +5952,13 @@ class LiquidityLabService:
         )
 
     def _is_trading_halted(self) -> bool:
+        kst_today = datetime.now(timezone.utc).astimezone(KST).date()
+        if getattr(self, "_daily_loss_date", None) != kst_today:
+            self._daily_loss_date = kst_today
+            self._session_realised_krw = 0.0
+            self._daily_halted_at = None
+            _logger.info("[CB] KST 날짜 전환 → daily_loss 초기화 (date=%s)", kst_today)
+
         risk = getattr(self.config, "risk", None)
         if risk is None:
             return False

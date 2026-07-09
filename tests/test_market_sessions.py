@@ -27,7 +27,7 @@ def test_us_regular_session_true_during_kis_premarket() -> None:
 
 
 def test_us_session_classified_as_daytime_during_kis_daytime() -> None:
-    assert get_us_trading_session(datetime(2026, 6, 25, 7, 0, tzinfo=timezone.utc)) == "daytime"
+    assert get_us_trading_session(datetime(2026, 6, 25, 2, 0, tzinfo=timezone.utc)) == "daytime"
 
 
 def test_us_session_classified_as_premarket_during_kis_premarket() -> None:
@@ -46,7 +46,7 @@ def test_us_regular_session_is_orderable_in_mock_profile() -> None:
 
 
 def test_us_regular_session_false_before_kis_day_session() -> None:
-    assert not is_us_regular_session(datetime(2026, 6, 25, 0, 30, tzinfo=timezone.utc))
+    assert not is_us_regular_session(datetime(2026, 6, 24, 23, 30, tzinfo=timezone.utc))
 
 
 def test_us_regular_session_false_on_sunday_kst_morning() -> None:

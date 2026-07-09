@@ -38,14 +38,15 @@ def get_us_trading_session(
     current_time = current.time()
     is_dst = _is_new_york_dst(now_utc)
 
-    daytime_end = time(17, 0) if is_dst else time(18, 0)
+    daytime_start = time(9, 0)
+    daytime_end = time(15, 0) if is_dst else time(16, 0)
     premarket_end = time(22, 30) if is_dst else time(23, 30)
     regular_end = time(5, 0) if is_dst else time(6, 0)
     aftermarket_end = time(7, 0)
     extended_aftermarket_end = time(9, 0)
 
     if weekday <= 4:
-        if time(10, 0) <= current_time < daytime_end:
+        if daytime_start <= current_time < daytime_end:
             return "daytime"
         if daytime_end <= current_time < premarket_end:
             return "premarket"

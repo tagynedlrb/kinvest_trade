@@ -1058,3 +1058,27 @@
   - 국내 `orderable_qty=0` 포지션은 실제 매도 대상 선택에서 제외
   - 전략 BUY 신호가 legacy entry_setup과 충돌할 때 메모를
     `strategy_buy_signal` 쪽으로 정리
+
+## [2026-07-09] 지시문 #60 — CB 우회 / 동일 종목 중복 매수 / 시장 세션
+
+### 07/09 세션 분석
+- 실거래 기준 승률이 낮고 CB가 반복 발동했는데, 로그상 `cb_active=1` 상태에서도 BUY가 일부 진행됨
+- 원인 1: consecutive CB 자동 해제 직후 `_is_trading_halted()`가 즉시 `False`를 반환해
+  `daily_loss_limit` CB 체크를 우회
+- 원인 2: `_select_overseas_buy_targets()`가 이미 보유 중인 종목을 BUY 후보에서 제외하지 않아
+  동일 심볼 연속 매수가 가능
+- 원인 3: `no_orderable_qty` 포지션이 여러 사이클 연속으로 반복 SKIP되며 이벤트 로그 노이즈 발생
+- 원인 4: 미국 `daytime` 세션 시간이 KIS 공식(KST 09:00~15:00 DST / 16:00 non-DST)과 불일치
+
+### 수정
+- `liquidity_lab.py`
+  - consecutive CB 자동 해제 후 `daily_loss_limit` 체크로 fall-through 되도록 수정
+  - `_select_overseas_buy_targets(..., held_positions=...)` 추가
+  - 실보유/가상보유 종목은 해외 BUY 후보에서 제외
+  - `no_orderable_qty`는 5분 재시도 버킷으로 관리하고 최초 시점에만 상세 이벤트 기록
+- `market_sessions.py`
+  - US daytime 세션을 KIS 공식 시간으로 보정
+- `tests`
+  - CB 해제 후 daily_loss가 여전히 매수를 막는지 테스트 추가
+  - 보유 중 심볼이 해외 BUY 후보에서 제외되는지 테스트 추가
+  - daytime 세션 시간 변경 반영

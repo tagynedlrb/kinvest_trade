@@ -1629,6 +1629,20 @@ def test_is_trading_halted_auto_releases_after_cooldown() -> None:
     assert service._halted_at is None
 
 
+def test_is_trading_halted_still_blocks_when_daily_loss_remains_after_consecutive_release() -> None:
+    service = _build_run_service()
+    service.notifier = DummyNotifier()
+    service._consecutive_losses = 3
+    service._halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    service._session_realised_krw = -600_000.0
+    service.config.risk.circuit_breaker_cooldown_minutes = 30
+
+    assert service._is_trading_halted() is True
+    assert service._consecutive_losses == 0
+    assert service._halted_at is None
+    assert service._daily_halted_at is not None
+
+
 def test_is_trading_halted_when_daily_loss_limit_exceeded() -> None:
     service = _build_run_service()
     service._session_realised_krw = -600_000.0
@@ -2152,6 +2166,40 @@ def test_select_overseas_buy_targets_returns_multiple() -> None:
     selected = service._select_overseas_buy_targets(overseas_ranked, watch_targets, max_concurrent=3)
 
     assert [item.symbol for item in selected] == ["NVDA", "AMD", "AAPL"]
+
+
+def test_select_overseas_buy_targets_excludes_already_held_symbols() -> None:
+    service = _build_run_service()
+    overseas_ranked = [
+        OverseasScanResult("CHW", "NASD", 10.0, 9.9, 10.1, 0.001, 1.0, 700_000, 10, 1350.0, 18.0),
+        OverseasScanResult("AMD", "NASD", 155.0, 154.9, 155.1, 0.0012, 1.5, 800_000, 10, 1350.0, 17.0),
+        OverseasScanResult("AAPL", "NASD", 210.0, 209.9, 210.1, 0.0010, 1.2, 700_000, 10, 1350.0, 16.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus("overseas", "CHW", "NASD", 10.0, 18.0, 12.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("overseas", "AMD", "NASD", 155.0, 17.0, 11.0, "BUY", "BUY_READY", "20d>60d 5>20", "pullback_entry", 0),
+        WatchTargetStatus("overseas", "AAPL", "NASD", 210.0, 16.0, 10.0, "BUY", "BUY_READY", "20d>60d 5>20", "volume_breakout_entry", 0),
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="CHW",
+            exchange_code="NASD",
+            quantity=100,
+            orderable_qty=100,
+            avg_price=9.8,
+            current_price=10.0,
+            pnl_pct=0.02,
+        )
+    ]
+
+    selected = service._select_overseas_buy_targets(
+        overseas_ranked,
+        watch_targets,
+        max_concurrent=3,
+        held_positions=held_positions,
+    )
+
+    assert [item.symbol for item in selected] == ["AMD", "AAPL"]
 
 
 def test_unified_watch_excludes_closed_market() -> None:

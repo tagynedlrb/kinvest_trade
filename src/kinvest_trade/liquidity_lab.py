@@ -581,6 +581,7 @@ class LiquidityLabService:
         self._trade_notification_window_sec: int = 60
         self._trade_notification_max_batch_size: int = 8
         self._session_start_logged: bool = False
+        self._no_orderable_retry: dict[str, datetime] = {}
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -1469,6 +1470,7 @@ class LiquidityLabService:
                     overseas_ranked,
                     overseas_watch_targets,
                     max_concurrent=max(1, _max_os - _real_os),
+                    held_positions=monitored_overseas_positions,
                 )
                 overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
         domestic_order: dict = {"skipped": True, "reason": "no_action"}
@@ -2266,12 +2268,19 @@ class LiquidityLabService:
             if avg_price <= 0:
                 continue
             if not is_virtual_only and remaining_real_orderable <= 0:
+                self._defer_no_orderable_position(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=0 if real is None else real.quantity,
+                    orderable_qty=remaining_real_orderable,
+                )
                 continue
             effective_orderable = (
                 (virtual_buy.qty if virtual_buy is not None else 0)
                 if is_virtual_only
                 else remaining_real_orderable
             )
+            self._clear_no_orderable_retry("overseas", symbol)
 
             exit_reason: str | None = None
             priority: tuple[int, float] | None = None
@@ -2308,7 +2317,14 @@ class LiquidityLabService:
             already_pending_qty = 0 if pending is None else pending[0]
             remaining_real_orderable = max(0, held.orderable_qty - already_pending_qty)
             if remaining_real_orderable <= 0:
+                self._defer_no_orderable_position(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                    orderable_qty=remaining_real_orderable,
+                )
                 continue
+            self._clear_no_orderable_retry("overseas", symbol)
             signal_snapshot = self._signal_cache.get(held.symbol.upper())
             if signal_snapshot is None:
                 continue
@@ -3348,6 +3364,16 @@ class LiquidityLabService:
             and watch_target.code in held_map
             and held_map[watch_target.code].orderable_qty > 0
         ]
+        for held in held_positions:
+            if held.orderable_qty <= 0:
+                self._defer_no_orderable_position(
+                    market="domestic",
+                    symbol=held.stock_code,
+                    holding_qty=held.quantity,
+                    orderable_qty=held.orderable_qty,
+                )
+            else:
+                self._clear_no_orderable_retry("domestic", held.stock_code)
         if not ready_targets:
             return None
         best_target = min(
@@ -3365,12 +3391,27 @@ class LiquidityLabService:
         overseas_ranked: list[OverseasScanResult],
         watch_targets: list[WatchTargetStatus],
         max_concurrent: int = 3,
+        held_positions: list[OverseasHeldPosition] | None = None,
     ) -> list[OverseasScanResult]:
         candidate_map = {candidate.symbol.upper(): candidate for candidate in overseas_ranked}
+        held_symbols: set[str] = set()
+        if held_positions:
+            held_symbols = {
+                held.symbol.upper()
+                for held in held_positions
+                if getattr(held, "quantity", 0) > 0
+            }
+        virtual_manager = getattr(self, "virtual_trades", None)
+        if virtual_manager is not None:
+            for position in virtual_manager.list_positions("overseas"):
+                if position.qty > 0:
+                    held_symbols.add(position.symbol.upper())
         ready_targets = [
             watch_target
             for watch_target in watch_targets
-            if watch_target.market == "overseas" and watch_target.action_bias == "BUY"
+            if watch_target.market == "overseas"
+            and watch_target.action_bias == "BUY"
+            and watch_target.code.upper() not in held_symbols
         ]
         if not ready_targets or max_concurrent <= 0:
             return []
@@ -5735,6 +5776,43 @@ class LiquidityLabService:
             entry_price = float(fallback_price)
         return entry_price, entry_time_iso, hold_duration_min
 
+    def _defer_no_orderable_position(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        holding_qty: int,
+        orderable_qty: int,
+    ) -> bool:
+        retry_map = getattr(self, "_no_orderable_retry", None)
+        if retry_map is None:
+            retry_map = {}
+            self._no_orderable_retry = retry_map
+        key = f"{market}:{symbol.strip().upper()}"
+        now = datetime.now(timezone.utc)
+        retry_until = retry_map.get(key)
+        if retry_until is not None and now <= ensure_timezone(retry_until):
+            return True
+        retry_map[key] = now + timedelta(minutes=5)
+        self._save_event(
+            event_type="trade_skip",
+            market=market,
+            symbol=symbol,
+            detail={
+                "reason": "no_orderable_qty",
+                "holding_qty": holding_qty,
+                "orderable_qty": orderable_qty,
+                "note": "T+2 pending or API delay",
+            },
+        )
+        return True
+
+    def _clear_no_orderable_retry(self, market: str, symbol: str) -> None:
+        retry_map = getattr(self, "_no_orderable_retry", None)
+        if not retry_map:
+            return
+        retry_map.pop(f"{market}:{symbol.strip().upper()}", None)
+
     def _record_trade_skip(
         self,
         *,
@@ -5843,6 +5921,7 @@ class LiquidityLabService:
             cooldown_minutes = int(
                 getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0
             )
+            consecutive_blocked = True
             if cooldown_minutes > 0:
                 halted_at = getattr(self, "_halted_at", None)
                 if halted_at is None:
@@ -5886,8 +5965,13 @@ class LiquidityLabService:
                                         f"쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
                                     )
                                 )
-                        return False
-            return True
+                        consecutive_blocked = False
+                    else:
+                        return True
+            elif cooldown_minutes <= 0:
+                return True
+            if consecutive_blocked:
+                return True
 
         daily_limit = float(getattr(risk, "daily_loss_limit_pct", 0.0) or 0.0)
         session_realised_krw = float(getattr(self, "_session_realised_krw", 0.0) or 0.0)

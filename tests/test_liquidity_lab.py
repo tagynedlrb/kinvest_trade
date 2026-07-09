@@ -500,6 +500,60 @@ def test_select_overseas_exit_targets_uses_held_qty_when_orderable_is_zero() -> 
     assert signal_snapshot is None
 
 
+def test_select_overseas_exit_targets_skips_during_no_orderable_retry_window() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.025,
+                    "overseas_stop_loss_pct": 0.015,
+                },
+            )()
+        },
+    )()
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    service._no_orderable_retry = {
+        "overseas:ALNY": datetime.now(timezone.utc) + timedelta(minutes=5)
+    }
+    ranked = [
+        OverseasScanResult(
+            symbol="ALNY",
+            exchange_code="NASD",
+            last_price=317.0,
+            bid=316.9,
+            ask=317.1,
+            spread_pct=0.0006,
+            change_rate_pct=-2.0,
+            volume=1_500_000,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=9.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="ALNY",
+            exchange_code="NASD",
+            quantity=61,
+            orderable_qty=0,
+            avg_price=338.41,
+            current_price=317.0,
+            pnl_pct=(317.0 - 338.41) / 338.41,
+        )
+    ]
+
+    results = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert results == []
+
+
 def test_manage_overseas_position_waits_when_already_holding_max_qty() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -843,6 +897,41 @@ def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
 
     assert result["submitted"] is False
     assert service.notifier.messages == []
+
+
+def test_place_overseas_sell_order_mock_balance_missing_treated_as_no_orderable() -> None:
+    service = _build_sell_service(
+        error=KisApiError("VTTT1001U error: 40240000 모의투자 잔고내역이 없습니다.")
+    )
+    candidate = OverseasScanResult(
+        symbol="ALNY",
+        exchange_code="NASD",
+        last_price=317.0,
+        bid=316.9,
+        ask=317.1,
+        spread_pct=0.0006,
+        change_rate_pct=-2.0,
+        volume=1_500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=9.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="ALNY",
+        exchange_code="NASD",
+        quantity=61,
+        orderable_qty=61,
+        avg_price=338.41,
+        current_price=317.0,
+        pnl_pct=(317.0 - 338.41) / 338.41,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is False
+    assert result["reason"] == "no_orderable_qty"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["action_reason"] == "sell:no_orderable_qty"
 
 
 def test_overseas_sell_rejected_converts_to_virtual_trade() -> None:

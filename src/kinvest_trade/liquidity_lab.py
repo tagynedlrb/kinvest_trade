@@ -2272,6 +2272,12 @@ class LiquidityLabService:
             pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
             already_pending_qty = 0 if pending is None else pending[0]
             remaining_real_orderable = max(0, (real.orderable_qty if real else 0) - already_pending_qty)
+            if (
+                remaining_real_orderable <= 0
+                and real is not None
+                and self._is_no_orderable_retry_active("overseas", symbol)
+            ):
+                continue
 
             avg_price = 0.0
             pnl_pct = 0.0
@@ -2350,6 +2356,11 @@ class LiquidityLabService:
             pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
             already_pending_qty = 0 if pending is None else pending[0]
             remaining_real_orderable = max(0, held.orderable_qty - already_pending_qty)
+            if (
+                remaining_real_orderable <= 0
+                and self._is_no_orderable_retry_active("overseas", symbol)
+            ):
+                continue
             effective_orderable = remaining_real_orderable
             if effective_orderable <= 0 and held.quantity > already_pending_qty:
                 effective_orderable = max(0, held.quantity - already_pending_qty)
@@ -4594,6 +4605,40 @@ class LiquidityLabService:
                     rejected_error=str(exc),
                     sell_qty_override=target_sell_qty,
                 )
+            if self._is_mock_us_balance_missing_error(str(exc)):
+                self._defer_no_orderable_position(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    holding_qty=held.quantity,
+                    orderable_qty=0,
+                )
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="no_orderable_qty",
+                    side="sell",
+                    price=candidate.last_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=0,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "no_orderable_qty",
+                    "error": str(exc),
+                }
             self._record_trade_skip(
                 market="overseas",
                 symbol=candidate.symbol,
@@ -5222,6 +5267,13 @@ class LiquidityLabService:
             or "does not support US daytime trading" in message
         )
 
+    @staticmethod
+    def _is_mock_us_balance_missing_error(message: str) -> bool:
+        return (
+            "모의투자 잔고내역이 없습니다" in message
+            or "mock balance not found" in message.lower()
+        )
+
     async def _reconcile_pending_virtual_sells(
         self,
         *,
@@ -5847,6 +5899,13 @@ class LiquidityLabService:
             },
         )
         return True
+
+    def _is_no_orderable_retry_active(self, market: str, symbol: str) -> bool:
+        retry_map = getattr(self, "_no_orderable_retry", None) or {}
+        retry_until = retry_map.get(f"{market}:{symbol.strip().upper()}")
+        if retry_until is None:
+            return False
+        return datetime.now(timezone.utc) <= ensure_timezone(retry_until)
 
     def _clear_no_orderable_retry(self, market: str, symbol: str) -> None:
         retry_map = getattr(self, "_no_orderable_retry", None)

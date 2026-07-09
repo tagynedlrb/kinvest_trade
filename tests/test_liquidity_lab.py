@@ -1315,6 +1315,7 @@ def test_get_domestic_available_krw_uses_cycle_cache() -> None:
 class DummyDomesticSellClient:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
+        self.order_calls: list[dict] = []
 
     async def place_cash_order(
         self,
@@ -1327,13 +1328,15 @@ class DummyDomesticSellClient:
     ):
         if self.error is not None:
             raise self.error
-        return {
+        payload = {
             "side": side,
             "stock_code": stock_code,
             "qty": qty,
             "price": price,
             "order_division": order_division,
         }
+        self.order_calls.append(payload)
+        return payload
 
 
 class DummyOverseasBalanceClient:
@@ -1580,6 +1583,8 @@ def test_place_domestic_sell_order_defers_unprofitable_time_exit_profit() -> Non
 
     assert result["skipped"] is True
     assert result["reason"] == "net_profit_below_cost"
+    assert service.client.order_calls == []
+    assert service.notifier.messages == []
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
     assert rows[0]["action_reason"] == "sell:net_profit_below_cost"
 
@@ -3471,8 +3476,49 @@ def test_send_summary_reports_skip_counts_when_trade_already_notified() -> None:
 
     assert len(service.notifier.messages) == 1
     assert service.notifier.messages[0].startswith("[KIS][거래알림]")
-    assert "동작=주문거부" in service.notifier.messages[0]
-    assert "주문거부=1건" in service.notifier.messages[0]
+    assert "동작=추가미실행" in service.notifier.messages[0]
+    assert "미실행=1건" in service.notifier.messages[0]
+
+
+def test_place_overseas_sell_order_defers_unprofitable_time_exit_profit_before_submit() -> None:
+    service = _build_sell_service()
+    service.config.auto_trade = SimpleNamespace(
+        usd_krw_fallback_rate=1380.0,
+        overseas_buy_fee_rate=0.0025,
+        overseas_sell_fee_rate=0.0025,
+        overseas_tax_rate=0.0,
+        overseas_min_fee_usd=0.0,
+        overseas_min_sell_fee_usd=0.0,
+    )
+    candidate = OverseasScanResult(
+        symbol="PCAP",
+        exchange_code="NASD",
+        last_price=10.295,
+        bid=10.295,
+        ask=10.305,
+        spread_pct=0.001,
+        change_rate_pct=0.1,
+        volume=500_000,
+        orderable_qty=0,
+        fx_rate_krw=1380.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="PCAP",
+        exchange_code="NASD",
+        quantity=610,
+        orderable_qty=610,
+        avg_price=10.29,
+        current_price=10.295,
+        pnl_pct=0.00048,
+    )
+
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "time_exit_profit"))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "net_profit_below_cost"
+    assert service.client.order_calls == []
+    assert service.notifier.messages == []
 
 
 def test_register_exit_cooldown_uses_reason_specific_minutes() -> None:

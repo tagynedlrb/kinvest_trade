@@ -3922,6 +3922,55 @@ class LiquidityLabService:
                 "reason": "no_orderable_qty",
                 "exit_reason": exit_reason,
             }
+        pnl_pct = (sell_price - held.avg_price) / held.avg_price if held.avg_price > 0 else None
+        if held.avg_price > 0 and self._is_profit_exit_reason(exit_reason):
+            estimated_net_krw, _ = self._estimate_domestic_net_pnl_krw(
+                entry_price=float(held.avg_price or 0.0),
+                exit_price=sell_price,
+                qty=sell_qty,
+            )
+            if estimated_net_krw <= 0:
+                self._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason="net_profit_below_cost",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                self._persist_trade_state(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    action_bias="HOLD",
+                    signal_state="HOLD",
+                    note="net_profit_below_cost",
+                    holding_qty=held.quantity,
+                    last_price=sell_price,
+                    pnl_pct=pnl_pct,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    signal_snapshot=signal_snapshot,
+                    has_position=True,
+                )
+                return {
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "reason": "net_profit_below_cost",
+                    "exit_reason": exit_reason,
+                }
         try:
             response = await self.client.place_cash_order(
                 side="sell",
@@ -4037,54 +4086,6 @@ class LiquidityLabService:
                     )
             if entry_price is None:
                 entry_price = float(held.avg_price or 0.0)
-            if self._is_profit_exit_reason(exit_reason):
-                estimated_net_krw, _ = self._estimate_domestic_net_pnl_krw(
-                    entry_price=float(entry_price or 0.0),
-                    exit_price=sell_price,
-                    qty=sell_qty,
-                )
-                if estimated_net_krw <= 0:
-                    self._record_trade_skip(
-                        market="domestic",
-                        symbol=candidate.stock_code,
-                        exchange_code=None,
-                        reason="net_profit_below_cost",
-                        side="sell",
-                        price=sell_price,
-                        signal_snapshot=signal_snapshot,
-                        strategy_flag=strategy_flag,
-                        entry_by=entry_by,
-                        stock_name=candidate.stock_name,
-                        activity_score=candidate.activity_score,
-                        orderable_qty=held.orderable_qty,
-                        holding_qty=held.quantity,
-                    )
-                    self._persist_trade_state(
-                        market="domestic",
-                        symbol=candidate.stock_code,
-                        exchange_code=None,
-                        action_bias="HOLD",
-                        signal_state="HOLD",
-                        note="net_profit_below_cost",
-                        holding_qty=held.quantity,
-                        last_price=sell_price,
-                        pnl_pct=pnl_pct,
-                        strategy_flag=strategy_flag,
-                        entry_by=entry_by,
-                        exit_by=exit_by,
-                        signal_snapshot=signal_snapshot,
-                        has_position=True,
-                    )
-                    return {
-                        "skipped": True,
-                        "market": "domestic",
-                        "side": "sell",
-                        "candidate": asdict(candidate),
-                        "held_position": asdict(held),
-                        "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
-                        "reason": "net_profit_below_cost",
-                        "exit_reason": exit_reason,
-                    }
             net_pnl_krw, sell_commission_krw = self._estimate_domestic_net_pnl_krw(
                 entry_price=float(entry_price or 0.0),
                 exit_price=sell_price,
@@ -4879,6 +4880,59 @@ class LiquidityLabService:
                 sell_qty_override=target_sell_qty,
             )
         sell_price = self._overseas_sell_order_price(candidate, exit_reason=exit_reason)
+        pnl_pct = (sell_price - held.avg_price) / held.avg_price if held.avg_price > 0 else None
+        if held.avg_price > 0 and self._is_profit_exit_reason(exit_reason):
+            auto_trade_cfg = getattr(self.config, "auto_trade", None)
+            fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
+            estimated_net_usd, _, _, _ = self._estimate_overseas_net_pnl(
+                entry_price=float(held.avg_price or 0.0),
+                exit_price=sell_price,
+                qty=real_sell_qty,
+                fx_rate=fx_rate,
+            )
+            if estimated_net_usd <= 0:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="net_profit_below_cost",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                self._persist_trade_state(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    action_bias="HOLD",
+                    signal_state="HOLD",
+                    note="net_profit_below_cost",
+                    holding_qty=held.quantity,
+                    last_price=sell_price,
+                    pnl_pct=pnl_pct,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    signal_snapshot=signal_snapshot,
+                    has_position=True,
+                )
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "reason": "net_profit_below_cost",
+                    "exit_reason": exit_reason,
+                }
+        replacement_note = ""
         conflicting_buy_order = await self._find_conflicting_overseas_order(
             symbol=candidate.symbol,
             side="SELL",
@@ -4962,6 +5016,7 @@ class LiquidityLabService:
                 reason="conflicting_pending_buy_cleared",
                 payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
             )
+            replacement_note = "미체결 매수 취소 후 재매도"
         pending_sell_order = await self._find_open_overseas_order(
             symbol=candidate.symbol,
             side="SELL",
@@ -5045,6 +5100,7 @@ class LiquidityLabService:
                 reason="stale_exit_replace",
                 payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
             )
+            replacement_note = "미체결 매도 정정 후 재주문"
 
         try:
             response = await self.client.place_overseas_order_for_current_session(
@@ -5168,6 +5224,8 @@ class LiquidityLabService:
             f"매수전략={entry_label}",
             f"청산전략={exit_label}",
         ]
+        if replacement_note:
+            lines.append(f"참고={replacement_note}")
         virtual_closed_qty = int(sell_result.get("qty_from_virtual_buy", 0) or 0)
         if virtual_closed_qty > 0:
             lines.append(f"참고=가상매수 {virtual_closed_qty}주 우선 차감")
@@ -5249,55 +5307,6 @@ class LiquidityLabService:
                     )
             if entry_price is None:
                 entry_price = float(held.avg_price or 0.0)
-            if self._is_profit_exit_reason(exit_reason):
-                estimated_net_usd, estimated_net_krw, _, _ = self._estimate_overseas_net_pnl(
-                    entry_price=float(entry_price or 0.0),
-                    exit_price=sell_price,
-                    qty=real_qty_sold,
-                    fx_rate=fx_rate,
-                )
-                if estimated_net_usd <= 0:
-                    self._record_trade_skip(
-                        market="overseas",
-                        symbol=candidate.symbol,
-                        exchange_code=candidate.exchange_code,
-                        reason="net_profit_below_cost",
-                        side="sell",
-                        price=sell_price,
-                        signal_snapshot=signal_snapshot,
-                        strategy_flag=strategy_flag,
-                        entry_by=entry_by,
-                        stock_name=candidate.symbol,
-                        activity_score=candidate.activity_score,
-                        orderable_qty=held.orderable_qty,
-                        holding_qty=held.quantity,
-                    )
-                    self._persist_trade_state(
-                        market="overseas",
-                        symbol=candidate.symbol,
-                        exchange_code=candidate.exchange_code,
-                        action_bias="HOLD",
-                        signal_state="HOLD",
-                        note="net_profit_below_cost",
-                        holding_qty=held.quantity,
-                        last_price=sell_price,
-                        pnl_pct=pnl_pct,
-                        strategy_flag=strategy_flag,
-                        entry_by=entry_by,
-                        exit_by=exit_by,
-                        signal_snapshot=signal_snapshot,
-                        has_position=True,
-                    )
-                    return {
-                        "skipped": True,
-                        "market": "overseas",
-                        "side": "sell",
-                        "candidate": asdict(candidate),
-                        "held_position": asdict(held),
-                        "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
-                        "reason": "net_profit_below_cost",
-                        "exit_reason": exit_reason,
-                    }
             net_pnl_usd, net_pnl_krw, sell_commission_usd, sell_commission_krw = (
                 self._estimate_overseas_net_pnl(
                     entry_price=float(entry_price or 0.0),
@@ -5386,6 +5395,7 @@ class LiquidityLabService:
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
             "exit_by": exit_by,
+            "replacement_note": replacement_note,
             "response": response,
         }
 
@@ -5851,8 +5861,8 @@ class LiquidityLabService:
                 f"시각={self._format_report_time(report.scanned_at)}",
                 f"시장={format_market_korean(display_market_key)}{session_note}",
                 f"종목={display_target}",
-                "동작=주문거부",
-                f"주문거부={skip_count}건 ({skip_top_reasons})",
+                "동작=추가미실행",
+                f"미실행={skip_count}건 ({skip_top_reasons})",
             ]
             await self.notifier.send("\n".join(lines))
             return
@@ -5892,6 +5902,8 @@ class LiquidityLabService:
             lines.append(f"사유={action['reason']}")
         if skip_count > 0:
             lines.append(f"주문거부={skip_count}건 ({skip_top_reasons})")
+        if action.get("replacement_note"):
+            lines.append(f"참고={action['replacement_note']}")
         if action["action_raw"] == "SELL_REJECTED":
             lines.append("참고=주문이 거부되어 실제로 체결되지 않았습니다")
         await self.notifier.send("\n".join(lines))
@@ -5937,17 +5949,17 @@ class LiquidityLabService:
         return total, top_reasons or "-"
 
     def _build_action_summary(self, report: LiquidityLabReport) -> dict[str, str]:
-        overseas_order = report.overseas_order or {}
-        domestic_order = report.domestic_order or {}
-        if overseas_order.get("submitted"):
+        overseas_order = self._select_representative_order(report.overseas_order)
+        domestic_order = self._select_representative_order(report.domestic_order)
+        if overseas_order and overseas_order.get("submitted"):
             return self._format_order_summary(overseas_order, currency="USD")
-        if domestic_order.get("submitted"):
+        if domestic_order and domestic_order.get("submitted"):
             return self._format_order_summary(domestic_order, currency="KRW")
-        if report.primary_market == "overseas" and (
+        if report.primary_market == "overseas" and overseas_order and (
             overseas_order.get("skipped") or overseas_order.get("error")
         ):
             return self._format_order_summary(overseas_order, currency="USD")
-        if report.primary_market == "domestic" and (
+        if report.primary_market == "domestic" and domestic_order and (
             domestic_order.get("skipped") or domestic_order.get("error")
         ):
             return self._format_order_summary(domestic_order, currency="KRW")
@@ -5959,6 +5971,20 @@ class LiquidityLabService:
             "indicator": "-",
             "reason": report.primary_selection_reason,
         }
+
+    def _select_representative_order(self, order_result: dict | None) -> dict | None:
+        if not order_result:
+            return None
+        leaves = list(self._iter_leaf_orders(order_result))
+        if not leaves:
+            return order_result
+        for leaf in leaves:
+            if leaf.get("submitted"):
+                return leaf
+        for leaf in leaves:
+            if leaf.get("error") or leaf.get("skipped"):
+                return leaf
+        return leaves[0]
 
     def _format_order_summary(self, order: dict, *, currency: str) -> dict[str, str]:
         candidate = order.get("candidate") or {}
@@ -5982,12 +6008,17 @@ class LiquidityLabService:
         else:
             action = side if side not in {"HOLD", "WAIT"} else "WAIT"
         if order.get("skipped"):
+            reason_raw = str(order.get("reason") or "")
             action = "WAIT"
             if side == "BUY" and str(order.get("reason")) == "dry_run_enabled":
                 action = "BUY_SETUP"
             elif side == "SELL" and str(order.get("reason")) == "dry_run_enabled":
                 action = "SELL_SETUP"
-            elif side == "SELL" and order.get("error"):
+            elif side == "SELL" and reason_raw in {
+                "session_not_orderable_in_profile",
+                "order_rejected",
+                "no_orderable_qty",
+            }:
                 action = "SELL_REJECTED"
         price_value = candidate.get("last_price") or candidate.get("current_price") or held.get("current_price")
         qty_value = order.get("qty") or held.get("quantity") or "-"
@@ -6048,6 +6079,7 @@ class LiquidityLabService:
             "strategy_flag": str(order.get("strategy_flag") or "-"),
             "entry_by": str(order.get("entry_by") or "-"),
             "exit_by": str(order.get("exit_by") or "-"),
+            "replacement_note": str(order.get("replacement_note") or ""),
         }
 
     def _get_strategy_manager(self, symbol: str) -> PriorityStrategyManager:

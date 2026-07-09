@@ -113,3 +113,15 @@
 114,2026-07-09T03:22:01.308911+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",827
 115,2026-07-09T03:29:59.553319+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",828
 116,2026-07-09T03:40:31.249273+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",829
+117,2026-07-09T03:49:57.030178+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",830
+118,2026-07-09T05:07:11.379789+00:00,e9868fb83933,session_start,,,"{""profile"": ""paper""}",1
+119,2026-07-09T05:07:22.778626+00:00,e9868fb83933,pool_refresh,domestic,,"{""pool_size"": 20, ""top_names"": [""SOL SK하이닉스선물단일종목인버스2X"", ""KODEX SK하이닉스단일종목레버리지"", ""KODEX 코스닥150레버리지"", ""TIGER SK하이닉스단일종목레버리지"", ""KODEX 삼성전자단일종목레버리지""]}",1
+120,2026-07-09T05:14:29.525476+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",1
+121,2026-07-09T05:21:38.630351+00:00,e9868fb83933,trade_skip,domestic,379800,"{""reason"": ""net_profit_below_cost"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 8.0, ""cb_active"": 0}",1
+122,2026-07-09T05:45:12.058731+00:00,e9868fb83933,cooldown_blocked,domestic,360750,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",3
+123,2026-07-09T06:56:03.677476+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",21
+124,2026-07-09T07:36:06.530190+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",41
+125,2026-07-09T08:06:11.627748+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",61
+126,2026-07-09T08:21:19.722582+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",81
+127,2026-07-09T08:36:25.782589+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",101
+128,2026-07-09T08:51:32.828832+00:00,e9868fb83933,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",121

@@ -1801,6 +1801,44 @@ def test_build_watch_target_status_uses_persisted_snapshot_when_signal_unavailab
     assert watch_target.entry_by == "VWAP"
 
 
+def test_load_virtual_overseas_positions_uses_persisted_state_when_rank_missing() -> None:
+    service = _build_run_service()
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        qty=3,
+        fill_price=68.7,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-07-09 20:10:00 KST",
+    )
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="persisted",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=3,
+        last_price=61.25,
+        pnl_pct=(61.25 - 68.7) / 68.7,
+        has_position=1,
+        updated_at="2026-07-09T11:00:00+00:00",
+    )
+
+    positions = service._load_virtual_overseas_positions([])
+
+    assert len(positions) == 1
+    assert positions[0].symbol == "SOLS"
+    assert positions[0].exchange_code == "NASD"
+    assert positions[0].current_price == 61.25
+    assert positions[0].is_virtual is True
+
+
 def test_get_overseas_signal_for_candidate_reuses_recent_cache_without_reload() -> None:
     service = _build_run_service()
     service._signal_cache["COIN"] = _snapshot(price=165.0)
@@ -2031,6 +2069,64 @@ def test_build_unified_watch_targets_updates_wait_cycles() -> None:
 
     assert watch_targets[0].action_bias == "WAIT"
     assert service._wait_cycles["domestic:D1"] == 1
+
+
+def test_build_unified_watch_targets_includes_virtual_held_outside_rank() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 0
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        qty=3,
+        fill_price=68.7,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-07-09 20:10:00 KST",
+    )
+    persisted_snapshot = _snapshot(price=61.25, rsi14=48.0)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="cached_signal",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=3,
+        last_price=61.25,
+        pnl_pct=(61.25 - 68.7) / 68.7,
+        has_position=1,
+        snapshot_json=asdict(persisted_snapshot),
+        updated_at="2026-07-09T11:00:00+00:00",
+    )
+    virtual_held = OverseasHeldPosition(
+        symbol="SOLS",
+        exchange_code="NASD",
+        quantity=3,
+        orderable_qty=3,
+        avg_price=68.7,
+        current_price=61.25,
+        pnl_pct=(61.25 - 68.7) / 68.7,
+        is_virtual=True,
+    )
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=[],
+            overseas_ranked=[],
+            domestic_positions=[],
+            overseas_positions=[virtual_held],
+            krx_open=False,
+            us_open=True,
+        )
+    )
+
+    assert [item.code for item in watch_targets] == ["SOLS"]
+    assert watch_targets[0].holding_qty == 3
+    assert watch_targets[0].strategy_flag == "VWAP"
 
 
 def test_held_position_shows_hold_not_wait() -> None:

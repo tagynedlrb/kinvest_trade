@@ -409,6 +409,56 @@ def test_build_portfolio_message_marks_virtual_position_without_price(tmp_path) 
     assert "해외 SOLS 수량=3 평균단가=$68.7000 (현재가 없음)" in message
 
 
+def test_build_portfolio_message_uses_lab_symbol_state_price_for_virtual_position(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_price.db")
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        qty=3,
+        fill_price=68.7,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 20:10:00 KST",
+    )
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="SOLS",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="persisted",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=3,
+        last_price=61.25,
+        pnl_pct=(61.25 - 68.7) / 68.7,
+        has_position=1,
+        updated_at="2026-07-09T11:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "watch_targets": [],
+    }
+
+    message = controller._build_portfolio_message()
+
+    assert "해외 SOLS 수량=3 매입=$68.7000 현재=$61.2500 손익=-10.84%" in message
+
+
 def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_log.db")
     repository.save_cycle_log(
@@ -1046,13 +1096,49 @@ def test_run_sends_fatal_notification_and_reraises() -> None:
 def test_restore_runtime_state_recovers_update_offset() -> None:
     controller = _build_async_controller()
     controller.config.storage.runtime_state_path.write_text(
-        '{"telegram_update_offset": 4321}',
+        json.dumps(
+            {
+                "telegram_update_offset": 4321,
+                "last_error": "prev_error",
+                "telegram_control": {
+                    "mode": "running",
+                    "current_cycle_no": 12,
+                    "next_run_at": "2026-07-09 20:55:00 KST",
+                    "last_command": "watchlist",
+                    "last_command_at": "2026-07-09 20:54:00 KST",
+                    "last_completed_at": "2026-07-09 20:54:40 KST",
+                    "last_report_summary": {"primary_target": "SOLS"},
+                    "session_performance": {
+                        "started_at": "2026-07-09 20:00:00 KST",
+                        "cycles_completed": 12,
+                        "domestic_paper_runs": 0,
+                        "domestic_paper_realized_pnl_krw": 0,
+                        "estimated_overseas_realized_pnl_krw": 0,
+                        "domestic_orders_submitted": 0,
+                        "overseas_orders_submitted": 1,
+                        "domestic_orders_failed": 0,
+                        "overseas_orders_failed": 0,
+                        "skip_reasons": {"no_action": 3},
+                        "primary_targets": {"SOLS": 12},
+                        "symbol_stats": {"SOLS": {"buy": 1}},
+                    },
+                    "last_error": "cycle_timeout",
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
     controller._restore_runtime_state()
 
     assert controller.update_offset == 4321
+    assert controller.mode == "running"
+    assert controller.current_cycle_no == 12
+    assert controller.last_command == "watchlist"
+    assert controller.last_report_summary == {"primary_target": "SOLS"}
+    assert controller.last_error == "cycle_timeout"
+    assert controller.session_performance.cycles_completed == 12
+    assert controller.session_performance.primary_targets == {"SOLS": 12}
 
 
 def test_write_runtime_state_persists_update_offset() -> None:

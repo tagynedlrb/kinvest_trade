@@ -823,6 +823,50 @@ class TelegramLiquidityLabController:
         stored_offset = payload.get("telegram_update_offset")
         if isinstance(stored_offset, int) and stored_offset >= 0:
             self.update_offset = stored_offset
+        snapshot = payload.get("telegram_control") or {}
+        mode = snapshot.get("mode")
+        if mode in {"running", "paused", "stopped"}:
+            self.mode = mode
+        self.current_cycle_no = int(snapshot.get("current_cycle_no", 0) or 0)
+        self.last_command = snapshot.get("last_command") or None
+        self.last_command_at = parse_datetime(str(snapshot.get("last_command_at") or ""))
+        self.last_completed_at = parse_datetime(str(snapshot.get("last_completed_at") or ""))
+        self.next_run_at = parse_datetime(str(snapshot.get("next_run_at") or ""))
+        self.last_report_summary = snapshot.get("last_report_summary") or None
+        self.last_error = str(
+            snapshot.get("last_error")
+            or payload.get("last_error")
+            or ""
+        ).strip() or None
+
+        session = snapshot.get("session_performance") or {}
+        if isinstance(session, dict) and session:
+            self.session_performance = SessionPerformance(
+                started_at=parse_datetime(str(session.get("started_at") or "")),
+                cycles_completed=int(session.get("cycles_completed", 0) or 0),
+                domestic_paper_runs=int(session.get("domestic_paper_runs", 0) or 0),
+                domestic_paper_realized_pnl_krw=int(
+                    session.get("domestic_paper_realized_pnl_krw", 0) or 0
+                ),
+                estimated_overseas_realized_pnl_krw=int(
+                    session.get("estimated_overseas_realized_pnl_krw", 0) or 0
+                ),
+                domestic_orders_submitted=int(
+                    session.get("domestic_orders_submitted", 0) or 0
+                ),
+                overseas_orders_submitted=int(
+                    session.get("overseas_orders_submitted", 0) or 0
+                ),
+                domestic_orders_failed=int(
+                    session.get("domestic_orders_failed", 0) or 0
+                ),
+                overseas_orders_failed=int(
+                    session.get("overseas_orders_failed", 0) or 0
+                ),
+                skip_reasons=dict(session.get("skip_reasons") or {}),
+                primary_targets=dict(session.get("primary_targets") or {}),
+                symbol_stats=dict(session.get("symbol_stats") or {}),
+            )
 
     def _snapshot(self) -> ControllerSnapshot:
         return ControllerSnapshot(
@@ -898,11 +942,17 @@ class TelegramLiquidityLabController:
         last_report = self.last_report_summary or {}
         watch_targets = last_report.get("watch_targets") or []
         positions = self._combined_positions(last_report)
-        pnl_map: dict[str, float] = {}
+        pnl_map: dict[tuple[str, str], float] = {}
         for pos in positions:
+            market = str(
+                pos.get(
+                    "market",
+                    "domestic" if pos.get("stock_code") else "overseas",
+                )
+            )
             code = str(pos.get("symbol") or pos.get("stock_code") or "").upper()
             if code:
-                pnl_map[code] = float(pos.get("pnl_pct", 0) or 0)
+                pnl_map[(market, code)] = float(pos.get("pnl_pct", 0) or 0)
         lab = self.lab_service
         if lab is not None:
             balance_cache = getattr(lab, "_overseas_balance_cache", {})
@@ -916,13 +966,22 @@ class TelegramLiquidityLabController:
                     if qty <= 0:
                         continue
                     sym = str(row.get("ovrs_pdno", "")).strip().upper()
-                    if sym and sym not in pnl_map:
+                    key = ("overseas", sym)
+                    if sym and key not in pnl_map:
                         try:
                             avg = float(str(row.get("pchs_avg_pric", "0") or "0").replace(",", ""))
                             cur = float(str(row.get("now_pric2", "0") or "0").replace(",", ""))
-                            pnl_map[sym] = (cur - avg) / avg if avg > 0 else 0.0
+                            pnl_map[key] = (cur - avg) / avg if avg > 0 else 0.0
                         except (ValueError, TypeError):
                             pass
+        repository = getattr(self, "repository", None)
+        if repository is not None:
+            for row in repository.list_lab_symbol_states(only_positions=True):
+                market = str(row.get("market", "overseas"))
+                sym = str(row.get("symbol", "")).strip().upper()
+                if not sym:
+                    continue
+                pnl_map.setdefault((market, sym), float(row.get("pnl_pct", 0) or 0))
         lines = [
             "[KIS][TELEGRAM_CONTROL_WATCHLIST]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
@@ -937,13 +996,14 @@ class TelegramLiquidityLabController:
             return "\n".join(lines)
 
         for watch_target in watch_targets:
+            market = str(watch_target.get("market", "overseas"))
             symbol = str(watch_target.get("code", "")).upper()
             lines.append(
                 self._format_watch_target_line(
                     watch_target,
-                    pnl_pct=pnl_map.get(symbol),
+                    pnl_pct=pnl_map.get((market, symbol)),
                     symbol_label=self._format_symbol_label(
-                        str(watch_target.get("market", "overseas")),
+                        market,
                         symbol,
                         last_report=last_report,
                     ),
@@ -1061,30 +1121,50 @@ class TelegramLiquidityLabController:
 
         last_report = self.last_report_summary or {}
         real_positions = self._combined_positions(last_report)
-        price_lookup: dict[str, float] = {}
+        price_lookup: dict[tuple[str, str], float] = {}
         for wt in last_report.get("watch_targets", []):
+            market = str(wt.get("market", "overseas"))
             code = str(wt.get("code", "")).upper()
             price = float(wt.get("price", 0) or 0)
             if code and price > 0:
-                price_lookup[code] = price
+                price_lookup[(market, code)] = price
         for pos in real_positions:
+            market = str(
+                pos.get(
+                    "market",
+                    "domestic" if pos.get("stock_code") else "overseas",
+                )
+            )
             code = str(pos.get("symbol") or pos.get("stock_code") or "").upper()
             current_price = float(pos.get("current_price", 0) or 0)
-            if code and current_price > 0 and code not in price_lookup:
-                price_lookup[code] = current_price
+            key = (market, code)
+            if code and current_price > 0 and key not in price_lookup:
+                price_lookup[key] = current_price
         lab = self.lab_service
         if lab is not None:
             balance_cache = getattr(lab, "_overseas_balance_cache", {})
             for balance in balance_cache.get("data", {}).values():
                 for row in balance.get("positions", []):
                     sym = str(row.get("ovrs_pdno", "")).strip().upper()
-                    if sym and sym not in price_lookup:
+                    key = ("overseas", sym)
+                    if sym and key not in price_lookup:
                         try:
                             cur = float(str(row.get("now_pric2", "0") or "0").replace(",", ""))
                             if cur > 0:
-                                price_lookup[sym] = cur
+                                price_lookup[key] = cur
                         except (ValueError, TypeError):
                             pass
+        repository = getattr(self, "repository", None)
+        if repository is not None:
+            for row in repository.list_lab_symbol_states(only_positions=True):
+                market = str(row.get("market", "overseas"))
+                symbol = str(row.get("symbol", "")).strip().upper()
+                key = (market, symbol)
+                if not symbol or key in price_lookup:
+                    continue
+                last_price = float(row.get("last_price", 0) or 0)
+                if last_price > 0:
+                    price_lookup[key] = last_price
         lines.append("─── 실보유 종목 ───")
         if not real_positions:
             lines.append("보유종목=없음")
@@ -1132,7 +1212,10 @@ class TelegramLiquidityLabController:
                 currency = str(position["currency"])
                 avg_price = float(position["avg_price"])
                 qty = int(position["qty"])
-                cur_price = price_lookup.get(symbol, 0.0)
+                cur_price = price_lookup.get(
+                    (market_key, str(position["symbol"]).upper()),
+                    0.0,
+                )
 
                 avg_text = self._format_price(avg_price, currency)
                 if cur_price > 0 and avg_price > 0:

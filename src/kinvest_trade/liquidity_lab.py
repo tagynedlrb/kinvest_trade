@@ -2127,28 +2127,47 @@ class LiquidityLabService:
         overseas_ranked: list[OverseasScanResult],
     ) -> list[OverseasHeldPosition]:
         manager = getattr(self, "virtual_trades", None)
-        if not overseas_ranked or manager is None:
+        if manager is None:
             return []
 
         quote_map = {item.symbol.upper(): item for item in overseas_ranked}
         positions: list[OverseasHeldPosition] = []
         for position in manager.list_positions("overseas"):
-            quote = quote_map.get(position.symbol.upper())
-            if quote is None or position.qty <= 0:
+            symbol = position.symbol.upper()
+            if position.qty <= 0:
                 continue
+            quote = quote_map.get(symbol)
+            exchange_code = str(position.exchange_code or "").strip().upper()
+            current_price = 0.0
+            if quote is not None:
+                current_price = float(quote.last_price)
+                if not exchange_code:
+                    exchange_code = str(quote.exchange_code or "").strip().upper()
+            else:
+                persisted = self._get_persisted_symbol_state("overseas", symbol)
+                if persisted is not None:
+                    current_price = self._parse_float(persisted.get("last_price"))
+                    if not exchange_code:
+                        exchange_code = str(
+                            persisted.get("exchange_code", "") or ""
+                        ).strip().upper()
+            if current_price <= 0:
+                current_price = float(position.avg_price)
+            if not exchange_code:
+                exchange_code = "NASD"
             pnl_pct = (
-                (quote.last_price - position.avg_price) / position.avg_price
+                (current_price - position.avg_price) / position.avg_price
                 if position.avg_price > 0
                 else 0.0
             )
             positions.append(
                 OverseasHeldPosition(
-                    symbol=position.symbol.upper(),
-                    exchange_code=(position.exchange_code or quote.exchange_code).upper(),
+                    symbol=symbol,
+                    exchange_code=exchange_code,
                     quantity=position.qty,
                     orderable_qty=position.qty,
                     avg_price=position.avg_price,
-                    current_price=quote.last_price,
+                    current_price=current_price,
                     pnl_pct=pnl_pct,
                     is_virtual=True,
                 )
@@ -2514,7 +2533,6 @@ class LiquidityLabService:
         held_overseas_codes = {
             position.symbol.upper()
             for position in overseas_positions
-            if not position.is_virtual
         }
         selected: list[UnifiedScanResult] = []
         selected_keys: set[tuple[str, str]] = set()

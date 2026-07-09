@@ -9,3 +9,107 @@
 10,2026-07-08T16:03:45.199644+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",141
 11,2026-07-08T16:12:21.785447+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 10, ""threshold"": 2.0, ""fallback_used"": false}",161
 12,2026-07-08T16:20:05.429148+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 12, ""threshold"": 2.0, ""fallback_used"": false}",181
+13,2026-07-08T16:28:29.008490+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",201
+14,2026-07-08T16:37:22.680806+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",221
+15,2026-07-08T16:46:36.309557+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": false}",241
+16,2026-07-08T16:56:13.897316+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",261
+17,2026-07-08T17:04:57.597467+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",281
+18,2026-07-08T17:13:34.195783+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": false}",301
+19,2026-07-08T17:22:36.151115+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": false}",321
+20,2026-07-08T17:31:41.493354+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": false}",341
+21,2026-07-08T17:40:53.163959+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 14, ""threshold"": 2.0, ""fallback_used"": false}",361
+22,2026-07-08T17:50:17.790437+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 15, ""threshold"": 2.0, ""fallback_used"": false}",381
+23,2026-07-08T18:00:27.561946+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 17, ""threshold"": 2.0, ""fallback_used"": false}",401
+24,2026-07-08T18:08:45.878575+00:00,050120bd1cf8,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",415
+25,2026-07-08T18:11:33.230627+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 17, ""threshold"": 2.0, ""fallback_used"": false}",421
+26,2026-07-08T18:22:40.951013+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 18, ""threshold"": 2.0, ""fallback_used"": false}",441
+27,2026-07-08T18:34:07.849010+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 18, ""threshold"": 2.0, ""fallback_used"": false}",461
+28,2026-07-08T18:39:19.305693+00:00,050120bd1cf8,cb_released,,,"{""elapsed_min"": 30.6, ""trigger"": ""auto_cooldown"", ""type"": ""consecutive""}",469
+29,2026-07-08T18:45:40.664859+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 20, ""threshold"": 2.0, ""fallback_used"": false}",481
+30,2026-07-08T18:58:04.661449+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 20, ""threshold"": 2.0, ""fallback_used"": false}",501
+31,2026-07-08T19:10:30.473473+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 22, ""threshold"": 2.0, ""fallback_used"": false}",521
+32,2026-07-08T19:24:52.743296+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 28, ""threshold"": 2.0, ""fallback_used"": false}",541
+33,2026-07-08T19:47:05.229654+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",561
+34,2026-07-08T19:50:44.081219+00:00,050120bd1cf8,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",563
+35,2026-07-08T20:05:00.062250+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 23}",575
+36,2026-07-08T20:06:15.302638+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 22}",576
+37,2026-07-08T20:07:25.974511+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 21}",577
+38,2026-07-08T20:08:38.321824+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 20}",578
+39,2026-07-08T20:09:48.233944+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 18}",579
+40,2026-07-08T20:11:00.621170+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 17}",580
+41,2026-07-08T20:11:01.024529+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",581
+42,2026-07-08T20:12:09.215506+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 16}",581
+43,2026-07-08T20:13:20.153757+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 15}",582
+44,2026-07-08T20:14:30.215868+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 14}",583
+45,2026-07-08T20:15:40.279980+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 13}",584
+46,2026-07-08T20:16:50.195652+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 11}",585
+47,2026-07-08T20:17:59.226830+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",586
+48,2026-07-08T20:19:09.700275+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",587
+49,2026-07-08T20:20:19.571681+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 8}",588
+50,2026-07-08T20:21:30.714996+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",589
+51,2026-07-08T20:22:40.310563+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 6}",590
+52,2026-07-08T20:23:50.652099+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",591
+53,2026-07-08T20:25:03.088524+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 3}",592
+54,2026-07-08T20:26:08.575259+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 2}",593
+55,2026-07-08T20:27:16.672117+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",594
+56,2026-07-08T20:28:26.061602+00:00,050120bd1cf8,cooldown_blocked,overseas,IPX,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",595
+57,2026-07-08T20:34:20.779721+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",601
+58,2026-07-08T20:58:51.566805+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",621
+59,2026-07-08T21:23:24.603179+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",641
+60,2026-07-08T21:47:58.359063+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",661
+61,2026-07-09T00:00:04.267755+00:00,050120bd1cf8,pool_refresh,domestic,,"{""pool_size"": 0, ""top_names"": []}",777
+62,2026-07-09T00:00:35.490740+00:00,050120bd1cf8,trade_skip,domestic,000660,"{""reason"": ""slot_budget_insufficient"", ""side"": ""buy"", ""rsi14"": 42.17, ""volume_ratio"": 1.529, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 1}",777
+63,2026-07-09T00:00:39.067082+00:00,050120bd1cf8,pool_refresh,domestic,,"{""pool_size"": 12, ""top_names"": [""다스코"", ""KODEX 코스닥150레버리지"", ""삼성전자"", ""KODEX 삼성전자단일종목레버리지"", ""RISE 삼성전자SK하이닉스채권혼합50""]}",778
+64,2026-07-09T00:01:45.252374+00:00,050120bd1cf8,trade_skip,domestic,000660,"{""reason"": ""slot_budget_insufficient"", ""side"": ""buy"", ""rsi14"": 35.95, ""volume_ratio"": 0.19, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 1}",778
+65,2026-07-09T00:02:49.026184+00:00,050120bd1cf8,trade_skip,domestic,000660,"{""reason"": ""slot_budget_insufficient"", ""side"": ""buy"", ""rsi14"": 27.69, ""volume_ratio"": 0.319, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 1}",779
+66,2026-07-09T00:05:30.245163+00:00,050120bd1cf8,cooldown_blocked,domestic,005930,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",781
+67,2026-07-09T00:07:05.574092+00:00,050120bd1cf8,cooldown_blocked,domestic,005930,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",782
+68,2026-07-09T00:07:12.984267+00:00,050120bd1cf8,cooldown_blocked,domestic,069500,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",782
+69,2026-07-09T00:07:23.515107+00:00,050120bd1cf8,trade_skip,domestic,000660,"{""reason"": ""slot_budget_insufficient"", ""side"": ""buy"", ""rsi14"": 34.16, ""volume_ratio"": 0.005, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 1}",782
+70,2026-07-09T00:08:38.547060+00:00,050120bd1cf8,cooldown_blocked,domestic,069500,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 9}",783
+71,2026-07-09T00:08:40.238223+00:00,050120bd1cf8,cooldown_blocked,domestic,005930,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",783
+72,2026-07-09T00:08:49.215583+00:00,050120bd1cf8,trade_skip,domestic,000660,"{""reason"": ""slot_budget_insufficient"", ""side"": ""buy"", ""rsi14"": 34.45, ""volume_ratio"": 0.348, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 1}",783
+73,2026-07-09T00:10:08.668180+00:00,050120bd1cf8,cooldown_blocked,domestic,005930,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 6}",784
+74,2026-07-09T00:10:10.877200+00:00,050120bd1cf8,cooldown_blocked,domestic,069500,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",784
+75,2026-07-09T00:10:25.038128+00:00,050120bd1cf8,cb_released,,,"{""elapsed_min"": 259.7, ""trigger"": ""auto_cooldown"", ""type"": ""consecutive""}",784
+76,2026-07-09T00:11:59.201503+00:00,050120bd1cf8,cooldown_blocked,domestic,005930,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",785
+77,2026-07-09T00:12:03.912820+00:00,050120bd1cf8,cooldown_blocked,domestic,069500,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 5}",785
+78,2026-07-09T00:13:39.240251+00:00,050120bd1cf8,cooldown_blocked,domestic,005930,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 2}",786
+79,2026-07-09T00:13:42.081461+00:00,050120bd1cf8,cooldown_blocked,domestic,069500,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",786
+80,2026-07-09T00:13:51.002167+00:00,050120bd1cf8,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 23}",786
+81,2026-07-09T00:13:51.072628+00:00,050120bd1cf8,trade_skip,domestic,229200,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 8.57, ""cb_active"": 0}",786
+82,2026-07-09T00:15:35.205315+00:00,050120bd1cf8,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 21}",787
+83,2026-07-09T00:15:35.277110+00:00,050120bd1cf8,trade_skip,domestic,229200,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 6.83, ""cb_active"": 0}",787
+84,2026-07-09T00:17:04.316601+00:00,050120bd1cf8,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 20}",788
+85,2026-07-09T00:17:11.689395+00:00,050120bd1cf8,trade_skip,domestic,229200,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 5.22, ""cb_active"": 0}",788
+86,2026-07-09T00:18:36.523478+00:00,050120bd1cf8,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 18}",789
+87,2026-07-09T00:18:44.254919+00:00,050120bd1cf8,trade_skip,domestic,229200,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 3.68, ""cb_active"": 0}",789
+88,2026-07-09T00:20:27.794903+00:00,050120bd1cf8,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 16}",790
+89,2026-07-09T00:33:58.203220+00:00,050120bd1cf8,pool_refresh,domestic,,"{""pool_size"": 20, ""top_names"": [""SOL SK하이닉스선물단일종목인버스2X"", ""KODEX SK하이닉스단일종목레버리지"", ""KODEX 코스닥150레버리지"", ""KODEX 삼성전자단일종목레버리지"", ""TIGER SK하이닉스단일종목레버리지""]}",798
+90,2026-07-09T00:36:51.613013+00:00,050120bd1cf8,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",798
+91,2026-07-09T00:39:22.694230+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 22}",799
+92,2026-07-09T00:42:28.120543+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 19}",800
+93,2026-07-09T00:45:19.108472+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 16}",801
+94,2026-07-09T00:48:18.243979+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 13}",802
+95,2026-07-09T00:51:13.318360+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 10}",803
+96,2026-07-09T00:53:54.509169+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",804
+97,2026-07-09T00:56:41.575120+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 5}",805
+98,2026-07-09T00:57:05.212490+00:00,050120bd1cf8,trade_skip,domestic,0167A0,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 9.21, ""cb_active"": 1}",805
+99,2026-07-09T00:59:35.320989+00:00,050120bd1cf8,cooldown_blocked,domestic,379800,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 2}",806
+100,2026-07-09T00:59:55.354244+00:00,050120bd1cf8,trade_skip,domestic,0167A0,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 6.38, ""cb_active"": 1}",806
+101,2026-07-09T01:08:06.818862+00:00,050120bd1cf8,cooldown_blocked,domestic,0162Z0,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 3}",808
+102,2026-07-09T01:08:15.711258+00:00,050120bd1cf8,cb_released,,,"{""elapsed_min"": 31.4, ""trigger"": ""auto_cooldown"", ""type"": ""consecutive""}",808
+103,2026-07-09T01:13:08.177601+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 3.15, ""cb_active"": 0}",809
+104,2026-07-09T01:27:16.213783+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",812
+105,2026-07-09T01:42:20.816559+00:00,050120bd1cf8,trade_skip,domestic,002990,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 19.54, ""cb_active"": 0}",815
+106,2026-07-09T01:57:33.549125+00:00,050120bd1cf8,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",817
+107,2026-07-09T01:57:33.966484+00:00,050120bd1cf8,pool_refresh,domestic,,"{""pool_size"": 20, ""top_names"": [""SOL SK하이닉스선물단일종목인버스2X"", ""KODEX SK하이닉스단일종목레버리지"", ""KODEX 코스닥150레버리지"", ""TIGER SK하이닉스단일종목레버리지"", ""KODEX 삼성전자단일종목레버리지""]}",818
+108,2026-07-09T02:02:15.151520+00:00,050120bd1cf8,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 2.0, ""fallback_used"": false}",818
+109,2026-07-09T02:06:22.723009+00:00,050120bd1cf8,trade_skip,domestic,0162Z0,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 3.18, ""cb_active"": 1}",818
+110,2026-07-09T02:14:47.339036+00:00,050120bd1cf8,trade_skip,domestic,0162Z0,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 1}",819
+111,2026-07-09T02:29:34.168330+00:00,050120bd1cf8,cb_released,,,"{""elapsed_min"": 32.0, ""trigger"": ""auto_cooldown"", ""type"": ""consecutive""}",821
+112,2026-07-09T02:44:55.056268+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",823
+113,2026-07-09T03:03:27.472144+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",825
+114,2026-07-09T03:22:01.308911+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",827
+115,2026-07-09T03:29:59.553319+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",828
+116,2026-07-09T03:40:31.249273+00:00,050120bd1cf8,trade_skip,domestic,058730,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",829

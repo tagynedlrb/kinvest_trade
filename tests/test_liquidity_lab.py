@@ -1210,6 +1210,41 @@ def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert rows[0]["realized_pnl_krw"] == 3900.0
 
 
+def test_place_domestic_sell_order_defers_unprofitable_time_exit_profit() -> None:
+    service = _build_domestic_sell_service()
+    service.config.auto_trade = SimpleNamespace(
+        commission_rate=0.0025,
+        domestic_commission_rate=0.0025,
+        domestic_sell_tax_rate=0.0,
+    )
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=80120,
+        best_ask=80130,
+        best_bid=80110,
+        spread_pct=0.0012,
+        minute_change_pct=-0.001,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+    held = DomesticHeldPosition(
+        stock_code="005930",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=80000.0,
+        current_price=80120.0,
+        pnl_pct=0.0015,
+    )
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "time_exit_profit"))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "net_profit_below_cost"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["action_reason"] == "sell:net_profit_below_cost"
+
+
 def test_domestic_sell_rejected_marks_skipped_true() -> None:
     service = _build_domestic_sell_service(error=KisApiError("domestic rejected"))
     candidate = DomesticScanResult(
@@ -1392,6 +1427,49 @@ def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
     assert held.stock_code == "005930"
     assert reason == "stop_loss"
     assert signal_snapshot is None
+
+
+def test_select_domestic_exit_target_skips_zero_orderable_positions() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    ranked = [
+        DomesticScanResult(
+            stock_code="005930",
+            current_price=82000,
+            best_ask=82050,
+            best_bid=81950,
+            spread_pct=0.0012,
+            minute_change_pct=-0.003,
+            intraday_turnover_krw=100_000_000_000,
+            volume_sum=500_000,
+            activity_score=11.0,
+        )
+    ]
+    watch_targets = [
+        type(
+            "WatchTarget",
+            (),
+            {
+                "market": "domestic",
+                "code": "005930",
+                "action_bias": "SELL",
+                "note": "stop_loss",
+            },
+        )()
+    ]
+    held_positions = [
+        DomesticHeldPosition(
+            stock_code="005930",
+            quantity=2,
+            orderable_qty=0,
+            avg_price=80000.0,
+            current_price=82000.0,
+            pnl_pct=-0.01,
+        )
+    ]
+
+    result = service._select_domestic_exit_target(ranked, watch_targets, held_positions)
+
+    assert result is None
 
 
 def test_select_domestic_buy_targets_returns_multiple() -> None:

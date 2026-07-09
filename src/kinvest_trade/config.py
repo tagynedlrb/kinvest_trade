@@ -163,8 +163,11 @@ class AutoTradeConfig:
     scale_in_cooldown_cycles: int
     telegram_notify_each_fill: bool
     commission_rate: float
+    domestic_commission_rate: float
+    overseas_commission_rate: float
     sec_fee_rate: float
     fx_fee_rate: float
+    domestic_sell_tax_rate: float
     min_expected_reward_cost_ratio: float
     min_expected_reward_risk_ratio: float
     annual_tax_free_allowance_krw: int
@@ -675,8 +678,20 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("telegram_notify_each_fill", True)
             ),
             commission_rate=float(auto_trade_raw.get("commission_rate", 0.0025)),
+            domestic_commission_rate=float(
+                auto_trade_raw.get("domestic_commission_rate", 0.00015)
+            ),
+            overseas_commission_rate=float(
+                auto_trade_raw.get(
+                    "overseas_commission_rate",
+                    auto_trade_raw.get("commission_rate", 0.0025),
+                )
+            ),
             sec_fee_rate=float(auto_trade_raw.get("sec_fee_rate", 0.0000206)),
             fx_fee_rate=float(auto_trade_raw.get("fx_fee_rate", 0.0)),
+            domestic_sell_tax_rate=float(
+                auto_trade_raw.get("domestic_sell_tax_rate", 0.0)
+            ),
             min_expected_reward_cost_ratio=float(
                 auto_trade_raw.get("min_expected_reward_cost_ratio", 0.5)
             ),

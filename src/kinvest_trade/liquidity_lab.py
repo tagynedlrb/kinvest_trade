@@ -3214,7 +3214,11 @@ class LiquidityLabService:
                 action_bias="BUY",
                 signal_state="BUY",
                 ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=f"[{strategy_result.flag}] {entry_setup.reason}",
+                note=(
+                    f"[{strategy_result.flag}] {entry_setup.reason}"
+                    if entry_setup.ready
+                    else f"[{strategy_result.flag}] strategy_buy_signal"
+                ),
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_result.flag,
@@ -3339,7 +3343,10 @@ class LiquidityLabService:
         ready_targets = [
             watch_target
             for watch_target in watch_targets
-            if watch_target.market == "domestic" and watch_target.action_bias == "SELL"
+            if watch_target.market == "domestic"
+            and watch_target.action_bias == "SELL"
+            and watch_target.code in held_map
+            and held_map[watch_target.code].orderable_qty > 0
         ]
         if not ready_targets:
             return None
@@ -3540,7 +3547,7 @@ class LiquidityLabService:
         self._mark_session_owned(candidate.stock_code)
         repository = getattr(self, "repository", None)
         if repository is not None:
-            commission_krw = round(buy_price * qty * self._commission_rate(), 2)
+            commission_krw = round(buy_price * qty * self._domestic_commission_rate(), 2)
             now_iso = datetime.now(timezone.utc).isoformat()
             repository.save_cycle_log(
                 logged_at=now_iso,
@@ -3784,12 +3791,61 @@ class LiquidityLabService:
                             f"신규 매수를 중단합니다."
                         )
                     )
-            sell_commission_krw = round(sell_price * sell_qty * self._commission_rate(), 2)
-            buy_commission_krw = round(
-                float(entry_price or held.avg_price or 0.0) * sell_qty * self._commission_rate(),
-                2,
+            if entry_price is None:
+                entry_price = float(held.avg_price or 0.0)
+            if self._is_profit_exit_reason(exit_reason):
+                estimated_net_krw, _ = self._estimate_domestic_net_pnl_krw(
+                    entry_price=float(entry_price or 0.0),
+                    exit_price=sell_price,
+                    qty=sell_qty,
+                )
+                if estimated_net_krw <= 0:
+                    self._record_trade_skip(
+                        market="domestic",
+                        symbol=candidate.stock_code,
+                        exchange_code=None,
+                        reason="net_profit_below_cost",
+                        side="sell",
+                        price=sell_price,
+                        signal_snapshot=signal_snapshot,
+                        strategy_flag=strategy_flag,
+                        entry_by=entry_by,
+                        stock_name=candidate.stock_name,
+                        activity_score=candidate.activity_score,
+                        orderable_qty=held.orderable_qty,
+                        holding_qty=held.quantity,
+                    )
+                    self._persist_trade_state(
+                        market="domestic",
+                        symbol=candidate.stock_code,
+                        exchange_code=None,
+                        action_bias="HOLD",
+                        signal_state="HOLD",
+                        note="net_profit_below_cost",
+                        holding_qty=held.quantity,
+                        last_price=sell_price,
+                        pnl_pct=pnl_pct,
+                        strategy_flag=strategy_flag,
+                        entry_by=entry_by,
+                        exit_by=exit_by,
+                        signal_snapshot=signal_snapshot,
+                        has_position=True,
+                    )
+                    return {
+                        "skipped": True,
+                        "market": "domestic",
+                        "side": "sell",
+                        "candidate": asdict(candidate),
+                        "held_position": asdict(held),
+                        "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                        "reason": "net_profit_below_cost",
+                        "exit_reason": exit_reason,
+                    }
+            net_pnl_krw, sell_commission_krw = self._estimate_domestic_net_pnl_krw(
+                entry_price=float(entry_price or 0.0),
+                exit_price=sell_price,
+                qty=sell_qty,
             )
-            net_pnl_krw = float(gross_pnl) - sell_commission_krw - buy_commission_krw
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
                 market="domestic",
@@ -4009,7 +4065,10 @@ class LiquidityLabService:
             }
         repository = getattr(self, "repository", None)
         if repository is not None:
-            commission_usd = round(candidate.last_price * qty * self._commission_rate(), 6)
+            commission_usd = round(
+                candidate.last_price * qty * self._overseas_commission_rate(),
+                6,
+            )
             commission_krw = round(commission_usd * float(candidate.fx_rate_krw or 0.0), 2)
             now_iso = datetime.now(timezone.utc).isoformat()
             repository.save_cycle_log(
@@ -4600,14 +4659,65 @@ class LiquidityLabService:
                             f"신규 매수를 중단합니다."
                         )
                     )
-            roundtrip_commission_usd = (
-                float(candidate.last_price + float(entry_price or held.avg_price or 0.0))
-                * real_qty_sold
-                * self._commission_rate()
+            if entry_price is None:
+                entry_price = float(held.avg_price or 0.0)
+            if self._is_profit_exit_reason(exit_reason):
+                estimated_net_usd, estimated_net_krw, _, _ = self._estimate_overseas_net_pnl(
+                    entry_price=float(entry_price or 0.0),
+                    exit_price=candidate.last_price,
+                    qty=real_qty_sold,
+                    fx_rate=fx_rate,
+                )
+                if estimated_net_usd <= 0:
+                    self._record_trade_skip(
+                        market="overseas",
+                        symbol=candidate.symbol,
+                        exchange_code=candidate.exchange_code,
+                        reason="net_profit_below_cost",
+                        side="sell",
+                        price=candidate.last_price,
+                        signal_snapshot=signal_snapshot,
+                        strategy_flag=strategy_flag,
+                        entry_by=entry_by,
+                        stock_name=candidate.symbol,
+                        activity_score=candidate.activity_score,
+                        orderable_qty=held.orderable_qty,
+                        holding_qty=held.quantity,
+                    )
+                    self._persist_trade_state(
+                        market="overseas",
+                        symbol=candidate.symbol,
+                        exchange_code=candidate.exchange_code,
+                        action_bias="HOLD",
+                        signal_state="HOLD",
+                        note="net_profit_below_cost",
+                        holding_qty=held.quantity,
+                        last_price=candidate.last_price,
+                        pnl_pct=pnl_pct,
+                        strategy_flag=strategy_flag,
+                        entry_by=entry_by,
+                        exit_by=exit_by,
+                        signal_snapshot=signal_snapshot,
+                        has_position=True,
+                    )
+                    return {
+                        "skipped": True,
+                        "market": "overseas",
+                        "side": "sell",
+                        "candidate": asdict(candidate),
+                        "held_position": asdict(held),
+                        "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                        "reason": "net_profit_below_cost",
+                        "exit_reason": exit_reason,
+                    }
+            net_pnl_usd, net_pnl_krw, sell_commission_usd, sell_commission_krw = (
+                self._estimate_overseas_net_pnl(
+                    entry_price=float(entry_price or 0.0),
+                    exit_price=candidate.last_price,
+                    qty=real_qty_sold,
+                    fx_rate=fx_rate,
+                )
             )
-            sell_commission_usd = candidate.last_price * real_qty_sold * self._commission_rate()
-            net_pnl_usd = gross_pnl_usd - roundtrip_commission_usd
-            net_pnl_krw = net_pnl_usd * fx_rate
             self.repository.save_cycle_log(
                 logged_at=datetime.now(timezone.utc).isoformat(),
                 market="overseas",
@@ -5456,6 +5566,79 @@ class LiquidityLabService:
     def _commission_rate(self) -> float:
         auto_trade = getattr(self.config, "auto_trade", None)
         return float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
+
+    def _domestic_commission_rate(self) -> float:
+        auto_trade = getattr(self.config, "auto_trade", None)
+        legacy = float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
+        return float(getattr(auto_trade, "domestic_commission_rate", 0.00015) or legacy)
+
+    def _overseas_commission_rate(self) -> float:
+        auto_trade = getattr(self.config, "auto_trade", None)
+        legacy = float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
+        return float(getattr(auto_trade, "overseas_commission_rate", legacy) or legacy)
+
+    def _domestic_sell_tax_rate(self) -> float:
+        auto_trade = getattr(self.config, "auto_trade", None)
+        return float(getattr(auto_trade, "domestic_sell_tax_rate", 0.0) or 0.0)
+
+    def _sec_fee_rate(self) -> float:
+        auto_trade = getattr(self.config, "auto_trade", None)
+        return float(getattr(auto_trade, "sec_fee_rate", 0.0000206) or 0.0)
+
+    def _fx_fee_rate(self) -> float:
+        auto_trade = getattr(self.config, "auto_trade", None)
+        return float(getattr(auto_trade, "fx_fee_rate", 0.0) or 0.0)
+
+    def _estimate_domestic_net_pnl_krw(
+        self,
+        *,
+        entry_price: float,
+        exit_price: float,
+        qty: int,
+    ) -> tuple[float, float]:
+        gross = (exit_price - entry_price) * qty
+        buy_fee = entry_price * qty * self._domestic_commission_rate()
+        sell_fee = exit_price * qty * self._domestic_commission_rate()
+        sell_tax = exit_price * qty * self._domestic_sell_tax_rate()
+        return round(gross - buy_fee - sell_fee - sell_tax, 2), round(
+            sell_fee + sell_tax,
+            2,
+        )
+
+    def _estimate_overseas_net_pnl(
+        self,
+        *,
+        entry_price: float,
+        exit_price: float,
+        qty: int,
+        fx_rate: float,
+    ) -> tuple[float, float, float, float]:
+        gross_usd = (exit_price - entry_price) * qty
+        buy_commission = entry_price * qty * self._overseas_commission_rate()
+        sell_commission = exit_price * qty * self._overseas_commission_rate()
+        sec_fee = exit_price * qty * self._sec_fee_rate()
+        total_fee_usd = buy_commission + sell_commission + sec_fee
+        fx_fee_krw = (
+            (entry_price * qty + exit_price * qty) * fx_rate * self._fx_fee_rate()
+        )
+        net_usd = gross_usd - total_fee_usd
+        net_krw = net_usd * fx_rate - fx_fee_krw
+        return (
+            round(net_usd, 6),
+            round(net_krw, 2),
+            round(sell_commission + sec_fee, 6),
+            round((sell_commission + sec_fee) * fx_rate, 2),
+        )
+
+    @staticmethod
+    def _is_profit_exit_reason(exit_reason: str) -> bool:
+        return exit_reason in {
+            "time_exit_profit",
+            "marginal_profit_exit",
+            "partial_profit_lock",
+            "take_profit",
+            "breakout_exhaustion_exit",
+        }
 
     def _cb_active_flag(self) -> int:
         return int(

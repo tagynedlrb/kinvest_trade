@@ -1035,3 +1035,26 @@
   - 공통 `_upload_csv()` helper 추가
 - `telegram_control.py`
   - `/lab_gitlog` 결과 메시지를 trade / event 파일별로 구분해 표시
+
+## [2026-07-09] 최근 거래 로그 점검 기반 개선
+
+### 확인된 문제
+- 국내 `time_exit_profit` 청산 중 일부가 gross 기준으로는 수익이지만
+  비용 차감 후 `net_pnl_krw < 0` 상태로 기록됨
+- 원인: `liquidity_lab.py`가 국내/해외를 동일 `commission_rate=0.25%`로 계산해
+  국내 비용을 과대 추정했고, 해외는 `sec_fee_rate` / `fx_fee_rate`를 실현손익 계산에 반영하지 않았음
+- 국내 `orderable_qty=0` 보유 종목이 `SELL_READY -> SKIP(no_orderable_qty)`로 반복되어
+  거래 로그와 이벤트 로그에 불필요한 노이즈가 누적됨
+- watchlist/상태 로그에서 `BUY`인데 메모가 `[VWAP] volume_low`처럼 보이는 모순이 존재했음
+
+### 적용한 개선
+- `config.py`, `config/fixed_config.json`
+  - `domestic_commission_rate`, `overseas_commission_rate`, `domestic_sell_tax_rate` 추가
+- `liquidity_lab.py`
+  - 국내/해외 비용 계산 helper 분리
+  - 해외 순손익에 `sec_fee_rate`, `fx_fee_rate` 반영
+  - `time_exit_profit`, `marginal_profit_exit`, `partial_profit_lock` 등
+    수익형 청산은 비용 차감 후 순손익이 0 이하이면 매도 보류
+  - 국내 `orderable_qty=0` 포지션은 실제 매도 대상 선택에서 제외
+  - 전략 BUY 신호가 legacy entry_setup과 충돌할 때 메모를
+    `strategy_buy_signal` 쪽으로 정리

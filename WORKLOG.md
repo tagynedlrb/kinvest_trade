@@ -2318,6 +2318,7 @@
   - 숨겨진 항목은 `숨김=정리된 보유잔상 N개`로만 간단히 표시
   - 최신 `lab_symbol_state`가 실제 보유 수량/가격/손익을 갖고 있으면
     오래된 마지막 리포트의 watchlist 표시값보다 우선
+  - `/lab_portfolio`의 실보유/가상보유 표시도 같은 최신 가격 lookup을 사용
   - `/lab_status`의 `감시수`와 `신호캐시` 요약도 같은 숨김 기준을 적용해
     닫힌 잔상 수를 별도 표기
 - 운영 DB
@@ -2331,8 +2332,10 @@
   `MSEX` 522주, `ord_psbl_qty=522` 확인
 - 운영 DB의 `lab_symbol_state`에서 `MSEX has_position=1`, `holding_qty=522`로 복구됨
 - 운영 `/lab_watchlist` 렌더링에서 `MSEX` 가격 `$54.8800`, 손익 `+1.43%`로 표시됨
+- 운영 `/lab_portfolio` 렌더링에서 `MSEX` 실보유/가상보유 현재가와 손익도
+  `$54.8800`, `+1.43%`로 표시됨
 - `python3 -m pytest tests/test_unified_position_tracker.py::test_reconcile_clears_orphan_virtual_sell_pending tests/test_telegram_control.py::test_build_watchlist_message_hides_closed_stale_position_state tests/test_telegram_control.py::test_build_watchlist_message_uses_balance_cache_for_held_pnl -q` → 3개 통과
-- `python3 -m pytest tests -q` → 398개 통과
+- `python3 -m pytest tests -q` → 399개 통과
 
 ## [2026-07-10] stale signal cache 신규 매수 차단
 

@@ -1604,7 +1604,7 @@ class TelegramLiquidityLabController:
                 for row in balance.get("positions", []):
                     sym = str(row.get("ovrs_pdno", "")).strip().upper()
                     key = ("overseas", sym)
-                    if sym and key not in price_lookup:
+                    if sym:
                         try:
                             cur = float(str(row.get("now_pric2", "0") or "0").replace(",", ""))
                             if cur > 0:
@@ -1617,7 +1617,7 @@ class TelegramLiquidityLabController:
                 market = str(row.get("market", "overseas"))
                 symbol = str(row.get("symbol", "")).strip().upper()
                 key = (market, symbol)
-                if not symbol or key in price_lookup:
+                if not symbol:
                     continue
                 last_price = float(row.get("last_price", 0) or 0)
                 if last_price > 0:
@@ -1641,16 +1641,24 @@ class TelegramLiquidityLabController:
                         "domestic" if pos.get("stock_code") else "overseas",
                     )
                 )
+                raw_symbol = str(pos.get("symbol") or pos.get("stock_code") or "-").upper()
                 symbol = self._format_symbol_label(
                     market_key,
-                    str(pos.get("symbol") or pos.get("stock_code") or "-"),
+                    raw_symbol,
                     last_report=last_report,
                 )
                 market = format_market_korean(market_key)
                 qty = int(pos.get("quantity", 0) or 0)
                 avg_price = float(pos.get("avg_price", 0) or 0)
-                current_price = float(pos.get("current_price", 0) or 0)
-                pnl_pct = float(pos.get("pnl_pct", 0) or 0)
+                current_price = price_lookup.get(
+                    (market_key, raw_symbol),
+                    float(pos.get("current_price", 0) or 0),
+                )
+                pnl_pct = (
+                    (current_price - avg_price) / avg_price
+                    if avg_price > 0 and current_price > 0
+                    else float(pos.get("pnl_pct", 0) or 0)
+                )
                 currency = str(pos.get("currency", "USD"))
                 lines.append(
                     f"{market} {symbol} "

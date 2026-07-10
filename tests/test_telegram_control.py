@@ -1061,6 +1061,63 @@ def test_build_portfolio_message_uses_lab_symbol_state_price_for_virtual_positio
     assert "해외 SOLS 수량=3 매입=$68.7000 현재=$61.2500 손익=-10.84%" in message
 
 
+def test_build_portfolio_message_uses_lab_symbol_state_price_for_real_position(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_real_lab_price.db")
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="live_balance_restored",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=522,
+        last_price=54.88,
+        pnl_pct=(54.88 - 54.104) / 54.104,
+        entry_price=54.104,
+        has_position=1,
+        updated_at="2026-07-10T14:12:56+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20, max_virtual_exposure_pct=0.5),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "stopped"
+    controller.last_report_summary = {
+        "watch_targets": [
+            {
+                "market": "overseas",
+                "code": "MSEX",
+                "price": 54.53,
+                "holding_qty": 522,
+            }
+        ],
+        "domestic_positions": [],
+        "overseas_positions": [
+            {
+                "market": "overseas",
+                "symbol": "MSEX",
+                "quantity": 522,
+                "avg_price": 54.104,
+                "current_price": 54.53,
+                "pnl_pct": (54.53 - 54.104) / 54.104,
+                "currency": "USD",
+            }
+        ],
+    }
+
+    message = controller._build_portfolio_message()
+
+    assert "해외 MSEX 수량=522 매입=$54.1040 현재=$54.8800 손익=+1.43%" in message
+
+
 def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_log.db")
     repository.save_cycle_log(

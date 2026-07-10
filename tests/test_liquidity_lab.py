@@ -1029,7 +1029,7 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert len(service.notifier.messages) == 1
     message = service.notifier.messages[0]
     assert message.startswith("[KIS][거래알림]")
-    assert "해외 TSLA 매도 +$281.90 x2" in message
+    assert "해외 TSLA 매도접수 +$281.90 x2" in message
     assert "매수=-" in message
     assert "청산=긴급 손절" in message
     assert "수익률=+0.68%" in message
@@ -1784,7 +1784,7 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     assert result["submitted"] is True
     message = service.notifier.messages[0]
     assert message.startswith("[KIS][거래알림]")
-    assert "국내 005930 매도 +81,950원 x2" in message
+    assert "국내 005930 매도접수 +81,950원 x2" in message
     assert "매수=-" in message
     assert "청산=손절" in message
     assert "수익률=+2.44%" in message
@@ -3647,7 +3647,7 @@ def test_send_summary_still_sends_when_overseas_buy_not_pre_notified() -> None:
 
     assert len(service.notifier.messages) == 1
     assert "종목=SMCI" in service.notifier.messages[0]
-    assert "동작=매수" in service.notifier.messages[0]
+    assert "동작=매수접수" in service.notifier.messages[0]
 
 
 def test_send_summary_skips_when_domestic_buy_already_notified() -> None:
@@ -3754,7 +3754,7 @@ def test_send_summary_real_overseas_buy_without_pre_notification_still_sends_onc
 
     assert len(service.notifier.messages) == 1
     assert "종목=INTC" in service.notifier.messages[0]
-    assert "동작=매수" in service.notifier.messages[0]
+    assert "동작=매수접수" in service.notifier.messages[0]
 
 
 def test_format_order_summary_sell_rejected_returns_sell_rejected_action() -> None:
@@ -4109,7 +4109,7 @@ def test_virtual_overseas_sell_uses_existing_virtual_position() -> None:
     assert result["submitted"] is True
     assert result["virtual"] is True
     assert service.virtual_trades.get_position("overseas", "SOXL") is None
-    assert any("SOXL(가상) 매도" in message for message in service.notifier.messages)
+    assert any("SOXL(가상) 가상매도" in message for message in service.notifier.messages)
 
 
 def test_virtual_buy_does_not_touch_real_broker_balance() -> None:

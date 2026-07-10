@@ -979,6 +979,18 @@ class LiquidityLabService:
             self._pending_trade_notifications = []
             self._pending_trade_notification_started_at = None
 
+    @staticmethod
+    def _display_trade_action(action_raw: str, action_text: str, *, skip_count: int = 0) -> str:
+        if action_raw == "WAIT" and skip_count > 0:
+            return "주문거부"
+        mapping = {
+            "BUY": "매수접수",
+            "SELL": "매도접수",
+            "VIRTUAL_BUY": "가상매수",
+            "VIRTUAL_SELL": "가상매도",
+        }
+        return mapping.get(action_raw, action_text)
+
     async def flush_pending_trade_notifications(self, *, force: bool = True) -> None:
         await self._flush_trade_notifications(force=force)
 
@@ -4127,7 +4139,7 @@ class LiquidityLabService:
                 [
                     format_market_korean("domestic"),
                     self._format_trade_symbol_label("domestic", candidate.stock_code),
-                    "매수",
+                    "매수접수",
                     f"{int(candidate.best_ask or candidate.current_price):,}원",
                     f"x{qty}",
                     f"전략={strategy_flag or '-'}",
@@ -4417,7 +4429,7 @@ class LiquidityLabService:
                 [
                     format_market_korean("domestic"),
                     self._format_trade_symbol_label("domestic", candidate.stock_code),
-                    "매도",
+                    "매도접수",
                     format_krw(sell_price),
                     f"x{sell_qty}",
                     f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
@@ -4899,7 +4911,7 @@ class LiquidityLabService:
                 [
                     format_market_korean("overseas"),
                     candidate.symbol,
-                    "매수",
+                    "매수접수",
                     format_usd(buy_price),
                     f"x{qty}",
                     f"전략={strategy_flag or '-'}",
@@ -5092,7 +5104,7 @@ class LiquidityLabService:
             f"시각={format_kst_korean(now)}",
             f"시장={format_market_korean('overseas')}",
             f"종목={candidate.symbol} (virtual)",
-            "구분=매수 (virtual)",
+            "구분=가상매수",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={qty}주",
             f"전략={strategy_flag or '-'}",
@@ -5123,7 +5135,7 @@ class LiquidityLabService:
                 [
                     format_market_korean("overseas"),
                     f"{candidate.symbol}(가상)",
-                    "매수",
+                    "가상매수",
                     format_usd(candidate.last_price),
                     f"x{qty}",
                     f"전략={strategy_flag or '-'}",
@@ -5708,7 +5720,7 @@ class LiquidityLabService:
                 [
                     format_market_korean("overseas"),
                     candidate.symbol,
-                    "매도",
+                    "매도접수",
                     format_usd(sell_price),
                     f"x{int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}",
                     f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
@@ -5921,7 +5933,7 @@ class LiquidityLabService:
             f"시각={format_kst_korean(now)}",
             f"시장={format_market_korean('overseas')}",
             f"종목={candidate.symbol} (virtual)",
-            "구분=매도 (virtual)",
+            "구분=가상매도",
             f"가격={format_usd(candidate.last_price)}",
             f"수량={sell_qty}주",
             f"매수전략={entry_label}",
@@ -5959,7 +5971,7 @@ class LiquidityLabService:
                 [
                     format_market_korean("overseas"),
                     f"{candidate.symbol}(가상)",
-                    "매도",
+                    "가상매도",
                     format_usd(candidate.last_price),
                     f"x{sell_qty}",
                     f"수익률={format_pct(realized_pnl_pct)}",
@@ -6353,7 +6365,7 @@ class LiquidityLabService:
             f"시각={self._format_report_time(report.scanned_at)}",
             f"시장={format_market_korean(display_market_key)}{session_note}",
             f"종목={display_target}",
-            f"동작={'주문거부' if action['action_raw'] == 'WAIT' and skip_count > 0 else action['action']}",
+            f"동작={self._display_trade_action(action['action_raw'], action['action'], skip_count=skip_count)}",
             f"가격={action['price']}",
             f"수량={action['qty']}",
         ]

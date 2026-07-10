@@ -1115,7 +1115,7 @@ def test_liquidity_lab_send_summary_sends_when_action_raw_is_buy() -> None:
     asyncio.run(service._send_summary(report))
 
     assert len(service.notifier.messages) == 1
-    assert "동작=매수" in service.notifier.messages[0]
+    assert "동작=매수접수" in service.notifier.messages[0]
 
 
 class DummyNotifier:

@@ -2329,3 +2329,22 @@
   `신호캐시=15/15 전체 캐시 숨김=정리잔상1 확인=/lab_watchlist`로 표시됨
 - `python3 -m pytest tests/test_unified_position_tracker.py::test_reconcile_clears_orphan_virtual_sell_pending tests/test_telegram_control.py::test_build_watchlist_message_hides_closed_stale_position_state tests/test_telegram_control.py::test_build_watchlist_message_uses_balance_cache_for_held_pnl -q` → 3개 통과
 - `python3 -m pytest tests -q` → 395개 통과
+
+## [2026-07-10] stale signal cache 신규 매수 차단
+
+### 배경
+- 거래 루프가 장시간 `stopped`였고, 마지막 watch target 대부분이
+  `stale_signal_cache` 기반이었다.
+- 보유 종목은 stale cache라도 청산 리스크 감시에 참고할 수 있지만,
+  미보유 종목의 신규 매수까지 오래된 캐시로 허용하면 재개 직후 잘못된 진입이
+  발생할 수 있다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - 실시간 신호 로딩 실패로 persisted snapshot을 사용하는 fallback 경로에서,
+    미보유 종목의 BUY 신호는 `WAIT`로 낮춤
+  - 표시 사유는 `[전략] stale_signal_cache_buy_blocked`로 남겨 원인 추적 가능
+  - 보유 종목의 stale cache 기반 SELL/HOLD 판단은 유지
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_build_watch_target_status_blocks_cached_buy_for_flat_symbol tests/test_liquidity_lab.py::test_build_watch_target_status_blocks_cached_overseas_standalone_vwap tests/test_liquidity_lab.py::test_build_watch_target_status_allows_overseas_vwap_combo -q` → 3개 통과

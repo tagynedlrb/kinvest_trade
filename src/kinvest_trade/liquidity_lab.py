@@ -3795,6 +3795,28 @@ class LiquidityLabService:
                         strategy_flag=strategy_result.flag,
                         entry_by=strategy_result.entry_by,
                     )
+                if strategy_result.signal == "BUY" or signal_state == "BUY":
+                    return WatchTargetStatus(
+                        market=market,
+                        code=code,
+                        exchange_code=exchange_code,
+                        price=price,
+                        activity_score=activity_score,
+                        signal_score=0.0,
+                        action_bias="WAIT",
+                        signal_state="WAIT",
+                        ma_summary=self._ma_relation_summary(fallback_snapshot),
+                        note=(
+                            f"[{strategy_result.flag or 'CACHE'}] "
+                            "stale_signal_cache_buy_blocked"
+                        ),
+                        holding_qty=holding_qty,
+                        signal_snapshot=fallback_snapshot,
+                        strategy_flag=strategy_result.flag
+                        or str(persisted.get("strategy_flag", "") or ""),
+                        entry_by=strategy_result.entry_by
+                        or str(persisted.get("entry_by", "") or ""),
+                    )
                 return WatchTargetStatus(
                     market=market,
                     code=code,

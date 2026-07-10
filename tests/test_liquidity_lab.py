@@ -2637,6 +2637,57 @@ def test_build_watch_target_status_blocks_cached_overseas_standalone_vwap() -> N
     assert watch_target.entry_by == "VWAP"
 
 
+def test_build_watch_target_status_blocks_cached_buy_for_flat_symbol() -> None:
+    service = _build_run_service()
+    persisted_snapshot = _snapshot(price=20.0, vwap=19.9, rsi14=45.0)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="cached_signal",
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+        holding_qty=0,
+        last_price=20.0,
+        pnl_pct=0.0,
+        has_position=0,
+        snapshot_json=asdict(persisted_snapshot),
+        updated_at="2026-07-10T00:00:00+00:00",
+    )
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(signal="BUY", flag="VWAP+RSI", entry_by="VWAP", exit_by="")
+
+    original_derive_watch_state = liquidity_lab_module.derive_watch_state
+    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    liquidity_lab_module.derive_watch_state = lambda *args, **kwargs: (
+        "BUY",
+        "cached_combo_buy",
+    )
+    try:
+        watch_target = service._build_watch_target_status(
+            market="overseas",
+            code="COIN",
+            exchange_code="NASD",
+            price=20.0,
+            activity_score=12.0,
+            signal_snapshot=None,
+            held_position=None,
+            holding_qty=0,
+        )
+    finally:
+        liquidity_lab_module.derive_watch_state = original_derive_watch_state
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.signal_state == "WAIT"
+    assert watch_target.note == "[VWAP+RSI] stale_signal_cache_buy_blocked"
+    assert watch_target.strategy_flag == "VWAP+RSI"
+    assert watch_target.entry_by == "VWAP"
+
+
 def test_build_watch_target_status_allows_overseas_vwap_combo() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.overseas_block_standalone_vwap = True

@@ -201,7 +201,7 @@
         "overseas_relist_schedule_kst": "22:35,01:00,03:30",
         "domestic_test_order_qty": 5,
         "overseas_test_order_qty": 1,
-        "max_concurrent_overseas_orders": 20,
+        "max_concurrent_overseas_orders": 8,
         "max_concurrent_domestic_orders": 5,
         "domestic_min_price_krw": 3000,
         "domestic_min_intraday_turnover_krw": 20000000000,
@@ -211,7 +211,7 @@
         "overseas_min_volume": 500000,
         "overseas_max_spread_pct": 0.003,
         "overseas_take_profit_pct": 0.025,
-        "overseas_stop_loss_pct": 0.015,
+        "overseas_stop_loss_pct": 0.010,
         "overseas_max_position_qty": 1,
         "inverse_etf_symbols": ["SQQQ", "SOXS", "UVXY", "SPXU"],
         "leveraged_etf_symbols": ["TQQQ", "SOXL"]

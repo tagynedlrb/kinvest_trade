@@ -1,5 +1,28 @@
 # WORKLOG
 
+## [2026-07-10] 과거 청산 라벨 exit_by 자동 보정
+
+### 배경
+- 최근 DB의 `SELL_REAL` 및 `broker_order_events`를 확인한 결과,
+  `action_reason=trend_filter_lost`, `stop_loss` 등은 남아 있지만 `exit_by`가 빈 값인
+  과거 레코드가 다수 존재
+- 현재 신규 주문 저장 경로는 `exit_by = exit_by or exit_reason`으로 보강되어 있으나,
+  과거 빈 값이 남아 있으면 `/lab_performance`, `scripts/analyze_trades.py`의 청산 트리거 분석이
+  계속 흐려질 수 있음
+
+### 수정
+- `repository.py`
+  - 스키마 초기화 시 `cycle_log`의 과거 `SELL_REAL` 중 `exit_by`가 비어 있으면
+    `action_reason`으로 자동 backfill
+  - `broker_order_events`의 과거 매도 주문 중 `exit_by`가 비어 있으면 `reason`으로 자동 backfill
+  - 단, 취소 실패/취소 완료처럼 청산 트리거가 아닌 cancel 이벤트는 제외
+- `tests/test_repository.py`
+  - legacy cycle/broker event의 빈 `exit_by`가 재초기화 시 보정되는지 회귀 테스트 추가
+
+### 기대 효과
+- 과거 주문까지 청산 사유별 성과 분석이 더 정확해지고,
+  `trend_filter_lost` 등 반복 손실 원인을 전략 리포트에서 더 쉽게 추적 가능
+
 ## [2026-07-10] 상태 메시지 시장상태 우선순위 수정
 
 ### 배경

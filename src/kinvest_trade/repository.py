@@ -371,7 +371,11 @@ class SqliteRepository:
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "lab_symbol_state", "snapshot_json", "TEXT")
+            self._ensure_column(conn, "broker_order_events", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "broker_order_events", "entry_by", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "broker_order_events", "exit_by", "TEXT NOT NULL DEFAULT ''")
             self._backfill_non_trade_cycle_log_flags(conn)
+            self._backfill_missing_exit_labels(conn)
 
     @staticmethod
     def _backfill_non_trade_cycle_log_flags(conn: sqlite3.Connection) -> None:
@@ -381,6 +385,35 @@ class SqliteRepository:
             SET is_session_trade = 0
             WHERE action_bias NOT IN ('BUY_REAL', 'SELL_REAL')
               AND COALESCE(is_session_trade, 1) != 0
+            """
+        )
+
+    @staticmethod
+    def _backfill_missing_exit_labels(conn: sqlite3.Connection) -> None:
+        """Populate legacy empty exit_by fields from recorded sell reasons."""
+        conn.execute(
+            """
+            UPDATE cycle_log
+            SET exit_by = action_reason
+            WHERE action_bias = 'SELL_REAL'
+              AND COALESCE(exit_by, '') = ''
+              AND COALESCE(action_reason, '') != ''
+            """
+        )
+        conn.execute(
+            """
+            UPDATE broker_order_events
+            SET exit_by = reason
+            WHERE UPPER(side) = 'SELL'
+              AND COALESCE(exit_by, '') = ''
+              AND COALESCE(reason, '') != ''
+              AND COALESCE(reason, '') NOT IN (
+                  'stale_live_order_cancel_failed',
+                  'stale_pending_exit_cancel_failed',
+                  'stale_pending_exit_cancelled',
+                  'conflicting_buy_cancel_failed',
+                  'conflicting_buy_cancelled'
+              )
             """
         )
 

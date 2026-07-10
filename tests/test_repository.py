@@ -195,6 +195,63 @@ def test_repository_backfills_non_trade_cycle_log_flags(tmp_path) -> None:
     assert rows["SELL_REAL"] == 1
 
 
+def test_repository_backfills_missing_exit_labels(tmp_path) -> None:
+    db_path = tmp_path / "test.db"
+    repository = SqliteRepository(db_path)
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        exit_by="",
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-01T00:01:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=20.0,
+        status="SUBMITTED",
+        reason="trend_filter_lost",
+        exit_by="",
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-01T00:02:00+00:00",
+        market="domestic",
+        symbol="073240",
+        exchange_code=None,
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=1,
+        requested_price=6990.0,
+        status="REJECTED",
+        reason="stale_live_order_cancel_failed",
+        exit_by="",
+    )
+
+    SqliteRepository(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        cycle_exit_by = conn.execute(
+            "SELECT exit_by FROM cycle_log WHERE symbol = 'SOXL'"
+        ).fetchone()[0]
+        broker_rows = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT symbol, exit_by FROM broker_order_events ORDER BY id"
+            ).fetchall()
+        }
+
+    assert cycle_exit_by == "trend_filter_lost"
+    assert broker_rows["SOXL"] == "trend_filter_lost"
+    assert broker_rows["073240"] == ""
+
+
 def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
 

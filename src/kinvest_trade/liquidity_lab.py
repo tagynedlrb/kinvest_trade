@@ -5253,6 +5253,51 @@ class LiquidityLabService:
                 signal_snapshot=signal_snapshot,
                 sell_qty_override=target_sell_qty,
             )
+        if not is_us_orderable_session_for_env(now, self.config.credentials.env):
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="session_not_orderable_in_profile",
+                side="sell",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+            )
+            self._persist_trade_state(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                action_bias="SELL",
+                signal_state="SELL",
+                note=f"{exit_reason}|session_not_orderable_in_profile",
+                holding_qty=held.quantity,
+                last_price=candidate.last_price,
+                pnl_pct=held.pnl_pct,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                signal_snapshot=signal_snapshot,
+                has_position=True,
+            )
+            return {
+                "submitted": False,
+                "skipped": True,
+                "market": "overseas",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                "exit_reason": exit_reason,
+                "reason": "session_not_orderable_in_profile",
+                "session": session,
+            }
         sell_price = self._overseas_sell_order_price(candidate, exit_reason=exit_reason)
         pnl_pct = (sell_price - held.avg_price) / held.avg_price if held.avg_price > 0 else None
         if held.avg_price > 0 and self._is_profit_exit_reason(exit_reason):
@@ -5486,16 +5531,6 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
-            is_session_blocked = self._is_mock_us_session_blocked_error(str(exc))
-            if is_session_blocked and is_us_regular_session(datetime.now(timezone.utc)):
-                return await self._record_virtual_overseas_sell(
-                    candidate,
-                    held,
-                    exit_reason,
-                    signal_snapshot=signal_snapshot,
-                    rejected_error=str(exc),
-                    sell_qty_override=target_sell_qty,
-                )
             if self._is_mock_us_balance_missing_error(str(exc)):
                 self._defer_no_orderable_position(
                     market="overseas",

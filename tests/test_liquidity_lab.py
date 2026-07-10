@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -977,6 +978,26 @@ def _build_sell_service(
     return service
 
 
+@contextmanager
+def _force_overseas_orderable_session():
+    original = liquidity_lab_module.is_us_orderable_session_for_env
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda *_args: True
+    try:
+        yield
+    finally:
+        liquidity_lab_module.is_us_orderable_session_for_env = original
+
+
+def _run_orderable_overseas_sell(
+    service: LiquidityLabService,
+    candidate: OverseasScanResult,
+    held: OverseasHeldPosition,
+    exit_reason: str,
+):
+    with _force_overseas_orderable_session():
+        return asyncio.run(service._place_overseas_sell_order(candidate, held, exit_reason))
+
+
 def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     service = _build_sell_service()
     candidate = OverseasScanResult(
@@ -1002,9 +1023,7 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
         pnl_pct=0.0071,
     )
 
-    import asyncio
-
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
 
     assert result["submitted"] is True
     assert len(service.notifier.messages) == 1
@@ -1042,7 +1061,7 @@ def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
         pnl_pct=0.0071,
     )
 
-    asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
     rows = service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5)
 
     assert len(rows) == 1
@@ -1086,7 +1105,7 @@ def test_real_sell_clears_virtual_sell_pending() -> None:
         pnl_pct=-0.0088,
     )
 
-    asyncio.run(service._place_overseas_sell_order(candidate, held, "momentum_loss_cut"))
+    _run_orderable_overseas_sell(service, candidate, held, "momentum_loss_cut")
 
     assert service.repository.get_virtual_sell_pending("overseas", "AAL") is None
 
@@ -1116,9 +1135,7 @@ def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
         pnl_pct=0.0071,
     )
 
-    import asyncio
-
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
 
     assert result["submitted"] is False
     assert service.notifier.messages == []
@@ -1151,7 +1168,7 @@ def test_place_overseas_sell_order_mock_balance_missing_treated_as_no_orderable(
         pnl_pct=(317.0 - 338.41) / 338.41,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
 
     assert result["submitted"] is False
     assert result["reason"] == "no_orderable_qty"
@@ -1186,19 +1203,14 @@ def test_place_overseas_sell_order_rejected_adds_20min_cooldown() -> None:
         pnl_pct=(317.0 - 338.41) / 338.41,
     )
 
-    original_is_orderable = liquidity_lab_module.is_us_orderable_session_for_env
-    liquidity_lab_module.is_us_orderable_session_for_env = lambda *_args: True
-    try:
-        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "stop_loss"))
-    finally:
-        liquidity_lab_module.is_us_orderable_session_for_env = original_is_orderable
+    result = _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
 
     assert result["submitted"] is False
     assert result["reason"] == "order_rejected"
     assert service._cooldown_remaining_minutes("overseas", "ALNY") > 19.0
 
 
-def test_overseas_sell_rejected_converts_to_virtual_trade() -> None:
+def test_overseas_sell_session_blocked_does_not_convert_real_to_virtual_trade() -> None:
     service = _build_sell_service(
         error=KisApiError("KIS mock does not support US daytime trading for this session")
     )
@@ -1225,23 +1237,18 @@ def test_overseas_sell_rejected_converts_to_virtual_trade() -> None:
         pnl_pct=0.0181,
     )
 
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
-    liquidity_lab_module.is_us_regular_session = lambda _now: True
-    try:
-        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
-    finally:
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
 
-    assert result["submitted"] is True
-    assert result["virtual"] is True
+    assert result["submitted"] is False
+    assert result["skipped"] is True
     assert result["reason"] == "session_not_orderable_in_profile"
     pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
-    assert pending is not None
-    assert int(pending["qty"]) == 1
-    assert service.virtual_trades.performance_summary()["overseas_USD"]["trade_count"] == 1
+    assert pending is None
+    assert service.virtual_trades.performance_summary() == {}
+    assert service.client.order_calls == []
 
 
-def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
+def test_overseas_sell_session_blocked_sends_no_virtual_trade_notification() -> None:
     service = _build_sell_service(
         error=KisApiError("KIS mock does not support US daytime trading for this session")
     )
@@ -1268,16 +1275,11 @@ def test_overseas_sell_rejected_sends_virtual_trade_notification() -> None:
         pnl_pct=0.0181,
     )
 
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
-    liquidity_lab_module.is_us_regular_session = lambda _now: True
-    try:
-        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
-    finally:
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
 
-    assert result["submitted"] is True
-    assert any(message.startswith("[KIS][거래알림]") for message in service.notifier.messages)
-    assert "NVDA(가상) 매도" in service.notifier.messages[-1]
+    assert result["submitted"] is False
+    assert result["reason"] == "session_not_orderable_in_profile"
+    assert service.notifier.messages == []
 
 
 def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
@@ -1305,9 +1307,7 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
         pnl_pct=0.0,
     )
 
-    import asyncio
-
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
 
     assert result["submitted"] is True
     assert "매수=-" in service.notifier.messages[0]
@@ -1351,7 +1351,7 @@ def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() ->
         pnl_pct=(317.0 - 338.41) / 338.41,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
 
     assert result["submitted"] is True
     assert len(service.client.cancel_calls) == 1
@@ -1470,7 +1470,7 @@ def test_place_overseas_sell_order_cancels_conflicting_buy_order_before_stop_los
         pnl_pct=(317.0 - 338.41) / 338.41,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "atr_hard_stop"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
 
     assert result["submitted"] is True
     assert len(service.client.cancel_calls) == 1
@@ -3919,7 +3919,7 @@ def test_place_overseas_sell_order_defers_unprofitable_time_exit_profit_before_s
         pnl_pct=0.00048,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "time_exit_profit"))
+    result = _run_orderable_overseas_sell(service, candidate, held, "time_exit_profit")
 
     assert result["skipped"] is True
     assert result["reason"] == "net_profit_below_cost"
@@ -4380,7 +4380,7 @@ def test_send_summary_skips_virtual_trade_messages() -> None:
     assert service.notifier.messages == []
 
 
-def test_repeated_cycles_do_not_duplicate_virtual_sell() -> None:
+def test_session_blocked_real_sell_does_not_record_virtual_sell() -> None:
     service = _build_run_service()
     service.client = DummySellClient(
         error=KisApiError("KIS mock does not support US daytime trading for this session")
@@ -4454,19 +4454,19 @@ def test_repeated_cycles_do_not_duplicate_virtual_sell() -> None:
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
-    assert first.overseas_order["submitted"] is True
-    assert first.overseas_order["virtual"] is True
+    assert first.overseas_order["skipped"] is True
+    assert first.overseas_order["reason"] == "session_not_orderable_in_profile"
     assert second.overseas_order["skipped"] is True
-    assert second.overseas_order["reason"] == "us_open_but_mock_session_not_supported"
+    assert second.overseas_order["reason"] == "session_not_orderable_in_profile"
+    assert service.client.order_calls == []
     pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
-    assert pending is not None
-    assert int(pending["qty"]) == 1
+    assert pending is None
     sell_orders = [
         row
         for row in service.repository.list_virtual_orders(limit=20)
         if row["symbol"] == "NVDA" and row["side"] == "sell"
     ]
-    assert len(sell_orders) == 1
+    assert sell_orders == []
 
 
 def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None:

@@ -546,6 +546,8 @@ class LiquidityLabService:
         self._last_held_symbols: set[str] = set()
         self._signal_cache: dict[str, MovingAverageSnapshot | None] = {}
         self._signal_cache_updated_at: dict[str, datetime] = {}
+        self._overseas_signal_failures: dict[str, int] = {}
+        self._overseas_signal_suppressed_until: dict[str, datetime] = {}
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
         self._wait_cycles: dict[str, int] = {}
@@ -2464,6 +2466,22 @@ class LiquidityLabService:
         )
         held_symbols = set(held_symbol_map.keys()) | virtual_symbols
         for candidate in active_overseas_pool:
+            symbol = candidate.symbol.strip().upper()
+            if symbol not in held_symbols:
+                suppression_reason = self._overseas_signal_suppression_reason(symbol)
+                if suppression_reason:
+                    excluded.append(
+                        ExcludedCandidate(
+                            market="overseas",
+                            code=symbol,
+                            reasons=[suppression_reason],
+                            snapshot={
+                                "symbol": symbol,
+                                "exchange_code": candidate.exchange_code,
+                            },
+                        )
+                    )
+                    continue
             try:
                 scan_result = await self._scan_single_overseas(candidate)
             except Exception:
@@ -2534,7 +2552,13 @@ class LiquidityLabService:
             symbol = result.symbol.upper()
             if symbol not in signal_symbols:
                 continue
-            self._signal_cache[symbol] = await self._get_overseas_signal_for_candidate(result)
+            signal_snapshot = await self._get_overseas_signal_for_candidate(result)
+            self._signal_cache[symbol] = signal_snapshot
+            self._record_overseas_signal_result(
+                result,
+                signal_snapshot,
+                is_held=symbol in held_symbols,
+            )
             await asyncio.sleep(0.05)
 
         for symbol in list(self._signal_cache.keys()):
@@ -3209,6 +3233,91 @@ class LiquidityLabService:
         if approx_daily_turnover < min_daily_turnover:
             reasons.append("thin_turnover")
         return reasons
+
+    def _overseas_signal_suppression_reason(self, symbol: str) -> str:
+        suppressed = getattr(self, "_overseas_signal_suppressed_until", None)
+        if not suppressed:
+            return ""
+        key = symbol.strip().upper()
+        until = suppressed.get(key)
+        if until is None:
+            return ""
+        until = ensure_timezone(until)
+        if datetime.now(timezone.utc) >= until:
+            suppressed.pop(key, None)
+            failures = getattr(self, "_overseas_signal_failures", None)
+            if failures:
+                failures.pop(key, None)
+            return ""
+        return "signal_unavailable_cooldown"
+
+    def _record_overseas_signal_result(
+        self,
+        candidate: OverseasScanResult,
+        snapshot: MovingAverageSnapshot | None,
+        *,
+        is_held: bool,
+    ) -> None:
+        symbol = candidate.symbol.strip().upper()
+        if not symbol:
+            return
+        failures = getattr(self, "_overseas_signal_failures", None)
+        if failures is None:
+            failures = {}
+            self._overseas_signal_failures = failures
+        suppressed = getattr(self, "_overseas_signal_suppressed_until", None)
+        if suppressed is None:
+            suppressed = {}
+            self._overseas_signal_suppressed_until = suppressed
+
+        if snapshot is not None:
+            failures.pop(symbol, None)
+            suppressed.pop(symbol, None)
+            return
+        if is_held:
+            return
+
+        failures[symbol] = int(failures.get(symbol, 0) or 0) + 1
+        threshold = max(
+            1,
+            int(
+                getattr(
+                    self.config.liquidity_lab,
+                    "overseas_signal_failure_threshold",
+                    3,
+                )
+                or 3
+            ),
+        )
+        if failures[symbol] < threshold:
+            return
+
+        cooldown_minutes = max(
+            1,
+            int(
+                getattr(
+                    self.config.liquidity_lab,
+                    "overseas_signal_failure_cooldown_minutes",
+                    180,
+                )
+                or 180
+            ),
+        )
+        until = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
+        suppressed[symbol] = until
+        self._save_event(
+            event_type="overseas_signal_suppressed",
+            market="overseas",
+            symbol=symbol,
+            detail={
+                "reason": "signal_unavailable",
+                "failures": failures[symbol],
+                "threshold": threshold,
+                "cooldown_minutes": cooldown_minutes,
+                "activity_score": candidate.activity_score,
+                "price": candidate.last_price,
+            },
+        )
 
     @staticmethod
     def _overseas_structured_symbol_reason(symbol: str) -> str:

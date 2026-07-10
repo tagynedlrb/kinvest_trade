@@ -271,6 +271,7 @@ python3 main.py liquidity-lab
 - 해외 후보군은 고정 목록 fallback 대신 TradingView Scanner 기반 동적 풀을 우선 사용한다.
 - chart 기반 signal 계산은 `overseas_scan_top_n` 기준으로 우선 로드하며, 기본값은 `25`라 상위 25개와 보유 종목에만 signal 캐시를 붙인다.
 - 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
+- 비보유 해외 종목이 chart signal 생성에 반복 실패하면 `overseas_signal_failure_threshold`(기본 `3`)회 이후 `overseas_signal_failure_cooldown_minutes`(기본 `180`분) 동안 제외한다.
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
 - 최근 성과 기준으로 해외 `VWAP` 단독 진입과 해외 `RSI` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`). 해외에서는 `VWAP+RSI`, `VOL`, `VOL+RSI`처럼 보조 확인이 붙은 신호를 우선한다.

@@ -65,6 +65,8 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.overseas_block_standalone_rsi is True
     assert config.liquidity_lab.overseas_block_standalone_vol is True
     assert config.liquidity_lab.overseas_min_strategy_volume_ratio == 0.8
+    assert config.liquidity_lab.overseas_signal_failure_threshold == 3
+    assert config.liquidity_lab.overseas_signal_failure_cooldown_minutes == 180
     assert config.liquidity_lab.max_concurrent_domestic_orders == 8
     assert config.liquidity_lab.strategy_guard_enabled is True
     assert config.liquidity_lab.strategy_guard_lookback_hours == 48

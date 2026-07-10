@@ -26,6 +26,9 @@ class DummyRepository:
     def save_heartbeat(self, status: str, message: str) -> None:
         self.heartbeats.append((status, message))
 
+    def get_lab_symbol_state(self, market: str, symbol: str):
+        return None
+
 
 class DummyClient:
     def __init__(self) -> None:
@@ -245,6 +248,74 @@ def test_scan_overseas_excluded_not_in_results() -> None:
 
     assert "AAA" not in [candidate.symbol for candidate in ranked]
     assert service._overseas_excluded[0].code == "AAA"
+
+
+def test_scan_overseas_suppresses_repeated_signal_unavailable_symbol() -> None:
+    service = _build_service()
+    service.config.liquidity_lab.overseas_signal_failure_threshold = 3
+    service.config.liquidity_lab.overseas_signal_failure_cooldown_minutes = 180
+    score_map = {"AAA": 10.0, "BBB": 9.0, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 5.0}
+    scan_calls: list[str] = []
+
+    async def fake_scan(candidate):
+        scan_calls.append(candidate.symbol)
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        if candidate.symbol == "AAA":
+            return None
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    for _ in range(3):
+        asyncio.run(service.scan_overseas())
+
+    assert service._overseas_signal_failures["AAA"] == 3
+    assert "AAA" in service._overseas_signal_suppressed_until
+
+    scan_calls.clear()
+    ranked, _ = asyncio.run(service.scan_overseas())
+
+    assert "AAA" not in scan_calls
+    assert "AAA" not in [candidate.symbol for candidate in ranked]
+    assert any(
+        item.code == "AAA" and "signal_unavailable_cooldown" in item.reasons
+        for item in service._overseas_excluded
+    )
+
+
+def test_scan_overseas_does_not_suppress_held_signal_unavailable_symbol() -> None:
+    service = _build_service()
+    service.config.liquidity_lab.overseas_signal_failure_threshold = 1
+    service.client.positions_by_exchange = {
+        "NASD": [{"ovrs_cblc_qty": "3", "ovrs_pdno": "AAA"}],
+    }
+    score_map = {"AAA": 10.0, "BBB": 9.0, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 5.0}
+    scan_calls: list[str] = []
+
+    async def fake_scan(candidate):
+        scan_calls.append(candidate.symbol)
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        if candidate.symbol == "AAA":
+            return None
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    for _ in range(2):
+        asyncio.run(service.scan_overseas())
+
+    assert "AAA" in scan_calls
+    assert "AAA" not in getattr(service, "_overseas_signal_suppressed_until", {})
+    assert not any(
+        item.code == "AAA" and "signal_unavailable_cooldown" in item.reasons
+        for item in service._overseas_excluded
+    )
 
 
 def test_held_symbol_fallback_uses_cache_on_api_failure() -> None:

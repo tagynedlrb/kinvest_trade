@@ -274,6 +274,8 @@ class LiquidityLabConfig:
     overseas_block_standalone_vwap: bool
     overseas_block_standalone_rsi: bool
     overseas_block_standalone_vol: bool
+    overseas_signal_failure_threshold: int
+    overseas_signal_failure_cooldown_minutes: int
     strategy_guard_enabled: bool
     strategy_guard_lookback_hours: int
     strategy_guard_min_trades: int
@@ -860,6 +862,12 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ),
             overseas_block_standalone_vol=bool(
                 liquidity_lab_raw.get("overseas_block_standalone_vol", False)
+            ),
+            overseas_signal_failure_threshold=int(
+                liquidity_lab_raw.get("overseas_signal_failure_threshold", 3)
+            ),
+            overseas_signal_failure_cooldown_minutes=int(
+                liquidity_lab_raw.get("overseas_signal_failure_cooldown_minutes", 180)
             ),
             strategy_guard_enabled=bool(liquidity_lab_raw.get("strategy_guard_enabled", True)),
             strategy_guard_lookback_hours=int(

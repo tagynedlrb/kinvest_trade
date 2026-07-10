@@ -217,6 +217,8 @@
         "overseas_block_standalone_vwap": true,
         "overseas_block_standalone_rsi": true,
         "overseas_block_standalone_vol": true,
+        "overseas_signal_failure_threshold": 3,
+        "overseas_signal_failure_cooldown_minutes": 180,
         "strategy_guard_enabled": true,
         "strategy_guard_lookback_hours": 48,
         "strategy_guard_min_trades": 3,

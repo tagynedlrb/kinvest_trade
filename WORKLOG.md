@@ -1,5 +1,28 @@
 # WORKLOG
 
+## [2026-07-10] 해외 반복 신호 실패 종목 쿨다운
+
+### 배경
+- `/lab_report wait 72`와 DB 세부 조회에서 `signal_unavailable`이 특정 해외 종목에 반복 집중됨
+- 일부는 구조화 상품/과거 로그였지만, 일반 심볼도 차트 signal 생성 실패가 반복되면
+  같은 종목에 API 호출과 WAIT 로그를 계속 쓰는 문제가 남아 있음
+
+### 수정
+- `config/fixed_config.json`
+  - `overseas_signal_failure_threshold=3`
+  - `overseas_signal_failure_cooldown_minutes=180`
+- `liquidity_lab.py`
+  - 비보유 해외 종목의 signal 생성 실패를 누적
+  - 기준 횟수 이상 실패하면 지정 시간 동안 scan pool에서 제외
+  - 제외 사유는 `signal_unavailable_cooldown`으로 남김
+  - 보유 종목은 청산 감시 보호를 위해 쿨다운 제외 대상에서 제외
+- `tests/`
+  - 반복 실패 비보유 종목 제외, 보유 종목 계속 감시 회귀 테스트 추가
+
+### 기대 효과
+- 신호 생성이 불가능한 종목에 API와 watchlist 슬롯을 반복 소모하지 않음
+- `signal_unavailable` WAIT 병목 감소 및 실시간 감시 품질 개선
+
 ## [2026-07-10] WAIT 병목 리포트 추가
 
 ### 배경

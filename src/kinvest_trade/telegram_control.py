@@ -214,6 +214,7 @@ class TelegramLiquidityLabController:
         self.active_session_id: str = ""
         self.lab_service: LiquidityLabService | None = None
         self.manual_overseas_pool: list[dict[str, str]] | None = None
+        self._last_auto_stale_domestic_cancel_at: datetime | None = None
 
     async def run(self) -> None:
         _acquire_pid_lock()
@@ -283,6 +284,7 @@ class TelegramLiquidityLabController:
     async def _scheduler_loop(self) -> None:
         while True:
             await self._drain_finished_cycle()
+            await self._maybe_auto_cancel_stale_domestic_orders()
             if self.mode == "running" and self.current_task is None:
                 now = datetime.now(timezone.utc)
                 if self.next_run_at is None or now >= self.next_run_at:
@@ -1688,9 +1690,18 @@ class TelegramLiquidityLabController:
         )
         await self.notifier.send("\n".join(lines))
 
-    async def _execute_cancel_stale_domestic_orders(self) -> None:
+    async def _execute_cancel_stale_domestic_orders(
+        self,
+        *,
+        source: str = "manual",
+        candidate_orders: list[dict] | None = None,
+    ) -> None:
         try:
-            live_open_orders = await self._load_live_open_domestic_orders()
+            live_open_orders = (
+                candidate_orders
+                if candidate_orders is not None
+                else await self._load_live_open_domestic_orders()
+            )
         except Exception as exc:  # noqa: BLE001
             await self.notifier.send(
                 "\n".join(
@@ -1720,6 +1731,7 @@ class TelegramLiquidityLabController:
         lines = [
             "[KIS][국내미체결취소]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"동작={'자동취소' if source == 'auto' else '확정취소'}",
             f"요청={len(stale_orders)}건",
         ]
         async with KisRestClient(self.config.credentials) as client:
@@ -1804,6 +1816,65 @@ class TelegramLiquidityLabController:
                 symbol_text = f"{symbol}({name})" if name else symbol
                 lines.append(f"{symbol_text} 취소요청 x{open_qty} 원주문={order_no} 취소주문={cancel_order_no}")
         await self.notifier.send("\n".join(lines))
+
+    async def _maybe_auto_cancel_stale_domestic_orders(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        current = now or datetime.now(timezone.utc)
+        if not is_krx_regular_session(current) or is_krx_holiday():
+            return False
+        last_run = self._last_auto_stale_domestic_cancel_at
+        if last_run is not None:
+            elapsed_min = (current - last_run).total_seconds() / 60
+            if elapsed_min < 10:
+                return False
+        self._last_auto_stale_domestic_cancel_at = current
+        try:
+            live_open_orders = await self._load_live_open_domestic_orders()
+        except Exception as exc:  # noqa: BLE001
+            self.repository.save_event(
+                event_type="maintenance_skip",
+                market="domestic",
+                symbol="",
+                detail={
+                    "reason": "auto_stale_domestic_cancel_lookup_failed",
+                    "error": str(exc)[:120],
+                },
+                cycle_no=self.current_cycle_no,
+                session_id=self.active_session_id,
+            )
+            return False
+
+        stale_orders = self._filter_stale_live_open_orders(live_open_orders, now=current)
+        bot_owned_stale_orders = self._filter_bot_submitted_domestic_orders(stale_orders)
+        if not bot_owned_stale_orders:
+            return False
+        await self._execute_cancel_stale_domestic_orders(
+            source="auto",
+            candidate_orders=bot_owned_stale_orders,
+        )
+        return True
+
+    def _filter_bot_submitted_domestic_orders(self, rows: list[dict]) -> list[dict]:
+        if not rows:
+            return []
+        submitted_order_numbers = {
+            str(event.get("broker_order_no", "") or "").strip()
+            for event in self.repository.list_broker_order_events(limit=500)
+            if str(event.get("market", "") or "").lower() == "domestic"
+            and str(event.get("status", "") or "").upper() == "SUBMITTED"
+            and str(event.get("order_kind", "") or "").lower() != "cancel"
+        }
+        if not submitted_order_numbers:
+            return []
+        result: list[dict] = []
+        for row in rows:
+            order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+            if order_no and order_no in submitted_order_numbers:
+                result.append(row)
+        return result
 
     def _build_recent_order_events_message(
         self,

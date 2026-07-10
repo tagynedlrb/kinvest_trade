@@ -1288,6 +1288,74 @@ def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -
     assert "장종료" in payload["error"]
 
 
+def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_auto_cancel.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T00:59:55+00:00",
+        market="domestic",
+        symbol="073240",
+        exchange_code="KRX",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=126,
+        requested_price=6990,
+        status="SUBMITTED",
+        reason="domestic_buy",
+        broker_order_no="0000013669",
+        is_virtual=0,
+        payload={},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    now = datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc)
+    stale_bot_order = {
+        "created_at": now - timedelta(minutes=45),
+        "symbol": "073240",
+        "name": "금호타이어",
+        "sll_buy_dvsn_cd": "02",
+        "ord_gno_brno": "00950",
+        "ord_dvsn_cd": "00",
+        "excg_id_dvsn_cd": "KRX",
+        "open_qty": 126,
+        "order_price": 6990,
+        "order_no": "0000013669",
+    }
+    stale_manual_order = {
+        **stale_bot_order,
+        "symbol": "005930",
+        "name": "삼성전자",
+        "order_no": "manual-order",
+    }
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(  # type: ignore[method-assign]
+        0,
+        result=[stale_bot_order, stale_manual_order],
+    )
+    calls: list[dict] = []
+
+    async def fake_execute(*, source="manual", candidate_orders=None):
+        calls.append({"source": source, "candidate_orders": candidate_orders})
+
+    controller._execute_cancel_stale_domestic_orders = fake_execute  # type: ignore[method-assign]
+
+    first = asyncio.run(controller._maybe_auto_cancel_stale_domestic_orders(now=now))
+    second = asyncio.run(
+        controller._maybe_auto_cancel_stale_domestic_orders(now=now + timedelta(minutes=5))
+    )
+
+    assert first is True
+    assert second is False
+    assert calls[0]["source"] == "auto"
+    assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["0000013669"]
+
+
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_orders_command.db")
     repository.save_broker_order_event(

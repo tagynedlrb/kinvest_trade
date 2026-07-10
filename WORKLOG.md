@@ -1843,3 +1843,22 @@
 ### 검증
 - 기준일 전달 회귀 테스트 추가
 - `python3 -m pytest tests -q` → 361개 통과
+
+## [2026-07-10] cycle_log 감시/SKIP 로그 비거래 분리
+
+### 배경
+- `cycle_log.is_session_trade`는 실제 세션 매매 성과 분석에서 쓰이는 구분값이지만,
+  감시 대상 HOLD/WAIT/BUY 신호 로그와 SKIP 로그도 기본값 1로 저장될 수 있었다.
+- 현재 손익 집계는 `SELL_REAL` 중심이라 즉시 손익 계산 오류는 제한적이지만,
+  이후 전략별 분석 쿼리에서 감시 로그를 실제 거래 로그로 오해할 여지가 있었다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - `_save_cycle_log_from_watch_target()` 감시 로그는 `is_session_trade=0`
+  - `_record_trade_skip()` 주문 미진행/SKIP 로그도 `is_session_trade=0`
+- 테스트
+  - 가격 급변 확인 SKIP, no_orderable SKIP, watch target cycle log가
+    모두 비거래 로그로 저장되는지 검증 추가
+
+### 검증
+- `python3 -m pytest tests -q` → 361개 통과

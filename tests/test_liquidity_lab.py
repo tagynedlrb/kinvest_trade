@@ -389,10 +389,11 @@ def test_overseas_exit_price_shock_requires_confirmation(tmp_path) -> None:
     assert first == []
     with service.repository._connect() as conn:
         skip_row = conn.execute(
-            "SELECT action_bias, action_reason FROM cycle_log ORDER BY id DESC LIMIT 1"
+            "SELECT action_bias, action_reason, is_session_trade FROM cycle_log ORDER BY id DESC LIMIT 1"
         ).fetchone()
     assert skip_row["action_bias"] == "SKIP"
     assert "sell:price_shock_confirm" in skip_row["action_reason"]
+    assert skip_row["is_session_trade"] == 0
 
     second = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
 
@@ -1195,6 +1196,7 @@ def test_place_overseas_sell_order_mock_balance_missing_treated_as_no_orderable(
     assert result["reason"] == "no_orderable_qty"
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
     assert rows[0]["action_reason"] == "sell:no_orderable_qty"
+    assert rows[0]["is_session_trade"] == 0
 
 
 def test_place_overseas_sell_order_rejected_adds_20min_cooldown() -> None:
@@ -2731,6 +2733,7 @@ def test_cycle_log_saved_per_watch_target() -> None:
     assert len(rows) == len(watch_targets)
     assert rows[0]["cycle_no"] == 9
     assert {row["symbol"] for row in rows} == {"D1", "O1", "O2"}
+    assert {row["is_session_trade"] for row in rows} == {0}
 
 
 def test_unified_watch_includes_held_domestic_regardless_of_rank() -> None:

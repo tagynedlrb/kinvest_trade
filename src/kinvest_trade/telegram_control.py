@@ -20,6 +20,7 @@ from .git_uploader import upload_log
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from .market_calendar import is_krx_holiday, is_nyse_holiday
 from .market_sessions import (
+    NEW_YORK,
     determine_loop_interval_sec,
     get_us_trading_session,
     is_krx_regular_session,
@@ -944,8 +945,14 @@ class TelegramLiquidityLabController:
         session = snapshot.session_performance or {}
         last_report = snapshot.last_report_summary or {}
         now = datetime.now(timezone.utc)
-        krx_holiday = bool(getattr(self.config, "skip_holiday_domestic", True) and is_krx_holiday())
-        nyse_holiday = bool(getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday())
+        krx_holiday = bool(
+            getattr(self.config, "skip_holiday_domestic", True)
+            and is_krx_holiday(now.astimezone(KST).date())
+        )
+        nyse_holiday = bool(
+            getattr(self.config, "skip_holiday_overseas", True)
+            and is_nyse_holiday(now.astimezone(NEW_YORK).date())
+        )
         krx_open = is_krx_regular_session(now) and not krx_holiday
         us_session = get_us_trading_session(now)
         us_tradeable = is_us_orderable_session_for_env(now, self.config.credentials.env) and not nyse_holiday
@@ -1876,7 +1883,7 @@ class TelegramLiquidityLabController:
         now: datetime | None = None,
     ) -> bool:
         current = now or datetime.now(timezone.utc)
-        if not is_krx_regular_session(current) or is_krx_holiday():
+        if not is_krx_regular_session(current) or is_krx_holiday(current.astimezone(KST).date()):
             return False
         last_run = self._last_auto_stale_domestic_cancel_at
         if last_run is not None:
@@ -1936,7 +1943,10 @@ class TelegramLiquidityLabController:
     ) -> bool:
         current = now or datetime.now(timezone.utc)
         env = str(getattr(self.config.credentials, "env", "vps") or "vps")
-        if not is_us_orderable_session_for_env(current, env) or is_nyse_holiday():
+        if (
+            not is_us_orderable_session_for_env(current, env)
+            or is_nyse_holiday(current.astimezone(NEW_YORK).date())
+        ):
             return False
         last_run = self._last_auto_stale_overseas_cancel_at
         if last_run is not None:

@@ -83,9 +83,13 @@ def is_krx_holiday(target_date: date | None = None) -> bool:
     return current in _KRX_HOLIDAYS_2026
 
 
-def market_status_summary() -> str:
-    nyse_closed = is_nyse_holiday()
-    krx_closed = is_krx_holiday()
+def market_status_summary(
+    *,
+    nyse_date: date | None = None,
+    krx_date: date | None = None,
+) -> str:
+    nyse_closed = is_nyse_holiday(nyse_date)
+    krx_closed = is_krx_holiday(krx_date)
     lines: list[str] = []
     if nyse_closed:
         lines.append("🇺🇸 NYSE/NASDAQ 오늘 휴장")

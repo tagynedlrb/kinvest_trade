@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1389,6 +1389,36 @@ def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_p
     assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["0000013669"]
 
 
+def test_auto_cancel_domestic_uses_kst_date_for_holiday_check(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_auto_cancel_holiday_date.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    now = datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc)
+    seen_dates: list[date | None] = []
+    original_is_krx_holiday = telegram_control_module.is_krx_holiday
+
+    def fake_krx_holiday(target_date=None):
+        seen_dates.append(target_date)
+        return True
+
+    telegram_control_module.is_krx_holiday = fake_krx_holiday
+    try:
+        result = asyncio.run(controller._maybe_auto_cancel_stale_domestic_orders(now=now))
+    finally:
+        telegram_control_module.is_krx_holiday = original_is_krx_holiday
+
+    assert result is False
+    assert seen_dates == [date(2026, 7, 10)]
+
+
 def test_maybe_auto_cancel_stale_overseas_orders_only_bot_submitted_orders(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_auto_cancel_overseas.db")
     repository.save_broker_order_event(
@@ -1452,6 +1482,36 @@ def test_maybe_auto_cancel_stale_overseas_orders_only_bot_submitted_orders(tmp_p
     assert calls[0]["source"] == "auto"
     assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["ov-001"]
     assert calls[0]["candidate_orders"][0]["exchange_code"] == "NASD"
+
+
+def test_auto_cancel_overseas_uses_new_york_date_for_holiday_check(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_auto_cancel_overseas_holiday_date.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    now = datetime(2026, 7, 10, 14, 30, tzinfo=timezone.utc)
+    seen_dates: list[date | None] = []
+    original_is_nyse_holiday = telegram_control_module.is_nyse_holiday
+
+    def fake_nyse_holiday(target_date=None):
+        seen_dates.append(target_date)
+        return True
+
+    telegram_control_module.is_nyse_holiday = fake_nyse_holiday
+    try:
+        result = asyncio.run(controller._maybe_auto_cancel_stale_overseas_orders(now=now))
+    finally:
+        telegram_control_module.is_nyse_holiday = original_is_nyse_holiday
+
+    assert result is False
+    assert seen_dates == [date(2026, 7, 10)]
 
 
 def test_execute_cancel_stale_overseas_orders_records_cancel_event(tmp_path) -> None:

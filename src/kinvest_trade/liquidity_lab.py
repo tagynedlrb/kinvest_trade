@@ -15,6 +15,7 @@ from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
 from .market_sessions import (
     KST,
+    NEW_YORK,
     get_us_trading_session,
     is_krx_regular_session,
     is_us_orderable_session_for_env,
@@ -1291,8 +1292,14 @@ class LiquidityLabService:
                     _logger.debug("relist_notify_failed", exc_info=True)
 
     async def _apply_holiday_overrides(self, now_utc: datetime) -> tuple[bool, bool]:
-        nyse_holiday = bool(getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday())
-        krx_holiday = bool(getattr(self.config, "skip_holiday_domestic", True) and is_krx_holiday())
+        nyse_date = now_utc.astimezone(NEW_YORK).date()
+        krx_date = now_utc.astimezone(KST).date()
+        nyse_holiday = bool(
+            getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday(nyse_date)
+        )
+        krx_holiday = bool(
+            getattr(self.config, "skip_holiday_domestic", True) and is_krx_holiday(krx_date)
+        )
         notice_key = (
             nyse_holiday,
             krx_holiday,
@@ -1304,7 +1311,7 @@ class LiquidityLabService:
             if notifier is not None and getattr(notifier, "enabled", True):
                 lines = [
                     "📅 휴장일 감지 — 스캔 중단",
-                    market_status_summary(),
+                    market_status_summary(nyse_date=nyse_date, krx_date=krx_date),
                     "",
                     f"해외 스캔 {'중단' if nyse_holiday else '유지'} | 국내 스캔 {'중단' if krx_holiday else '유지'}",
                     "다음 영업일에 자동으로 재개됩니다.",

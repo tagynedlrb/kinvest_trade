@@ -4067,6 +4067,8 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
     service = _build_run_service()
     service.config.skip_holiday_overseas = True
     service.config.skip_holiday_domestic = True
+    seen_krx_dates = []
+    seen_nyse_dates = []
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
     original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
@@ -4077,8 +4079,17 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
     liquidity_lab_module.is_us_regular_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
-    liquidity_lab_module.is_krx_holiday = lambda: False
-    liquidity_lab_module.is_nyse_holiday = lambda: True
+
+    def fake_krx_holiday(target_date=None):
+        seen_krx_dates.append(target_date)
+        return False
+
+    def fake_nyse_holiday(target_date=None):
+        seen_nyse_dates.append(target_date)
+        return True
+
+    liquidity_lab_module.is_krx_holiday = fake_krx_holiday
+    liquidity_lab_module.is_nyse_holiday = fake_nyse_holiday
     try:
         report = asyncio.run(service.run())
     finally:
@@ -4090,6 +4101,10 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
         liquidity_lab_module.is_nyse_holiday = original_is_nyse_holiday
 
     assert report.krx_market_open is True
+    assert seen_krx_dates
+    assert seen_nyse_dates
+    assert all(target_date is not None for target_date in seen_krx_dates)
+    assert all(target_date is not None for target_date in seen_nyse_dates)
 
 
 def test_run_returns_network_error_report_on_connect_timeout() -> None:

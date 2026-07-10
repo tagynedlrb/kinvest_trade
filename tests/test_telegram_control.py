@@ -285,6 +285,7 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     message = controller._build_portfolio_message()
 
     assert "[KIS][포트폴리오]" in message
+    assert "거래루프=중지됨 (/lab_start 필요)" in message
     assert "─── 실보유 종목 ───" in message
     assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
     assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
@@ -300,6 +301,16 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     assert "─── 정산 대기 매도 ───" in message
     assert "해외 TSLA(v) 수량=-1 가상매도가=$250.0000" in message
     assert "─── 누적 성과 (virtual) ───" in message
+
+
+def test_build_status_message_shows_stopped_loop_notice() -> None:
+    controller = _build_async_controller()
+    controller.mode = "stopped"
+
+    message = controller._build_status_message()
+
+    assert "모드=stopped" in message
+    assert "거래루프=중지됨 (/lab_start 필요)" in message
 
 
 def test_build_portfolio_message_uses_live_real_position_override(tmp_path) -> None:
@@ -443,6 +454,54 @@ def test_load_live_virtual_price_lookup_fetches_quotes_with_fallback(tmp_path) -
 
     assert prices[("overseas", "AAPL")] == 220.5
     assert prices[("overseas", "MSFT")] == 301.0
+
+
+def test_load_live_portfolio_positions_parses_domestic_balance_without_ranked_scan(tmp_path) -> None:
+    class FakeBalanceClient:
+        async def get_balance(self):
+            return {
+                "positions": [
+                    {
+                        "pdno": "058730",
+                        "hldg_qty": "1,184",
+                        "ord_psbl_qty": "184",
+                        "pchs_avg_pric": "5,310",
+                        "prpr": "5,030",
+                    }
+                ]
+            }
+
+    class FakeLab:
+        client = FakeBalanceClient()
+
+        async def _load_overseas_positions(self, _ranked):
+            return []
+
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=SqliteRepository(tmp_path / "telegram_portfolio_live_domestic.db"),
+        notifier=DummyNotifier(),
+    )
+
+    positions = asyncio.run(controller._load_live_portfolio_positions(FakeLab()))
+
+    assert positions == [
+        {
+            "market": "domestic",
+            "stock_code": "058730",
+            "quantity": 1184,
+            "orderable_qty": 184,
+            "avg_price": 5310.0,
+            "current_price": 5030.0,
+            "pnl_pct": (5030.0 - 5310.0) / 5310.0,
+            "currency": "KRW",
+        }
+    ]
 
 
 def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path) -> None:

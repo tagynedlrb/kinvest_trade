@@ -1468,3 +1468,23 @@
 ### 기대 효과
 - 국내 동적 스캔 실패/공백 시에도 실제 보유 종목의 청산 감시가 유지됨
 - 손실 중인 국내 보유 종목이 평균단가로 덮여 `0%`처럼 보이는 문제 감소
+
+## [2026-07-10] 포트폴리오 조회용 KIS client 분리
+
+### 추가 점검 결과
+- 매매 사이클은 `async with KisRestClient(...)`로 KIS client를 열고 닫지만,
+  `TelegramLiquidityLabController.lab_service`는 마지막 사이클의 닫힌 client를 들고 있을 수 있음
+- 이 상태에서 `/lab_portfolio`가 기존 `lab_service.client`에 의존하면 실시간 실보유/현재가 조회가
+  실패하고 오래된 report/state fallback으로 표시될 위험이 있음
+- 서비스는 켜져 있어도 거래 루프가 `stopped`인 상황이 텔레그램 메시지에서 충분히 명확하지 않았음
+
+### 수정 사항
+- `/lab_portfolio` 실행 시 명령 처리 전용 임시 `KisRestClient`와 `LiquidityLabService`를 생성해
+  실보유와 가상보유 현재가를 조회
+- 기존 `lab_service`의 동적 종목명/풀/최근 주문가능 USD 같은 표시용 상태는 임시 service로 복사
+- 국내 live portfolio 파싱도 `parse_kis_number()`를 사용해 콤마가 포함된 수량/가격 문자열 처리 강화
+- `/lab_status`, `/lab_portfolio`에 `거래루프=중지됨 (/lab_start 필요)` 같은 명확한 루프 상태 안내 추가
+
+### 기대 효과
+- 재시작 직후 또는 거래 루프 stopped 상태에서도 포트폴리오 실시간 조회 안정성 향상
+- 사용자가 systemd 서비스 active 상태와 실제 거래 루프 stopped 상태를 혼동할 가능성 감소

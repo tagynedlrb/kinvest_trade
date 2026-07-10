@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
 
-from .client import KisRestClient
+from .client import KisRestClient, parse_kis_number
 from .config import AppConfig
 from .git_uploader import upload_log
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
@@ -886,6 +886,13 @@ class TelegramLiquidityLabController:
             last_error=self.last_error,
         )
 
+    def _loop_mode_notice(self) -> str:
+        if self.mode == "running":
+            return "실행중"
+        if self.mode == "paused":
+            return "일시정지됨 (/lab_resume 가능)"
+        return "중지됨 (/lab_start 필요)"
+
     def _build_status_message(self) -> str:
         snapshot = self._snapshot()
         session = snapshot.session_performance or {}
@@ -923,6 +930,7 @@ class TelegramLiquidityLabController:
                 "[KIS][TELEGRAM_CONTROL_STATUS]",
                 f"시각={format_kst_korean(now)}",
                 f"모드={snapshot.mode}",
+                f"거래루프={self._loop_mode_notice()}",
                 f"사이클={snapshot.current_cycle_no}",
                 f"시장상태={market_status}",
                 f"다음실행={self._short_time(snapshot.next_run_at)}",
@@ -1122,6 +1130,8 @@ class TelegramLiquidityLabController:
             "[KIS][포트폴리오]",
             f"시각={format_kst_korean(now)}",
         ]
+        if self.mode != "running":
+            lines.append(f"거래루프={self._loop_mode_notice()}")
 
         last_report = self.last_report_summary or {}
         real_positions = (
@@ -1347,8 +1357,15 @@ class TelegramLiquidityLabController:
         return lines
 
     async def _send_portfolio_message(self) -> None:
-        live_real_positions = await self._load_live_portfolio_positions()
-        live_virtual_prices = await self._load_live_virtual_price_lookup()
+        live_real_positions = None
+        live_virtual_prices: dict[tuple[str, str], float] = {}
+        try:
+            async with KisRestClient(self.config.credentials) as client:
+                portfolio_lab = self._build_portfolio_lab_service(client)
+                live_real_positions = await self._load_live_portfolio_positions(portfolio_lab)
+                live_virtual_prices = await self._load_live_virtual_price_lookup(portfolio_lab)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("portfolio_live_refresh_failed error=%s", exc)
         await self.notifier.send(
             self._build_portfolio_message(
                 real_positions_override=live_real_positions,
@@ -1356,8 +1373,25 @@ class TelegramLiquidityLabController:
             )
         )
 
-    async def _load_live_virtual_price_lookup(self) -> dict[tuple[str, str], float]:
-        lab = self.lab_service
+    def _build_portfolio_lab_service(self, client: KisRestClient) -> LiquidityLabService:
+        service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+        existing = self.lab_service
+        if existing is not None:
+            for attr in (
+                "_dynamic_domestic_names",
+                "_dynamic_overseas_pool",
+                "_manual_overseas_pool",
+                "_last_overseas_available_usd",
+            ):
+                if hasattr(existing, attr):
+                    setattr(service, attr, getattr(existing, attr))
+        return service
+
+    async def _load_live_virtual_price_lookup(
+        self,
+        lab: LiquidityLabService | None = None,
+    ) -> dict[tuple[str, str], float]:
+        lab = lab or self.lab_service
         if lab is None:
             return {}
 
@@ -1407,8 +1441,11 @@ class TelegramLiquidityLabController:
             result[key] = price
         return result
 
-    async def _load_live_portfolio_positions(self) -> list[dict] | None:
-        lab = self.lab_service
+    async def _load_live_portfolio_positions(
+        self,
+        lab: LiquidityLabService | None = None,
+    ) -> list[dict] | None:
+        lab = lab or self.lab_service
         if lab is None:
             return None
 
@@ -1419,23 +1456,27 @@ class TelegramLiquidityLabController:
             balance = await lab.client.get_balance()
             loaded_any = True
             for row in balance.get("positions", []) or []:
-                qty = int(float(str(row.get("hldg_qty", 0) or 0).replace(",", "")))
+                qty = int(parse_kis_number(row.get("hldg_qty")))
                 if qty <= 0:
                     continue
                 stock_code = str(row.get("pdno", "")).strip()
                 if not stock_code:
                     continue
                 avg_price = self._parse_float(row.get("pchs_avg_pric"))
-                current_price = self._parse_float(row.get("prpr")) or avg_price
+                current_price = (
+                    self._parse_float(row.get("prpr"))
+                    or self._parse_float(row.get("stck_prpr"))
+                    or self._parse_float(row.get("now_pric"))
+                    or self._parse_float(row.get("last_price"))
+                    or avg_price
+                )
                 pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0.0
                 positions.append(
                     {
                         "market": "domestic",
                         "stock_code": stock_code,
                         "quantity": qty,
-                        "orderable_qty": int(
-                            float(str(row.get("ord_psbl_qty", qty) or qty).replace(",", ""))
-                        ),
+                        "orderable_qty": int(parse_kis_number(row.get("ord_psbl_qty")) or qty),
                         "avg_price": avg_price,
                         "current_price": current_price,
                         "pnl_pct": pnl_pct,

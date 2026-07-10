@@ -1052,6 +1052,9 @@ class TelegramLiquidityLabController:
             f"추정청산손익={int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원",
             f"감시수={len(last_report.get('watch_targets') or [])}",
         ]
+        virtual_exposure_status = self._build_virtual_exposure_status_line()
+        if virtual_exposure_status:
+            lines.append(virtual_exposure_status)
         if open_order_error:
             lines.append(f"미체결=조회실패 ({open_order_error})")
         elif domestic_open_count is not None or overseas_open_count is not None:
@@ -1071,6 +1074,68 @@ class TelegramLiquidityLabController:
             ]
         )
         return "\n".join(lines)
+
+    def _build_virtual_exposure_status_line(self) -> str:
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "list_virtual_positions"):
+            return ""
+        try:
+            rows = repository.list_virtual_positions()
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("status_virtual_exposure_failed error=%s", exc)
+            return ""
+
+        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
+        for row in rows:
+            market = str(row.get("market", "overseas"))
+            currency = str(row.get("currency", "USD"))
+            qty = int(row.get("qty", 0) or 0)
+            avg_price = float(row.get("avg_price", 0.0) or 0.0)
+            if qty <= 0 or avg_price <= 0:
+                continue
+            key = (market, currency)
+            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
+            item["count"] = int(item["count"]) + 1
+            item["notional"] = float(item["notional"]) + qty * avg_price
+        if not by_market_currency:
+            return ""
+
+        lab = self.lab_service
+        last_available_usd = (
+            None
+            if lab is None
+            else getattr(lab, "_last_overseas_available_usd", None)
+        )
+        max_pct = float(
+            getattr(self.config.liquidity_lab, "max_virtual_exposure_pct", 1.0) or 1.0
+        )
+        parts: list[str] = []
+        status = ""
+        for (market, currency), item in sorted(by_market_currency.items()):
+            count = int(item["count"])
+            notional = float(item["notional"])
+            parts.append(
+                f"{format_market_korean(market)} "
+                f"{self._format_notional_price(notional, currency)} "
+                f"{count}종목"
+            )
+            if (
+                not status
+                and market == "overseas"
+                and currency == "USD"
+                and last_available_usd is not None
+                and float(last_available_usd) > 0
+            ):
+                limit = float(last_available_usd) * max_pct
+                status = "초과" if notional > limit else "정상"
+
+        suffix: list[str] = []
+        if status:
+            suffix.append(f"상태={status}")
+            if status == "초과" and self.mode != "running":
+                suffix.append("감시=중지")
+        suffix.append("확인=/lab_portfolio")
+        return f"가상노출={' / '.join(parts)} {' '.join(suffix)}"
 
     def _build_watchlist_message(self) -> str:
         last_report = self.last_report_summary or {}

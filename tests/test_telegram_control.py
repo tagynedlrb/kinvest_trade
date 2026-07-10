@@ -330,6 +330,41 @@ def test_build_status_message_shows_stopped_loop_notice() -> None:
     assert "다음간격=-" in message
 
 
+def test_build_status_message_warns_virtual_exposure_when_stopped(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_status_virtual_exposure.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=3,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20, max_virtual_exposure_pct=0.5),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            skip_holiday_overseas=True,
+            skip_holiday_domestic=True,
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "stopped"
+    controller.lab_service = SimpleNamespace(_last_overseas_available_usd=1000.0)
+
+    message = controller._build_status_message()
+
+    assert (
+        "가상노출=해외 $600.00 1종목 상태=초과 감시=중지 확인=/lab_portfolio"
+        in message
+    )
+
+
 def test_build_status_message_shows_live_open_order_counts() -> None:
     controller = _build_async_controller()
 
@@ -2249,6 +2284,9 @@ class DummyRepository:
         return {"real": {}, "virtual": {}}
 
     def get_realized_strategy_performance(self, **kwargs) -> list[dict]:
+        return []
+
+    def list_virtual_positions(self) -> list[dict]:
         return []
 
 

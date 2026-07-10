@@ -1967,3 +1967,26 @@
 
 ### 검증
 - `python3 -m pytest tests -q` → 370개 통과
+
+## [2026-07-10] 포트폴리오 가상보유 리스크 표시 보강
+
+### 배경
+- `/lab_portfolio`는 실보유 종목의 손절 기준 초과 위험은 별도 섹션으로 표시했지만,
+  가상보유 종목은 손절 기준을 넘거나 총 가상 노출이 한도를 초과해도
+  일반 보유/노출 줄만 보고 판단해야 했다.
+- 거래 루프가 중지된 상태에서는 가상 포지션의 자동 청산 감시도 멈추므로,
+  사용자가 포트폴리오 조회만으로 위험 상태를 바로 알아야 한다.
+
+### 수정 사항
+- `telegram_control.py`
+  - 가상보유 종목도 현재가와 평균단가 기준 손익이 손절 기준을 넘으면
+    `가상보유 리스크` 섹션에 표시
+  - 거래 루프가 중지된 경우 `상태=감시중지`와 자동 청산 감시 중지 경고 표시
+  - 가상매수 노출이 주문가능 USD 기준 한도를 초과하고 루프가 중지된 경우
+    `상태=초과 감시=중지` 및 별도 주의 문구 표시
+- `tests/test_telegram_control.py`
+  - 가상 손절 리스크와 가상 노출 초과 경고가 동시에 표시되는 회귀 테스트 추가
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_build_portfolio_message_uses_available_usd_override_for_virtual_exposure tests/test_telegram_control.py::test_build_portfolio_message_warns_virtual_risk_and_exposure_when_stopped -q` → 2개 통과
+- `python3 -m pytest tests -q` → 371개 통과

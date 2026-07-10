@@ -456,6 +456,49 @@ def test_build_portfolio_message_uses_available_usd_override_for_virtual_exposur
     ) in message
 
 
+def test_build_portfolio_message_warns_virtual_risk_and_exposure_when_stopped(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_risk.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=3,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_virtual_exposure_pct=0.5,
+                overseas_stop_loss_pct=0.01,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0, hard_stop_loss_pct=0.01),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "stopped"
+
+    message = controller._build_portfolio_message(
+        price_lookup_override={("overseas", "AAPL"): 190.0},
+        virtual_exposure_available_usd=1000.0,
+    )
+
+    assert "─── 가상보유 리스크 ───" in message
+    assert "해외 AAPL 손익=-5.00% 기준=-1.00% 수량=3 상태=감시중지" in message
+    assert "주의=거래루프가 중지되어 가상 포지션 청산 감시가 동작하지 않습니다" in message
+    assert (
+        "해외 가상매수노출=$600.00 1종목 "
+        "한도=주문가능USD x50% 최근한도=$500.00 상태=초과 감시=중지"
+    ) in message
+    assert "주의=가상 노출 한도 초과 상태에서 거래루프가 중지되어 있습니다" in message
+
+
 def test_build_portfolio_message_uses_live_virtual_price_override(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_price.db")
     repository.upsert_virtual_position(

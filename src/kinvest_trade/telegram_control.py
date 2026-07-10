@@ -1338,6 +1338,15 @@ class TelegramLiquidityLabController:
                         f"(현재가 없음)"
                     )
 
+            virtual_risk_lines = self._build_virtual_position_risk_lines(
+                effective_positions,
+                price_lookup,
+                last_report=last_report,
+            )
+            if virtual_risk_lines:
+                lines.append("─── 가상보유 리스크 ───")
+                lines.extend(virtual_risk_lines)
+
         exposure_lines = self._build_virtual_exposure_lines(
             available_usd_override=virtual_exposure_available_usd
         )
@@ -1428,6 +1437,51 @@ class TelegramLiquidityLabController:
             risk_lines.append("주의=거래루프가 중지되어 자동 청산 감시가 동작하지 않습니다")
         return risk_lines
 
+    def _build_virtual_position_risk_lines(
+        self,
+        effective_positions: list[dict[str, object]],
+        price_lookup: dict[tuple[str, str], float],
+        *,
+        last_report: dict,
+    ) -> list[str]:
+        if not effective_positions:
+            return []
+        domestic_threshold = float(
+            getattr(getattr(self.config, "auto_trade", None), "hard_stop_loss_pct", 0.01)
+            or 0.01
+        )
+        overseas_threshold = float(
+            getattr(getattr(self.config, "liquidity_lab", None), "overseas_stop_loss_pct", 0.01)
+            or 0.01
+        )
+        risk_lines: list[str] = []
+        for position in effective_positions:
+            market_key = str(position["market"])
+            symbol_raw = str(position["symbol"]).upper()
+            avg_price = float(position["avg_price"])
+            qty = int(position["qty"])
+            current_price = float(price_lookup.get((market_key, symbol_raw), 0.0) or 0.0)
+            threshold = domestic_threshold if market_key == "domestic" else overseas_threshold
+            if avg_price <= 0 or current_price <= 0:
+                continue
+            pnl_pct = (current_price - avg_price) / avg_price
+            if pnl_pct > -threshold:
+                continue
+            symbol = self._format_symbol_label(
+                market_key,
+                symbol_raw,
+                last_report=last_report,
+            )
+            market = format_market_korean(market_key)
+            state = "감시중" if self.mode == "running" else "감시중지"
+            risk_lines.append(
+                f"{market} {symbol} 손익={format_pct(pnl_pct)} "
+                f"기준={format_pct(-threshold)} 수량={qty} 상태={state}"
+            )
+        if risk_lines and self.mode != "running":
+            risk_lines.append("주의=거래루프가 중지되어 가상 포지션 청산 감시가 동작하지 않습니다")
+        return risk_lines
+
     def _build_virtual_exposure_lines(
         self,
         *,
@@ -1478,7 +1532,11 @@ class TelegramLiquidityLabController:
                     status = "초과" if notional > limit else "정상"
                     parts.append(f"최근한도={self._format_notional_price(limit, currency)}")
                     parts.append(f"상태={status}")
+                    if status == "초과" and self.mode != "running":
+                        parts.append("감시=중지")
             lines.append(" ".join(parts))
+        if any("상태=초과 감시=중지" in line for line in lines):
+            lines.append("주의=가상 노출 한도 초과 상태에서 거래루프가 중지되어 있습니다")
         return lines
 
     async def _send_portfolio_message(self) -> None:

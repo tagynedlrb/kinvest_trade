@@ -1724,6 +1724,33 @@ def test_run_cycle_increments_consecutive_errors_on_exception() -> None:
     assert any("TELEGRAM_CONTROL_ERROR" in message for message in controller.notifier.messages)
 
 
+def test_run_cycle_cancellation_is_not_persisted_as_error() -> None:
+    controller = _build_async_controller()
+    controller.last_error = "previous"
+
+    class CancelledLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            pass
+
+        async def run(self):
+            raise asyncio.CancelledError
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = CancelledLiquidityLabService
+    try:
+        try:
+            asyncio.run(controller._run_cycle(9))
+        except asyncio.CancelledError:
+            pass
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert controller.last_error is None
+
+
 def test_run_cycle_resets_consecutive_errors_on_success() -> None:
     controller = _build_async_controller()
     controller._consecutive_errors = 3
@@ -1826,6 +1853,28 @@ def test_restore_runtime_state_recovers_update_offset() -> None:
     assert controller.last_error == "cycle_timeout"
     assert controller.session_performance.cycles_completed == 12
     assert controller.session_performance.primary_targets == {"SOLS": 12}
+
+
+def test_restore_runtime_state_ignores_cancelled_cycle_error() -> None:
+    controller = _build_async_controller()
+    controller.config.storage.runtime_state_path.write_text(
+        json.dumps(
+            {
+                "telegram_update_offset": 4321,
+                "last_error": "cycle_1149_cancelled",
+                "telegram_control": {
+                    "mode": "stopped",
+                    "current_cycle_no": 1149,
+                    "last_error": "cycle_1149_cancelled",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    controller._restore_runtime_state()
+
+    assert controller.last_error is None
 
 
 def test_write_runtime_state_persists_update_offset() -> None:

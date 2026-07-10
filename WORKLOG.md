@@ -1624,3 +1624,19 @@
 - 사용자가 `/lab_cancel_stale_domestic`으로 대상 확인 후
   `/lab_cancel_stale_domestic_confirm`을 직접 보내야 실제 취소 요청 진행
 - confirm 명령은 실수 방지를 위해 봇 메뉴에는 노출하지 않고 prompt에서만 안내
+
+## [2026-07-10] 사이클 취소를 최근오류로 남기지 않도록 수정
+
+### 추가 점검 결과
+- 서비스 배포/재시작 또는 `/lab_stop` 과정에서 실행 중이던 사이클이 `CancelledError`로 종료될 수 있음
+- 기존에는 이 상황이 `cycle_N_cancelled` 형태로 `last_error`에 남아 `/lab_status`에서 실제 장애처럼 보일 수 있었음
+- 현재 runtime state에도 `cycle_1149_cancelled`가 남아 있었으나, 이는 배포/중지 과정의 흔적으로 판단됨
+
+### 수정 사항
+- `_run_cycle()`의 `asyncio.CancelledError`는 오류로 저장하지 않고 `last_error=None` 처리
+- `_drain_finished_cycle()`, `_handle_stop()`, `_handle_terminate()`의 취소 경로도 동일하게 정리
+- `_restore_runtime_state()`에서 과거 `cycle_*_cancelled` 오류 문자열은 복원하지 않도록 필터링
+
+### 기대 효과
+- 의도된 중지/재시작과 실제 런타임 오류를 구분하기 쉬워짐
+- `/lab_status`의 `최근오류`가 배포 흔적으로 오염되는 문제 감소

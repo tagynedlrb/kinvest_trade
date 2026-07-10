@@ -691,6 +691,7 @@ class TelegramLiquidityLabController:
             self.current_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.current_task
+            self.last_error = None
         if self.lab_service is not None:
             with contextlib.suppress(Exception):
                 await self.lab_service.flush_pending_trade_notifications(force=True)
@@ -709,6 +710,7 @@ class TelegramLiquidityLabController:
             self.current_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.current_task
+            self.last_error = None
         if self.lab_service is not None:
             with contextlib.suppress(Exception):
                 await self.lab_service.flush_pending_trade_notifications(force=True)
@@ -767,7 +769,7 @@ class TelegramLiquidityLabController:
                 )
             self._last_market_state = current_market_state
         except asyncio.CancelledError:
-            self.last_error = f"cycle_{cycle_no}_cancelled"
+            self.last_error = None
             raise
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
@@ -802,7 +804,7 @@ class TelegramLiquidityLabController:
         try:
             await self.current_task
         except asyncio.CancelledError:
-            pass
+            self.last_error = None
         self.current_task = None
         self.current_task_started_at = None
         self._write_runtime_state()
@@ -846,11 +848,14 @@ class TelegramLiquidityLabController:
         self.last_completed_at = parse_datetime(str(snapshot.get("last_completed_at") or ""))
         self.next_run_at = parse_datetime(str(snapshot.get("next_run_at") or ""))
         self.last_report_summary = snapshot.get("last_report_summary") or None
-        self.last_error = str(
+        restored_error = str(
             snapshot.get("last_error")
             or payload.get("last_error")
             or ""
-        ).strip() or None
+        ).strip()
+        if restored_error.startswith("cycle_") and restored_error.endswith("_cancelled"):
+            restored_error = ""
+        self.last_error = restored_error or None
 
         session = snapshot.get("session_performance") or {}
         if isinstance(session, dict) and session:

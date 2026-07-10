@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from kinvest_trade.trade_analysis import compare_before_after
+
 
 def _where_sql(column: str, since: str) -> tuple[str, list[str]]:
     if not since:
@@ -22,12 +24,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="거래 내역 분석")
     parser.add_argument("db_path", help="SQLite DB 파일 경로")
     parser.add_argument("--days", type=int, default=0, help="최근 N일 분석 (0=전체)")
+    parser.add_argument("--compare-date", help="기준일 전후 SELL_REAL 전략 성과 비교 (KST, YYYY-MM-DD)")
     args = parser.parse_args()
 
     db_path = Path(args.db_path)
     if not db_path.exists():
         print(f"DB 파일 없음: {db_path}", file=sys.stderr)
         raise SystemExit(1)
+
+    if args.compare_date:
+        try:
+            print(compare_before_after(db_path, args.compare_date))
+        except ValueError as exc:
+            print(f"기준일 형식 오류: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        return
 
     since = ""
     if args.days > 0:

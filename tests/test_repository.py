@@ -569,6 +569,47 @@ def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> Non
     assert by_key[("domestic", "RSI", "take_profit")]["win_rate"] == 1.0
 
 
+def test_get_sell_reason_counts_groups_recent_sell_real_only(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "sell_reason_counts.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="OLD",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:00:00+00:00",
+        market="overseas",
+        symbol="NEW1",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:01:00+00:00",
+        market="overseas",
+        symbol="NEW2",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:02:00+00:00",
+        market="overseas",
+        symbol="SIGNAL",
+        exchange_code="NASD",
+        action_bias="SELL",
+        action_reason="trend_filter_lost",
+    )
+
+    rows = repository.get_sell_reason_counts(after_logged_at="2026-07-02T00:00:00+00:00")
+
+    by_reason = {row["action_reason"]: row["cnt"] for row in rows}
+    assert by_reason == {"trend_filter_lost": 1, "stop_loss": 1}
+
+
 def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_virtual_order(

@@ -202,7 +202,7 @@
         "domestic_test_order_qty": 5,
         "overseas_test_order_qty": 1,
         "max_concurrent_overseas_orders": 8,
-        "max_concurrent_domestic_orders": 5,
+        "max_concurrent_domestic_orders": 8,
         "domestic_min_price_krw": 3000,
         "domestic_min_intraday_turnover_krw": 20000000000,
         "domestic_min_volume_sum": 100000,
@@ -216,5 +216,15 @@
         "overseas_block_standalone_vwap": true,
         "inverse_etf_symbols": ["SQQQ", "SOXS", "UVXY", "SPXU"],
         "leveraged_etf_symbols": ["TQQQ", "SOXL"]
-    }
+    },
+    "_strategy_changes": [
+        {
+            "date": "2026-07-10",
+            "desc": "VWAP단독차단/RSI임계30/SL1%/min_hold12"
+        },
+        {
+            "date": "2026-07-09",
+            "desc": "CHW중복매수차단/CB날짜초기화"
+        }
+    ]
 }

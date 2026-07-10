@@ -1163,6 +1163,27 @@ class SqliteRepository:
             result.append(item)
         return result
 
+    def get_sell_reason_counts(self, *, after_logged_at: str = "") -> list[dict]:
+        """Return recent SELL_REAL counts grouped by action_reason."""
+        params: list[object] = []
+        where = ["action_bias = 'SELL_REAL'"]
+        if after_logged_at:
+            where.append("logged_at >= ?")
+            params.append(after_logged_at)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT COALESCE(action_reason, '') AS action_reason,
+                       COUNT(*) AS cnt
+                FROM cycle_log
+                WHERE {' AND '.join(where)}
+                GROUP BY action_reason
+                ORDER BY cnt DESC
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def create_paper_run(
         self,
         mode: str,

@@ -2360,7 +2360,7 @@ def _build_run_service() -> LiquidityLabService:
             overseas_take_profit_pct=0.012,
             overseas_stop_loss_pct=0.008,
             max_concurrent_overseas_orders=20,
-            max_concurrent_domestic_orders=5,
+            max_concurrent_domestic_orders=8,
             use_slot_sizing=False,
             slot_entry_pct=0.10,
             slot_max_pct=0.20,
@@ -2398,7 +2398,89 @@ def _build_run_service() -> LiquidityLabService:
     service._pending_trade_notification_started_at = None
     service._trade_notification_window_sec = 0
     service._trade_notification_max_batch_size = 8
+    service._recent_trade_count = 0
+    service._recent_cycle_count = 0
+    service._rsi_blocked_count = 0
+    service._last_trend_filter_alert_cycle = 0
     return service
+
+
+def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
+    service = _build_run_service()
+
+    for _ in range(50):
+        service._record_cycle_trade_frequency(
+            domestic_orders=[{"skipped": True, "reason": "no_action"}],
+            overseas_orders=[{"skipped": True, "reason": "no_action"}],
+        )
+
+    events = service.repository.list_event_log(event_type="low_trade_frequency", limit=1)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["cycle_count"] == 50
+    assert detail["trade_count"] == 0
+    assert detail["ratio"] == 0.0
+    assert service._recent_cycle_count == 0
+
+
+def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:
+    service = _build_run_service()
+    service._rsi_blocked_count = 19
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="PLTR",
+        exchange_code="NYSE",
+        price=20.0,
+        activity_score=10.0,
+        signal_score=5.0,
+        action_bias="HOLD",
+        signal_state="HOLD",
+        ma_summary="watch",
+        note="RSI watching",
+        signal_snapshot=_snapshot(rsi14=42.0),
+        strategy_flag="RSI",
+    )
+
+    service._track_rsi_threshold_blocks([watch_target])
+
+    assert service._rsi_blocked_count == 20
+
+
+def test_check_trend_filter_lost_ratio_saves_warning_event() -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc).isoformat()
+    for idx in range(4):
+        service.repository.save_cycle_log(
+            logged_at=now,
+            market="overseas",
+            symbol=f"TFL{idx}",
+            exchange_code="NASD",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            pnl_pct=-0.01,
+            qty_executed=1,
+        )
+    for idx in range(2):
+        service.repository.save_cycle_log(
+            logged_at=now,
+            market="overseas",
+            symbol=f"STP{idx}",
+            exchange_code="NASD",
+            action_bias="SELL_REAL",
+            action_reason="stop_loss",
+            pnl_pct=-0.01,
+            qty_executed=1,
+        )
+    service._cycle_count = 200
+
+    service._check_trend_filter_lost_ratio()
+
+    events = service.repository.list_event_log(event_type="trend_filter_lost_ratio_high", limit=1)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["trend_filter_lost"] == 4
+    assert detail["total_sell_real"] == 6
+    assert detail["ratio"] == 0.6667
 
 
 def test_active_overseas_pool_includes_held_symbols_without_positions() -> None:

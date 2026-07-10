@@ -2355,3 +2355,32 @@
 
 ### 검증
 - `python3 -m pytest tests/test_liquidity_lab.py::test_build_watch_target_status_blocks_cached_buy_for_flat_symbol tests/test_liquidity_lab.py::test_build_watch_target_status_blocks_cached_overseas_standalone_vwap tests/test_liquidity_lab.py::test_build_watch_target_status_allows_overseas_vwap_combo -q` → 3개 통과
+
+## [2026-07-10] 지시문 #65 — 전략 효과 검증 + 매매 빈도 정상화
+
+### 목적
+- Codex 70+ 커밋 이후 보수화된 전략의 실거래 효과를 기준일 전후로 검증할 수 있게 함
+- RSI 30.0 / VWAP 단독 차단 / min_hold=12가 매매 빈도를 과도하게 낮추는지 감시
+- 07/10 기준 국내 전략 성과가 상대적으로 양호해 국내 동시 주문 슬롯 확대
+
+### 수정
+- `scripts/analyze_trades.py`
+  - `--compare-date YYYY-MM-DD` 옵션 추가
+  - 기준일 전후 `SELL_REAL` 전략 성과 비교 출력
+- `telegram_control.py`
+  - `/lab_report compare 2026-07-10` 명령 추가
+  - 텔레그램에서 전략 전후 비교를 즉시 확인 가능
+- `liquidity_lab.py`
+  - 50사이클마다 유효 매매 빈도 모니터링
+  - 사이클당 매매율 1% 미만이면 `low_trade_frequency` 이벤트 저장
+  - 해외 RSI 감시 신호가 임계값 초과로 차단되는 횟수 누적 로그
+  - 200사이클마다 최근 24시간 `trend_filter_lost` 청산 비율 점검
+- `config/fixed_config.json`
+  - `max_concurrent_domestic_orders`: 5 → 8
+  - `_strategy_changes` 메타데이터 추가
+
+### 평가 기준 (1주 후 재평가)
+- 해외 Net EV > -0.1%, 국내 Net EV > +0.1%
+- `trend_filter_lost` 비율 < 50%
+- 하루 CB 발동 ≤ 2회
+- 사이클당 매매율 2~5%

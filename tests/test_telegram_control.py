@@ -30,6 +30,10 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
     assert TelegramLiquidityLabController.parse_command("/lab_performance") == ("performance", None)
     assert TelegramLiquidityLabController.parse_command("/lab_performance 72") == ("performance", "72")
+    assert TelegramLiquidityLabController.parse_command("/lab_report compare 2026-07-10") == (
+        "report",
+        "compare 2026-07-10",
+    )
     assert TelegramLiquidityLabController.parse_command("/lab_orders") == "orders"
     assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic") == "cancel_stale_domestic"
     assert (
@@ -1265,6 +1269,61 @@ def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> Non
     assert "─── 하위 전략 ───" in message
     assert "해외 VWAP 진입=VWAP 청산=손절 1건" in message
     assert "손익=-$12.50/-16,875원" in message
+
+
+def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_report_command.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-09T14:30:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        pnl_pct=0.012,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-09T15:30:00+00:00",
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        strategy_flag="RSI",
+        pnl_pct=-0.010,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_report compare 2026-07-10",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][전략리포트]" in message
+    assert "기준=실주문접수 SELL_REAL" in message
+    assert "[전략 전후 비교] 기준일=2026-07-10 KST" in message
+    assert "[이전 2026-07-10]" in message
+    assert "overseas VWAP" in message
+    assert "[이후 2026-07-10]" in message
+    assert "overseas RSI" in message
 
 
 def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:

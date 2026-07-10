@@ -585,6 +585,10 @@ class LiquidityLabService:
         self._session_start_logged: bool = False
         self._no_orderable_retry: dict[str, datetime] = {}
         self._exit_price_shock_guard: dict[str, dict[str, float | str]] = {}
+        self._recent_trade_count: int = 0
+        self._recent_cycle_count: int = 0
+        self._rsi_blocked_count: int = 0
+        self._last_trend_filter_alert_cycle: int = 0
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -1926,6 +1930,12 @@ class LiquidityLabService:
         if domestic_orders:
             domestic_order = dict(domestic_order)
             domestic_order["batched_orders"] = domestic_orders
+
+        self._record_cycle_trade_frequency(
+            domestic_orders=domestic_orders,
+            overseas_orders=overseas_orders,
+        )
+        self._check_trend_filter_lost_ratio()
 
         domestic_active = any(not order.get("skipped", False) for order in domestic_orders)
         overseas_active = any(not order.get("skipped", False) for order in overseas_orders)
@@ -4193,6 +4203,7 @@ class LiquidityLabService:
             for position in virtual_manager.list_positions("overseas"):
                 if position.qty > 0:
                     held_symbols.add(position.symbol.upper())
+        self._track_rsi_threshold_blocks(watch_targets)
         ready_targets = [
             watch_target
             for watch_target in watch_targets
@@ -7299,6 +7310,143 @@ class LiquidityLabService:
         if market_key == "overseas":
             return len(getattr(self, "_dynamic_overseas_pool", None) or [])
         return 0
+
+    @staticmethod
+    def _is_effective_trade_order(order: dict) -> bool:
+        if not isinstance(order, dict) or order.get("skipped"):
+            return False
+        side = str(order.get("side") or "").strip().lower()
+        if side not in {"buy", "sell"}:
+            return False
+        return bool(
+            order.get("submitted")
+            or order.get("recorded")
+            or order.get("virtual")
+            or order.get("broker_order_no")
+            or order.get("order_id")
+        )
+
+    def _record_cycle_trade_frequency(
+        self,
+        *,
+        domestic_orders: list[dict],
+        overseas_orders: list[dict],
+    ) -> None:
+        self._recent_cycle_count = getattr(self, "_recent_cycle_count", 0) + 1
+        trade_count = sum(
+            1
+            for order in [*domestic_orders, *overseas_orders]
+            if self._is_effective_trade_order(order)
+        )
+        self._recent_trade_count = getattr(self, "_recent_trade_count", 0) + trade_count
+        if self._recent_cycle_count < 50:
+            return
+        trade_ratio = self._recent_trade_count / max(self._recent_cycle_count, 1)
+        if trade_ratio < 0.01:
+            _logger.warning(
+                "[FREQ] 최근 %d사이클 매매율 %.1f%% (trade_count=%d)",
+                self._recent_cycle_count,
+                trade_ratio * 100.0,
+                self._recent_trade_count,
+            )
+            self._save_event(
+                event_type="low_trade_frequency",
+                detail={
+                    "cycle_count": self._recent_cycle_count,
+                    "trade_count": self._recent_trade_count,
+                    "ratio": round(trade_ratio, 4),
+                },
+            )
+        self._recent_trade_count = 0
+        self._recent_cycle_count = 0
+
+    def _track_rsi_threshold_blocks(self, watch_targets: list[WatchTargetStatus]) -> None:
+        rsi_threshold = float(
+            getattr(getattr(self.config, "auto_trade", object()), "rsi_entry_threshold", 50.0)
+            or 50.0
+        )
+        for watch_target in watch_targets:
+            if watch_target.market != "overseas":
+                continue
+            if watch_target.holding_qty > 0 or watch_target.action_bias == "BUY":
+                continue
+            snapshot = watch_target.signal_snapshot
+            rsi14 = snapshot.rsi14 if snapshot is not None else None
+            if rsi14 is None or rsi14 <= rsi_threshold:
+                continue
+            strategy_flag = str(watch_target.strategy_flag or watch_target.note or "")
+            if "RSI" not in strategy_flag:
+                continue
+            self._rsi_blocked_count = getattr(self, "_rsi_blocked_count", 0) + 1
+            if self._rsi_blocked_count % 20 == 0:
+                _logger.info(
+                    "[RSI] 차단 누적 %d건 (최근 rsi=%.1f, threshold=%.1f)",
+                    self._rsi_blocked_count,
+                    rsi14,
+                    rsi_threshold,
+                )
+
+    def _check_trend_filter_lost_ratio(self) -> None:
+        cycle_no = getattr(self, "_cycle_count", 0)
+        if cycle_no <= 0 or cycle_no % 200 != 0:
+            return
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "get_sell_reason_counts"):
+            return
+        after_logged_at = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        rows = repository.get_sell_reason_counts(after_logged_at=after_logged_at)
+        total = sum(int(row.get("cnt") or 0) for row in rows)
+        trend_filter_lost = sum(
+            int(row.get("cnt") or 0)
+            for row in rows
+            if "trend_filter" in str(row.get("action_reason") or "")
+        )
+        if total <= 5:
+            return
+        ratio = trend_filter_lost / total
+        if ratio <= 0.50:
+            return
+        if getattr(self, "_last_trend_filter_alert_cycle", 0) == cycle_no:
+            return
+        self._last_trend_filter_alert_cycle = cycle_no
+        _logger.warning(
+            "[TREND] trend_filter_lost 비율 %.0f%% (%d/%d)",
+            ratio * 100.0,
+            trend_filter_lost,
+            total,
+        )
+        self._save_event(
+            event_type="trend_filter_lost_ratio_high",
+            detail={
+                "trend_filter_lost": trend_filter_lost,
+                "total_sell_real": total,
+                "ratio": round(ratio, 4),
+                "min_hold_before_trend_exit": getattr(
+                    getattr(self.config, "auto_trade", object()),
+                    "min_hold_before_trend_exit",
+                    12,
+                ),
+            },
+        )
+        notifier = getattr(self, "notifier", None)
+        if notifier is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            notifier.send(
+                "\n".join(
+                    [
+                        "⚠️ trend_filter_lost 비율 경고",
+                        f"비율={ratio * 100:.0f}% ({trend_filter_lost}/{total}건)",
+                        "범위=최근 24시간 SELL_REAL",
+                        "확인=min_hold_before_trend_exit/추세청산 조건",
+                    ]
+                )
+            )
+        )
 
     def _save_event(
         self,

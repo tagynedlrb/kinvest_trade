@@ -62,6 +62,7 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.paper.max_spread_pct == 0.003
     assert config.paper.trailing_stop_pct == 0.004
     assert config.liquidity_lab.overseas_block_standalone_vwap is True
+    assert config.liquidity_lab.max_concurrent_domestic_orders == 8
     assert (
         config.liquidity_lab.tv_min_price_usd
         == config.liquidity_lab.overseas_min_price_usd
@@ -95,6 +96,7 @@ def test_fixed_config_risk_section_contains_only_live_keys() -> None:
         "circuit_breaker_cooldown_minutes",
         "operating_capital_krw",
     }
+    assert payload["_strategy_changes"][0]["date"] == "2026-07-10"
 
 
 def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:

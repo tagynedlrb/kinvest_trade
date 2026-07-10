@@ -46,6 +46,7 @@ from .time_utils import (
     format_kst_korean,
     parse_datetime,
 )
+from .trade_analysis import compare_before_after
 
 
 HELP_MESSAGE = "\n".join(
@@ -61,6 +62,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_watchlist - 감시 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
         "/lab_performance [시간] - 최근 실제 체결 전략 성과",
+        "/lab_report compare <YYYY-MM-DD> - 기준일 전후 전략 성과 비교",
         "/lab_orders - 최근 주문 접수/취소 기록",
         "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
         "/lab_cancel_stale_overseas - 30분 이상 해외 미체결 취소 확인",
@@ -86,6 +88,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_performance", "description": "최근 실제 체결 전략 성과"},
+    {"command": "lab_report", "description": "기준일 전후 전략 성과 비교"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
     {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
     {"command": "lab_cancel_stale_overseas", "description": "장기 해외 미체결 취소 확인"},
@@ -368,6 +371,10 @@ class TelegramLiquidityLabController:
         if command_name == "performance":
             hours_text = parsed_command[1] if isinstance(parsed_command, tuple) else None
             await self._send_performance_message(hours_text)
+            return
+        if command_name == "report":
+            report_args = parsed_command[1] if isinstance(parsed_command, tuple) else None
+            await self._send_report_message(report_args)
             return
         if command_name == "orders":
             await self._send_recent_order_events()
@@ -2137,6 +2144,45 @@ class TelegramLiquidityLabController:
     async def _send_performance_message(self, hours_text: str | None = None) -> None:
         await self.notifier.send(self._build_performance_message(hours_text))
 
+    async def _send_report_message(self, report_args: str | None = None) -> None:
+        await self.notifier.send(self._build_report_message(report_args))
+
+    def _build_report_message(self, report_args: str | None = None) -> str:
+        now = datetime.now(timezone.utc)
+        args = str(report_args or "").strip().split()
+        usage = "사용법=/lab_report compare 2026-07-10"
+        if len(args) != 2 or args[0].lower() != "compare":
+            return "\n".join(
+                [
+                    "[KIS][전략리포트]",
+                    f"시각={format_kst_korean(now)}",
+                    "실행실패=지원하지 않는 리포트 명령",
+                    usage,
+                ]
+            )
+        cutoff_date = args[1]
+        try:
+            comparison = compare_before_after(self.repository.db_path, cutoff_date)
+        except Exception as exc:  # noqa: BLE001
+            return "\n".join(
+                [
+                    "[KIS][전략리포트]",
+                    f"시각={format_kst_korean(now)}",
+                    "실행실패=전략 비교 생성 실패",
+                    f"오류={str(exc)[:120]}",
+                    usage,
+                ]
+            )
+        return "\n".join(
+            [
+                "[KIS][전략리포트]",
+                f"시각={format_kst_korean(now)}",
+                "기준=실주문접수 SELL_REAL",
+                "주의=net은 평균 손익률에서 0.5% 비용을 차감한 추정치",
+                comparison,
+            ]
+        )
+
     @staticmethod
     def _parse_performance_hours(hours_text: str | None) -> int:
         try:
@@ -3378,6 +3424,9 @@ class TelegramLiquidityLabController:
         if stripped.lower().startswith("/lab_performance"):
             parts = stripped.split(maxsplit=1)
             return ("performance", parts[1].strip() if len(parts) > 1 else None)
+        if stripped.lower().startswith("/lab_report"):
+            parts = stripped.split(maxsplit=1)
+            return ("report", parts[1].strip() if len(parts) > 1 else None)
         if stripped.lower().startswith("/lab_relist_schedule"):
             return "relist_schedule"
         if stripped.lower().startswith("/lab_gitlog"):
@@ -3398,6 +3447,7 @@ class TelegramLiquidityLabController:
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
             "/lab_log": "log",
+            "/lab_report": "report",
             "/lab_orders": "orders",
             "/lab_cancel_stale_domestic": "cancel_stale_domestic",
             "/lab_cancel_stale_domestic_confirm": "cancel_stale_domestic_confirm",

@@ -1,5 +1,27 @@
 # WORKLOG
 
+## [2026-07-10] 해외 저거래량 전략 진입 차단
+
+### 배경
+- 최근 72시간 분석에서 해외 실주문은 순손실이고, 과거 해외 `BUY_REAL` 중
+  `[VWAP] volume_low`, `[RSI] volume_low`처럼 낮은 거래량 비율에서도 진입한 기록이 확인됨
+- #36의 momentum_policy 이중 게이트 제거는 유지하되, 해외 단타 특성상 최소 유동성 하한은
+  별도 안전장치로 남기는 것이 필요하다고 판단
+
+### 수정
+- `config/fixed_config.json`
+  - `liquidity_lab.overseas_min_strategy_volume_ratio=0.8` 추가
+- `liquidity_lab.py`
+  - 해외 신규 BUY 전략 신호라도 `volume_ratio < 0.8`이면 `overseas_volume_floor`로 WAIT
+  - watchlist 단계, 실주문 직전, 가상매수 직전 3곳에서 동일 기준 적용
+  - 차단 시 `cycle_log`/`event_log`에 volume_ratio와 기준값을 남겨 추후 성과 분석 가능
+- `tests/`
+  - 해외 조합 전략 저거래량 차단, 국내 미적용, 실주문/가상매수 최종 방어 회귀 테스트 추가
+
+### 기대 효과
+- 해외 저유동성 구간에서 불필요한 진입과 미체결/슬리피지 리스크 감소
+- 국내 전략은 기존처럼 유지해, 최근 상대적으로 양호했던 국내 매매 빈도는 과도하게 줄이지 않음
+
 ## [2026-07-10] 전략 전후 비교 시각 기준 지원
 
 ### 배경

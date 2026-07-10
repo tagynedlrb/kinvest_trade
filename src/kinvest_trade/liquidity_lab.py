@@ -888,6 +888,31 @@ class LiquidityLabService:
             return "recent_strategy_underperformance"
         return ""
 
+    def _entry_liquidity_block_reason(
+        self,
+        *,
+        market: str,
+        signal_snapshot: MovingAverageSnapshot | None,
+    ) -> str:
+        """Protect overseas scalping entries from low-flow strategy signals."""
+        if str(market or "").strip().lower() != "overseas":
+            return ""
+        if signal_snapshot is None:
+            return ""
+        min_ratio = float(
+            getattr(
+                self.config.liquidity_lab,
+                "overseas_min_strategy_volume_ratio",
+                0.0,
+            )
+            or 0.0
+        )
+        if min_ratio <= 0:
+            return ""
+        if signal_snapshot.volume_ratio < min_ratio:
+            return "overseas_volume_floor"
+        return ""
+
     @staticmethod
     def _extract_broker_order_no(response: object) -> str:
         if not isinstance(response, dict):
@@ -4241,6 +4266,27 @@ class LiquidityLabService:
                     strategy_flag=strategy_result.flag,
                     entry_by=strategy_result.entry_by,
                 )
+            liquidity_block_reason = self._entry_liquidity_block_reason(
+                market=market,
+                signal_snapshot=signal_snapshot,
+            )
+            if liquidity_block_reason:
+                return WatchTargetStatus(
+                    market=market,
+                    code=code,
+                    exchange_code=exchange_code,
+                    price=price,
+                    activity_score=activity_score,
+                    signal_score=entry_setup.score,
+                    action_bias="WAIT",
+                    signal_state="WAIT",
+                    ma_summary=self._ma_relation_summary(signal_snapshot),
+                    note=f"[{strategy_result.flag or '-'}] {liquidity_block_reason}",
+                    holding_qty=holding_qty,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_result.flag,
+                    entry_by=strategy_result.entry_by,
+                )
             if (
                 market == "overseas"
                 and strategy_result.flag in {"VWAP", "RSI"}
@@ -5346,6 +5392,44 @@ class LiquidityLabService:
                 "reason": block_reason,
             }
 
+        liquidity_block_reason = self._entry_liquidity_block_reason(
+            market="overseas",
+            signal_snapshot=signal_snapshot,
+        )
+        if liquidity_block_reason:
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason=liquidity_block_reason,
+                side="buy",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+                extra_detail={
+                    "min_volume_ratio": float(
+                        getattr(
+                            self.config.liquidity_lab,
+                            "overseas_min_strategy_volume_ratio",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                },
+            )
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+                "reason": liquidity_block_reason,
+            }
+
         config = self.config.liquidity_lab
         qty = config.overseas_test_order_qty
         buy_price = self._overseas_buy_order_price(candidate)
@@ -5857,6 +5941,42 @@ class LiquidityLabService:
                 "side": "buy",
                 "candidate": asdict(candidate),
                 "reason": block_reason,
+            }
+        liquidity_block_reason = self._entry_liquidity_block_reason(
+            market="overseas",
+            signal_snapshot=snapshot,
+        )
+        if liquidity_block_reason:
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason=liquidity_block_reason,
+                side="buy",
+                price=candidate.last_price,
+                signal_snapshot=snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+                extra_detail={
+                    "min_volume_ratio": float(
+                        getattr(
+                            self.config.liquidity_lab,
+                            "overseas_min_strategy_volume_ratio",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                },
+            )
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": liquidity_block_reason,
             }
         if config.use_slot_sizing:
             try:

@@ -270,6 +270,7 @@ class LiquidityLabConfig:
     overseas_take_profit_pct: float
     overseas_stop_loss_pct: float
     overseas_max_position_qty: int
+    overseas_min_strategy_volume_ratio: float
     overseas_block_standalone_vwap: bool
     overseas_block_standalone_rsi: bool
     overseas_block_standalone_vol: bool
@@ -848,6 +849,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             overseas_take_profit_pct=float(liquidity_lab_raw.get("overseas_take_profit_pct", 0.012)),
             overseas_stop_loss_pct=float(liquidity_lab_raw.get("overseas_stop_loss_pct", 0.008)),
             overseas_max_position_qty=int(liquidity_lab_raw.get("overseas_max_position_qty", 1)),
+            overseas_min_strategy_volume_ratio=float(
+                liquidity_lab_raw.get("overseas_min_strategy_volume_ratio", 0.8)
+            ),
             overseas_block_standalone_vwap=bool(
                 liquidity_lab_raw.get("overseas_block_standalone_vwap", False)
             ),

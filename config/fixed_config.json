@@ -213,6 +213,7 @@
         "overseas_take_profit_pct": 0.025,
         "overseas_stop_loss_pct": 0.010,
         "overseas_max_position_qty": 1,
+        "overseas_min_strategy_volume_ratio": 0.8,
         "overseas_block_standalone_vwap": true,
         "overseas_block_standalone_rsi": true,
         "overseas_block_standalone_vol": true,

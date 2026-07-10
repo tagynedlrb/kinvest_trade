@@ -58,6 +58,7 @@ class KisRestClient:
     DOMESTIC_FLUCTUATION_PATH = "/uapi/domestic-stock/v1/quotations/fluctuation-rank"
     DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     DOMESTIC_POSSIBLE_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+    DOMESTIC_ORDER_HISTORY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     DOMESTIC_ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     OVERSEAS_PRICE_PATH = "/uapi/overseas-price/v1/quotations/price"
     OVERSEAS_DAILY_PRICE_PATH = "/uapi/overseas-price/v1/quotations/dailyprice"
@@ -834,6 +835,75 @@ class KisRestClient:
             "ctx_area_nk200": payload.get("ctx_area_nk200", ""),
             "raw": payload,
         }
+
+    async def get_domestic_order_history(
+        self,
+        *,
+        symbol: str = "",
+        start_date: str,
+        end_date: str,
+        side_filter: str = "00",
+        fill_filter: str = "00",
+        query_order: str = "00",
+        query_type: str = "00",
+        exchange_code: str = "KRX",
+        order_branch_no: str = "",
+        order_no: str = "",
+        query_type_1: str = "",
+        fk100: str = "",
+        nk100: str = "",
+    ) -> dict[str, Any]:
+        cano, product_code = self.account_parts()
+        modern_tr_id = "TTTC0081R" if self.credentials.env == "prod" else "VTTC0081R"
+        legacy_tr_id = "TTTC8001R" if self.credentials.env == "prod" else "VTTC8001R"
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": product_code,
+            "INQR_STRT_DT": start_date,
+            "INQR_END_DT": end_date,
+            "SLL_BUY_DVSN_CD": side_filter,
+            "PDNO": symbol,
+            "CCLD_DVSN": fill_filter,
+            "INQR_DVSN": query_order,
+            "INQR_DVSN_3": query_type,
+            "ORD_GNO_BRNO": order_branch_no,
+            "ODNO": order_no,
+            "INQR_DVSN_1": query_type_1,
+            "CTX_AREA_FK100": fk100,
+            "CTX_AREA_NK100": nk100,
+        }
+        if exchange_code:
+            params["EXCG_ID_DVSN_CD"] = exchange_code
+
+        last_error: KisApiError | None = None
+        for tr_id in (modern_tr_id, legacy_tr_id):
+            try:
+                payload = await self._request(
+                    "GET",
+                    self.DOMESTIC_ORDER_HISTORY_PATH,
+                    tr_id,
+                    params=params,
+                )
+            except KisApiError as exc:
+                last_error = exc
+                continue
+
+            output1 = payload.get("output1")
+            if output1 is None:
+                output1 = payload.get("output")
+            rows = self._coerce_kis_list(output1)
+            return {
+                "orders": rows,
+                "summary": payload.get("output2") or {},
+                "ctx_area_fk100": payload.get("ctx_area_fk100", ""),
+                "ctx_area_nk100": payload.get("ctx_area_nk100", ""),
+                "tr_id": tr_id,
+                "raw": payload,
+            }
+
+        if last_error is not None:
+            raise last_error
+        raise KisApiError("domestic order history request failed")
 
     async def revise_or_cancel_overseas_order(
         self,

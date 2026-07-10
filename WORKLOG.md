@@ -1566,3 +1566,31 @@
 ### 기대 효과
 - 기존 주문 때문에 매도/매수 가능수량이 막히는 상황을 텔레그램에서 빠르게 확인 가능
 - 내부 접수 기록과 KIS 서버의 현재 미체결 상태를 한 화면에서 비교 가능
+
+## [2026-07-10] `/lab_orders` live 국내 미체결 섹션 추가
+
+### 추가 점검 결과
+- `/lab_orders`가 해외 live 미체결은 표시하지만 국내 미체결은 내부 `broker_order_events`
+  접수 기록만 보여주고 있었음
+- 운영 DB에는 국내 주문 접수 이벤트가 다수 남아 있어, 실제 KIS 서버에 미체결 주문이 남아 있는지
+  텔레그램에서 바로 확인할 필요가 있었음
+- KIS 공식 샘플 기준 국내 주문체결조회는
+  `/uapi/domestic-stock/v1/trading/inquire-daily-ccld`와 `TTTC0081R/VTTC0081R`를 사용
+  (`TTTC8001R/VTTC8001R`는 폴백으로 유지)
+- 실제 확인: 현재 국내 live 미체결 1건
+  `073240 금호타이어 매수 126주 @ 6,990원 주문번호=0000013669`
+
+### 수정 사항
+- `KisRestClient.get_domestic_order_history()` 추가
+  - 최신 TR ID 실패 시 구 TR ID로 폴백
+  - `output1`, `output`, `output2`, 연속조회 키를 통합 반환
+- `/lab_orders`에 `live 국내 미체결` 섹션 추가
+  - 당일 KIS 국내 주문체결조회에서 `CCLD_DVSN=02` 미체결 주문 조회
+  - `rmn_qty`가 없으면 `ord_qty - tot_ccld_qty - cncl_cfrm_qty - rjct_qty`로 잔여수량 계산
+  - 종목코드/종목명, 매수·매도미체결, 가격, 수량, 주문번호 표시
+- 주문 사유 표시에서 `domestic_buy`, `strategy_buy_signal`, `stale_exit_replace`를 한국어로 매핑
+
+### 기대 효과
+- 국내 미체결 주문이 주문가능수량을 막거나 오래 남아 있는 상황을 텔레그램에서 즉시 파악 가능
+- 내부 접수 기록과 KIS 서버 live 미체결 상태를 국내/해외 모두 같은 화면에서 비교 가능
+- 사용자 입장에서 `/lab_orders`가 “주문 접수 기록 + 실제 미체결 확인” 역할을 더 명확히 수행

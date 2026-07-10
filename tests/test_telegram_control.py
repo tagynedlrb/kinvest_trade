@@ -906,8 +906,8 @@ def test_build_recent_order_events_message_formats_submission_cancel_and_virtual
     assert "[KIS][주문기록]" in message
     assert "기준=주문 접수/취소/가상기록 (체결확정 아님)" in message
     assert "해외 MSFT virtual 가상매도기록 $300.0000 x1 상태=RECORDED 사유=손절" in message
-    assert "해외 AAPL 취소 $210.5000 x2 상태=CANCELED 사유=stale_exit_replace 주문번호=12346" in message
-    assert "해외 AAPL 매수접수 $210.5000 x2 상태=SUBMITTED 사유=strategy_buy_signal 주문번호=12345" in message
+    assert "해외 AAPL 취소 $210.5000 x2 상태=CANCELED 사유=미체결 정리 후 재주문 주문번호=12346" in message
+    assert "해외 AAPL 매수접수 $210.5000 x2 상태=SUBMITTED 사유=전략 매수 신호 주문번호=12345" in message
 
 
 def test_build_recent_order_events_message_includes_live_open_orders(tmp_path) -> None:
@@ -940,6 +940,85 @@ def test_build_recent_order_events_message_includes_live_open_orders(tmp_path) -
     assert "─── live 해외 미체결 ───" in message
     assert "해외 AAPL 매도미체결 $210.5000 x3 주문번호=999" in message
     assert "주문기록=없음" in message
+
+
+def test_build_recent_order_events_message_includes_live_domestic_open_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders_live_domestic.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    live_open_domestic_orders = [
+        {
+            "created_at": datetime(2026, 7, 10, 0, 59, 55, tzinfo=timezone.utc),
+            "symbol": "073240",
+            "name": "금호타이어",
+            "sll_buy_dvsn_cd": "02",
+            "open_qty": 126,
+            "order_price": 6990,
+            "order_no": "0000013669",
+        }
+    ]
+
+    message = controller._build_recent_order_events_message(
+        live_open_domestic_orders=live_open_domestic_orders
+    )
+
+    assert "─── live 국내 미체결 ───" in message
+    assert "국내 073240(금호타이어) 매수미체결 6,990원 x126 주문번호=0000013669" in message
+    assert "주문기록=없음" in message
+
+
+def test_parse_live_open_domestic_order_rows_filters_closed_and_computes_open_qty(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders_parse_live_domestic.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    parsed = controller._parse_live_open_domestic_order_rows(
+        [
+            {
+                "pdno": "005930",
+                "prdt_name": "삼성전자",
+                "ord_qty": "10",
+                "tot_ccld_qty": "10",
+                "rmn_qty": "0",
+                "odno": "closed",
+            },
+            {
+                "pdno": "073240",
+                "prdt_name": "금호타이어",
+                "ord_qty": "126",
+                "tot_ccld_qty": "0",
+                "rmn_qty": "",
+                "sll_buy_dvsn_cd": "02",
+                "ord_unpr": "6,990",
+                "ord_dt": "20260710",
+                "ord_tmd": "095955",
+                "odno": "open",
+            },
+        ]
+    )
+
+    assert len(parsed) == 1
+    assert parsed[0]["symbol"] == "073240"
+    assert parsed[0]["name"] == "금호타이어"
+    assert parsed[0]["open_qty"] == 126
+    assert parsed[0]["order_no"] == "open"
+    assert parsed[0]["order_price"] == 6990.0
 
 
 def test_parse_live_open_overseas_order_rows_filters_zero_open_qty(tmp_path) -> None:
@@ -1010,6 +1089,7 @@ def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
         notifier=notifier,
     )
     controller._load_live_open_overseas_orders = lambda: asyncio.sleep(0, result=[])  # type: ignore[method-assign]
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[])  # type: ignore[method-assign]
 
     asyncio.run(
         controller._handle_update(

@@ -1613,8 +1613,15 @@ class TelegramLiquidityLabController:
         )
 
     async def _send_recent_order_events(self) -> None:
+        live_open_domestic_orders: list[dict] | None = None
+        live_open_domestic_error = ""
         live_open_orders: list[dict] | None = None
         live_open_error = ""
+        try:
+            live_open_domestic_orders = await self._load_live_open_domestic_orders()
+        except Exception as exc:  # noqa: BLE001
+            live_open_domestic_error = str(exc)
+            _logger.warning("live_open_domestic_orders_failed error=%s", exc)
         try:
             live_open_orders = await self._load_live_open_overseas_orders()
         except Exception as exc:  # noqa: BLE001
@@ -1622,6 +1629,8 @@ class TelegramLiquidityLabController:
             _logger.warning("live_open_overseas_orders_failed error=%s", exc)
         await self.notifier.send(
             self._build_recent_order_events_message(
+                live_open_domestic_orders=live_open_domestic_orders,
+                live_open_domestic_error=live_open_domestic_error,
                 live_open_orders=live_open_orders,
                 live_open_error=live_open_error,
             )
@@ -1631,6 +1640,8 @@ class TelegramLiquidityLabController:
         self,
         *,
         limit: int = 12,
+        live_open_domestic_orders: list[dict] | None = None,
+        live_open_domestic_error: str = "",
         live_open_orders: list[dict] | None = None,
         live_open_error: str = "",
     ) -> str:
@@ -1640,6 +1651,15 @@ class TelegramLiquidityLabController:
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
             "기준=주문 접수/취소/가상기록 (체결확정 아님)",
         ]
+        if live_open_domestic_orders is not None or live_open_domestic_error:
+            lines.append("─── live 국내 미체결 ───")
+            if live_open_domestic_error:
+                lines.append(f"조회실패={live_open_domestic_error[:80]}")
+            elif not live_open_domestic_orders:
+                lines.append("미체결=없음")
+            else:
+                for row in live_open_domestic_orders[:8]:
+                    lines.append(self._format_live_open_domestic_order_line(row))
         if live_open_orders is not None or live_open_error:
             lines.append("─── live 해외 미체결 ───")
             if live_open_error:
@@ -1684,6 +1704,91 @@ class TelegramLiquidityLabController:
                 parts.append(f"원시구분={side}")
             lines.append(" ".join(parts))
         return "\n".join(lines)
+
+    async def _load_live_open_domestic_orders(self, *, limit: int = 12) -> list[dict]:
+        now_kst = datetime.now(timezone.utc).astimezone(KST)
+        trade_date = now_kst.strftime("%Y%m%d")
+        async with KisRestClient(self.config.credentials) as client:
+            history = await client.get_domestic_order_history(
+                symbol="",
+                start_date=trade_date,
+                end_date=trade_date,
+                side_filter="00",
+                fill_filter="02",
+                query_order="00",
+                query_type="00",
+                exchange_code="KRX",
+            )
+        return self._parse_live_open_domestic_order_rows(history.get("orders", []), limit=limit)
+
+    def _parse_live_open_domestic_order_rows(self, rows: list[dict], *, limit: int = 12) -> list[dict]:
+        parsed: list[dict] = []
+        for row in rows:
+            open_qty = parse_kis_number(row.get("rmn_qty"))
+            if open_qty <= 0:
+                order_qty = parse_kis_number(row.get("ord_qty"))
+                filled_qty = parse_kis_number(row.get("tot_ccld_qty"))
+                canceled_qty = parse_kis_number(row.get("cncl_cfrm_qty"))
+                rejected_qty = parse_kis_number(row.get("rjct_qty"))
+                open_qty = max(0, order_qty - filled_qty - canceled_qty - rejected_qty)
+            if open_qty <= 0:
+                continue
+            if str(row.get("cncl_yn", "") or "").strip().upper() == "Y":
+                continue
+            item = dict(row)
+            item["open_qty"] = open_qty
+            item["symbol"] = str(row.get("pdno") or "").strip().upper()
+            item["name"] = str(row.get("prdt_name") or "").strip()
+            item["order_no"] = str(row.get("odno") or "").strip()
+            item["order_price"] = self._parse_float(row.get("ord_unpr"))
+            item["created_at"] = self._parse_domestic_order_history_timestamp(row)
+            parsed.append(item)
+        parsed.sort(
+            key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        return parsed[:limit]
+
+    @staticmethod
+    def _parse_domestic_order_history_timestamp(row: dict) -> datetime | None:
+        ord_dt = str(row.get("ord_dt") or "").strip()
+        ord_tmd = str(row.get("ord_tmd") or "").strip()
+        if not ord_dt or not ord_tmd:
+            return None
+        ord_tmd = ord_tmd.zfill(6)[:6]
+        try:
+            parsed = datetime.strptime(f"{ord_dt}{ord_tmd}", "%Y%m%d%H%M%S")
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=KST).astimezone(timezone.utc)
+
+    def _format_live_open_domestic_order_line(self, row: dict) -> str:
+        created_at = row.get("created_at")
+        time_text = format_kst_korean(created_at) if isinstance(created_at, datetime) else "-"
+        symbol = str(row.get("symbol") or row.get("pdno") or "-").upper()
+        name = str(row.get("name") or row.get("prdt_name") or "").strip()
+        symbol_text = f"{symbol}({name})" if name else symbol
+        side_code = str(row.get("sll_buy_dvsn_cd") or "").strip()
+        side_name = str(row.get("sll_buy_dvsn_cd_name") or "").strip()
+        if side_code == "01" or side_name == "매도":
+            side_text = "매도미체결"
+        elif side_code == "02" or side_name == "매수":
+            side_text = "매수미체결"
+        else:
+            side_text = "미체결"
+        qty = int(row.get("open_qty") or parse_kis_number(row.get("rmn_qty")))
+        price = self._parse_float(row.get("order_price") or row.get("ord_unpr"))
+        price_text = "-" if price <= 0 else self._format_price(price, "KRW")
+        order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+        parts = [
+            f"{time_text} 국내 {symbol_text}",
+            side_text,
+            price_text,
+            f"x{qty}",
+        ]
+        if order_no:
+            parts.append(f"주문번호={order_no}")
+        return " ".join(parts)
 
     async def _load_live_open_overseas_orders(self, *, limit: int = 12) -> list[dict]:
         now_kst = datetime.now(timezone.utc).astimezone(KST)

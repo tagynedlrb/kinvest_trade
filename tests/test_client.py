@@ -165,6 +165,55 @@ def test_get_overseas_minute_chart_reads_output2_head_when_present(tmp_path: Pat
     assert rows == [{"xymd": "20260626", "xhms": "110000", "last": "219.53"}]
 
 
+def test_get_domestic_order_history_uses_modern_daily_ccld_endpoint(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        assert method == "GET"
+        assert path == client.DOMESTIC_ORDER_HISTORY_PATH
+        assert tr_id == "VTTC0081R"
+        assert kwargs["params"]["CANO"] == "12345678"
+        assert kwargs["params"]["ACNT_PRDT_CD"] == "01"
+        assert kwargs["params"]["INQR_STRT_DT"] == "20260710"
+        assert kwargs["params"]["INQR_END_DT"] == "20260710"
+        assert kwargs["params"]["SLL_BUY_DVSN_CD"] == "00"
+        assert kwargs["params"]["CCLD_DVSN"] == "02"
+        assert kwargs["params"]["EXCG_ID_DVSN_CD"] == "KRX"
+        return {
+            "output1": [{"pdno": "073240", "rmn_qty": "126"}],
+            "output2": {"tot_ord_qty": "126"},
+            "ctx_area_fk100": "",
+            "ctx_area_nk100": "",
+        }
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    history = asyncio.run(
+        client.get_domestic_order_history(
+            start_date="20260710",
+            end_date="20260710",
+            fill_filter="02",
+        )
+    )
+
+    assert history["tr_id"] == "VTTC0081R"
+    assert history["orders"] == [{"pdno": "073240", "rmn_qty": "126"}]
+    assert history["summary"] == {"tot_ord_qty": "126"}
+
+
 def test_ensure_token_retries_after_connect_timeout(tmp_path: Path) -> None:
     credentials = KisCredentials(
         env="vps",

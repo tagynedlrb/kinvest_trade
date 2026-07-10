@@ -2710,6 +2710,9 @@ class LiquidityLabService:
     def _overseas_speculative_reasons(self, candidate: OverseasScanResult) -> list[str]:
         config = self.config.liquidity_lab
         reasons: list[str] = []
+        structured_reason = self._overseas_structured_symbol_reason(candidate.symbol)
+        if structured_reason:
+            reasons.append(structured_reason)
         if candidate.last_price < config.overseas_min_price_usd:
             reasons.append("low_price_usd")
         if candidate.volume < config.overseas_min_volume:
@@ -2721,6 +2724,16 @@ class LiquidityLabService:
         if approx_daily_turnover < min_daily_turnover:
             reasons.append("thin_turnover")
         return reasons
+
+    @staticmethod
+    def _overseas_structured_symbol_reason(symbol: str) -> str:
+        normalized = symbol.strip().upper().replace(".", "").replace("-", "")
+        if len(normalized) >= 5 and normalized.endswith("U"):
+            return "structured_unit_symbol"
+        warrant_suffixes = ("WTS", "WS", "WT", "W", "RT", "R")
+        if len(normalized) >= 5 and normalized.endswith(warrant_suffixes):
+            return "structured_warrant_or_right_symbol"
+        return ""
 
     def _overseas_exit_price_guard_reason(
         self,

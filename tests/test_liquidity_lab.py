@@ -169,6 +169,33 @@ def test_overseas_speculative_reasons_flag_thin_turnover() -> None:
     assert "thin_turnover" in reasons
 
 
+def test_overseas_speculative_reasons_exclude_structured_symbols() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_min_price_usd": 5.0,
+                    "overseas_min_volume": 500_000,
+                    "overseas_max_spread_pct": 0.003,
+                },
+            )()
+        },
+    )()
+
+    unit = OverseasScanResult("CXIIU", "NASD", 10.0, 9.99, 10.01, 0.001, 1.0, 800_000, 0, 0.0, 1.0)
+    warrant = OverseasScanResult("ABCDW", "NASD", 10.0, 9.99, 10.01, 0.001, 1.0, 800_000, 0, 0.0, 1.0)
+    regular = OverseasScanResult("BIDU", "NASD", 100.0, 99.9, 100.1, 0.001, 1.0, 800_000, 0, 0.0, 1.0)
+
+    assert "structured_unit_symbol" in service._overseas_speculative_reasons(unit)
+    assert "structured_warrant_or_right_symbol" in service._overseas_speculative_reasons(warrant)
+    assert service._overseas_speculative_reasons(regular) == []
+
+
 def test_select_overseas_exit_target_prioritizes_stop_loss() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(

@@ -1654,7 +1654,8 @@ def test_build_recent_order_events_message_formats_submission_cancel_and_virtual
     assert "[KIS][주문기록]" in message
     assert "기준=주문 접수/취소/가상기록 (체결확정 아님)" in message
     assert "─── 접수 후 체결확정 추적 필요 ───" in message
-    assert "해외 AAPL 매수접수 $210.5000 x2 확인필요=MTS/잔고 주문번호=12345" in message
+    assert "해외 AAPL 매수접수 $210.5000 x2 확인필요=MTS/잔고 경과=" in message
+    assert "주문번호=12345" in message
     assert "국내 073240 취소거부 6,990원 x126 상태=REJECTED" in message
     assert "오류=모의투자 장종료 입니다." in message
     assert "해외 MSFT virtual 가상매도기록 $300.0000 x1 상태=RECORDED 사유=손절" in message
@@ -1738,7 +1739,8 @@ def test_build_recent_order_events_message_marks_audit_order_live_open_status(tm
         live_open_orders=[]
     )
 
-    assert "해외 AAPL 매도접수 $210.5000 x3 확인필요=MTS/잔고 주문번호=999 브로커상태=미체결" in message
+    assert "해외 AAPL 매도접수 $210.5000 x3 확인필요=MTS/잔고 경과=" in message
+    assert "주문번호=999 브로커상태=미체결" in message
     assert "브로커상태=미체결목록없음" in closed_or_filled_message
 
 

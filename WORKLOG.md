@@ -2998,3 +2998,24 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_handle_start_like_command_warns_about_virtual_position_cap tests/test_telegram_control.py::test_handle_start_like_command_warns_about_live_open_orders -q`
   → 통과
 - `python3 -m pytest tests -q` → 438개 통과
+
+## [2026-07-11] `/lab_orders` 체결확정 감사 경과 표시
+
+### 배경
+- 운영 DB에 국내 `SUBMITTED` 주문 접수 기록이 다수 남아 있고, DB만으로는
+  실제 체결 확정 여부를 알 수 없다.
+- 기존 `/lab_orders`의 `접수 후 체결확정 추적 필요` 섹션은 주문 시각은 보여줬지만,
+  경과 시간이 직접 표시되지 않아 오래된 접수 기록인지 즉시 판단하기 어려웠다.
+
+### 수정
+- `telegram_control.py`
+  - 체결확정 감사 라인에 `경과=11시간26분`, `주의=장기미체결` 형식 표시 추가
+- `tests/test_telegram_control.py`
+  - 주문 감사 메시지 테스트를 새 경과 표시 포맷에 맞게 갱신
+
+### 검증
+- 운영 DB 기준 `/lab_orders` 샘플:
+  `국내 360750 매도접수 ... 확인필요=MTS/잔고 경과=11시간26분 주의=장기미체결`
+- `python3 -m pytest tests/test_telegram_control.py::test_build_recent_order_events_message_marks_audit_order_live_open_status tests/test_telegram_control.py::test_build_recent_order_events_message_formats_submission_cancel_and_virtual -q`
+  → 통과
+- `python3 -m pytest tests -q` → 438개 통과

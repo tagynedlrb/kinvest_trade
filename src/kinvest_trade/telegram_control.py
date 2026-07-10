@@ -4026,6 +4026,7 @@ class TelegramLiquidityLabController:
             f"x{qty}",
             "확인필요=MTS/잔고",
         ]
+        parts.extend(self._format_open_order_age_parts(created_at))
         if order_no:
             parts.append(f"주문번호={order_no}")
             live_key = (market, order_no)

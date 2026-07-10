@@ -1715,6 +1715,21 @@ class TelegramLiquidityLabController:
             return str(visible_count)
         return f"{visible_count} (숨김 {hidden_count})"
 
+    @staticmethod
+    def _format_recent_age_text(then: datetime | None, *, now: datetime | None = None) -> str:
+        if then is None:
+            return ""
+        current = now or datetime.now(timezone.utc)
+        age_min = int(max((current - ensure_timezone(then)).total_seconds(), 0.0) // 60)
+        if age_min <= 0:
+            return "방금"
+        if age_min < 60:
+            return f"{age_min}분전"
+        age_hours = age_min // 60
+        if age_hours < 48:
+            return f"{age_hours}시간전"
+        return f"{age_hours // 24}일전"
+
     def _build_recent_sell_block_status_line(self, *, lookback_hours: int = 12) -> str:
         repository = getattr(self, "repository", None)
         if repository is None or not hasattr(repository, "list_event_log"):
@@ -1771,9 +1786,13 @@ class TelegramLiquidityLabController:
         parts: list[str] = []
         for (market, symbol, reason), item in ranked[:3]:
             count = int(item["count"])
+            latest_text = self._format_recent_age_text(
+                item["latest"] if isinstance(item.get("latest"), datetime) else None
+            )
+            latest_suffix = f" 최근={latest_text}" if latest_text else ""
             parts.append(
                 f"{format_market_korean(market)} {symbol} "
-                f"{reason_labels.get(reason, reason)} {count}회"
+                f"{reason_labels.get(reason, reason)} {count}회{latest_suffix}"
             )
         return f"매도장애({lookback_hours}h)={' / '.join(parts)} 확인=/lab_orders"
 

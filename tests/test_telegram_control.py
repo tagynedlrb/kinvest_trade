@@ -533,9 +533,29 @@ def test_build_status_message_shows_recent_sell_block_events(tmp_path) -> None:
 
     message = controller._build_status_message()
 
-    assert "매도장애(12h)=해외 MSEX 매도가능0 3회" in message
-    assert "국내 069500 주문거부 1회" in message
+    assert "매도장애(12h)=해외 MSEX 매도가능0 3회 최근=방금" in message
+    assert "국내 069500 주문거부 1회 최근=방금" in message
     assert "확인=/lab_orders" in message
+
+
+def test_format_recent_age_text() -> None:
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+    assert TelegramLiquidityLabController._format_recent_age_text(now, now=now) == "방금"
+    assert (
+        TelegramLiquidityLabController._format_recent_age_text(
+            now - timedelta(minutes=17),
+            now=now,
+        )
+        == "17분전"
+    )
+    assert (
+        TelegramLiquidityLabController._format_recent_age_text(
+            now - timedelta(hours=9, minutes=30),
+            now=now,
+        )
+        == "9시간전"
+    )
 
 
 def test_build_status_message_shows_live_open_order_counts() -> None:

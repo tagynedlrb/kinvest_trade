@@ -2906,3 +2906,24 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_shows_virtual_position_cap tests/test_telegram_control.py::test_build_portfolio_message_shows_virtual_position_cap -q`
   → 통과
 - `python3 -m pytest tests -q` → 433개 통과
+
+## [2026-07-11] `/lab_status` 매도장애 최근 발생 시각 표시
+
+### 배경
+- `매도장애(12h)`는 최근 12시간 `event_log` 집계라서, 이미 9시간 지난
+  과거 장애도 현재 진행 중인 장애처럼 보일 수 있었다.
+- MSEX `매도가능0` 사례도 마지막 이벤트가 약 9시간 전이었으나 상태 메시지에는
+  경과 시간이 표시되지 않았다.
+
+### 수정
+- `telegram_control.py`
+  - 매도장애 항목에 `최근=방금/17분전/9시간전/1일전` 형식의 경과 표시 추가
+- `tests/test_telegram_control.py`
+  - 매도장애 상태 메시지와 경과 포맷 테스트 추가
+
+### 검증
+- 운영 DB 기준 상태 메시지:
+  `매도장애(12h)=해외 MSEX 매도가능0 20회 최근=9시간전 ...`
+- `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_shows_recent_sell_block_events tests/test_telegram_control.py::test_format_recent_age_text -q`
+  → 통과
+- `python3 -m pytest tests -q` → 434개 통과

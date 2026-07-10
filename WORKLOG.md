@@ -1,5 +1,28 @@
 # WORKLOG
 
+## [2026-07-10] WAIT 병목 리포트 추가
+
+### 배경
+- 최근 72시간 분석에서 `WAIT`의 대부분이 `volume_low`였지만,
+  기존 리포트는 시장/전략별 병목을 바로 보여주지 않아 SQL로 직접 확인해야 했음
+- 매매 빈도 저하가 안전한 필터 때문인지, 과도한 보수화 때문인지 빠르게 판단하려면
+  운영 중 텔레그램에서 병목을 볼 수 있어야 함
+
+### 수정
+- `trade_analysis.py`
+  - `summarize_wait_bottlenecks()` 추가
+  - `WAIT` 로그를 시장, 전략, 사유별로 묶고 평균 `volume_ratio`, RSI, 모멘텀 표시
+- `scripts/analyze_trades.py`
+  - `--wait-hours`, `--wait-limit` 옵션 추가
+- `telegram_control.py`
+  - `/lab_report wait [시간]` 명령 추가
+- `README.md`, `tests/`
+  - 사용법과 회귀 테스트 추가
+
+### 기대 효과
+- `/lab_report wait 72`로 저빈도 원인을 즉시 확인 가능
+- 향후 `overseas_volume_floor`, `volume_low`, `trend_down` 중 어느 병목이 커지는지 빠르게 판단 가능
+
 ## [2026-07-10] 해외 저거래량 전략 진입 차단
 
 ### 배경

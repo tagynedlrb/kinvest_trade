@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -43,6 +43,14 @@ def _format_kst_cutoff(cutoff_kst: datetime) -> str:
 def _cutoff_kst_to_utc_iso(cutoff_date: str) -> str:
     cutoff_kst = _parse_kst_cutoff(cutoff_date)
     return cutoff_kst.astimezone(timezone.utc).isoformat()
+
+
+def _fmt_optional(value: object, *, digits: int = 2, suffix: str = "") -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{number:.{digits}f}{suffix}"
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -140,6 +148,59 @@ def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
                     f"  {market:<8} {strategy:<15} {cnt:>3}건  "
                     f"net={net * 100:+.3f}%  승률={win_rate:.0f}%"
                 )
+        return "\n".join(result)
+    finally:
+        conn.close()
+
+
+def summarize_wait_bottlenecks(
+    db_path: Path | str,
+    *,
+    hours: int = 72,
+    limit: int = 12,
+) -> str:
+    """Summarize WAIT rows by market, strategy, and reason."""
+    db_path_obj = Path(db_path)
+    lookback_hours = max(1, int(hours or 72))
+    row_limit = max(1, int(limit or 12))
+    cutoff_utc = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+    conn = sqlite3.connect(db_path_obj)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                market,
+                COALESCE(NULLIF(strategy_flag, ''), 'N/A') AS strategy,
+                COALESCE(NULLIF(action_reason, ''), 'N/A') AS reason,
+                COUNT(*) AS cnt,
+                AVG(volume_ratio) AS avg_volume_ratio,
+                AVG(rsi14) AS avg_rsi14,
+                AVG(intraday_momentum) * 100.0 AS avg_momentum_pct
+            FROM cycle_log
+            WHERE action_bias = 'WAIT'
+              AND logged_at >= ?
+            GROUP BY market, strategy, reason
+            ORDER BY cnt DESC, market ASC, strategy ASC, reason ASC
+            LIMIT ?
+            """,
+            (cutoff_utc, row_limit),
+        ).fetchall()
+        result = [f"[WAIT 병목] 범위=최근 {lookback_hours}시간"]
+        if not rows:
+            result.append("  병목=없음")
+            return "\n".join(result)
+        for row in rows:
+            result.append(
+                "  "
+                f"{str(row['market'] or '-'):<8} "
+                f"{str(row['strategy'] or 'N/A'):<12} "
+                f"{str(row['reason'] or 'N/A'):<24} "
+                f"{int(row['cnt'] or 0):>5}건 "
+                f"vr={_fmt_optional(row['avg_volume_ratio'], digits=2)} "
+                f"rsi={_fmt_optional(row['avg_rsi14'], digits=1)} "
+                f"mom={_fmt_optional(row['avg_momentum_pct'], digits=3, suffix='%')}"
+            )
         return "\n".join(result)
     finally:
         conn.close()

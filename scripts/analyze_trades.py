@@ -7,7 +7,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from kinvest_trade.trade_analysis import _net_pnl_pct_expr, compare_before_after
+from kinvest_trade.trade_analysis import (
+    _net_pnl_pct_expr,
+    compare_before_after,
+    summarize_wait_bottlenecks,
+)
 
 
 def _where_sql(column: str, since: str) -> tuple[str, list[str]]:
@@ -28,6 +32,8 @@ def main() -> None:
         "--compare-date",
         help="기준일/시각 전후 SELL_REAL 전략 성과 비교 (KST, YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM)",
     )
+    parser.add_argument("--wait-hours", type=int, default=0, help="최근 N시간 WAIT 병목 요약")
+    parser.add_argument("--wait-limit", type=int, default=12, help="WAIT 병목 출력 행 수")
     args = parser.parse_args()
 
     db_path = Path(args.db_path)
@@ -41,6 +47,15 @@ def main() -> None:
         except ValueError as exc:
             print(f"기준일 형식 오류: {exc}", file=sys.stderr)
             raise SystemExit(2) from exc
+        return
+    if args.wait_hours > 0:
+        print(
+            summarize_wait_bottlenecks(
+                db_path,
+                hours=args.wait_hours,
+                limit=args.wait_limit,
+            )
+        )
         return
 
     since = ""

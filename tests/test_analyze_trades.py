@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.analyze_trades import compare_before_after
+from datetime import datetime, timedelta, timezone
+
+from scripts.analyze_trades import compare_before_after, summarize_wait_bottlenecks
 from kinvest_trade.repository import SqliteRepository
 
 
@@ -129,3 +131,52 @@ def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:
     assert "domestic VWAP" in output
     assert "net=-0.500%" in output
     assert "승률=50%" in output
+
+
+def test_summarize_wait_bottlenecks_groups_recent_wait_rows(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "wait_bottleneck.db")
+    now = datetime.now(timezone.utc)
+    repository.save_cycle_log(
+        logged_at=now.isoformat(),
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="WAIT",
+        action_reason="volume_low",
+        strategy_flag="VWAP",
+        volume_ratio=0.25,
+        rsi14=55.0,
+        intraday_momentum=-0.001,
+    )
+    repository.save_cycle_log(
+        logged_at=(now - timedelta(minutes=5)).isoformat(),
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="WAIT",
+        action_reason="volume_low",
+        strategy_flag="VWAP",
+        volume_ratio=0.35,
+        rsi14=57.0,
+        intraday_momentum=0.002,
+    )
+    repository.save_cycle_log(
+        logged_at=(now - timedelta(hours=30)).isoformat(),
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_bias="WAIT",
+        action_reason="trend_down",
+        strategy_flag="RSI",
+        volume_ratio=2.0,
+    )
+
+    output = summarize_wait_bottlenecks(repository.db_path, hours=24, limit=3)
+
+    assert "[WAIT 병목] 범위=최근 24시간" in output
+    assert "overseas VWAP" in output
+    assert "volume_low" in output
+    assert "2건" in output
+    assert "vr=0.30" in output
+    assert "rsi=56.0" in output
+    assert "domestic" not in output

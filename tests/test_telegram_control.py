@@ -1500,6 +1500,52 @@ def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> N
     assert "overseas RSI" in message
 
 
+def test_lab_report_wait_command_reports_wait_bottlenecks(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_wait_report.db")
+    now = datetime.now(timezone.utc)
+    repository.save_cycle_log(
+        logged_at=now.isoformat(),
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="WAIT",
+        action_reason="volume_low",
+        strategy_flag="VWAP",
+        volume_ratio=0.25,
+        rsi14=55.0,
+        intraday_momentum=-0.001,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_report wait 24",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][전략리포트]" in message
+    assert "기준=cycle_log WAIT" in message
+    assert "[WAIT 병목] 범위=최근 24시간" in message
+    assert "overseas VWAP" in message
+    assert "volume_low" in message
+
+
 def test_lab_guard_command_reports_current_strategy_guard_state(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_guard_command.db")
     logged_at = datetime.now(timezone.utc).isoformat()

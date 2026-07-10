@@ -371,6 +371,18 @@ class SqliteRepository:
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "lab_symbol_state", "snapshot_json", "TEXT")
+            self._backfill_non_trade_cycle_log_flags(conn)
+
+    @staticmethod
+    def _backfill_non_trade_cycle_log_flags(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            UPDATE cycle_log
+            SET is_session_trade = 0
+            WHERE action_bias NOT IN ('BUY_REAL', 'SELL_REAL')
+              AND COALESCE(is_session_trade, 1) != 0
+            """
+        )
 
     @staticmethod
     def _ensure_column(

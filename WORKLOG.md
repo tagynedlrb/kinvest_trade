@@ -1943,3 +1943,27 @@
 
 ### 기대 효과
 - 실제 운영 주기와 문서 설명이 달라 사용자가 감시 빈도/스캔 범위를 오해하는 문제 감소
+
+## [2026-07-10] 기존 cycle_log 비거래 플래그 보정
+
+### 배경
+- 신규 감시/HOLD/WAIT/SKIP 로그는 `is_session_trade=0`으로 저장되도록 수정했지만,
+  과거 DB에는 `HOLD`, `WAIT`, `BUY`, `SELL`, `SKIP` 감시 로그가
+  `is_session_trade=1`로 남아 있었다.
+- 누적 전략 분석에서 감시 신호를 실제 거래처럼 오해할 수 있어
+  기존 데이터도 동일 기준으로 보정할 필요가 있었다.
+
+### 수정 사항
+- `repository.py`
+  - 초기화 시 `cycle_log.action_bias NOT IN ('BUY_REAL', 'SELL_REAL')`인 기존 행의
+    `is_session_trade`를 0으로 보정
+- `tests/test_repository.py`
+  - 기존 비거래 로그 플래그가 재초기화 시 0으로 보정되고,
+    `BUY_REAL`/`SELL_REAL`은 유지되는지 검증
+- 실제 `data/trading.db` 확인:
+  - `SKIP/HOLD/WAIT/BUY/SELL`의 `session_trade_1` → 0
+  - `BUY_REAL`은 169건 유지
+  - `SELL_REAL`은 기존 세션 소유 판정대로 89건 유지
+
+### 검증
+- `python3 -m pytest tests -q` → 370개 통과

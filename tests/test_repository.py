@@ -162,6 +162,39 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
     assert sell_rows[0]["exit_by"] == "VWAP"
 
 
+def test_repository_backfills_non_trade_cycle_log_flags(tmp_path) -> None:
+    db_path = tmp_path / "test.db"
+    repository = SqliteRepository(db_path)
+    for action_bias in ("HOLD", "WAIT", "BUY", "SELL", "SKIP", "BUY_REAL", "SELL_REAL"):
+        repository.save_cycle_log(
+            logged_at="2026-07-01T00:00:00+00:00",
+            market="overseas",
+            symbol=action_bias,
+            exchange_code="NASD",
+            action_bias=action_bias,
+            action_reason="legacy",
+            is_session_trade=1,
+        )
+
+    SqliteRepository(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT action_bias, is_session_trade FROM cycle_log"
+            ).fetchall()
+        }
+
+    assert rows["HOLD"] == 0
+    assert rows["WAIT"] == 0
+    assert rows["BUY"] == 0
+    assert rows["SELL"] == 0
+    assert rows["SKIP"] == 0
+    assert rows["BUY_REAL"] == 1
+    assert rows["SELL_REAL"] == 1
+
+
 def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
 

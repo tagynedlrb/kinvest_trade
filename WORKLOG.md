@@ -2273,3 +2273,27 @@
 - `0162fd8` Surface recent sell blocks in status
 - `3d07407` Document status risk summaries
 - `049c68f` Throttle telegram startup notifications
+
+## [2026-07-10] `/lab_status` 신호 캐시 요약 추가
+
+### 배경
+- 거래 루프가 `stopped`인 상태에서 마지막 감시 데이터는 286분 이상 지연되어 있었고,
+  마지막 watch target 16개 모두 `stale_signal_cache` 기반이었다.
+- 기존 `/lab_status`는 감시데이터 지연 시간은 표시했지만,
+  개별 감시 종목 신호가 캐시 기반인지 여부는 `/lab_watchlist`를 봐야 알 수 있었다.
+
+### 수정 사항
+- `telegram_control.py`
+  - `/lab_status`에 `신호캐시=16/16 전체 캐시 확인=/lab_watchlist` 형태의 요약 추가
+  - 일부 종목만 캐시 기반이면 `일부 캐시`로 표시
+- `tests/test_telegram_control.py`
+  - stale signal cache watch target이 status에 요약되는지 검증
+
+### 검증
+- 실제 runtime 렌더링:
+  - `감시데이터=288분 전 (루프 stopped)`
+  - `신호캐시=16/16 전체 캐시 확인=/lab_watchlist`
+- `python3 -m pytest tests -q` → 393개 통과
+
+### 커밋
+- `a1057f5` Show stale signal cache count in status

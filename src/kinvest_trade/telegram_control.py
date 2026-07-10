@@ -215,6 +215,7 @@ class TelegramLiquidityLabController:
         self.lab_service: LiquidityLabService | None = None
         self.manual_overseas_pool: list[dict[str, str]] | None = None
         self._last_auto_stale_domestic_cancel_at: datetime | None = None
+        self._last_auto_stale_overseas_cancel_at: datetime | None = None
 
     async def run(self) -> None:
         _acquire_pid_lock()
@@ -285,6 +286,7 @@ class TelegramLiquidityLabController:
         while True:
             await self._drain_finished_cycle()
             await self._maybe_auto_cancel_stale_domestic_orders()
+            await self._maybe_auto_cancel_stale_overseas_orders()
             if self.mode == "running" and self.current_task is None:
                 now = datetime.now(timezone.utc)
                 if self.next_run_at is None or now >= self.next_run_at:
@@ -1927,6 +1929,166 @@ class TelegramLiquidityLabController:
                 result.append(row)
         return result
 
+    async def _maybe_auto_cancel_stale_overseas_orders(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        current = now or datetime.now(timezone.utc)
+        env = str(getattr(self.config.credentials, "env", "vps") or "vps")
+        if not is_us_orderable_session_for_env(current, env) or is_nyse_holiday():
+            return False
+        last_run = self._last_auto_stale_overseas_cancel_at
+        if last_run is not None:
+            elapsed_min = (current - last_run).total_seconds() / 60
+            if elapsed_min < 10:
+                return False
+        self._last_auto_stale_overseas_cancel_at = current
+        try:
+            live_open_orders = await self._load_live_open_overseas_orders()
+        except Exception as exc:  # noqa: BLE001
+            self.repository.save_event(
+                event_type="maintenance_skip",
+                market="overseas",
+                symbol="",
+                detail={
+                    "reason": "auto_stale_overseas_cancel_lookup_failed",
+                    "error": str(exc)[:120],
+                },
+                cycle_no=self.current_cycle_no,
+                session_id=self.active_session_id,
+            )
+            return False
+
+        stale_orders = self._filter_stale_live_open_orders(live_open_orders, now=current)
+        bot_owned_stale_orders = self._filter_bot_submitted_overseas_orders(stale_orders)
+        if not bot_owned_stale_orders:
+            return False
+        await self._execute_cancel_stale_overseas_orders(
+            source="auto",
+            candidate_orders=bot_owned_stale_orders,
+        )
+        return True
+
+    def _filter_bot_submitted_overseas_orders(self, rows: list[dict]) -> list[dict]:
+        if not rows:
+            return []
+        submitted_events: dict[str, dict] = {}
+        for event in self.repository.list_broker_order_events(limit=500):
+            order_no = str(event.get("broker_order_no", "") or "").strip()
+            if (
+                order_no
+                and str(event.get("market", "") or "").lower() == "overseas"
+                and str(event.get("status", "") or "").upper() == "SUBMITTED"
+                and str(event.get("order_kind", "") or "").lower() != "cancel"
+            ):
+                submitted_events[order_no] = event
+        if not submitted_events:
+            return []
+        result: list[dict] = []
+        for row in rows:
+            order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+            event = submitted_events.get(order_no)
+            if event is None:
+                continue
+            item = dict(row)
+            if not str(item.get("exchange_code") or "").strip():
+                item["exchange_code"] = str(event.get("exchange_code") or "NASD").strip().upper()
+            if not str(item.get("side") or "").strip():
+                item["side"] = str(event.get("side") or "").strip().upper()
+            result.append(item)
+        return result
+
+    async def _execute_cancel_stale_overseas_orders(
+        self,
+        *,
+        source: str = "auto",
+        candidate_orders: list[dict] | None = None,
+    ) -> None:
+        live_open_orders = (
+            candidate_orders
+            if candidate_orders is not None
+            else await self._load_live_open_overseas_orders()
+        )
+        stale_orders = self._filter_stale_live_open_orders(live_open_orders)
+        if not stale_orders:
+            return
+
+        lines = [
+            "[KIS][해외미체결취소]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"동작={'자동취소' if source == 'auto' else '확정취소'}",
+            f"요청={len(stale_orders)}건",
+        ]
+        async with KisRestClient(self.config.credentials) as client:
+            lab = LiquidityLabService(self.config, client, self.repository, self.notifier)
+            for row in stale_orders[:10]:
+                symbol = str(row.get("symbol") or row.get("pdno") or row.get("ovrs_pdno") or "").strip().upper()
+                exchange_code = str(
+                    row.get("exchange_code")
+                    or row.get("ovrs_excg_cd")
+                    or "NASD"
+                ).strip().upper()
+                order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+                open_qty = int(row.get("open_qty") or parse_kis_number(row.get("nccs_qty")))
+                price = self._parse_float(row.get("order_price") or row.get("ft_ord_unpr3"))
+                side = self._overseas_order_side(row)
+                if not symbol or not order_no or open_qty <= 0:
+                    lines.append(f"{symbol or '-'} 취소실패=필수 주문정보 부족")
+                    continue
+                try:
+                    response = await lab._cancel_open_overseas_order(
+                        symbol=symbol,
+                        exchange_code=exchange_code,
+                        pending_order={**row, "order_no": order_no, "open_qty": open_qty},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.repository.save_broker_order_event(
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        market="overseas",
+                        symbol=symbol,
+                        exchange_code=exchange_code,
+                        side=side,
+                        order_kind="cancel",
+                        requested_qty=open_qty,
+                        requested_price=price,
+                        status="REJECTED",
+                        reason="stale_live_overseas_order_cancel_failed",
+                        broker_order_no=order_no,
+                        is_virtual=0,
+                        payload={
+                            "original_order_no": order_no,
+                            "error": str(exc),
+                        },
+                    )
+                    lines.append(f"{symbol} 취소실패={str(exc)[:80]}")
+                    continue
+
+                output = response.get("output") if isinstance(response, dict) else {}
+                if not isinstance(output, dict):
+                    output = {}
+                cancel_order_no = str(output.get("ODNO") or output.get("odno") or order_no).strip()
+                self.repository.save_broker_order_event(
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    market="overseas",
+                    symbol=symbol,
+                    exchange_code=exchange_code,
+                    side=side,
+                    order_kind="cancel",
+                    requested_qty=open_qty,
+                    requested_price=price,
+                    status="CANCELED",
+                    reason="stale_live_overseas_order_cancel",
+                    broker_order_no=cancel_order_no,
+                    is_virtual=0,
+                    payload={
+                        "original_order_no": order_no,
+                        "response": response,
+                    },
+                )
+                lines.append(f"{symbol} 취소요청 x{open_qty} 원주문={order_no} 취소주문={cancel_order_no}")
+        await self.notifier.send("\n".join(lines))
+
     def _build_recent_order_events_message(
         self,
         *,
@@ -2205,6 +2367,17 @@ class TelegramLiquidityLabController:
         if side_code == "01" or side_name == "매도":
             return "SELL"
         if side_code == "02" or side_name == "매수":
+            return "BUY"
+        return ""
+
+    @staticmethod
+    def _overseas_order_side(row: dict) -> str:
+        side_code = str(row.get("sll_buy_dvsn_cd") or "").strip()
+        side_name = str(row.get("sll_buy_dvsn_cd_name") or row.get("sll_buy_dvsn_name") or "").strip()
+        raw_side = str(row.get("side") or "").strip().upper()
+        if side_code == "01" or side_name == "매도" or raw_side == "SELL":
+            return "SELL"
+        if side_code == "02" or side_name == "매수" or raw_side == "BUY":
             return "BUY"
         return ""
 

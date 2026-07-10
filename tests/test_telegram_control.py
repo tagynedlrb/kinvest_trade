@@ -1389,6 +1389,142 @@ def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_p
     assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["0000013669"]
 
 
+def test_maybe_auto_cancel_stale_overseas_orders_only_bot_submitted_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_auto_cancel_overseas.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T13:35:00+00:00",
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=2,
+        requested_price=210.5,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no="ov-001",
+        is_virtual=0,
+        payload={},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    now = datetime(2026, 7, 10, 14, 30, tzinfo=timezone.utc)
+    stale_bot_order = {
+        "created_at": now - timedelta(minutes=45),
+        "symbol": "AAPL",
+        "exchange_code": "NASD",
+        "sll_buy_dvsn_cd": "02",
+        "open_qty": 2,
+        "order_price": 210.5,
+        "order_no": "ov-001",
+    }
+    stale_manual_order = {
+        **stale_bot_order,
+        "symbol": "MSFT",
+        "order_no": "manual-overseas",
+    }
+    controller._load_live_open_overseas_orders = lambda: asyncio.sleep(  # type: ignore[method-assign]
+        0,
+        result=[stale_bot_order, stale_manual_order],
+    )
+    calls: list[dict] = []
+
+    async def fake_execute(*, source="auto", candidate_orders=None):
+        calls.append({"source": source, "candidate_orders": candidate_orders})
+
+    controller._execute_cancel_stale_overseas_orders = fake_execute  # type: ignore[method-assign]
+
+    first = asyncio.run(controller._maybe_auto_cancel_stale_overseas_orders(now=now))
+    second = asyncio.run(
+        controller._maybe_auto_cancel_stale_overseas_orders(now=now + timedelta(minutes=5))
+    )
+
+    assert first is True
+    assert second is False
+    assert calls[0]["source"] == "auto"
+    assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["ov-001"]
+    assert calls[0]["candidate_orders"][0]["exchange_code"] == "NASD"
+
+
+def test_execute_cancel_stale_overseas_orders_records_cancel_event(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_cancel_overseas.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
+        "symbol": "AAPL",
+        "exchange_code": "NASD",
+        "sll_buy_dvsn_cd": "02",
+        "open_qty": 2,
+        "order_price": 210.5,
+        "order_no": "ov-001",
+    }
+
+    class FakeKisClient:
+        calls: list[dict] = []
+
+        def __init__(self, credentials) -> None:
+            self.credentials = credentials
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def revise_or_cancel_overseas_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"output": {"ODNO": "ov-cancel-001"}}
+
+    original_client = telegram_control_module.KisRestClient
+    telegram_control_module.KisRestClient = FakeKisClient
+    try:
+        asyncio.run(
+            controller._execute_cancel_stale_overseas_orders(
+                source="auto",
+                candidate_orders=[row],
+            )
+        )
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert FakeKisClient.calls == [
+        {
+            "symbol": "AAPL",
+            "exchange_code": "NASD",
+            "original_order_no": "ov-001",
+            "rvse_cncl_dvsn_cd": "02",
+            "qty": 2,
+            "price": "0",
+        }
+    ]
+    assert "AAPL 취소요청 x2 원주문=ov-001 취소주문=ov-cancel-001" in notifier.messages[-1]
+    rows = repository.list_broker_order_events(limit=1)
+    assert rows[0]["market"] == "overseas"
+    assert rows[0]["symbol"] == "AAPL"
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["status"] == "CANCELED"
+    assert rows[0]["reason"] == "stale_live_overseas_order_cancel"
+    assert rows[0]["broker_order_no"] == "ov-cancel-001"
+
+
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_orders_command.db")
     repository.save_broker_order_event(

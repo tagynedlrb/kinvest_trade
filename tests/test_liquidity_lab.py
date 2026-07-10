@@ -2921,6 +2921,35 @@ def test_build_watch_target_status_blocks_overseas_standalone_rsi() -> None:
     assert watch_target.entry_by == "RSI"
 
 
+def test_build_watch_target_status_blocks_overseas_standalone_vol() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vol = True
+    snapshot = _snapshot(price=20.0, vwap=19.9, rsi14=45.0, volume_ratio=4.0)
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(signal="BUY", flag="VOL", entry_by="VOL", exit_by="")
+
+    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="SMPL",
+        exchange_code="NASD",
+        price=20.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.signal_state == "WAIT"
+    assert watch_target.note == "[VOL] standalone_vol_blocked"
+    assert watch_target.strategy_flag == "VOL"
+    assert watch_target.entry_by == "VOL"
+
+
 def test_build_watch_target_status_blocks_cached_overseas_standalone_vwap() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.overseas_block_standalone_vwap = True

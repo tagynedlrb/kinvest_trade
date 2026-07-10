@@ -2869,3 +2869,29 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_parse_command tests/test_telegram_control.py::test_trim_virtual_prompt_and_confirm_closes_excess_positions -q`
   → 통과
 - `python3 -m pytest tests -q` → 432개 통과
+
+## [2026-07-11] 해외 VOL 단독 진입 고정 차단
+
+### 배경
+- 최근 48시간 성과 기준 해외 단독 전략은 모두 부진했다.
+  - 해외 VWAP: 14건, 평균 순손익률 -0.63%
+  - 해외 RSI: 4건, 평균 순손익률 -2.02%
+  - 해외 VOL: 1건, 평균 순손익률 -0.87%
+- VWAP/RSI 단독은 이미 고정 차단 중이었지만, VOL 단독은 3건 누적 전이라
+  성과 기반 guard가 아직 차단하지 못했다.
+- 국내 전략은 같은 기간 VWAP/VOL/VWAP+RSI가 양호하므로 국내 정책은 유지한다.
+
+### 수정
+- `config.py`, `config/fixed_config.json`
+  - `overseas_block_standalone_vol=true` 추가
+- `liquidity_lab.py`
+  - 해외 단독 `VOL` BUY 신호를 `standalone_vol_blocked`로 WAIT 처리
+- `telegram_control.py`
+  - `/lab_guard` 고정차단 표시 대상에 `해외 VOL단독` 추가
+- `tests`
+  - 설정 로드 및 해외 VOL 단독 차단 테스트 추가
+
+### 검증
+- `python3 -m pytest tests/test_config.py::test_load_app_config_uses_paper_profile_variables tests/test_liquidity_lab.py::test_build_watch_target_status_blocks_overseas_standalone_vol -q`
+  → 통과
+- `python3 -m pytest tests -q` → 433개 통과

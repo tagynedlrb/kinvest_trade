@@ -272,6 +272,7 @@ class LiquidityLabConfig:
     overseas_max_position_qty: int
     overseas_block_standalone_vwap: bool
     overseas_block_standalone_rsi: bool
+    overseas_block_standalone_vol: bool
     strategy_guard_enabled: bool
     strategy_guard_lookback_hours: int
     strategy_guard_min_trades: int
@@ -852,6 +853,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ),
             overseas_block_standalone_rsi=bool(
                 liquidity_lab_raw.get("overseas_block_standalone_rsi", False)
+            ),
+            overseas_block_standalone_vol=bool(
+                liquidity_lab_raw.get("overseas_block_standalone_vol", False)
             ),
             strategy_guard_enabled=bool(liquidity_lab_raw.get("strategy_guard_enabled", True)),
             strategy_guard_lookback_hours=int(

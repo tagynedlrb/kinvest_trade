@@ -215,6 +215,7 @@
         "overseas_max_position_qty": 1,
         "overseas_block_standalone_vwap": true,
         "overseas_block_standalone_rsi": true,
+        "overseas_block_standalone_vol": true,
         "strategy_guard_enabled": true,
         "strategy_guard_lookback_hours": 48,
         "strategy_guard_min_trades": 3,

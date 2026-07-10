@@ -2803,6 +2803,8 @@ class TelegramLiquidityLabController:
             hard_blocks.append("해외 VWAP단독")
         if bool(getattr(config, "overseas_block_standalone_rsi", False)):
             hard_blocks.append("해외 RSI단독")
+        if bool(getattr(config, "overseas_block_standalone_vol", False)):
+            hard_blocks.append("해외 VOL단독")
         if hard_blocks:
             lines.insert(6, f"고정차단={','.join(hard_blocks)}")
         if not enabled:

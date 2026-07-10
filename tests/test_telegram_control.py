@@ -365,6 +365,30 @@ def test_build_status_message_warns_virtual_exposure_when_stopped(tmp_path) -> N
     )
 
 
+def test_build_status_message_shows_stale_signal_cache_summary() -> None:
+    controller = _build_async_controller()
+    controller.last_report_summary = {
+        "scanned_at": "2026-07-10 17:59:42 KST",
+        "watch_targets": [
+            {
+                "market": "overseas",
+                "code": "MSEX",
+                "note": "vr=0.0x mom=-0.31%|stale_signal_cache",
+            },
+            {
+                "market": "overseas",
+                "code": "KURA",
+                "note": "vr=0.0x mom=+0.01%|stale_signal_cache",
+            },
+        ],
+    }
+
+    message = controller._build_status_message()
+
+    assert "감시수=2" in message
+    assert "신호캐시=2/2 전체 캐시 확인=/lab_watchlist" in message
+
+
 def test_build_status_message_shows_recent_sell_block_events(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_status_sell_block.db")
     for _ in range(3):

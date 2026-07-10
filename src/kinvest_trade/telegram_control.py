@@ -1098,6 +1098,9 @@ class TelegramLiquidityLabController:
             f"추정청산손익={int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원",
             f"감시수={len(last_report.get('watch_targets') or [])}",
         ]
+        signal_cache_status = self._build_signal_cache_status_line(last_report)
+        if signal_cache_status:
+            lines.append(signal_cache_status)
         virtual_exposure_status = self._build_virtual_exposure_status_line()
         if virtual_exposure_status:
             lines.append(virtual_exposure_status)
@@ -1185,6 +1188,23 @@ class TelegramLiquidityLabController:
                 suffix.append("감시=중지")
         suffix.append("확인=/lab_portfolio")
         return f"가상노출={' / '.join(parts)} {' '.join(suffix)}"
+
+    @staticmethod
+    def _build_signal_cache_status_line(last_report: dict) -> str:
+        watch_targets = last_report.get("watch_targets") or []
+        if not watch_targets:
+            return ""
+        stale_count = sum(
+            1
+            for target in watch_targets
+            if "stale_signal_cache" in str(target.get("note", ""))
+        )
+        if stale_count <= 0:
+            return ""
+        total = len(watch_targets)
+        if stale_count == total:
+            return f"신호캐시={stale_count}/{total} 전체 캐시 확인=/lab_watchlist"
+        return f"신호캐시={stale_count}/{total} 일부 캐시 확인=/lab_watchlist"
 
     def _build_recent_sell_block_status_line(self, *, lookback_hours: int = 12) -> str:
         repository = getattr(self, "repository", None)

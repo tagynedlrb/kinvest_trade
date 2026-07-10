@@ -384,6 +384,39 @@ def test_build_portfolio_message_uses_live_real_position_override(tmp_path) -> N
     assert "해외 AAPL 수량=3 매입=$193.3333 현재=$210.0000 손익=+8.62%" in message
 
 
+def test_build_portfolio_message_warns_real_position_risk_when_loop_stopped(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_risk.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20, overseas_stop_loss_pct=0.01),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0, hard_stop_loss_pct=0.01),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "stopped"
+
+    message = controller._build_portfolio_message(
+        real_positions_override=[
+            {
+                "market": "domestic",
+                "stock_code": "058730",
+                "quantity": 184,
+                "avg_price": 5310.0,
+                "current_price": 5030.0,
+                "pnl_pct": (5030.0 - 5310.0) / 5310.0,
+                "currency": "KRW",
+            }
+        ],
+    )
+
+    assert "─── 실보유 리스크 ───" in message
+    assert "국내 058730 손익=-5.27% 기준=-1.00% 수량=184 상태=감시중지" in message
+    assert "주의=거래루프가 중지되어 자동 청산 감시가 동작하지 않습니다" in message
+
+
 def test_build_portfolio_message_uses_available_usd_override_for_virtual_exposure(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_portfolio_available_usd.db")
     repository.upsert_virtual_position(

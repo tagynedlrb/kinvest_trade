@@ -1269,6 +1269,13 @@ class TelegramLiquidityLabController:
                     f"현재={self._format_price(current_price, currency)} "
                     f"손익={format_pct(pnl_pct)}"
                 )
+            risk_lines = self._build_real_position_risk_lines(
+                real_positions,
+                last_report=last_report,
+            )
+            if risk_lines:
+                lines.append("─── 실보유 리스크 ───")
+                lines.extend(risk_lines)
 
         manager = VirtualTradeManager(self.repository)
         effective_positions = self._build_effective_positions(
@@ -1359,6 +1366,50 @@ class TelegramLiquidityLabController:
                 )
 
         return "\n".join(lines)
+
+    def _build_real_position_risk_lines(
+        self,
+        real_positions: list[dict],
+        *,
+        last_report: dict,
+    ) -> list[str]:
+        if not real_positions:
+            return []
+        domestic_threshold = float(
+            getattr(getattr(self.config, "auto_trade", None), "hard_stop_loss_pct", 0.01)
+            or 0.01
+        )
+        overseas_threshold = float(
+            getattr(getattr(self.config, "liquidity_lab", None), "overseas_stop_loss_pct", 0.01)
+            or 0.01
+        )
+        risk_lines: list[str] = []
+        for pos in real_positions:
+            market_key = str(
+                pos.get(
+                    "market",
+                    "domestic" if pos.get("stock_code") else "overseas",
+                )
+            )
+            threshold = domestic_threshold if market_key == "domestic" else overseas_threshold
+            pnl_pct = float(pos.get("pnl_pct", 0) or 0)
+            if pnl_pct > -threshold:
+                continue
+            symbol = self._format_symbol_label(
+                market_key,
+                str(pos.get("symbol") or pos.get("stock_code") or "-"),
+                last_report=last_report,
+            )
+            qty = int(pos.get("quantity", 0) or 0)
+            market = format_market_korean(market_key)
+            state = "감시중" if self.mode == "running" else "감시중지"
+            risk_lines.append(
+                f"{market} {symbol} 손익={format_pct(pnl_pct)} "
+                f"기준={format_pct(-threshold)} 수량={qty} 상태={state}"
+            )
+        if risk_lines and self.mode != "running":
+            risk_lines.append("주의=거래루프가 중지되어 자동 청산 감시가 동작하지 않습니다")
+        return risk_lines
 
     def _build_virtual_exposure_lines(
         self,

@@ -1675,3 +1675,27 @@
 ### 기대 효과
 - 전략 조정 시 gross/old virtual 데이터에 속는 문제 감소
 - 국내/해외, 전략, 청산 사유별로 손실 원인을 더 빠르게 식별 가능
+
+## [2026-07-10] 주문 거부 관측성 보강
+
+### 추가 점검 결과
+- 최근 24시간 `cycle_log` 기준:
+  - `sell:no_orderable_qty` 29건
+  - `sell:order_rejected` 21건
+- 해외 `ALNY`의 반복 거부는 이전 운용 코드/미체결 주문 영향으로 보이며,
+  현재 코드는 해외 `order_rejected` 시 20분 쿨다운을 적용 중
+- 국내 `069500`, `379800`에서도 1회성 `sell:order_rejected` 흔적이 있어,
+  국내 매도 거부 쿨다운이 회귀하지 않도록 테스트 보강 필요
+
+### 수정 사항
+- `tests/test_liquidity_lab.py`
+  - 국내 매도 주문 거부 시 10분 쿨다운이 등록되고,
+    `cycle_log.exit_cooldown_remaining`에도 9분 이상으로 기록되는지 검증 추가
+- `scripts/analyze_trades.py`
+  - 전체 분석(`--days 0`) 경로의 f-string SQL 누락 수정
+  - 전략별 손익 집계에서 `exit_by`가 비어 있으면 `action_reason`을 청산 원인으로 표시
+
+### 기대 효과
+- 국내/해외 모두 주문 거부 후 즉시 반복 재시도되는 문제의 회귀 방지
+- 전략별 분석에서 `exit=N/A`로 뭉개지던 항목을
+  `trend_filter_lost`, `stop_loss`, `momentum_loss_cut` 등 실제 청산 정책별로 파악 가능

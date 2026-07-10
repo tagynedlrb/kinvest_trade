@@ -99,7 +99,7 @@ def main() -> None:
         GROUP BY market
         """
         if cycle_where
-        else """
+        else f"""
         SELECT market,
                COUNT(*) AS trade_count,
                SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
@@ -124,10 +124,15 @@ def main() -> None:
         )
 
     if has_strategy_flag:
+        exit_expr = (
+            "COALESCE(NULLIF(exit_by, ''), NULLIF(action_reason, ''), 'N/A')"
+            if has_exit_by
+            else "COALESCE(NULLIF(action_reason, ''), 'N/A')"
+        )
         strategy_cols = (
             "market, COALESCE(NULLIF(strategy_flag, ''), 'N/A') AS strategy, "
-            + ("COALESCE(NULLIF(exit_by, ''), 'N/A')" if has_exit_by else "'N/A'")
-            + " AS exit_by"
+            + exit_expr
+            + " AS exit_reason"
         )
         rows = conn.execute(
             f"""
@@ -140,7 +145,7 @@ def main() -> None:
             FROM cycle_log
             {cycle_where}
             AND action_bias = 'SELL_REAL'
-            GROUP BY market, strategy, exit_by
+            GROUP BY market, strategy, exit_reason
             ORDER BY total_krw ASC
             """
             if cycle_where
@@ -153,7 +158,7 @@ def main() -> None:
                    {usd_expr} AS total_usd
             FROM cycle_log
             WHERE action_bias = 'SELL_REAL'
-            GROUP BY market, strategy, exit_by
+            GROUP BY market, strategy, exit_reason
             ORDER BY total_krw ASC
             """,
             cycle_params,
@@ -162,7 +167,7 @@ def main() -> None:
         for row in rows[:15]:
             win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
             print(
-                f"  {row['market']:10s} {row['strategy']:12s} exit={row['exit_by']:8s} "
+                f"  {row['market']:10s} {row['strategy']:12s} exit={row['exit_reason']:22s} "
                 f"거래={row['trade_count']:3d} 승률={win_rate:3.0f}% 평균={row['avg_pnl_pct']:7.3f}% "
                 f"누적={int(row['total_krw'] or 0):,}원"
             )

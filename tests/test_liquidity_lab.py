@@ -936,6 +936,27 @@ class DummySellClient:
         self.order_calls.append(payload)
         return payload
 
+    async def place_cash_order(
+        self,
+        *,
+        side: str,
+        stock_code: str,
+        qty: int,
+        price: int,
+        order_division: str,
+    ):
+        if self.error is not None:
+            raise self.error
+        payload = {
+            "side": side,
+            "stock_code": stock_code,
+            "qty": qty,
+            "price": price,
+            "order_division": order_division,
+        }
+        self.order_calls.append(payload)
+        return payload
+
     async def get_overseas_order_history(self, **kwargs):
         del kwargs
         return {"orders": list(self.pending_orders)}
@@ -1208,6 +1229,43 @@ def test_place_overseas_sell_order_rejected_adds_20min_cooldown() -> None:
     assert result["submitted"] is False
     assert result["reason"] == "order_rejected"
     assert service._cooldown_remaining_minutes("overseas", "ALNY") > 19.0
+
+
+def test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it() -> None:
+    service = _build_sell_service(
+        error=KisApiError("40580000 already waiting order exists")
+    )
+    candidate = DomesticScanResult(
+        stock_code="069500",
+        current_price=122_400,
+        best_ask=122_405,
+        best_bid=122_395,
+        spread_pct=0.00008,
+        minute_change_pct=-0.1,
+        intraday_turnover_krw=50_000_000_000,
+        volume_sum=300_000,
+        activity_score=12.0,
+        stock_name="KODEX 200",
+    )
+    held = DomesticHeldPosition(
+        stock_code="069500",
+        quantity=7,
+        orderable_qty=7,
+        avg_price=122_900,
+        current_price=122_400,
+        pnl_pct=(122_400 - 122_900) / 122_900,
+    )
+
+    result = asyncio.run(
+        service._place_domestic_sell_order(candidate, held, "trend_filter_lost")
+    )
+
+    assert result["submitted"] is False
+    assert result["reason"] == "order_rejected"
+    assert service._cooldown_remaining_minutes("domestic", "069500") > 9.0
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["action_reason"] == "sell:order_rejected"
+    assert rows[0]["exit_cooldown_remaining"] > 9.0
 
 
 def test_overseas_sell_session_blocked_does_not_convert_real_to_virtual_trade() -> None:

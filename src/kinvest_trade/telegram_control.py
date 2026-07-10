@@ -68,6 +68,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
         "/lab_cancel_stale_overseas - 30분 이상 해외 미체결 취소 확인",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
+        "/lab_trim_virtual - 가상보유 초과분만 성과 제외 정리",
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
         "/lab_relist_schedule - 해외 relist 알림 시간 확인",
@@ -95,6 +96,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
     {"command": "lab_cancel_stale_overseas", "description": "장기 해외 미체결 취소 확인"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
+    {"command": "lab_trim_virtual", "description": "가상보유 초과분 정리"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
     {"command": "lab_relist_schedule", "description": "해외 relist 알림 시간"},
@@ -370,6 +372,12 @@ class TelegramLiquidityLabController:
         if command_name == "portfolio":
             await self._send_portfolio_message()
             return
+        if command_name == "trim_virtual":
+            await self._send_trim_virtual_prompt()
+            return
+        if command_name == "trim_virtual_confirm":
+            await self._execute_trim_virtual()
+            return
         if command_name == "log":
             await self._send_recent_trade_log()
             return
@@ -589,6 +597,205 @@ class TelegramLiquidityLabController:
         if pending_sells:
             lines.append(f"  • 정산대기={len(pending_sells)}건")
         return lines
+
+    def _select_virtual_trim_candidates(self) -> tuple[list[dict[str, object]], int, int]:
+        max_overseas_positions = int(
+            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
+        )
+        if max_overseas_positions <= 0:
+            return [], 0, max_overseas_positions
+
+        rows = [
+            row
+            for row in self.repository.list_virtual_positions()
+            if str(row.get("market", "")).strip().lower() == "overseas"
+            and int(row.get("qty", 0) or 0) > 0
+        ]
+        total = len(rows)
+        excess_count = total - max_overseas_positions
+        if excess_count <= 0:
+            return [], total, max_overseas_positions
+
+        now = datetime.now(timezone.utc)
+        candidates: list[dict[str, object]] = []
+        for row in rows:
+            symbol = str(row.get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            market = str(row.get("market", "overseas")).strip().lower()
+            qty = int(row.get("qty", 0) or 0)
+            avg_price = float(row.get("avg_price", 0.0) or 0.0)
+            if qty <= 0 or avg_price <= 0:
+                continue
+            state = self.repository.get_lab_symbol_state(market, symbol)
+            current_price = 0.0
+            if state is not None:
+                current_price = float(state.get("last_price") or 0.0)
+            price_missing = current_price <= 0
+            if price_missing:
+                current_price = avg_price
+            pnl_pct = (current_price - avg_price) / avg_price
+            opened_at = ensure_timezone(parse_datetime(row.get("opened_at")) or now)
+            age_hours = max(0.0, (now - opened_at).total_seconds() / 3600)
+            candidates.append(
+                {
+                    "market": market,
+                    "symbol": symbol,
+                    "exchange_code": row.get("exchange_code"),
+                    "qty": qty,
+                    "avg_price": avg_price,
+                    "current_price": current_price,
+                    "currency": str(row.get("currency", "USD")),
+                    "pnl_pct": pnl_pct,
+                    "age_hours": age_hours,
+                    "price_missing": price_missing,
+                }
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                float(item["pnl_pct"]),
+                -float(item["age_hours"]),
+                -(float(item["avg_price"]) * int(item["qty"])),
+            )
+        )
+        return candidates[:excess_count], total, max_overseas_positions
+
+    def _format_virtual_trim_candidate_line(self, item: dict[str, object]) -> str:
+        symbol = str(item["symbol"])
+        qty = int(item["qty"])
+        avg_price = float(item["avg_price"])
+        current_price = float(item["current_price"])
+        pnl_pct = float(item["pnl_pct"])
+        currency = str(item["currency"])
+        price_note = " 현재가없음" if bool(item.get("price_missing")) else ""
+        return (
+            f"해외 {symbol} 수량={qty} "
+            f"매입={self._format_price(avg_price, currency)} "
+            f"정리가={self._format_price(current_price, currency)} "
+            f"손익={format_pct(pnl_pct)}{price_note}"
+        )
+
+    async def _send_trim_virtual_prompt(self) -> None:
+        candidates, total, max_positions = self._select_virtual_trim_candidates()
+        if not candidates:
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][가상보유 정리]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        f"상태=정리불필요 ({total}/{max_positions})",
+                    ]
+                )
+            )
+            return
+
+        lines = [
+            "⚠️ [가상보유 초과분 정리]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"포지션={total}/{max_positions} 초과={len(candidates)}종목",
+            "방식=성과 제외 가상매도 기록 후 초과분 삭제",
+            "",
+            "정리 후보:",
+        ]
+        lines.extend(self._format_virtual_trim_candidate_line(item) for item in candidates[:5])
+        lines.extend(
+            [
+                "",
+                "진행: /lab_trim_virtual_confirm",
+                "취소: 무시",
+            ]
+        )
+        await self.notifier.send("\n".join(lines))
+
+    async def _execute_trim_virtual(self) -> None:
+        now = datetime.now(timezone.utc)
+        candidates, total, max_positions = self._select_virtual_trim_candidates()
+        if not candidates:
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][가상보유 정리]",
+                        f"시각={format_kst_korean(now)}",
+                        f"상태=정리불필요 ({total}/{max_positions})",
+                    ]
+                )
+            )
+            return
+
+        try:
+            backup_path = self.repository.backup_db(suffix="pre_trim_virtual")
+            trimmed: list[dict[str, object]] = []
+            excluded_at = now.isoformat()
+            created_at = format_kst(now) or excluded_at
+            for item in candidates:
+                market = str(item["market"])
+                symbol = str(item["symbol"])
+                exchange_code = item.get("exchange_code")
+                qty = int(item["qty"])
+                avg_price = float(item["avg_price"])
+                fill_price = float(item["current_price"])
+                currency = str(item["currency"])
+                realized_pnl = (fill_price - avg_price) * qty
+                realized_pnl_pct = (fill_price - avg_price) / avg_price if avg_price > 0 else 0.0
+                self.repository.save_virtual_order(
+                    created_at=created_at,
+                    market=market,
+                    symbol=symbol,
+                    exchange_code=str(exchange_code) if exchange_code else None,
+                    side="sell",
+                    qty=qty,
+                    fill_price=fill_price,
+                    currency=currency,
+                    session="manual",
+                    reason="manual_virtual_trim",
+                    realized_pnl=realized_pnl,
+                    realized_pnl_pct=realized_pnl_pct,
+                    excluded_from_performance=True,
+                    exclude_reason="manual_virtual_trim",
+                    excluded_at=excluded_at,
+                )
+                self.repository.delete_virtual_position(market, symbol)
+                self.repository.delete_virtual_sell_pending(market, symbol)
+                self.repository.upsert_lab_symbol_state(
+                    market=market,
+                    symbol=symbol,
+                    exchange_code=str(exchange_code) if exchange_code else None,
+                    action_bias="VIRTUAL_TRIM",
+                    signal_state="CLOSED",
+                    note="manual_virtual_trim",
+                    holding_qty=0,
+                    last_price=fill_price,
+                    pnl_pct=realized_pnl_pct,
+                    has_position=0,
+                    updated_at=excluded_at,
+                )
+                trimmed.append(item)
+
+            if self.lab_service is not None:
+                symbols = {str(item["symbol"]) for item in trimmed}
+                for attr in ("_exit_cooldown", "_wait_cycles", "_strategy_managers"):
+                    mapping = getattr(self.lab_service, attr, None)
+                    if mapping is None:
+                        continue
+                    for symbol in symbols:
+                        mapping.pop(symbol, None)
+                        mapping.pop(f"overseas:{symbol}", None)
+                session_owned = getattr(self.lab_service, "_session_owned_symbols", None)
+                if session_owned is not None:
+                    session_owned.difference_update(symbols)
+
+            lines = [
+                "✅ [가상보유 정리 완료]",
+                f"시각={format_kst_korean(now)}",
+                f"백업={backup_path.name}",
+                f"정리={len(trimmed)}종목",
+                "성과반영=제외(manual_virtual_trim)",
+            ]
+            lines.extend(self._format_virtual_trim_candidate_line(item) for item in trimmed[:5])
+            await self.notifier.send("\n".join(lines))
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(f"❌ [가상보유 정리 실패]\n오류={exc}")
 
     async def _execute_reset_virtual(self) -> None:
         now = datetime.now(timezone.utc)
@@ -4004,6 +4211,8 @@ class TelegramLiquidityLabController:
             "/lab_cancel_stale_overseas": "cancel_stale_overseas",
             "/lab_cancel_stale_overseas_confirm": "cancel_stale_overseas_confirm",
             "/lab_portfolio": "portfolio",
+            "/lab_trim_virtual": "trim_virtual",
+            "/lab_trim_virtual_confirm": "trim_virtual_confirm",
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",
             "/lab_relist_schedule": "relist_schedule",

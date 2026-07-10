@@ -47,6 +47,8 @@ def test_parse_command() -> None:
         == "cancel_stale_overseas_confirm"
     )
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
+    assert TelegramLiquidityLabController.parse_command("/lab_trim_virtual") == "trim_virtual"
+    assert TelegramLiquidityLabController.parse_command("/lab_trim_virtual_confirm") == "trim_virtual_confirm"
     assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
     assert TelegramLiquidityLabController.parse_command("/lab_relist NVDA TSLA") == ("relist", "NVDA TSLA")
@@ -3479,6 +3481,73 @@ def test_send_reset_virtual_prompt_shows_current_virtual_exposure(tmp_path) -> N
     assert "해외 가상보유=$700.00 2종목 포지션한도=2/1 초과" in message
     assert "정산대기=1건" in message
     assert "/lab_reset_confirm" in message
+
+
+def test_trim_virtual_prompt_and_confirm_closes_excess_positions(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "trim_virtual.db")
+    for symbol, qty, avg_price, current_price in [
+        ("AAA", 10, 100.0, 94.0),
+        ("BBB", 10, 100.0, 99.0),
+        ("CCC", 10, 100.0, 105.0),
+    ]:
+        repository.upsert_virtual_position(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            qty=qty,
+            avg_price=avg_price,
+            currency="USD",
+            opened_at="2026-07-01T00:00:00+00:00",
+            updated_at="2026-07-01T00:00:00+00:00",
+        )
+        repository.upsert_lab_symbol_state(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            action_bias="HOLD",
+            signal_state="HOLD",
+            note="test",
+            holding_qty=qty,
+            last_price=current_price,
+            pnl_pct=(current_price - avg_price) / avg_price,
+            has_position=1,
+            updated_at="2026-07-01T00:01:00+00:00",
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_concurrent_overseas_orders=1,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    asyncio.run(controller._send_trim_virtual_prompt())
+
+    prompt = controller.notifier.messages[-1]
+    assert "가상보유 초과분 정리" in prompt
+    assert "포지션=3/1 초과=2종목" in prompt
+    assert "AAA" in prompt
+    assert "BBB" in prompt
+    assert "/lab_trim_virtual_confirm" in prompt
+
+    asyncio.run(controller._execute_trim_virtual())
+
+    remaining = repository.list_virtual_positions()
+    assert [row["symbol"] for row in remaining] == ["CCC"]
+    orders = repository.list_virtual_orders(limit=10)
+    sells = [row for row in orders if row["side"] == "sell"]
+    assert {row["symbol"] for row in sells} == {"AAA", "BBB"}
+    assert all(row["excluded_from_performance"] == 1 for row in sells)
+    assert all(row["exclude_reason"] == "manual_virtual_trim" for row in sells)
+    assert "가상보유 정리 완료" in controller.notifier.messages[-1]
+    backups = sorted(tmp_path.glob("trim_virtual_backup_*_pre_trim_virtual.db"))
+    assert backups
 
 
 def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> None:

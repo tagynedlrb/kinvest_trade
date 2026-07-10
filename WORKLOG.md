@@ -2845,3 +2845,27 @@
 - `python3 -m pytest tests/test_liquidity_lab.py::test_overseas_exit_price_shock_requires_confirmation -q`
   → 통과
 - `python3 -m pytest tests -q` → 431개 통과
+
+## [2026-07-11] `/lab_trim_virtual` 가상보유 초과분 정리 명령 추가
+
+### 배경
+- 가상보유 종목 수가 `max_concurrent_overseas_orders`를 초과하면 신규 해외 진입이
+  막히지만, 기존 `/lab_reset`은 전체 가상거래 이력을 초기화하는 거친 선택지였다.
+- 운영 중에는 초과분만 정리해 포지션 한도를 회복하고, 전략 성과 통계는 오염시키지
+  않는 중간 명령이 필요했다.
+
+### 수정
+- `telegram_control.py`
+  - `/lab_trim_virtual` 추가: 초과분 정리 후보와 확인 명령 표시
+  - `/lab_trim_virtual_confirm` 추가: 손익률이 낮고 오래된 해외 가상보유 초과분만
+    전량 가상매도로 기록 후 `virtual_positions`에서 삭제
+  - 정리 전 DB 백업 생성
+  - 정리 매도는 `reason=manual_virtual_trim`,
+    `excluded_from_performance=1`로 저장해 전략 성과에서 제외
+- `tests/test_telegram_control.py`
+  - 파서 테스트 및 초과분만 정리되는 동작 테스트 추가
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_parse_command tests/test_telegram_control.py::test_trim_virtual_prompt_and_confirm_closes_excess_positions -q`
+  → 통과
+- `python3 -m pytest tests -q` → 432개 통과

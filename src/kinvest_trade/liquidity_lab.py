@@ -1996,6 +1996,8 @@ class LiquidityLabService:
             if krx_open
             else None
         )
+        overseas_entry_block_reason = ""
+        overseas_entry_block_detail: dict[str, int] = {}
         if self._is_trading_halted():
             domestic_buy_targets = []
             domestic_buy_target = None
@@ -2021,6 +2023,16 @@ class LiquidityLabService:
                 max_positions=_max_os,
             )
             if remaining_overseas_slots <= 0:
+                open_overseas_symbols = {
+                    position.symbol.strip().upper()
+                    for position in monitored_overseas_positions
+                    if position.symbol.strip() and position.quantity > 0
+                }
+                overseas_entry_block_reason = "overseas_position_cap_reached"
+                overseas_entry_block_detail = {
+                    "open_positions": len(open_overseas_symbols),
+                    "max_positions": int(_max_os),
+                }
                 overseas_buy_targets = []
                 overseas_buy_target = None
             else:
@@ -2087,14 +2099,16 @@ class LiquidityLabService:
                 )
             overseas_order = overseas_orders[0]
         else:
+            overseas_skip_reason = (
+                "us_open_but_mock_session_not_supported"
+                if us_open and not us_orderable_in_profile
+                else overseas_entry_block_reason or "no_overseas_candidate"
+            )
             overseas_order = {
                 "skipped": True,
-                "reason": (
-                    "us_open_but_mock_session_not_supported"
-                    if us_open and not us_orderable_in_profile
-                    else "no_overseas_candidate"
-                ),
+                "reason": overseas_skip_reason,
             }
+            overseas_order.update(overseas_entry_block_detail)
             overseas_orders = [overseas_order]
         if overseas_orders:
             overseas_order = dict(overseas_order)

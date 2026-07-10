@@ -3810,6 +3810,92 @@ def test_remaining_overseas_entry_slots_counts_virtual_positions() -> None:
     assert remaining == 0
 
 
+def test_run_reports_overseas_position_cap_reached_when_slots_full() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.max_concurrent_overseas_orders = 1
+    candidate = OverseasScanResult(
+        "AMD",
+        "NASD",
+        155.0,
+        154.9,
+        155.1,
+        0.0012,
+        1.5,
+        800_000,
+        10,
+        1350.0,
+        17.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="HELD",
+        exchange_code="NASD",
+        quantity=10,
+        orderable_qty=10,
+        avg_price=100.0,
+        current_price=101.0,
+        pnl_pct=0.01,
+    )
+
+    async def fake_scan_overseas():
+        return [candidate], {"HELD"}
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return [held]
+
+    async def fake_select_overseas_exit_targets(*args, **kwargs):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return [
+            WatchTargetStatus(
+                "overseas",
+                "AMD",
+                "NASD",
+                155.0,
+                17.0,
+                12.0,
+                "BUY",
+                "BUY",
+                "20d>60d 9>21",
+                "[VOL] strategy_buy_signal",
+                0,
+                strategy_flag="VOL",
+                entry_by="VOL",
+            )
+        ]
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._load_virtual_overseas_positions = lambda overseas_ranked: []  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = (
+            original_is_us_orderable_session_for_env
+        )
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.overseas_order["skipped"] is True
+    assert report.overseas_order["reason"] == "overseas_position_cap_reached"
+    assert report.overseas_order["open_positions"] == 1
+    assert report.overseas_order["max_positions"] == 1
+
+
 def test_unified_watch_excludes_closed_market() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.unified_watch_top_n = 3

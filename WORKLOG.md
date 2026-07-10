@@ -9,6 +9,8 @@
   - 2026-07-10 KST 이후 해외 VWAP: 4건, 평균 Net `-1.011%`
 - 최근 2일 기준 국내 실주문접수 SELL_REAL은 평균 Net `+0.341%`,
   해외는 평균 Net `-0.916%`로 국내 비중 확대와 해외 단독 VWAP/RSI 차단 방향이 타당함
+- 현재 해외 가상 포지션은 15개로 `max_concurrent_overseas_orders=8`을 초과하여,
+  해외 신규 매수 빈도 저하가 포지션 한도 정책 때문일 수 있음
 
 ### 확인된 적용 사항
 - `/lab_report compare <YYYY-MM-DD>` 기준일 전후 전략 성과 비교 가능
@@ -19,8 +21,11 @@
 - `liquidity_lab.py`
   - `low_trade_frequency` 이벤트 detail에 최근 50사이클의 상위 주문/스킵 이유 `top_reasons` 기록
   - 경고 로그에도 동일 요약을 출력하여 매매 빈도 저하 원인을 바로 분석 가능하게 개선
+  - 해외 포지션 한도 초과로 신규 매수가 막힌 경우 `no_overseas_candidate` 대신
+    `overseas_position_cap_reached`와 `open_positions/max_positions` 기록
 - `tests/test_liquidity_lab.py`
   - low frequency 이벤트의 `top_reasons` 기록과 리셋 동작 검증 추가
+  - 해외 포지션 한도 초과 시 사이클 리포트 reason이 명확히 남는지 검증 추가
 
 ### 기대 효과
 - 다음 실행에서 매매가 적을 때 단순히 "빈도 낮음"이 아니라

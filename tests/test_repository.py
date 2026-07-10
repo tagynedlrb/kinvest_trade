@@ -498,6 +498,77 @@ def test_get_session_pnl_summary_real_only(tmp_path) -> None:
     assert summary["real"]["overseas"]["total_pnl_usd"] == 12.5
 
 
+def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "strategy_performance.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=-0.10,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:01:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=-0.02,
+        qty_executed=2,
+        net_pnl_usd=-4.0,
+        net_pnl_krw=-5400.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:01:30+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=0.03,
+        qty_executed=1,
+        net_pnl_usd=5.0,
+        net_pnl_krw=6750.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:02:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="RSI",
+        entry_by="RSI",
+        exit_by="take_profit",
+        pnl_pct=0.01,
+        qty_executed=1,
+        net_pnl_krw=3000.0,
+    )
+
+    rows = repository.get_realized_strategy_performance(
+        after_logged_at="2026-07-01T00:00:00+00:00",
+        limit=10,
+    )
+
+    assert len(rows) == 3
+    by_key = {(row["market"], row["strategy_flag"], row["exit_by"]): row for row in rows}
+    assert by_key[("overseas", "VWAP", "stop_loss")]["trade_count"] == 1
+    assert by_key[("overseas", "VWAP", "stop_loss")]["total_qty"] == 2
+    assert by_key[("overseas", "VWAP", "stop_loss")]["total_net_pnl_usd"] == -4.0
+    assert by_key[("overseas", "VWAP", "take_profit")]["trade_count"] == 1
+    assert by_key[("overseas", "VWAP", "take_profit")]["win_rate"] == 1.0
+    assert by_key[("domestic", "RSI", "take_profit")]["win_rate"] == 1.0
+
+
 def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_virtual_order(

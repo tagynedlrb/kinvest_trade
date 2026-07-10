@@ -28,6 +28,8 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
+    assert TelegramLiquidityLabController.parse_command("/lab_performance") == ("performance", None)
+    assert TelegramLiquidityLabController.parse_command("/lab_performance 72") == ("performance", "72")
     assert TelegramLiquidityLabController.parse_command("/lab_orders") == "orders"
     assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic") == "cancel_stale_domestic"
     assert (
@@ -979,6 +981,67 @@ def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
     assert "[KIS][손익요약]" in message
     assert "실주문접수 기준" in message
     assert "환산손익=+3,900원" in message
+
+
+def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_performance_command.db")
+    logged_at = datetime.now(timezone.utc).isoformat()
+    repository.save_cycle_log(
+        logged_at=logged_at,
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=-0.02,
+    )
+    repository.save_cycle_log(
+        logged_at=logged_at,
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        exit_by="stop_loss",
+        pnl_pct=-0.012,
+        qty_executed=3,
+        net_pnl_usd=-12.5,
+        net_pnl_krw=-16875.0,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_performance 720",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][전략성과]" in message
+    assert "기준=실제 체결성 SELL_REAL만 집계" in message
+    assert "제외=감시 신호 BUY/SELL/HOLD" in message
+    assert "전체=1건" in message
+    assert "해외 VWAP 진입=VWAP 청산=손절 1건" in message
+    assert "손익=-$12.50/-16,875원" in message
 
 
 def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:
@@ -2181,6 +2244,9 @@ class DummyRepository:
 
     def get_session_pnl_summary(self, **kwargs) -> dict:
         return {"real": {}, "virtual": {}}
+
+    def get_realized_strategy_performance(self, **kwargs) -> list[dict]:
+        return []
 
 
 class DummyAsyncClient:

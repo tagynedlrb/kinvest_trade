@@ -27,7 +27,14 @@ from .market_sessions import (
     minutes_until_next_tradeable_session,
     us_holiday_date_for_kis_session,
 )
-from .message_format import format_market_korean, format_pct, format_reason_korean, format_side_korean
+from .message_format import (
+    format_krw,
+    format_market_korean,
+    format_pct,
+    format_reason_korean,
+    format_side_korean,
+    format_usd,
+)
 from .notifier import TelegramNotifier
 from .paper import PaperTradingService
 from .repository import SqliteRepository
@@ -46,6 +53,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_status - 현재 상태",
         "/lab_watchlist - 감시 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
+        "/lab_performance [시간] - 최근 실제 체결 전략 성과",
         "/lab_orders - 최근 주문 접수/취소 기록",
         "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
         "/lab_cancel_stale_overseas - 30분 이상 해외 미체결 취소 확인",
@@ -70,6 +78,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_status", "description": "현재 상태 조회"},
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
+    {"command": "lab_performance", "description": "최근 실제 체결 전략 성과"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
     {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
     {"command": "lab_cancel_stale_overseas", "description": "장기 해외 미체결 취소 확인"},
@@ -342,6 +351,10 @@ class TelegramLiquidityLabController:
             return
         if command_name == "log":
             await self._send_recent_trade_log()
+            return
+        if command_name == "performance":
+            hours_text = parsed_command[1] if isinstance(parsed_command, tuple) else None
+            await self._send_performance_message(hours_text)
             return
         if command_name == "orders":
             await self._send_recent_order_events()
@@ -1802,6 +1815,79 @@ class TelegramLiquidityLabController:
             )
         )
 
+    async def _send_performance_message(self, hours_text: str | None = None) -> None:
+        await self.notifier.send(self._build_performance_message(hours_text))
+
+    @staticmethod
+    def _parse_performance_hours(hours_text: str | None) -> int:
+        try:
+            hours = int(float(str(hours_text or "24").strip()))
+        except (TypeError, ValueError):
+            hours = 24
+        return min(max(hours, 1), 720)
+
+    @staticmethod
+    def _format_mixed_pnl(*, usd: float, krw: float) -> str:
+        parts: list[str] = []
+        if abs(usd) > 1e-9:
+            parts.append(format_usd(usd))
+        if abs(krw) > 0.5:
+            parts.append(format_krw(krw))
+        return "/".join(parts) if parts else "0"
+
+    def _build_performance_message(self, hours_text: str | None = None) -> str:
+        hours = self._parse_performance_hours(hours_text)
+        now = datetime.now(timezone.utc)
+        after_logged_at = (now - timedelta(hours=hours)).isoformat()
+        rows = self.repository.get_realized_strategy_performance(
+            after_logged_at=after_logged_at,
+            limit=200,
+        )
+        lines = [
+            "[KIS][전략성과]",
+            f"시각={format_kst_korean(now)}",
+            f"범위=최근 {hours}시간",
+            "기준=실제 체결성 SELL_REAL만 집계",
+            "제외=감시 신호 BUY/SELL/HOLD",
+        ]
+        if not rows:
+            lines.append("성과=없음")
+            return "\n".join(lines)
+
+        total_trades = sum(int(row.get("trade_count") or 0) for row in rows)
+        total_wins = sum(int(row.get("win_count") or 0) for row in rows)
+        total_usd = sum(float(row.get("total_net_pnl_usd") or 0.0) for row in rows)
+        total_krw = sum(float(row.get("total_net_pnl_krw") or 0.0) for row in rows)
+        total_win_rate = (total_wins / total_trades) if total_trades else 0.0
+        lines.append(
+            "전체="
+            f"{total_trades}건 승률={total_win_rate * 100:.0f}% "
+            f"손익={self._format_mixed_pnl(usd=total_usd, krw=total_krw)}"
+        )
+        lines.append("─── 전략별 ───")
+        display_rows = rows[:10]
+        if len(rows) > len(display_rows):
+            lines.append(f"표시=상위 {len(display_rows)}/{len(rows)}개 그룹")
+        for row in display_rows:
+            market = format_market_korean(str(row.get("market") or "-"))
+            strategy = str(row.get("strategy_flag") or "-")
+            entry_by = str(row.get("entry_by") or "-")
+            exit_by = str(row.get("exit_by") or "-")
+            trade_count = int(row.get("trade_count") or 0)
+            win_rate = float(row.get("win_rate") or 0.0)
+            avg_pnl = float(row.get("avg_pnl_pct") or 0.0)
+            pnl_label = self._format_mixed_pnl(
+                usd=float(row.get("total_net_pnl_usd") or 0.0),
+                krw=float(row.get("total_net_pnl_krw") or 0.0),
+            )
+            lines.append(
+                f"{market} {strategy} "
+                f"진입={entry_by} 청산={format_reason_korean(exit_by)} "
+                f"{trade_count}건 승률={win_rate * 100:.0f}% "
+                f"평균={format_pct(avg_pnl)} 손익={pnl_label}"
+            )
+        return "\n".join(lines)
+
     async def _send_recent_order_events(self) -> None:
         live_open_domestic_orders: list[dict] | None = None
         live_open_domestic_error = ""
@@ -2957,6 +3043,9 @@ class TelegramLiquidityLabController:
         if stripped.lower().startswith("/lab_paper_test"):
             parts = stripped.split(maxsplit=1)
             return ("paper_test", parts[1].strip() if len(parts) > 1 else None)
+        if stripped.lower().startswith("/lab_performance"):
+            parts = stripped.split(maxsplit=1)
+            return ("performance", parts[1].strip() if len(parts) > 1 else None)
         if stripped.lower().startswith("/lab_relist_schedule"):
             return "relist_schedule"
         if stripped.lower().startswith("/lab_gitlog"):

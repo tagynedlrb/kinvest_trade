@@ -319,6 +319,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
 - `/lab_portfolio`: 실제 계좌 보유, 통합 가상보유, 정산 대기 매도, 누적 성과 조회
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
+- `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실제 체결성 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록과 KIS 실시간 미체결 주문 조회
 - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
 - `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)
@@ -359,6 +360,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.
 - `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
 - `/lab_portfolio`는 국내/해외 실제 보유 종목과 가상 체결 반영 통합 보유, 정산 대기 매도, 누적 실현손익을 함께 보여준다.
+- `/lab_performance`는 전략 평가용이다. `cycle_log`의 감시 신호 행(`BUY`, `SELL`, `HOLD`)을 제외하고 실제 체결성 매도 행(`SELL_REAL`)만 집계한다.
 - `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 국내 장기 미체결은 장외 시간에 `취소가능=국내장중`으로 표시되며, 봇이 접수한 장기 미체결 국내 주문은 다음 국내 정규장에 자동 취소를 재시도한다. 해외도 봇이 접수한 장기 미체결 주문만 미국 주문 가능 세션에 자동 취소를 재시도한다.
 
 ## 거래 시간 정책

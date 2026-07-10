@@ -1749,3 +1749,16 @@
 - RSI 단독 진입은 RSI 30 이하에서만 허용
 - 성과가 좋았던 VWAP+RSI 복합 진입은 기존처럼 유지
 - 해외 RSI 단독 손실 빈도 감소 기대
+
+## [2026-07-10] README 텔레그램 명령/기본값 동기화
+
+### 수정 사항
+- `README.md`
+  - `max_concurrent_overseas_orders` 기본값 20 → 8로 갱신
+  - 제거된 `/lab_positions`, `/lab_virtual` 설명을 `/lab_portfolio`로 대체
+  - `/lab_orders`, `/lab_cancel_stale_domestic`, `/lab_cancel_stale_domestic_confirm` 설명 추가
+  - 국내 장기 미체결은 장외 시간에 `취소가능=국내장중`으로 표시되고,
+    봇 접수 주문은 다음 국내 정규장에 자동 취소 재시도됨을 문서화
+
+### 기대 효과
+- 실제 텔레그램 명령과 README가 어긋나 사용자가 없는 명령을 호출하는 문제 감소

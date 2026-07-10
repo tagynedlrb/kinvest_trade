@@ -277,7 +277,7 @@ python3 main.py liquidity-lab
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
 - 국내장이 열려 있으면 매 사이클마다 보유 포지션 청산 신호를 먼저 확인하고, 없으면 진입 조건을 충족한 종목의 신규 매수를 진행한다.
-- 미국장이 열려 있으면 진입 조건을 충족한 해외 종목에 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_overseas_orders`(기본 20)개까지 가능하다.
+- 미국장이 열려 있으면 진입 조건을 충족한 해외 종목에 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_overseas_orders`(기본 8)개까지 가능하다.
 - 국내장이 열려 있으면 진입 조건을 충족한 국내 종목에도 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_domestic_orders`(기본 5)개까지 가능하다.
 - 자동 사이클에서는 더 이상 국내 `paper-run` 25초 검증을 끼워 넣지 않는다. 수동 검증이 필요하면 텔레그램 `/lab_paper_test <종목코드>`를 사용한다.
 
@@ -316,9 +316,11 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_service_restart`: `kinvest-telegram-control.service` 자체를 재시작
 - `/lab_status`: 현재 상태 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
-- `/lab_positions`: 현재 보유 포지션과 미실현 손익 조회
+- `/lab_portfolio`: 실제 계좌 보유, 통합 가상보유, 정산 대기 매도, 누적 성과 조회
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
-- `/lab_virtual`: 거래불가 세션에서 가상 체결된 별도 포트폴리오와 누적 성과 조회
+- `/lab_orders`: 최근 주문 접수/취소/거부 기록과 KIS 실시간 미체결 주문 조회
+- `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
+- `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
 
@@ -353,8 +355,8 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - 재시작 후 평균매입가 복구가 실패하면 `매입가=알수없음`, `수익률=알수없음`으로 명확히 표기한다.
 - `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.
 - `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
-- `/lab_positions`는 국내/해외 보유 종목을 함께 보여주고, `/lab_watchlist`는 시장·상태·이평·메모·가격 한 줄 형식으로 요약한다.
-- `/lab_virtual`는 미국 거래불가 세션에서 `(virtual)`로 체결된 별도 포트폴리오, 정산 대기 매도 수량, 누적 실현손익을 따로 보여준다.
+- `/lab_portfolio`는 국내/해외 실제 보유 종목과 가상 체결 반영 통합 보유, 정산 대기 매도, 누적 실현손익을 함께 보여준다.
+- `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 국내 장기 미체결은 장외 시간에 `취소가능=국내장중`으로 표시되며, 봇이 접수한 장기 미체결 국내 주문은 다음 국내 정규장에 자동 취소를 재시도한다.
 
 ## 거래 시간 정책
 이 프로그램은 국내(KRX)와 해외(미국) 시장을 동시에 감시하며, 각 시장의 세션 상태에 따라 거래 가능 여부가 자동으로 결정된다. 판단 로직은 `src/kinvest_trade/market_sessions.py`에 구현되어 있다.
@@ -401,7 +403,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 실전투자로 전환하면 데이타임~애프터마켓까지 거래가 가능해지므로 이 제한이 사라진다. 전환 방법은 [실계좌 전환 방법](#실계좌-전환-방법) 섹션을 참고한다.
 
 ### 가상(virtual) 거래
-모의투자 환경에서 미국 시장이 열려 있지만 주문이 거부되는 세션(데이타임/프리마켓/애프터마켓)에는 실제 브로커 잔고와 분리된 `virtual_positions`, `virtual_orders` 테이블에 가상 체결을 기록한다. 실제 보유분을 거래불가 세션에 먼저 가상 매도한 경우에는 `virtual_sell_pending`에 정산 대기 수량이 음수 성격으로 따로 쌓인다. 이 포트폴리오는 실제 `liquidity_lab`의 진입/청산 신호를 그대로 따르지만, `get_overseas_balance` 등 실제 잔고와는 섞이지 않는다. 거래 가능 시간이 되면 정산 대기 매도는 실제 매도로 맞춰지고 `[KIS][VIRTUAL_SETTLED]` 알림이 전송된다. 텔레그램 알림은 종목명 뒤에 `(virtual)`이 붙고, 누적 성과와 정산 대기 상태는 `/lab_virtual` 명령으로 확인할 수 있다.
+모의투자 환경에서 미국 시장이 열려 있지만 주문이 거부되는 세션(데이타임/프리마켓/애프터마켓)에는 실제 브로커 잔고와 분리된 `virtual_positions`, `virtual_orders` 테이블에 가상 체결을 기록한다. 실제 보유분을 거래불가 세션에 먼저 가상 매도한 경우에는 `virtual_sell_pending`에 정산 대기 수량이 음수 성격으로 따로 쌓인다. 이 포트폴리오는 실제 `liquidity_lab`의 진입/청산 신호를 그대로 따르지만, `get_overseas_balance` 등 실제 잔고와는 섞이지 않는다. 거래 가능 시간이 되면 정산 대기 매도는 실제 매도로 맞춰지고 `[KIS][VIRTUAL_SETTLED]` 알림이 전송된다. 텔레그램 알림은 종목명 뒤에 `(virtual)`이 붙고, 누적 성과와 정산 대기 상태는 `/lab_portfolio` 명령으로 확인할 수 있다.
 
 ### 시장이 모두 닫혀 있을 때
 국내장과 미국장(애프터마켓 포함)이 모두 닫혀 있는 시간대(KST 07:00~09:00, 15:30~17:00 부근)에는 프로그램이 API 호출 없이 대기 상태로 유지된다. 다음 거래 가능 세션이 임박하면(30분 이내) 감시 주기가 짧아지고, 그렇지 않으면 길어진다(`determine_loop_interval_sec` 참고).

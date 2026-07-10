@@ -610,6 +610,71 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(tmp_path) -> None:
     assert by_reason == {"trend_filter_lost": 1, "stop_loss": 1}
 
 
+def test_get_recent_strategy_guard_performance_groups_executed_sell_real(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "strategy_guard.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="OLD",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP",
+        pnl_pct=-0.10,
+        qty_executed=1,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:00:00+00:00",
+        market="overseas",
+        symbol="A",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="RSI",
+        pnl_pct=-0.01,
+        qty_executed=1,
+        net_pnl_krw=-1000.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:01:00+00:00",
+        market="overseas",
+        symbol="B",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="RSI",
+        pnl_pct=0.02,
+        qty_executed=1,
+        net_pnl_krw=2000.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:02:00+00:00",
+        market="overseas",
+        symbol="SIGNAL",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="signal_only",
+        strategy_flag="RSI",
+        pnl_pct=-0.50,
+        qty_executed=0,
+    )
+
+    rows = repository.get_recent_strategy_guard_performance(
+        after_logged_at="2026-07-02T00:00:00+00:00",
+        cost_pct=0.005,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["market"] == "overseas"
+    assert row["strategy_flag"] == "RSI"
+    assert row["trade_count"] == 2
+    assert row["win_count"] == 1
+    assert round(row["avg_gross_pnl_pct"], 6) == 0.005
+    assert round(row["avg_net_pnl_pct"], 6) == 0.0
+    assert row["total_net_pnl_krw"] == 1000.0
+
+
 def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_virtual_order(

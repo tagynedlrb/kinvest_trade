@@ -1184,6 +1184,42 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_recent_strategy_guard_performance(
+        self,
+        *,
+        after_logged_at: str = "",
+        cost_pct: float = 0.005,
+    ) -> list[dict]:
+        """Summarize recent SELL_REAL performance by market and strategy for entry guards."""
+        params: list[object] = [float(cost_pct)]
+        where = [
+            "action_bias = 'SELL_REAL'",
+            "COALESCE(qty_executed, 0) > 0",
+        ]
+        if after_logged_at:
+            where.append("logged_at >= ?")
+            params.append(after_logged_at)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    market,
+                    COALESCE(NULLIF(strategy_flag, ''), 'N/A') AS strategy_flag,
+                    COUNT(*) AS trade_count,
+                    SUM(CASE WHEN COALESCE(pnl_pct, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+                    AVG(COALESCE(pnl_pct, 0)) AS avg_gross_pnl_pct,
+                    AVG(COALESCE(pnl_pct, 0)) - ? AS avg_net_pnl_pct,
+                    SUM(COALESCE(net_pnl_usd, realized_pnl_usd, 0)) AS total_net_pnl_usd,
+                    SUM(COALESCE(net_pnl_krw, realized_pnl_krw, 0)) AS total_net_pnl_krw
+                FROM cycle_log
+                WHERE {' AND '.join(where)}
+                GROUP BY market, strategy_flag
+                ORDER BY avg_net_pnl_pct ASC, trade_count DESC
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def create_paper_run(
         self,
         mode: str,

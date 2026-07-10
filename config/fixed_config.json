@@ -214,6 +214,12 @@
         "overseas_stop_loss_pct": 0.010,
         "overseas_max_position_qty": 1,
         "overseas_block_standalone_vwap": true,
+        "strategy_guard_enabled": true,
+        "strategy_guard_lookback_hours": 48,
+        "strategy_guard_min_trades": 3,
+        "strategy_guard_max_avg_net_pnl_pct": -0.003,
+        "strategy_guard_markets": ["overseas"],
+        "strategy_guard_strategy_flags": ["VWAP", "RSI"],
         "inverse_etf_symbols": ["SQQQ", "SOXS", "UVXY", "SPXU"],
         "leveraged_etf_symbols": ["TQQQ", "SOXL"]
     },

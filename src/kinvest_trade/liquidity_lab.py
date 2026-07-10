@@ -589,6 +589,8 @@ class LiquidityLabService:
         self._recent_cycle_count: int = 0
         self._rsi_blocked_count: int = 0
         self._last_trend_filter_alert_cycle: int = 0
+        self._strategy_guard_cache: dict[str, object] = {}
+        self._last_strategy_guard_blocked_keys: set[tuple[str, str]] = set()
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -736,6 +738,106 @@ class LiquidityLabService:
                 )
             )
         )
+
+    def _strategy_guard_blocked_keys(self) -> set[tuple[str, str]]:
+        config = getattr(self.config, "liquidity_lab", object())
+        if not bool(getattr(config, "strategy_guard_enabled", False)):
+            return set()
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "get_recent_strategy_guard_performance"):
+            return set()
+        cycle_no = getattr(self, "_cycle_count", 0)
+        cache = getattr(self, "_strategy_guard_cache", {})
+        if cache.get("cycle_no") == cycle_no:
+            return set(cache.get("blocked", set()))
+
+        lookback_hours = max(1, int(getattr(config, "strategy_guard_lookback_hours", 48) or 48))
+        min_trades = max(1, int(getattr(config, "strategy_guard_min_trades", 3) or 3))
+        max_avg_net = float(
+            getattr(config, "strategy_guard_max_avg_net_pnl_pct", -0.003) or -0.003
+        )
+        guard_markets = {
+            str(market).strip().lower()
+            for market in getattr(config, "strategy_guard_markets", ["overseas"])
+            if str(market).strip()
+        }
+        guard_flags = {
+            str(flag).strip().upper()
+            for flag in getattr(config, "strategy_guard_strategy_flags", ["VWAP", "RSI"])
+            if str(flag).strip()
+        }
+        after_logged_at = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+        auto_config = getattr(self.config, "auto_trade", object())
+        cost_pct = max(
+            0.005,
+            float(getattr(auto_config, "overseas_commission_rate", 0.0025) or 0.0025) * 2,
+        )
+        rows = repository.get_recent_strategy_guard_performance(
+            after_logged_at=after_logged_at,
+            cost_pct=cost_pct,
+        )
+        blocked: set[tuple[str, str]] = set()
+        blocked_detail: list[dict] = []
+        for row in rows:
+            market = str(row.get("market") or "").strip().lower()
+            strategy = str(row.get("strategy_flag") or "").strip().upper()
+            if not market or not strategy:
+                continue
+            if guard_markets and market not in guard_markets:
+                continue
+            if guard_flags and strategy not in guard_flags:
+                continue
+            trade_count = int(row.get("trade_count") or 0)
+            avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
+            if trade_count < min_trades or avg_net > max_avg_net:
+                continue
+            blocked.add((market, strategy))
+            blocked_detail.append(
+                {
+                    "market": market,
+                    "strategy_flag": strategy,
+                    "trade_count": trade_count,
+                    "avg_net_pnl_pct": round(avg_net, 6),
+                }
+            )
+
+        self._strategy_guard_cache = {
+            "cycle_no": cycle_no,
+            "blocked": blocked,
+            "rows": rows,
+        }
+        previous = getattr(self, "_last_strategy_guard_blocked_keys", set())
+        if blocked and blocked != previous:
+            self._save_event(
+                event_type="strategy_guard_active",
+                detail={
+                    "lookback_hours": lookback_hours,
+                    "min_trades": min_trades,
+                    "max_avg_net_pnl_pct": max_avg_net,
+                    "blocked": blocked_detail,
+                },
+            )
+        self._last_strategy_guard_blocked_keys = blocked
+        return blocked
+
+    def _entry_strategy_block_reason(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+    ) -> str:
+        strategy = str(strategy_flag or "").strip().upper()
+        market_key = str(market or "").strip().lower()
+        if not strategy:
+            return ""
+        if self._should_block_overseas_standalone_vwap(
+            market=market_key,
+            strategy_flag=strategy,
+        ):
+            return "standalone_vwap_blocked"
+        if (market_key, strategy) in self._strategy_guard_blocked_keys():
+            return "recent_strategy_underperformance"
+        return ""
 
     @staticmethod
     def _extract_broker_order_no(response: object) -> str:
@@ -3782,13 +3884,11 @@ class LiquidityLabService:
                     inverse_etf_symbols=getattr(self.config.liquidity_lab, "inverse_etf_symbols", []),
                     leveraged_etf_symbols=getattr(self.config.liquidity_lab, "leveraged_etf_symbols", []),
                 )
-                if (
-                    self._should_block_overseas_standalone_vwap(
-                        market=market,
-                        strategy_flag=strategy_result.flag,
-                    )
-                    and (strategy_result.signal == "BUY" or signal_state == "BUY")
-                ):
+                block_reason = self._entry_strategy_block_reason(
+                    market=market,
+                    strategy_flag=strategy_result.flag,
+                )
+                if block_reason and (strategy_result.signal == "BUY" or signal_state == "BUY"):
                     return WatchTargetStatus(
                         market=market,
                         code=code,
@@ -3799,7 +3899,7 @@ class LiquidityLabService:
                         action_bias="WAIT",
                         signal_state="WAIT",
                         ma_summary=self._ma_relation_summary(fallback_snapshot),
-                        note="[VWAP] standalone_vwap_blocked|stale_signal_cache",
+                        note=f"[{strategy_result.flag or '-'}] {block_reason}|stale_signal_cache",
                         holding_qty=holding_qty,
                         signal_snapshot=fallback_snapshot,
                         strategy_flag=strategy_result.flag,
@@ -3922,10 +4022,11 @@ class LiquidityLabService:
             commit=False,
         )
         if strategy_result.signal == "BUY":
-            if self._should_block_overseas_standalone_vwap(
+            block_reason = self._entry_strategy_block_reason(
                 market=market,
                 strategy_flag=strategy_result.flag,
-            ):
+            )
+            if block_reason:
                 return WatchTargetStatus(
                     market=market,
                     code=code,
@@ -3936,7 +4037,7 @@ class LiquidityLabService:
                     action_bias="WAIT",
                     signal_state="WAIT",
                     ma_summary=self._ma_relation_summary(signal_snapshot),
-                    note="[VWAP] standalone_vwap_blocked",
+                    note=f"[{strategy_result.flag or '-'}] {block_reason}",
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
                     strategy_flag=strategy_result.flag,
@@ -4210,7 +4311,7 @@ class LiquidityLabService:
             if watch_target.market == "overseas"
             and watch_target.action_bias == "BUY"
             and watch_target.code.upper() not in held_symbols
-            and not self._should_block_overseas_standalone_vwap(
+            and not self._entry_strategy_block_reason(
                 market=watch_target.market,
                 strategy_flag=watch_target.strategy_flag,
             )
@@ -4976,15 +5077,16 @@ class LiquidityLabService:
             buy_reason = watch_target.note or buy_reason
         if not strategy_flag or not entry_by:
             strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, signal_snapshot)
-        if self._should_block_overseas_standalone_vwap(
+        block_reason = self._entry_strategy_block_reason(
             market="overseas",
             strategy_flag=strategy_flag,
-        ):
+        )
+        if block_reason:
             self._record_trade_skip(
                 market="overseas",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
-                reason="standalone_vwap_blocked",
+                reason=block_reason,
                 side="buy",
                 price=candidate.last_price,
                 signal_snapshot=signal_snapshot,
@@ -5000,7 +5102,7 @@ class LiquidityLabService:
                 "side": "buy",
                 "candidate": asdict(candidate),
                 "signal_snapshot": asdict(signal_snapshot),
-                "reason": "standalone_vwap_blocked",
+                "reason": block_reason,
             }
 
         config = self.config.liquidity_lab
@@ -5448,15 +5550,16 @@ class LiquidityLabService:
         entry_by = "" if watch_target is None else watch_target.entry_by
         if snapshot is not None and (not strategy_flag or not entry_by):
             strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, snapshot)
-        if self._should_block_overseas_standalone_vwap(
+        block_reason = self._entry_strategy_block_reason(
             market="overseas",
             strategy_flag=strategy_flag,
-        ):
+        )
+        if block_reason:
             self._record_trade_skip(
                 market="overseas",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
-                reason="standalone_vwap_blocked",
+                reason=block_reason,
                 side="buy",
                 price=candidate.last_price,
                 signal_snapshot=snapshot,
@@ -5471,7 +5574,7 @@ class LiquidityLabService:
                 "market": "overseas",
                 "side": "buy",
                 "candidate": asdict(candidate),
-                "reason": "standalone_vwap_blocked",
+                "reason": block_reason,
             }
         if config.use_slot_sizing:
             try:

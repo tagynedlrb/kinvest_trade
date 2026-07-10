@@ -3501,6 +3501,89 @@ def test_select_overseas_buy_targets_excludes_standalone_vwap_when_blocked() -> 
     assert [item.symbol for item in selected] == ["AMD"]
 
 
+def test_select_overseas_buy_targets_excludes_recent_underperforming_standalone_strategy() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
+    service.config.liquidity_lab.strategy_guard_markets = ["overseas"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["RSI"]
+    now = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        service.repository.save_cycle_log(
+            logged_at=now,
+            market="overseas",
+            symbol=f"RSI{idx}",
+            exchange_code="NASD",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="RSI",
+            pnl_pct=-0.01,
+            qty_executed=1,
+        )
+    overseas_ranked = [
+        OverseasScanResult("PLTR", "NYSE", 20.0, 19.99, 20.01, 0.0010, 1.0, 900_000, 10, 1350.0, 18.0),
+        OverseasScanResult("AMD", "NASD", 155.0, 154.9, 155.1, 0.0012, 1.5, 800_000, 10, 1350.0, 17.0),
+        OverseasScanResult("MSFT", "NASD", 430.0, 429.9, 430.1, 0.0009, 1.1, 600_000, 10, 1350.0, 15.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus(
+            "overseas",
+            "PLTR",
+            "NYSE",
+            20.0,
+            18.0,
+            12.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[RSI] strategy_buy_signal",
+            0,
+            strategy_flag="RSI",
+            entry_by="RSI",
+        ),
+        WatchTargetStatus(
+            "overseas",
+            "AMD",
+            "NASD",
+            155.0,
+            17.0,
+            11.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[VOL] strategy_buy_signal",
+            0,
+            strategy_flag="VOL",
+            entry_by="VOL",
+        ),
+        WatchTargetStatus(
+            "overseas",
+            "MSFT",
+            "NASD",
+            430.0,
+            15.0,
+            10.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[VWAP+RSI] strategy_buy_signal",
+            0,
+            strategy_flag="VWAP+RSI",
+            entry_by="VWAP",
+        ),
+    ]
+
+    selected = service._select_overseas_buy_targets(overseas_ranked, watch_targets, max_concurrent=3)
+
+    assert [item.symbol for item in selected] == ["AMD", "MSFT"]
+    events = service.repository.list_event_log(event_type="strategy_guard_active", limit=1)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["blocked"][0]["strategy_flag"] == "RSI"
+
+
 def test_select_overseas_buy_targets_excludes_already_held_symbols() -> None:
     service = _build_run_service()
     overseas_ranked = [
@@ -4872,6 +4955,74 @@ def test_place_overseas_test_order_blocks_standalone_vwap_before_submission() ->
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
     assert rows[0]["symbol"] == "SOXL"
     assert rows[0]["action_reason"] == "buy:standalone_vwap_blocked"
+
+
+def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before_submission() -> None:
+    class FailingOverseasClient:
+        async def get_overseas_possible_order(self, **kwargs):
+            raise AssertionError("possible-order API should not be called")
+
+        async def place_overseas_order_for_current_session(self, **kwargs):
+            raise AssertionError("order API should not be called")
+
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
+    service.config.liquidity_lab.strategy_guard_markets = ["overseas"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["RSI"]
+    service.client = FailingOverseasClient()
+    now = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        service.repository.save_cycle_log(
+            logged_at=now,
+            market="overseas",
+            symbol=f"BAD{idx}",
+            exchange_code="NASD",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="RSI",
+            pnl_pct=-0.02,
+            qty_executed=1,
+        )
+    snapshot = _snapshot(price=25.0, vwap=24.9, rsi14=29.0)
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NYSE",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="PLTR",
+        exchange_code="NYSE",
+        price=25.0,
+        activity_score=16.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[RSI] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="RSI",
+        entry_by="RSI",
+    )
+
+    result = asyncio.run(service._place_overseas_test_order(candidate, watch_target=watch_target))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "recent_strategy_underperformance"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["symbol"] == "PLTR"
+    assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
 def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:

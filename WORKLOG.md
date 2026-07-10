@@ -2384,3 +2384,30 @@
 - `trend_filter_lost` 비율 < 50%
 - 하루 CB 발동 ≤ 2회
 - 사이클당 매매율 2~5%
+
+## [2026-07-10] 해외 단독 전략 성과 기반 진입 가드
+
+### 배경
+- 최근 2일 `SELL_REAL` 기준 국내는 +106,966원, 해외는 -6,178,536원으로 차이가 컸다.
+- 해외 손실은 단독 전략의 `trend_filter_lost` 청산에 집중됐다.
+  - 해외 `VWAP` + `trend_filter_lost`: 15건, 승률 0%, 누적 약 -356만원
+  - 해외 `RSI` + `stop_loss/trend_filter_lost`: 최근 손실 확대
+- 기존 `overseas_block_standalone_vwap`은 고정 차단이지만,
+  RSI/VOL 등 다른 단독 전략 부진을 데이터 기반으로 자동 제어하는 장치가 없었다.
+
+### 수정
+- `repository.py`
+  - `get_recent_strategy_guard_performance()` 추가
+  - 최근 `SELL_REAL`을 시장/전략별로 집계하고 평균 순손익률을 계산
+- `liquidity_lab.py`
+  - `strategy_guard_enabled` 설정 기반 진입 가드 추가
+  - 최근 48시간, 최소 3건, 평균 순손익률 -0.3% 이하인 해외 단독 전략은 신규 BUY 차단
+  - 차단 발생 시 `strategy_guard_active` 이벤트 기록
+  - 후보 선정 단계와 주문 직전 단계 모두에서 같은 가드 적용
+- `config/fixed_config.json`
+  - 기본 감시 대상: 해외 `VWAP`, `RSI`
+  - 조합 전략(`VWAP+RSI`)은 별도 전략으로 취급하여 자동 차단 대상에서 제외
+
+### 의도
+- 해외 단독 전략이 다시 회복되기 전까지 신규 진입을 줄여 손실 반복을 방지
+- 국내/조합 전략처럼 상대적으로 성과가 나은 경로는 열어두어 매매 빈도 전체가 완전히 죽지 않게 함

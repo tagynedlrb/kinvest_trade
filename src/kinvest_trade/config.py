@@ -271,6 +271,12 @@ class LiquidityLabConfig:
     overseas_stop_loss_pct: float
     overseas_max_position_qty: int
     overseas_block_standalone_vwap: bool
+    strategy_guard_enabled: bool
+    strategy_guard_lookback_hours: int
+    strategy_guard_min_trades: int
+    strategy_guard_max_avg_net_pnl_pct: float
+    strategy_guard_markets: list[str]
+    strategy_guard_strategy_flags: list[str]
     inverse_etf_symbols: list[str]
     leveraged_etf_symbols: list[str]
 
@@ -843,6 +849,24 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             overseas_block_standalone_vwap=bool(
                 liquidity_lab_raw.get("overseas_block_standalone_vwap", False)
             ),
+            strategy_guard_enabled=bool(liquidity_lab_raw.get("strategy_guard_enabled", True)),
+            strategy_guard_lookback_hours=int(
+                liquidity_lab_raw.get("strategy_guard_lookback_hours", 48)
+            ),
+            strategy_guard_min_trades=int(liquidity_lab_raw.get("strategy_guard_min_trades", 3)),
+            strategy_guard_max_avg_net_pnl_pct=float(
+                liquidity_lab_raw.get("strategy_guard_max_avg_net_pnl_pct", -0.003)
+            ),
+            strategy_guard_markets=[
+                str(value).strip().lower()
+                for value in liquidity_lab_raw.get("strategy_guard_markets", ["overseas"])
+                if str(value).strip()
+            ],
+            strategy_guard_strategy_flags=[
+                str(value).strip().upper()
+                for value in liquidity_lab_raw.get("strategy_guard_strategy_flags", ["VWAP", "RSI"])
+                if str(value).strip()
+            ],
             inverse_etf_symbols=[
                 str(value)
                 for value in liquidity_lab_raw.get("inverse_etf_symbols", ["SQQQ", "SOXS"])

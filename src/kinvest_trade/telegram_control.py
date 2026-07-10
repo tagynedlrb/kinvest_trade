@@ -1005,7 +1005,8 @@ class TelegramLiquidityLabController:
 
         age_text = "방금" if age_min <= 0 else f"{age_min}분 전"
         if self.mode != "running":
-            return f"감시데이터={age_text} (루프 {self.mode})"
+            mode_text = "일시정지" if self.mode == "paused" else "중지"
+            return f"감시데이터={age_text} (저장값·루프 {mode_text})"
 
         if age_min >= self._status_stale_threshold_min():
             return f"감시데이터={age_text} (지연)"
@@ -1375,6 +1376,8 @@ class TelegramLiquidityLabController:
             self._report_freshness_notice(),
             f"예상호출={last_report.get('estimated_api_calls_per_cycle', '-')}",
         ]
+        if self.mode != "running":
+            lines.append("주의=루프가 실행 중이 아니므로 아래 목록은 마지막 저장 감시데이터")
         if not watch_targets:
             lines.append("감시종목=없음")
             if positions:

@@ -455,7 +455,7 @@ def test_build_status_message_marks_estimated_pnl_as_stored_when_stopped() -> No
 
     message = controller._build_status_message()
 
-    assert "감시데이터=30분 전 (루프 stopped)" in message
+    assert "감시데이터=30분 전 (저장값·루프 중지)" in message
     assert "추정청산손익=-11,229,211원 (저장값)" in message
 
 
@@ -2519,6 +2519,7 @@ def test_build_watchlist_message_hides_closed_stale_position_state(tmp_path) -> 
     message = controller._build_watchlist_message()
 
     assert "MSEX 상태=보유중" not in message
+    assert "주의=루프가 실행 중이 아니므로 아래 목록은 마지막 저장 감시데이터" in message
     assert "감시종목=없음" in message
     assert "숨김=정리된 보유잔상 1개" in message
 
@@ -2574,6 +2575,7 @@ def test_build_watchlist_message_uses_persisted_position_price(tmp_path) -> None
     message = controller._build_watchlist_message()
 
     assert "해외 MSEX 상태=보유중 전략=VWAP 가격=$54.8800 보유=522주" in message
+    assert "주의=루프가 실행 중이 아니므로 아래 목록은 마지막 저장 감시데이터" in message
     assert "손익=+1.43%" in message
 
 

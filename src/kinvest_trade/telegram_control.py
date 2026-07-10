@@ -1752,7 +1752,29 @@ class TelegramLiquidityLabController:
                         exchange_code=exchange_code,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    lines.append(f"{symbol} 취소실패={str(exc)[:80]}")
+                    error_text = str(exc)[:80]
+                    if "장종료" in error_text:
+                        error_text = "장종료(국내장중 재시도 필요)"
+                    self.repository.save_broker_order_event(
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        market="domestic",
+                        symbol=symbol,
+                        exchange_code=exchange_code,
+                        side=side,
+                        order_kind="cancel",
+                        requested_qty=open_qty,
+                        requested_price=price,
+                        status="REJECTED",
+                        reason="stale_live_order_cancel_failed",
+                        broker_order_no=order_no,
+                        is_virtual=0,
+                        payload={
+                            "original_order_no": order_no,
+                            "original_order_orgno": orgno,
+                            "error": str(exc),
+                        },
+                    )
+                    lines.append(f"{symbol} 취소실패={error_text}")
                     continue
 
                 output = response.get("output") if isinstance(response, dict) else {}
@@ -1909,7 +1931,12 @@ class TelegramLiquidityLabController:
             return None
         return parsed.replace(tzinfo=KST).astimezone(timezone.utc)
 
-    def _format_live_open_domestic_order_line(self, row: dict) -> str:
+    def _format_live_open_domestic_order_line(
+        self,
+        row: dict,
+        *,
+        now: datetime | None = None,
+    ) -> str:
         created_at = row.get("created_at")
         time_text = format_kst_korean(created_at) if isinstance(created_at, datetime) else "-"
         symbol = str(row.get("symbol") or row.get("pdno") or "-").upper()
@@ -1935,8 +1962,11 @@ class TelegramLiquidityLabController:
         ]
         if order_no:
             parts.append(f"주문번호={order_no}")
-        age_parts = self._format_open_order_age_parts(created_at)
+        current = now or datetime.now(timezone.utc)
+        age_parts = self._format_open_order_age_parts(created_at, now=current)
         parts.extend(age_parts)
+        if "주의=장기미체결" in age_parts and not is_krx_regular_session(current):
+            parts.append("취소가능=국내장중")
         return " ".join(parts)
 
     async def _load_live_open_overseas_orders(self, *, limit: int = 12) -> list[dict]:

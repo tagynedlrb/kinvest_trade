@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import kinvest_trade.telegram_control as telegram_control_module
 import pytest
+from kinvest_trade.client import KisApiError
 from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.telegram_control import (
@@ -1078,6 +1079,34 @@ def test_format_open_order_age_parts_marks_stale_order() -> None:
     assert parts == ["경과=1시간35분", "주의=장기미체결"]
 
 
+def test_format_live_open_domestic_order_line_marks_cancel_session_when_closed(tmp_path) -> None:
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=SqliteRepository(tmp_path / "telegram_open_order_line.db"),
+        notifier=DummyNotifier(),
+    )
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+    row = {
+        "created_at": now - timedelta(minutes=95),
+        "symbol": "073240",
+        "name": "금호타이어",
+        "sll_buy_dvsn_cd": "02",
+        "open_qty": 126,
+        "order_price": 6990,
+        "order_no": "0000013669",
+    }
+
+    line = controller._format_live_open_domestic_order_line(row, now=now)
+
+    assert "주의=장기미체결" in line
+    assert "취소가능=국내장중" in line
+
+
 def test_send_cancel_stale_domestic_prompt_lists_stale_orders(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_cancel_prompt.db")
     notifier = DummyNotifier()
@@ -1181,6 +1210,66 @@ def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> 
     assert rows[0]["status"] == "CANCELED"
     assert rows[0]["reason"] == "stale_live_order_cancel"
     assert rows[0]["broker_order_no"] == "0000014000"
+
+
+def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_cancel_rejected.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
+        "symbol": "073240",
+        "name": "금호타이어",
+        "sll_buy_dvsn_cd": "02",
+        "ord_gno_brno": "00950",
+        "ord_dvsn_cd": "00",
+        "excg_id_dvsn_cd": "KRX",
+        "open_qty": 126,
+        "order_price": 6990,
+        "order_no": "0000013669",
+    }
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
+
+    class FakeKisClient:
+        def __init__(self, credentials) -> None:
+            self.credentials = credentials
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def revise_or_cancel_domestic_order(self, **kwargs):
+            del kwargs
+            raise KisApiError("VTTC0803U error: 40580000 모의투자 장종료 입니다.")
+
+    original_client = telegram_control_module.KisRestClient
+    telegram_control_module.KisRestClient = FakeKisClient
+    try:
+        asyncio.run(controller._execute_cancel_stale_domestic_orders())
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert "073240 취소실패=장종료(국내장중 재시도 필요)" in notifier.messages[-1]
+    rows = repository.list_broker_order_events(limit=1)
+    assert rows[0]["market"] == "domestic"
+    assert rows[0]["symbol"] == "073240"
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["status"] == "REJECTED"
+    assert rows[0]["reason"] == "stale_live_order_cancel_failed"
+    assert rows[0]["broker_order_no"] == "0000013669"
+    payload = rows[0]["payload_json"]
+    assert "장종료" in payload["error"]
 
 
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:

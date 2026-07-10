@@ -2213,3 +2213,20 @@
 
 ### 검증
 - `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_shows_stopped_loop_notice tests/test_telegram_control.py::test_build_status_message_shows_live_open_order_counts tests/test_telegram_control.py::test_send_status_message_includes_live_open_order_counts -q` → 3개 통과
+
+## [2026-07-10] 모의투자 미국 확장세션 상태 문구 명확화
+
+### 배경
+- 모의투자(`vps`)는 미국 프리마켓/애프터마켓에서 KIS 주문이 불가하지만,
+  `/lab_status`는 `US premarket (감시중)`처럼 표시해 사용자가 주문 가능 상태로
+  오해할 수 있었다.
+
+### 수정 사항
+- `telegram_control.py`
+  - 실전(`prod`)이 아닌 환경에서 미국 프리마켓/애프터마켓이면
+    `US premarket (모의 주문불가·감시만)`처럼 표시
+- `tests/test_telegram_control.py`
+  - 모의투자 프리마켓 상태 문구 회귀 테스트 추가
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_marks_mock_us_extended_session_not_orderable tests/test_telegram_control.py::test_build_status_message_shows_stopped_loop_notice -q` → 2개 통과

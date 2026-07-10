@@ -342,6 +342,24 @@ def test_build_status_message_shows_live_open_order_counts() -> None:
     assert "해외장기취소=/lab_cancel_stale_overseas" in message
 
 
+def test_build_status_message_marks_mock_us_extended_session_not_orderable(monkeypatch) -> None:
+    controller = _build_async_controller()
+    controller.config.credentials.env = "vps"
+    monkeypatch.setattr(telegram_control_module, "is_krx_regular_session", lambda now: False)
+    monkeypatch.setattr(telegram_control_module, "is_krx_holiday", lambda day: False)
+    monkeypatch.setattr(telegram_control_module, "is_nyse_holiday", lambda day: False)
+    monkeypatch.setattr(telegram_control_module, "get_us_trading_session", lambda now: "premarket")
+    monkeypatch.setattr(
+        telegram_control_module,
+        "is_us_orderable_session_for_env",
+        lambda now, env: False,
+    )
+
+    message = controller._build_status_message()
+
+    assert "시장상태=US premarket (모의 주문불가·감시만)" in message
+
+
 def test_send_status_message_includes_live_open_order_counts() -> None:
     controller = _build_async_controller()
 

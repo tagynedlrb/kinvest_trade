@@ -365,6 +365,45 @@ def test_build_status_message_warns_virtual_exposure_when_stopped(tmp_path) -> N
     )
 
 
+def test_build_status_message_shows_recent_sell_block_events(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_status_sell_block.db")
+    for _ in range(3):
+        repository.save_event(
+            event_type="trade_skip",
+            market="overseas",
+            symbol="MSEX",
+            detail={
+                "reason": "no_orderable_qty",
+                "holding_qty": 522,
+                "orderable_qty": 0,
+            },
+        )
+    repository.save_event(
+        event_type="trade_skip",
+        market="domestic",
+        symbol="069500",
+        detail={"reason": "order_rejected", "side": "sell"},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            skip_holiday_overseas=True,
+            skip_holiday_domestic=True,
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_status_message()
+
+    assert "매도장애(12h)=해외 MSEX 매도가능0 3회" in message
+    assert "국내 069500 주문거부 1회" in message
+    assert "확인=/lab_orders" in message
+
+
 def test_build_status_message_shows_live_open_order_counts() -> None:
     controller = _build_async_controller()
 
@@ -2287,6 +2326,9 @@ class DummyRepository:
         return []
 
     def list_virtual_positions(self) -> list[dict]:
+        return []
+
+    def list_event_log(self, **kwargs) -> list[dict]:
         return []
 
 

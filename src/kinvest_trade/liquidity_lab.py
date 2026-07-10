@@ -6056,7 +6056,8 @@ class LiquidityLabService:
                 }
             reject_reason = (
                 "session_not_orderable_in_profile"
-                if not is_us_orderable_session_for_env(
+                if self._is_mock_us_session_blocked_error(error_text)
+                or not is_us_orderable_session_for_env(
                     datetime.now(timezone.utc),
                     self.config.credentials.env,
                 )

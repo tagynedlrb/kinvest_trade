@@ -1069,6 +1069,9 @@ class TelegramLiquidityLabController:
         virtual_exposure_status = self._build_virtual_exposure_status_line()
         if virtual_exposure_status:
             lines.append(virtual_exposure_status)
+        sell_block_status = self._build_recent_sell_block_status_line()
+        if sell_block_status:
+            lines.append(sell_block_status)
         if open_order_error:
             lines.append(f"미체결=조회실패 ({open_order_error})")
         elif domestic_open_count is not None or overseas_open_count is not None:
@@ -1150,6 +1153,68 @@ class TelegramLiquidityLabController:
                 suffix.append("감시=중지")
         suffix.append("확인=/lab_portfolio")
         return f"가상노출={' / '.join(parts)} {' '.join(suffix)}"
+
+    def _build_recent_sell_block_status_line(self, *, lookback_hours: int = 12) -> str:
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "list_event_log"):
+            return ""
+        try:
+            rows = repository.list_event_log(event_type="trade_skip", limit=300)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("status_sell_block_summary_failed error=%s", exc)
+            return ""
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, int(lookback_hours)))
+        stats: dict[tuple[str, str, str], dict[str, int | datetime | None]] = {}
+        for row in rows:
+            logged_at = parse_datetime(str(row.get("logged_at") or ""))
+            if logged_at is not None and logged_at < cutoff:
+                continue
+            detail_raw = row.get("detail", "")
+            try:
+                detail = json.loads(detail_raw) if isinstance(detail_raw, str) else {}
+            except json.JSONDecodeError:
+                detail = {}
+            reason = str(detail.get("reason") or "")
+            if reason not in {"no_orderable_qty", "order_rejected"}:
+                continue
+            side = str(detail.get("side") or "").lower()
+            if side and side != "sell":
+                continue
+            market = str(row.get("market") or "")
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not market or not symbol:
+                continue
+            key = (market, symbol, reason)
+            item = stats.setdefault(key, {"count": 0, "latest": None})
+            item["count"] = int(item["count"]) + 1
+            if logged_at is not None:
+                latest = item.get("latest")
+                if latest is None or logged_at > latest:
+                    item["latest"] = logged_at
+
+        if not stats:
+            return ""
+
+        reason_labels = {
+            "no_orderable_qty": "매도가능0",
+            "order_rejected": "주문거부",
+        }
+        ranked = sorted(
+            stats.items(),
+            key=lambda item: (
+                -int(item[1]["count"]),
+                item[1]["latest"] or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+        )
+        parts: list[str] = []
+        for (market, symbol, reason), item in ranked[:3]:
+            count = int(item["count"])
+            parts.append(
+                f"{format_market_korean(market)} {symbol} "
+                f"{reason_labels.get(reason, reason)} {count}회"
+            )
+        return f"매도장애({lookback_hours}h)={' / '.join(parts)} 확인=/lab_orders"
 
     def _build_watchlist_message(self) -> str:
         last_report = self.last_report_summary or {}

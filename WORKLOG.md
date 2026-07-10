@@ -2316,6 +2316,8 @@
   - 마지막 리포트의 watch target이 보유 수량을 갖고 있더라도,
     최신 `lab_symbol_state.has_position=0`이면 `/lab_watchlist`에서 숨김
   - 숨겨진 항목은 `숨김=정리된 보유잔상 N개`로만 간단히 표시
+  - `/lab_status`의 `감시수`와 `신호캐시` 요약도 같은 숨김 기준을 적용해
+    닫힌 잔상 수를 별도 표기
 - 운영 DB
   - 백업 생성: `data/trading_backup_20260710_135858_pre_msex_lab_state_cleanup.db`
   - `MSEX` lab 보유 잔상 1건을 수동 정리
@@ -2323,5 +2325,7 @@
 ### 검증
 - 운영 `/lab_watchlist` 렌더링에서 `MSEX` 보유 라인이 사라지고
   `숨김=정리된 보유잔상 1개`로 표시됨
+- 운영 `/lab_status` 렌더링에서 `감시수=15 (숨김 1)`,
+  `신호캐시=15/15 전체 캐시 숨김=정리잔상1 확인=/lab_watchlist`로 표시됨
 - `python3 -m pytest tests/test_unified_position_tracker.py::test_reconcile_clears_orphan_virtual_sell_pending tests/test_telegram_control.py::test_build_watchlist_message_hides_closed_stale_position_state tests/test_telegram_control.py::test_build_watchlist_message_uses_balance_cache_for_held_pnl -q` → 3개 통과
 - `python3 -m pytest tests -q` → 395개 통과

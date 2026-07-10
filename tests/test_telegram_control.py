@@ -389,6 +389,55 @@ def test_build_status_message_shows_stale_signal_cache_summary() -> None:
     assert "신호캐시=2/2 전체 캐시 확인=/lab_watchlist" in message
 
 
+def test_build_status_message_excludes_closed_stale_target_from_cache_summary(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_status_closed_stale.db")
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="manual_orphan_lab_state_cleared",
+        holding_qty=0,
+        last_price=54.53,
+        has_position=0,
+        updated_at="2026-07-10T13:58:58+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "stopped"
+    controller.last_report_summary = {
+        "scanned_at": "2026-07-10 17:59:42 KST",
+        "watch_targets": [
+            {
+                "market": "overseas",
+                "code": "MSEX",
+                "note": "vr=0.0x mom=-0.31%|stale_signal_cache",
+                "holding_qty": 522,
+            },
+            {
+                "market": "overseas",
+                "code": "KURA",
+                "note": "vr=0.0x mom=+0.01%|stale_signal_cache",
+                "holding_qty": 1705,
+            },
+        ],
+    }
+
+    message = controller._build_status_message()
+
+    assert "감시수=1 (숨김 1)" in message
+    assert "신호캐시=1/1 전체 캐시 숨김=정리잔상1 확인=/lab_watchlist" in message
+
+
 def test_build_status_message_marks_estimated_pnl_as_stored_when_stopped() -> None:
     controller = _build_async_controller()
     controller.mode = "stopped"

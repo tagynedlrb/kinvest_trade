@@ -1103,6 +1103,7 @@ class TelegramLiquidityLabController:
         )
         next_run_text = "-" if snapshot.mode != "running" else self._short_time(snapshot.next_run_at)
         next_interval_text = "-" if snapshot.mode != "running" else f"{next_interval}초"
+        watch_count_text = self._watch_target_count_text(last_report)
         lines = [
             "[KIS][TELEGRAM_CONTROL_STATUS]",
             f"시각={format_kst_korean(now)}",
@@ -1120,7 +1121,7 @@ class TelegramLiquidityLabController:
             "추정청산손익="
             f"{int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원"
             f"{self._estimated_pnl_suffix(now)}",
-            f"감시수={len(last_report.get('watch_targets') or [])}",
+            f"감시수={watch_count_text}",
         ]
         signal_cache_status = self._build_signal_cache_status_line(last_report)
         if signal_cache_status:
@@ -1213,10 +1214,17 @@ class TelegramLiquidityLabController:
         suffix.append("확인=/lab_portfolio")
         return f"가상노출={' / '.join(parts)} {' '.join(suffix)}"
 
-    @staticmethod
-    def _build_signal_cache_status_line(last_report: dict) -> str:
-        watch_targets = last_report.get("watch_targets") or []
+    def _build_signal_cache_status_line(self, last_report: dict) -> str:
+        raw_watch_targets = last_report.get("watch_targets") or []
+        watch_targets = [
+            target
+            for target in raw_watch_targets
+            if not self._is_closed_stale_watch_target(target)
+        ]
+        hidden_count = len(raw_watch_targets) - len(watch_targets)
         if not watch_targets:
+            if hidden_count > 0:
+                return f"신호캐시=숨김 정리잔상{hidden_count} 확인=/lab_watchlist"
             return ""
         stale_count = sum(
             1
@@ -1226,9 +1234,20 @@ class TelegramLiquidityLabController:
         if stale_count <= 0:
             return ""
         total = len(watch_targets)
+        hidden_text = f" 숨김=정리잔상{hidden_count}" if hidden_count > 0 else ""
         if stale_count == total:
-            return f"신호캐시={stale_count}/{total} 전체 캐시 확인=/lab_watchlist"
-        return f"신호캐시={stale_count}/{total} 일부 캐시 확인=/lab_watchlist"
+            return f"신호캐시={stale_count}/{total} 전체 캐시{hidden_text} 확인=/lab_watchlist"
+        return f"신호캐시={stale_count}/{total} 일부 캐시{hidden_text} 확인=/lab_watchlist"
+
+    def _watch_target_count_text(self, last_report: dict) -> str:
+        raw_watch_targets = last_report.get("watch_targets") or []
+        hidden_count = sum(
+            1 for target in raw_watch_targets if self._is_closed_stale_watch_target(target)
+        )
+        visible_count = max(0, len(raw_watch_targets) - hidden_count)
+        if hidden_count <= 0:
+            return str(visible_count)
+        return f"{visible_count} (숨김 {hidden_count})"
 
     def _build_recent_sell_block_status_line(self, *, lookback_hours: int = 12) -> str:
         repository = getattr(self, "repository", None)

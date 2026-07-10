@@ -1058,8 +1058,38 @@ class TelegramLiquidityLabController:
             f"command={verb}",
             "next_run=immediate",
         ]
+        lines.extend(self._build_start_resume_virtual_position_notice_lines())
         lines.extend(await self._build_start_resume_open_order_notice_lines())
         await self.notifier.send("\n".join(lines))
+
+    def _build_start_resume_virtual_position_notice_lines(self) -> list[str]:
+        repository = getattr(self, "repository", None)
+        config = getattr(getattr(self, "config", None), "liquidity_lab", None)
+        if repository is None or config is None or not hasattr(repository, "list_virtual_positions"):
+            return []
+        max_overseas_positions = int(
+            getattr(config, "max_concurrent_overseas_orders", 0) or 0
+        )
+        if max_overseas_positions <= 0:
+            return []
+        try:
+            overseas_positions = [
+                row
+                for row in repository.list_virtual_positions()
+                if str(row.get("market", "")).strip().lower() == "overseas"
+                and int(row.get("qty", 0) or 0) > 0
+            ]
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("start_virtual_position_notice_failed error=%s", exc)
+            return []
+        count = len(overseas_positions)
+        if count <= max_overseas_positions:
+            return []
+        return [
+            f"가상포지션=해외 {count}/{max_overseas_positions} 초과",
+            "신규해외매수=한도 해소 전 제한",
+            "정리=/lab_trim_virtual",
+        ]
 
     async def _build_start_resume_open_order_notice_lines(self) -> list[str]:
         """Warn once on start/resume if old live orders may affect fresh orders."""

@@ -3104,6 +3104,58 @@ def test_handle_start_like_command_warns_about_live_open_orders() -> None:
     assert "해외장기취소=/lab_cancel_stale_overseas" in message
 
 
+def test_handle_start_like_command_warns_about_virtual_position_cap(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_start_virtual_cap.db")
+    for symbol in ["AAA", "BBB", "CCC"]:
+        repository.upsert_virtual_position(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            qty=1,
+            avg_price=100.0,
+            currency="USD",
+            opened_at="2026-07-01T00:00:00+00:00",
+            updated_at="2026-07-01T00:00:00+00:00",
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_concurrent_overseas_orders=2,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            skip_holiday_overseas=True,
+            skip_holiday_domestic=True,
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "paused"
+    controller.active_session_id = "sess-1"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+    )
+    controller._write_runtime_state = lambda: None
+
+    async def no_domestic_orders(limit: int = 20):
+        return []
+
+    async def no_overseas_orders(limit: int = 20):
+        return []
+
+    controller._load_live_open_domestic_orders = no_domestic_orders  # type: ignore[method-assign]
+    controller._load_live_open_overseas_orders = no_overseas_orders  # type: ignore[method-assign]
+
+    asyncio.run(controller._handle_start_like_command("running", "resumed"))
+
+    message = controller.notifier.messages[-1]
+    assert "가상포지션=해외 3/2 초과" in message
+    assert "신규해외매수=한도 해소 전 제한" in message
+    assert "정리=/lab_trim_virtual" in message
+
+
 def test_handle_start_like_command_reports_open_order_lookup_failure() -> None:
     controller = _build_async_controller()
     controller.mode = "paused"

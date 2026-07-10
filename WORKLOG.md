@@ -2975,3 +2975,26 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_build_stopped_open_market_warning_counts_real_and_virtual_positions tests/test_telegram_control.py::test_build_stopped_open_market_warning_hidden_while_running -q`
   → 통과
 - `python3 -m pytest tests -q` → 437개 통과
+
+## [2026-07-11] `/lab_start` 가상 포지션 한도 초과 안내
+
+### 배경
+- 현재 운영 DB 기준 해외 가상보유가 15종목이고 `max_concurrent_overseas_orders=8`이라
+  `/lab_start` 후에도 신규 해외 매수는 한도 해소 전까지 제한된다.
+- 기존 시작/재개 응답은 미체결 주문만 경고해, 사용자가 시작 후 해외 매수가 안 되는
+  이유를 즉시 알기 어려웠다.
+
+### 수정
+- `telegram_control.py`
+  - `/lab_start`, `/lab_resume` 응답에 가상 포지션 한도 초과 시
+    `가상포지션=해외 N/M 초과`, `신규해외매수=한도 해소 전 제한`,
+    `정리=/lab_trim_virtual` 안내 추가
+- `tests/test_telegram_control.py`
+  - 시작/재개 명령에서 가상 포지션 한도 초과 안내가 표시되는 테스트 추가
+
+### 검증
+- 운영 DB 기준 시작 안내 시뮬레이션:
+  `가상포지션=해외 15/8 초과`, `신규해외매수=한도 해소 전 제한`
+- `python3 -m pytest tests/test_telegram_control.py::test_handle_start_like_command_warns_about_virtual_position_cap tests/test_telegram_control.py::test_handle_start_like_command_warns_about_live_open_orders -q`
+  → 통과
+- `python3 -m pytest tests -q` → 438개 통과

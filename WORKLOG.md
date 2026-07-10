@@ -1,5 +1,25 @@
 # WORKLOG
 
+## [2026-07-10] no_orderable_qty 장기 지속 재시도 백오프
+
+### 분석
+- 최근 DB 기준 `MSEX`에서 `no_orderable_qty` 스킵 이벤트가 76회 반복 기록됨
+- `orderable_qty=0` 장기 지속 상태는 T+2/미체결/브로커 반영 지연 가능성이 높아,
+  초기 5분 재시도는 유효하지만 장시간 동일 이벤트를 계속 쌓을 필요는 낮음
+
+### 수정
+- `liquidity_lab.py`
+  - 초기 `no_orderable_qty` 재시도 간격은 5분 유지
+  - stall count 30회 이상이면 20분 재시도
+  - stall count 120회 이상이면 60분 재시도
+  - `trade_skip` 이벤트 detail에 `retry_after_min` 기록
+- `tests/test_liquidity_lab.py`
+  - 초기 5분 재시도와 장기 지속 20분/60분 백오프 회귀 테스트 추가
+
+### 기대 효과
+- 자본 동결 알림과 추적은 유지하면서, 장기 고착 종목의 DB/API 소음 감소
+- `/lab_orders`, event log 분석 시 실제 신규 이슈와 반복 상태를 더 쉽게 구분
+
 ## [2026-07-10] 해외 단독 RSI 진입 차단
 
 ### 분석

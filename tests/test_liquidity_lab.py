@@ -754,6 +754,63 @@ def test_track_no_orderable_stall_sends_alert_on_30th_cycle() -> None:
     asyncio.run(run())
 
 
+def test_defer_no_orderable_position_uses_short_initial_retry(tmp_path) -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.repository = SqliteRepository(tmp_path / "no_orderable_short.db")
+    service._cycle_count = 7
+    service._session_id = "sess-no-orderable"
+
+    service._defer_no_orderable_position(
+        market="overseas",
+        symbol="MSEX",
+        holding_qty=522,
+        orderable_qty=0,
+    )
+
+    retry_until = service._no_orderable_retry["overseas:MSEX"]
+    remaining_min = (retry_until - datetime.now(timezone.utc)).total_seconds() / 60
+    assert 4.0 <= remaining_min <= 5.1
+    events = service.repository.list_event_log(event_type="trade_skip", limit=1)
+    detail = json.loads(events[0]["detail"])
+    assert detail["retry_after_min"] == 5
+    assert detail["reason"] == "no_orderable_qty"
+
+
+def test_defer_no_orderable_position_backs_off_after_long_stall(tmp_path) -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.repository = SqliteRepository(tmp_path / "no_orderable_long.db")
+    service._cycle_count = 77
+    service._session_id = "sess-no-orderable"
+    service._no_orderable_counts = {"overseas:MSEX": 30, "overseas:ALNY": 120}
+
+    service._defer_no_orderable_position(
+        market="overseas",
+        symbol="MSEX",
+        holding_qty=522,
+        orderable_qty=0,
+    )
+    service._defer_no_orderable_position(
+        market="overseas",
+        symbol="ALNY",
+        holding_qty=61,
+        orderable_qty=0,
+    )
+
+    msex_remaining = (
+        service._no_orderable_retry["overseas:MSEX"] - datetime.now(timezone.utc)
+    ).total_seconds() / 60
+    alny_remaining = (
+        service._no_orderable_retry["overseas:ALNY"] - datetime.now(timezone.utc)
+    ).total_seconds() / 60
+    assert 19.0 <= msex_remaining <= 20.1
+    assert 59.0 <= alny_remaining <= 60.1
+    details = [
+        json.loads(row["detail"])
+        for row in service.repository.list_event_log(event_type="trade_skip", limit=2)
+    ]
+    assert [detail["retry_after_min"] for detail in details] == [60, 20]
+
+
 def test_manage_overseas_position_waits_when_already_holding_max_qty() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(

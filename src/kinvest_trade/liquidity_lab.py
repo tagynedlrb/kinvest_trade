@@ -7767,7 +7767,8 @@ class LiquidityLabService:
         retry_until = retry_map.get(key)
         if retry_until is not None and now <= ensure_timezone(retry_until):
             return True
-        retry_map[key] = now + timedelta(minutes=5)
+        retry_minutes = self._no_orderable_retry_minutes(key)
+        retry_map[key] = now + timedelta(minutes=retry_minutes)
         self._save_event(
             event_type="trade_skip",
             market=market,
@@ -7777,9 +7778,19 @@ class LiquidityLabService:
                 "holding_qty": holding_qty,
                 "orderable_qty": orderable_qty,
                 "note": "T+2 pending or API delay",
+                "retry_after_min": retry_minutes,
             },
         )
         return True
+
+    def _no_orderable_retry_minutes(self, key: str) -> int:
+        counts = getattr(self, "_no_orderable_counts", None) or {}
+        count = int(counts.get(key, 0) or 0)
+        if count >= 120:
+            return 60
+        if count >= 30:
+            return 20
+        return 5
 
     def _track_no_orderable_stall(
         self,

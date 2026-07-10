@@ -311,6 +311,23 @@ def test_build_status_message_shows_stopped_loop_notice() -> None:
 
     assert "모드=stopped" in message
     assert "거래루프=중지됨 (/lab_start 필요)" in message
+    assert "감시데이터=없음 (/lab_start 후 생성)" in message
+    assert "다음실행=-" in message
+    assert "다음간격=-" in message
+
+
+def test_build_watchlist_message_explains_missing_report() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.last_report_summary = None
+    controller.current_cycle_no = 0
+    controller.mode = "stopped"
+    controller.lab_service = None
+    controller.repository = None
+
+    message = controller._build_watchlist_message()
+
+    assert "감시데이터=없음 (/lab_start 후 생성)" in message
+    assert "감시종목=없음" in message
 
 
 def test_build_portfolio_message_uses_live_real_position_override(tmp_path) -> None:

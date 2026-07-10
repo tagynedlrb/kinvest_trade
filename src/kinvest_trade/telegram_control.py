@@ -893,6 +893,30 @@ class TelegramLiquidityLabController:
             return "일시정지됨 (/lab_resume 가능)"
         return "중지됨 (/lab_start 필요)"
 
+    def _report_freshness_notice(self, now: datetime | None = None) -> str:
+        if not self.last_report_summary:
+            return "감시데이터=없음 (/lab_start 후 생성)"
+
+        ref_time = getattr(self, "last_completed_at", None)
+        if ref_time is None:
+            ref_time = parse_datetime(str(self.last_report_summary.get("scanned_at") or ""))
+        if ref_time is None:
+            return "감시데이터=저장상태(시각불명)"
+
+        current = now or datetime.now(timezone.utc)
+        age_min = int(max((current - ref_time).total_seconds(), 0.0) // 60)
+        age_text = "방금" if age_min <= 0 else f"{age_min}분 전"
+        if self.mode != "running":
+            return f"감시데이터={age_text} (루프 {self.mode})"
+
+        config = getattr(self, "config", None)
+        liquidity_lab = getattr(config, "liquidity_lab", None)
+        interval_sec = max(int(getattr(liquidity_lab, "loop_interval_sec", 20) or 20), 1)
+        stale_threshold_min = max(5, int((interval_sec * 6) // 60))
+        if age_min >= stale_threshold_min:
+            return f"감시데이터={age_text} (지연)"
+        return f"감시데이터={age_text}"
+
     def _build_status_message(self) -> str:
         snapshot = self._snapshot()
         session = snapshot.session_performance or {}
@@ -925,6 +949,8 @@ class TelegramLiquidityLabController:
             self.config.credentials.env,
             self._consecutive_errors,
         )
+        next_run_text = "-" if snapshot.mode != "running" else self._short_time(snapshot.next_run_at)
+        next_interval_text = "-" if snapshot.mode != "running" else f"{next_interval}초"
         return "\n".join(
             [
                 "[KIS][TELEGRAM_CONTROL_STATUS]",
@@ -933,8 +959,9 @@ class TelegramLiquidityLabController:
                 f"거래루프={self._loop_mode_notice()}",
                 f"사이클={snapshot.current_cycle_no}",
                 f"시장상태={market_status}",
-                f"다음실행={self._short_time(snapshot.next_run_at)}",
-                f"다음간격={next_interval}초",
+                self._report_freshness_notice(now),
+                f"다음실행={next_run_text}",
+                f"다음간격={next_interval_text}",
                 f"최근명령={snapshot.last_command or '-'}",
                 f"최근완료={self._short_time(snapshot.last_completed_at)}",
                 f"최근타겟={last_report.get('primary_target') or '-'}",
@@ -995,6 +1022,7 @@ class TelegramLiquidityLabController:
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
             f"모드={self.mode}",
             f"사이클={self.current_cycle_no}",
+            self._report_freshness_notice(),
             f"예상호출={last_report.get('estimated_api_calls_per_cycle', '-')}",
         ]
         if not watch_targets:

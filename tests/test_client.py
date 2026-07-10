@@ -214,6 +214,57 @@ def test_get_domestic_order_history_uses_modern_daily_ccld_endpoint(tmp_path: Pa
     assert history["summary"] == {"tot_ord_qty": "126"}
 
 
+def test_revise_or_cancel_domestic_order_uses_full_cancel_body(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        assert method == "POST"
+        assert path == client.DOMESTIC_REVISE_CANCEL_PATH
+        assert tr_id == "VTTC0013U"
+        assert kwargs["body"] == {
+            "CANO": "12345678",
+            "ACNT_PRDT_CD": "01",
+            "KRX_FWDG_ORD_ORGNO": "00950",
+            "ORGN_ODNO": "0000013669",
+            "ORD_DVSN": "00",
+            "RVSE_CNCL_DVSN_CD": "02",
+            "ORD_QTY": "0",
+            "ORD_UNPR": "0",
+            "QTY_ALL_ORD_YN": "Y",
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+        return {"output": {"ODNO": "0000014000"}}
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        client.revise_or_cancel_domestic_order(
+            krx_order_orgno="00950",
+            original_order_no="0000013669",
+            order_division="00",
+            rvse_cncl_dvsn_cd="02",
+            qty=126,
+            price=6990,
+            qty_all_order_yn="Y",
+        )
+    )
+
+    assert result["output"]["ODNO"] == "0000014000"
+
+
 def test_ensure_token_retries_after_connect_timeout(tmp_path: Path) -> None:
     credentials = KisCredentials(
         env="vps",

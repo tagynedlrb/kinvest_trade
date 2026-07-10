@@ -60,6 +60,7 @@ class KisRestClient:
     DOMESTIC_POSSIBLE_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
     DOMESTIC_ORDER_HISTORY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     DOMESTIC_ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+    DOMESTIC_REVISE_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
     OVERSEAS_PRICE_PATH = "/uapi/overseas-price/v1/quotations/price"
     OVERSEAS_DAILY_PRICE_PATH = "/uapi/overseas-price/v1/quotations/dailyprice"
     OVERSEAS_MINUTE_CHART_PATH = "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
@@ -949,6 +950,58 @@ class KisRestClient:
             "ORD_SVR_DVSN_CD": ord_svr_dvsn_cd,
         }
         return await self._request("POST", self.OVERSEAS_REVISE_CANCEL_PATH, tr_id, body=body)
+
+    async def revise_or_cancel_domestic_order(
+        self,
+        *,
+        krx_order_orgno: str,
+        original_order_no: str,
+        order_division: str,
+        rvse_cncl_dvsn_cd: str,
+        qty: int,
+        price: int,
+        qty_all_order_yn: str,
+        exchange_code: str = "KRX",
+        condition_price: str = "",
+    ) -> dict[str, Any]:
+        cano, product_code = self.account_parts()
+        if qty_all_order_yn.upper() == "Y":
+            qty = 0
+            if rvse_cncl_dvsn_cd == "02":
+                price = 0
+        modern_tr_id = "TTTC0013U" if self.credentials.env == "prod" else "VTTC0013U"
+        legacy_tr_id = "TTTC0803U" if self.credentials.env == "prod" else "VTTC0803U"
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": product_code,
+            "KRX_FWDG_ORD_ORGNO": krx_order_orgno,
+            "ORGN_ODNO": original_order_no,
+            "ORD_DVSN": order_division,
+            "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,
+            "ORD_QTY": str(qty),
+            "ORD_UNPR": str(price),
+            "QTY_ALL_ORD_YN": qty_all_order_yn.upper(),
+        }
+        if exchange_code:
+            body["EXCG_ID_DVSN_CD"] = exchange_code
+        if condition_price:
+            body["CNDT_PRIC"] = condition_price
+
+        last_error: KisApiError | None = None
+        for tr_id in (modern_tr_id, legacy_tr_id):
+            try:
+                return await self._request(
+                    "POST",
+                    self.DOMESTIC_REVISE_CANCEL_PATH,
+                    tr_id,
+                    body=body,
+                )
+            except KisApiError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise KisApiError("domestic revise/cancel request failed")
 
     async def place_overseas_order(
         self,

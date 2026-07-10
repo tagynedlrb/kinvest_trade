@@ -28,6 +28,11 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
     assert TelegramLiquidityLabController.parse_command("/lab_orders") == "orders"
+    assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic") == "cancel_stale_domestic"
+    assert (
+        TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic_confirm")
+        == "cancel_stale_domestic_confirm"
+    )
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
     assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
@@ -1071,6 +1076,111 @@ def test_format_open_order_age_parts_marks_stale_order() -> None:
     )
 
     assert parts == ["경과=1시간35분", "주의=장기미체결"]
+
+
+def test_send_cancel_stale_domestic_prompt_lists_stale_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_cancel_prompt.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
+        "symbol": "073240",
+        "name": "금호타이어",
+        "sll_buy_dvsn_cd": "02",
+        "open_qty": 126,
+        "order_price": 6990,
+        "order_no": "0000013669",
+    }
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
+
+    asyncio.run(controller._send_cancel_stale_domestic_prompt())
+
+    message = notifier.messages[-1]
+    assert "[KIS][국내미체결취소]" in message
+    assert "대상=1건" in message
+    assert "073240(금호타이어) 매수미체결" in message
+    assert "실행=/lab_cancel_stale_domestic_confirm" in message
+
+
+def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_cancel_execute.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
+        "symbol": "073240",
+        "name": "금호타이어",
+        "sll_buy_dvsn_cd": "02",
+        "ord_gno_brno": "00950",
+        "ord_dvsn_cd": "00",
+        "excg_id_dvsn_cd": "KRX",
+        "open_qty": 126,
+        "order_price": 6990,
+        "order_no": "0000013669",
+    }
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
+
+    class FakeKisClient:
+        calls: list[dict] = []
+
+        def __init__(self, credentials) -> None:
+            self.credentials = credentials
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def revise_or_cancel_domestic_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"output": {"ODNO": "0000014000"}}
+
+    original_client = telegram_control_module.KisRestClient
+    telegram_control_module.KisRestClient = FakeKisClient
+    try:
+        asyncio.run(controller._execute_cancel_stale_domestic_orders())
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert FakeKisClient.calls == [
+        {
+            "krx_order_orgno": "00950",
+            "original_order_no": "0000013669",
+            "order_division": "00",
+            "rvse_cncl_dvsn_cd": "02",
+            "qty": 0,
+            "price": 0,
+            "qty_all_order_yn": "Y",
+            "exchange_code": "KRX",
+        }
+    ]
+    assert "073240(금호타이어) 취소요청 x126" in notifier.messages[-1]
+    rows = repository.list_broker_order_events(limit=1)
+    assert rows[0]["market"] == "domestic"
+    assert rows[0]["symbol"] == "073240"
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["status"] == "CANCELED"
+    assert rows[0]["reason"] == "stale_live_order_cancel"
+    assert rows[0]["broker_order_no"] == "0000014000"
 
 
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:

@@ -46,6 +46,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_watchlist - 감시 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
         "/lab_orders - 최근 주문 접수/취소 기록",
+        "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
@@ -68,6 +69,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
+    {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
@@ -336,6 +338,12 @@ class TelegramLiquidityLabController:
             return
         if command_name == "orders":
             await self._send_recent_order_events()
+            return
+        if command_name == "cancel_stale_domestic":
+            await self._send_cancel_stale_domestic_prompt()
+            return
+        if command_name == "cancel_stale_domestic_confirm":
+            await self._execute_cancel_stale_domestic_orders()
             return
         if command_name == "paper_test":
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -1636,6 +1644,140 @@ class TelegramLiquidityLabController:
             )
         )
 
+    async def _send_cancel_stale_domestic_prompt(self) -> None:
+        try:
+            live_open_orders = await self._load_live_open_domestic_orders()
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][국내미체결취소]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        "상태=조회실패",
+                        f"사유={str(exc)[:120]}",
+                    ]
+                )
+            )
+            return
+
+        stale_orders = self._filter_stale_live_open_orders(live_open_orders)
+        lines = [
+            "[KIS][국내미체결취소]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            "동작=확인",
+        ]
+        if not stale_orders:
+            lines.append("대상=없음 (30분 이상 국내 미체결 없음)")
+            await self.notifier.send("\n".join(lines))
+            return
+        lines.append(f"대상={len(stale_orders)}건")
+        for row in stale_orders[:8]:
+            lines.append(self._format_live_open_domestic_order_line(row))
+        if len(stale_orders) > 8:
+            lines.append(f"외 {len(stale_orders) - 8}건")
+        lines.extend(
+            [
+                "주의=확정 명령을 보내면 위 국내 미체결 주문을 KIS에 취소 요청합니다.",
+                "실행=/lab_cancel_stale_domestic_confirm",
+            ]
+        )
+        await self.notifier.send("\n".join(lines))
+
+    async def _execute_cancel_stale_domestic_orders(self) -> None:
+        try:
+            live_open_orders = await self._load_live_open_domestic_orders()
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][국내미체결취소]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        "상태=조회실패",
+                        f"사유={str(exc)[:120]}",
+                    ]
+                )
+            )
+            return
+
+        stale_orders = self._filter_stale_live_open_orders(live_open_orders)
+        if not stale_orders:
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][국내미체결취소]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        "상태=취소대상없음",
+                    ]
+                )
+            )
+            return
+
+        lines = [
+            "[KIS][국내미체결취소]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"요청={len(stale_orders)}건",
+        ]
+        async with KisRestClient(self.config.credentials) as client:
+            for row in stale_orders[:10]:
+                symbol = str(row.get("symbol") or row.get("pdno") or "").strip().upper()
+                order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+                orgno = str(row.get("ord_gno_brno") or row.get("krx_fwdg_ord_orgno") or "").strip()
+                order_division = str(row.get("ord_dvsn_cd") or "00").strip() or "00"
+                exchange_code = str(
+                    row.get("excg_id_dvsn_cd")
+                    or row.get("excg_id_dvsn_Cd")
+                    or row.get("EXCG_ID_DVSN_CD")
+                    or "KRX"
+                ).strip() or "KRX"
+                open_qty = int(row.get("open_qty") or parse_kis_number(row.get("rmn_qty")))
+                price = int(round(float(row.get("order_price") or self._parse_float(row.get("ord_unpr")))))
+                side = self._domestic_order_side(row)
+                if not symbol or not order_no or not orgno:
+                    lines.append(f"{symbol or '-'} 취소실패=필수 주문정보 부족")
+                    continue
+                try:
+                    response = await client.revise_or_cancel_domestic_order(
+                        krx_order_orgno=orgno,
+                        original_order_no=order_no,
+                        order_division=order_division,
+                        rvse_cncl_dvsn_cd="02",
+                        qty=0,
+                        price=0,
+                        qty_all_order_yn="Y",
+                        exchange_code=exchange_code,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    lines.append(f"{symbol} 취소실패={str(exc)[:80]}")
+                    continue
+
+                output = response.get("output") if isinstance(response, dict) else {}
+                if not isinstance(output, dict):
+                    output = {}
+                cancel_order_no = str(output.get("ODNO") or output.get("odno") or order_no).strip()
+                self.repository.save_broker_order_event(
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    market="domestic",
+                    symbol=symbol,
+                    exchange_code=exchange_code,
+                    side=side,
+                    order_kind="cancel",
+                    requested_qty=open_qty,
+                    requested_price=price,
+                    status="CANCELED",
+                    reason="stale_live_order_cancel",
+                    broker_order_no=cancel_order_no,
+                    is_virtual=0,
+                    payload={
+                        "original_order_no": order_no,
+                        "original_order_orgno": orgno,
+                        "response": response,
+                    },
+                )
+                name = str(row.get("name") or row.get("prdt_name") or "").strip()
+                symbol_text = f"{symbol}({name})" if name else symbol
+                lines.append(f"{symbol_text} 취소요청 x{open_qty} 원주문={order_no} 취소주문={cancel_order_no}")
+        await self.notifier.send("\n".join(lines))
+
     def _build_recent_order_events_message(
         self,
         *,
@@ -1878,6 +2020,36 @@ class TelegramLiquidityLabController:
         age_parts = self._format_open_order_age_parts(created_at)
         parts.extend(age_parts)
         return " ".join(parts)
+
+    def _filter_stale_live_open_orders(
+        self,
+        rows: list[dict],
+        *,
+        stale_threshold_min: int = 30,
+        now: datetime | None = None,
+    ) -> list[dict]:
+        current = now or datetime.now(timezone.utc)
+        result: list[dict] = []
+        for row in rows:
+            created_at = row.get("created_at")
+            if not isinstance(created_at, datetime):
+                continue
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_min = int(max((current - created_at).total_seconds(), 0.0) // 60)
+            if age_min >= stale_threshold_min:
+                result.append(row)
+        return result
+
+    @staticmethod
+    def _domestic_order_side(row: dict) -> str:
+        side_code = str(row.get("sll_buy_dvsn_cd") or "").strip()
+        side_name = str(row.get("sll_buy_dvsn_cd_name") or "").strip()
+        if side_code == "01" or side_name == "매도":
+            return "SELL"
+        if side_code == "02" or side_name == "매수":
+            return "BUY"
+        return ""
 
     @staticmethod
     def _format_open_order_age_parts(
@@ -2249,6 +2421,8 @@ class TelegramLiquidityLabController:
             "/lab_watchlist": "watchlist",
             "/lab_log": "log",
             "/lab_orders": "orders",
+            "/lab_cancel_stale_domestic": "cancel_stale_domestic",
+            "/lab_cancel_stale_domestic_confirm": "cancel_stale_domestic_confirm",
             "/lab_portfolio": "portfolio",
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",

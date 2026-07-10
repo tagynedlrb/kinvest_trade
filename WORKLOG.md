@@ -1597,3 +1597,30 @@
 - 내부 접수 기록과 KIS 서버 live 미체결 상태를 국내/해외 모두 같은 화면에서 비교 가능
 - 오래된 미체결 주문이 장시간 방치되는 문제를 사용자가 `/lab_orders`에서 즉시 인지 가능
 - 사용자 입장에서 `/lab_orders`가 “주문 접수 기록 + 실제 미체결 확인” 역할을 더 명확히 수행
+
+## [2026-07-10] 국내 장기미체결 텔레그램 취소 명령 추가
+
+### 추가 점검 결과
+- `/lab_orders` live 조회 결과 국내 073240 금호타이어 매수 미체결 주문이 9시간 이상 남아 있었음
+- 국내 미체결 주문도 해외와 마찬가지로 주문가능수량/예수금/다음 전략 판단을 흐릴 수 있음
+- KIS 국내 정정취소 API:
+  - endpoint: `/uapi/domestic-stock/v1/trading/order-rvsecncl`
+  - 최신 TR ID: `TTTC0013U/VTTC0013U`
+  - 구 샘플 TR ID: `TTTC0803U/VTTC0803U`
+  - 잔량 전체 취소 시 `QTY_ALL_ORD_YN=Y`, `ORD_QTY=0`, `ORD_UNPR=0`
+
+### 수정 사항
+- `KisRestClient.revise_or_cancel_domestic_order()` 추가
+  - 최신 TR ID 실패 시 구 TR ID로 폴백
+  - 잔량 전체 취소 요청이면 수량과 취소 단가를 0으로 보정
+- 텔레그램 명령 추가
+  - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 주문 미리보기
+  - `/lab_cancel_stale_domestic_confirm`: 미리보기 대상 국내 미체결 주문을 KIS에 취소 요청
+- 실제 취소 요청 결과는 `broker_order_events`에 `order_kind=cancel`,
+  `reason=stale_live_order_cancel`, `status=CANCELED`로 기록
+
+### 안전 정책
+- 자동 취소는 하지 않음
+- 사용자가 `/lab_cancel_stale_domestic`으로 대상 확인 후
+  `/lab_cancel_stale_domestic_confirm`을 직접 보내야 실제 취소 요청 진행
+- confirm 명령은 실수 방지를 위해 봇 메뉴에는 노출하지 않고 prompt에서만 안내

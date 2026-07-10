@@ -24,7 +24,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="거래 내역 분석")
     parser.add_argument("db_path", help="SQLite DB 파일 경로")
     parser.add_argument("--days", type=int, default=0, help="최근 N일 분석 (0=전체)")
-    parser.add_argument("--compare-date", help="기준일 전후 SELL_REAL 전략 성과 비교 (KST, YYYY-MM-DD)")
+    parser.add_argument(
+        "--compare-date",
+        help="기준일/시각 전후 SELL_REAL 전략 성과 비교 (KST, YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM)",
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db_path)

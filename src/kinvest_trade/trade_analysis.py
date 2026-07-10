@@ -8,10 +8,40 @@ from zoneinfo import ZoneInfo
 DEFAULT_COST_PCT = 0.005
 
 
-def _cutoff_kst_to_utc_iso(cutoff_date: str) -> str:
-    cutoff_kst = datetime.strptime(cutoff_date, "%Y-%m-%d").replace(
-        tzinfo=ZoneInfo("Asia/Seoul")
+def _parse_kst_cutoff(cutoff_text: str) -> datetime:
+    normalized = str(cutoff_text or "").strip().replace("_", "T")
+    formats = (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
     )
+    for fmt in formats:
+        try:
+            return datetime.strptime(normalized, fmt).replace(
+                tzinfo=ZoneInfo("Asia/Seoul")
+            )
+        except ValueError:
+            continue
+    raise ValueError(
+        "cutoff must be YYYY-MM-DD or YYYY-MM-DDTHH:MM in KST"
+    )
+
+
+def _format_kst_cutoff(cutoff_kst: datetime) -> str:
+    if (
+        cutoff_kst.hour == 0
+        and cutoff_kst.minute == 0
+        and cutoff_kst.second == 0
+        and cutoff_kst.microsecond == 0
+    ):
+        return cutoff_kst.strftime("%Y-%m-%d")
+    return cutoff_kst.strftime("%Y-%m-%d %H:%M")
+
+
+def _cutoff_kst_to_utc_iso(cutoff_date: str) -> str:
+    cutoff_kst = _parse_kst_cutoff(cutoff_date)
     return cutoff_kst.astimezone(timezone.utc).isoformat()
 
 
@@ -61,12 +91,14 @@ def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
     Otherwise fall back to the legacy 0.5 percentage point cost adjustment.
     """
     db_path_obj = Path(db_path)
-    cutoff_utc = _cutoff_kst_to_utc_iso(cutoff_date)
+    cutoff_kst = _parse_kst_cutoff(cutoff_date)
+    cutoff_label = _format_kst_cutoff(cutoff_kst)
+    cutoff_utc = cutoff_kst.astimezone(timezone.utc).isoformat()
     conn = sqlite3.connect(db_path_obj)
     conn.row_factory = sqlite3.Row
     try:
         net_expr = _net_pnl_pct_expr(conn)
-        result = [f"[전략 전후 비교] 기준일={cutoff_date} KST"]
+        result = [f"[전략 전후 비교] 기준={cutoff_label} KST"]
         for label, operator in [("이전", "<"), ("이후", ">=")]:
             rows = conn.execute(
                 f"""
@@ -93,7 +125,7 @@ def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
                 """,
                 (cutoff_utc,),
             ).fetchall()
-            result.append(f"[{label} {cutoff_date}]")
+            result.append(f"[{label} {cutoff_label}]")
             if not rows:
                 result.append("  성과=없음")
                 continue

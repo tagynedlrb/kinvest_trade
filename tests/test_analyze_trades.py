@@ -49,7 +49,7 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
 
     output = compare_before_after(repository.db_path, "2026-07-10")
 
-    assert "[전략 전후 비교] 기준일=2026-07-10 KST" in output
+    assert "[전략 전후 비교] 기준=2026-07-10 KST" in output
     assert "[이전 2026-07-10]" in output
     assert "overseas VWAP" in output
     assert "net=+0.500%" in output
@@ -58,6 +58,41 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
     assert "net=-2.500%" in output
     assert "domestic VOL" in output
     assert "signal_only" not in output
+
+
+def test_compare_before_after_accepts_kst_time_cutoff(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "analysis_time_cutoff.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-09T15:10:00+00:00",
+        market="overseas",
+        symbol="AAA",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        pnl_pct=0.010,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-09T15:20:00+00:00",
+        market="overseas",
+        symbol="BBB",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        strategy_flag="RSI",
+        pnl_pct=-0.010,
+    )
+
+    output = compare_before_after(repository.db_path, "2026-07-10T00:15")
+
+    assert "[전략 전후 비교] 기준=2026-07-10 00:15 KST" in output
+    previous_section = output.split("[이전 2026-07-10 00:15]", 1)[1].split(
+        "[이후 2026-07-10 00:15]", 1
+    )[0]
+    after_section = output.split("[이후 2026-07-10 00:15]", 1)[1]
+    assert "VWAP" in previous_section
+    assert "RSI" not in previous_section
+    assert "RSI" in after_section
 
 
 def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:

@@ -2906,7 +2906,7 @@ class TelegramLiquidityLabController:
     def _build_report_message(self, report_args: str | None = None) -> str:
         now = datetime.now(timezone.utc)
         args = str(report_args or "").strip().split()
-        usage = "사용법=/lab_report compare 2026-07-10"
+        usage = "사용법=/lab_report compare 2026-07-10 또는 2026-07-10T18:00"
         if len(args) != 2 or args[0].lower() != "compare":
             return "\n".join(
                 [

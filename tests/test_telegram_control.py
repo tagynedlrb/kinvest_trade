@@ -1484,7 +1484,7 @@ def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> N
             {
                 "message": {
                     "chat": {"id": 123456},
-                    "text": "/lab_report compare 2026-07-10",
+                    "text": "/lab_report compare 2026-07-10T00:15",
                 }
             }
         )
@@ -1493,10 +1493,10 @@ def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> N
     message = notifier.messages[-1]
     assert "[KIS][전략리포트]" in message
     assert "기준=실주문접수 SELL_REAL" in message
-    assert "[전략 전후 비교] 기준일=2026-07-10 KST" in message
-    assert "[이전 2026-07-10]" in message
+    assert "[전략 전후 비교] 기준=2026-07-10 00:15 KST" in message
+    assert "[이전 2026-07-10 00:15]" in message
     assert "overseas VWAP" in message
-    assert "[이후 2026-07-10]" in message
+    assert "[이후 2026-07-10 00:15]" in message
     assert "overseas RSI" in message
 
 

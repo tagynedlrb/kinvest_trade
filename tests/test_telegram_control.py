@@ -407,7 +407,7 @@ def test_build_status_message_shows_virtual_position_cap(tmp_path) -> None:
 
     assert "포지션한도=2/1 초과" in message
     assert "감시=중지" in message
-    assert "조치=/lab_start 또는 /lab_reset" in message
+    assert "조치=/lab_trim_virtual 또는 /lab_start" in message
 
 
 def test_build_status_message_shows_stale_signal_cache_summary() -> None:
@@ -772,7 +772,7 @@ def test_build_portfolio_message_shows_virtual_position_cap(tmp_path) -> None:
     assert "초과=2/1 정리필요=1종목" in message
     assert "해외 AAPL 손익=현재가없음 노출=$100.00" in message
     assert "주의=가상 포지션 한도 초과 상태에서 거래루프가 중지되어 있습니다" in message
-    assert "조치=/lab_start 재개 또는 /lab_reset 초기화 검토" in message
+    assert "조치=/lab_trim_virtual 초과분 정리 또는 /lab_start 재개" in message
 
 
 def test_build_portfolio_message_warns_virtual_risk_and_exposure_when_stopped(tmp_path) -> None:

@@ -1676,7 +1676,7 @@ class TelegramLiquidityLabController:
         if position_cap_exceeded and self.mode != "running":
             if "감시=중지" not in suffix:
                 suffix.append("감시=중지")
-            suffix.append("조치=/lab_start 또는 /lab_reset")
+            suffix.append("조치=/lab_trim_virtual 또는 /lab_start")
         suffix.append("확인=/lab_portfolio")
         return f"가상노출={' / '.join(parts)} {' '.join(suffix)}"
 
@@ -2501,7 +2501,7 @@ class TelegramLiquidityLabController:
             lines.append("주의=가상 노출 한도 초과 상태에서 거래루프가 중지되어 있습니다")
         if position_cap_exceeded and self.mode != "running":
             lines.append("주의=가상 포지션 한도 초과 상태에서 거래루프가 중지되어 있습니다")
-            lines.append("조치=/lab_start 재개 또는 /lab_reset 초기화 검토")
+            lines.append("조치=/lab_trim_virtual 초과분 정리 또는 /lab_start 재개")
         return lines
 
     async def _send_portfolio_message(self) -> None:

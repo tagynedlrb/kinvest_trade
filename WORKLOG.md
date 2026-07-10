@@ -2895,3 +2895,14 @@
 - `python3 -m pytest tests/test_config.py::test_load_app_config_uses_paper_profile_variables tests/test_liquidity_lab.py::test_build_watch_target_status_blocks_overseas_standalone_vol -q`
   → 통과
 - `python3 -m pytest tests -q` → 433개 통과
+
+## [2026-07-11] 가상보유 초과 안내 문구 개선
+
+### 수정
+- `/lab_status`, `/lab_portfolio`에서 가상 포지션 한도 초과 시
+  전체 초기화(`/lab_reset`)보다 초과분 정리(`/lab_trim_virtual`)를 우선 안내하도록 변경
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_shows_virtual_position_cap tests/test_telegram_control.py::test_build_portfolio_message_shows_virtual_position_cap -q`
+  → 통과
+- `python3 -m pytest tests -q` → 433개 통과

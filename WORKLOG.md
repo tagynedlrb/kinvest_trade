@@ -1481,10 +1481,13 @@
 ### 수정 사항
 - `/lab_portfolio` 실행 시 명령 처리 전용 임시 `KisRestClient`와 `LiquidityLabService`를 생성해
   실보유와 가상보유 현재가를 조회
+- 같은 임시 client로 주문가능 USD를 1회 조회해 가상 노출의 최근한도/초과 여부를 표시
 - 기존 `lab_service`의 동적 종목명/풀/최근 주문가능 USD 같은 표시용 상태는 임시 service로 복사
 - 국내 live portfolio 파싱도 `parse_kis_number()`를 사용해 콤마가 포함된 수량/가격 문자열 처리 강화
 - `/lab_status`, `/lab_portfolio`에 `거래루프=중지됨 (/lab_start 필요)` 같은 명확한 루프 상태 안내 추가
+- 실제 확인: 가상매수노출 `$393,294.92`, 최근한도 `$171,292.39`, 상태 `초과` 표시
 
 ### 기대 효과
 - 재시작 직후 또는 거래 루프 stopped 상태에서도 포트폴리오 실시간 조회 안정성 향상
 - 사용자가 systemd 서비스 active 상태와 실제 거래 루프 stopped 상태를 혼동할 가능성 감소
+- 가상 포지션이 주문가능 USD 대비 과도하게 쌓였는지 포트폴리오 조회만으로 즉시 판단 가능

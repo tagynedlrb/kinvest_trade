@@ -360,6 +360,40 @@ def test_build_portfolio_message_uses_live_real_position_override(tmp_path) -> N
     assert "해외 AAPL 수량=3 매입=$193.3333 현재=$210.0000 손익=+8.62%" in message
 
 
+def test_build_portfolio_message_uses_available_usd_override_for_virtual_exposure(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_available_usd.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=2,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20, max_virtual_exposure_pct=0.5),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_portfolio_message(
+        price_lookup_override={("overseas", "AAPL"): 210.0},
+        virtual_exposure_available_usd=1000.0,
+    )
+
+    assert (
+        "해외 가상매수노출=$400.00 1종목 "
+        "한도=주문가능USD x50% 최근한도=$500.00 상태=정상"
+    ) in message
+
+
 def test_build_portfolio_message_uses_live_virtual_price_override(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_price.db")
     repository.upsert_virtual_position(
@@ -502,6 +536,46 @@ def test_load_live_portfolio_positions_parses_domestic_balance_without_ranked_sc
             "currency": "KRW",
         }
     ]
+
+
+def test_load_live_overseas_available_usd_uses_real_position_candidate(tmp_path) -> None:
+    class FakeLab:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def _get_overseas_available_usd(self, *, symbol, exchange_code, price):
+            self.calls.append((symbol, exchange_code, price))
+            return 1234.5
+
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=SqliteRepository(tmp_path / "telegram_available_usd.db"),
+        notifier=DummyNotifier(),
+    )
+    lab = FakeLab()
+
+    available = asyncio.run(
+        controller._load_live_overseas_available_usd(
+            lab,
+            real_positions=[
+                {
+                    "market": "overseas",
+                    "symbol": "AAPL",
+                    "exchange_code": "NASD",
+                    "current_price": 210.0,
+                }
+            ],
+            price_lookup={},
+        )
+    )
+
+    assert available == 1234.5
+    assert lab.calls == [("AAPL", "NASD", 210.0)]
 
 
 def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path) -> None:

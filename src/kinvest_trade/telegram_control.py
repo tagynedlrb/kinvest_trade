@@ -1124,6 +1124,7 @@ class TelegramLiquidityLabController:
         self,
         real_positions_override: list[dict] | None = None,
         price_lookup_override: dict[tuple[str, str], float] | None = None,
+        virtual_exposure_available_usd: float | None = None,
     ) -> str:
         now = datetime.now(timezone.utc)
         lines = [
@@ -1265,7 +1266,9 @@ class TelegramLiquidityLabController:
                         f"(현재가 없음)"
                     )
 
-        exposure_lines = self._build_virtual_exposure_lines()
+        exposure_lines = self._build_virtual_exposure_lines(
+            available_usd_override=virtual_exposure_available_usd
+        )
         if exposure_lines:
             lines.append("─── 가상 노출 ───")
             lines.extend(exposure_lines)
@@ -1309,7 +1312,11 @@ class TelegramLiquidityLabController:
 
         return "\n".join(lines)
 
-    def _build_virtual_exposure_lines(self) -> list[str]:
+    def _build_virtual_exposure_lines(
+        self,
+        *,
+        available_usd_override: float | None = None,
+    ) -> list[str]:
         rows = self.repository.list_virtual_positions()
         if not rows:
             return []
@@ -1333,11 +1340,13 @@ class TelegramLiquidityLabController:
             getattr(self.config.liquidity_lab, "max_virtual_exposure_pct", 1.0) or 1.0
         )
         lab = self.lab_service
-        last_available_usd = (
-            None
-            if lab is None
-            else getattr(lab, "_last_overseas_available_usd", None)
-        )
+        last_available_usd = available_usd_override
+        if last_available_usd is None:
+            last_available_usd = (
+                None
+                if lab is None
+                else getattr(lab, "_last_overseas_available_usd", None)
+            )
         lines: list[str] = []
         for (market, currency), item in sorted(by_market_currency.items()):
             count = int(item["count"])
@@ -1359,17 +1368,24 @@ class TelegramLiquidityLabController:
     async def _send_portfolio_message(self) -> None:
         live_real_positions = None
         live_virtual_prices: dict[tuple[str, str], float] = {}
+        live_available_usd = None
         try:
             async with KisRestClient(self.config.credentials) as client:
                 portfolio_lab = self._build_portfolio_lab_service(client)
                 live_real_positions = await self._load_live_portfolio_positions(portfolio_lab)
                 live_virtual_prices = await self._load_live_virtual_price_lookup(portfolio_lab)
+                live_available_usd = await self._load_live_overseas_available_usd(
+                    portfolio_lab,
+                    real_positions=live_real_positions or [],
+                    price_lookup=live_virtual_prices,
+                )
         except Exception as exc:  # noqa: BLE001
             _logger.warning("portfolio_live_refresh_failed error=%s", exc)
         await self.notifier.send(
             self._build_portfolio_message(
                 real_positions_override=live_real_positions,
                 price_lookup_override=live_virtual_prices,
+                virtual_exposure_available_usd=live_available_usd,
             )
         )
 
@@ -1386,6 +1402,55 @@ class TelegramLiquidityLabController:
                 if hasattr(existing, attr):
                     setattr(service, attr, getattr(existing, attr))
         return service
+
+    async def _load_live_overseas_available_usd(
+        self,
+        lab: LiquidityLabService,
+        *,
+        real_positions: list[dict],
+        price_lookup: dict[tuple[str, str], float],
+    ) -> float | None:
+        candidates: list[tuple[str, str, float]] = []
+        for position in real_positions:
+            if str(position.get("market", "")).lower() != "overseas":
+                continue
+            symbol = str(position.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            exchange_code = str(position.get("exchange_code") or "NASD").strip().upper()
+            price = self._parse_float(position.get("current_price"))
+            if price > 0:
+                candidates.append((symbol, exchange_code, price))
+
+        if not candidates:
+            manager = VirtualTradeManager(self.repository)
+            for position in manager.list_positions("overseas"):
+                if int(position.qty) <= 0:
+                    continue
+                symbol = position.symbol.upper()
+                price = price_lookup.get(("overseas", symbol), float(position.avg_price))
+                if price > 0:
+                    candidates.append((symbol, str(position.exchange_code or "NASD").upper(), price))
+                if len(candidates) >= 3:
+                    break
+
+        for symbol, exchange_code, price in candidates[:3]:
+            try:
+                return await asyncio.wait_for(
+                    lab._get_overseas_available_usd(
+                        symbol=symbol,
+                        exchange_code=exchange_code,
+                        price=price,
+                    ),
+                    timeout=6.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "portfolio_live_available_usd_failed symbol=%s error=%s",
+                    symbol,
+                    exc,
+                )
+        return None
 
     async def _load_live_virtual_price_lookup(
         self,

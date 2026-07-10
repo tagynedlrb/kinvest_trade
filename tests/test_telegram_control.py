@@ -370,6 +370,41 @@ def test_build_status_message_warns_virtual_exposure_when_stopped(tmp_path) -> N
     )
 
 
+def test_build_status_message_shows_virtual_position_cap(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_status_virtual_position_cap.db")
+    for symbol in ("AAPL", "MSFT"):
+        repository.upsert_virtual_position(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            qty=1,
+            avg_price=100.0,
+            currency="USD",
+            opened_at="2026-07-01T00:00:00+00:00",
+            updated_at="2026-07-01T00:00:00+00:00",
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_virtual_exposure_pct=1.0,
+                max_concurrent_overseas_orders=1,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            skip_holiday_overseas=True,
+            skip_holiday_domestic=True,
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_status_message()
+
+    assert "포지션한도=2/1 초과" in message
+
+
 def test_build_status_message_shows_stale_signal_cache_summary() -> None:
     controller = _build_async_controller()
     controller.last_report_summary = {
@@ -674,6 +709,40 @@ def test_build_portfolio_message_uses_available_usd_override_for_virtual_exposur
         "해외 가상매수노출=$400.00 1종목 "
         "한도=주문가능USD x50% 최근한도=$500.00 상태=정상"
     ) in message
+
+
+def test_build_portfolio_message_shows_virtual_position_cap(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_position_cap.db")
+    for symbol in ("AAPL", "MSFT"):
+        repository.upsert_virtual_position(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            qty=1,
+            avg_price=100.0,
+            currency="USD",
+            opened_at="2026-07-01T00:00:00+00:00",
+            updated_at="2026-07-01T00:00:00+00:00",
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_virtual_exposure_pct=1.0,
+                max_concurrent_overseas_orders=1,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_portfolio_message(virtual_exposure_available_usd=1000.0)
+
+    assert "해외 가상매수노출=$200.00 2종목" in message
+    assert "포지션한도=2/1 초과" in message
 
 
 def test_build_portfolio_message_warns_virtual_risk_and_exposure_when_stopped(tmp_path) -> None:

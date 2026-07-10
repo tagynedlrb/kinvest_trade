@@ -23,9 +23,14 @@
   - 경고 로그에도 동일 요약을 출력하여 매매 빈도 저하 원인을 바로 분석 가능하게 개선
   - 해외 포지션 한도 초과로 신규 매수가 막힌 경우 `no_overseas_candidate` 대신
     `overseas_position_cap_reached`와 `open_positions/max_positions` 기록
+- `telegram_control.py`
+  - `/lab_status`, `/lab_portfolio`의 가상노출 요약에 해외 포지션 한도 `현재/최대`와
+    초과 여부 표시
 - `tests/test_liquidity_lab.py`
   - low frequency 이벤트의 `top_reasons` 기록과 리셋 동작 검증 추가
   - 해외 포지션 한도 초과 시 사이클 리포트 reason이 명확히 남는지 검증 추가
+- `tests/test_telegram_control.py`
+  - status/portfolio 메시지에 포지션 한도 초과가 표시되는지 검증 추가
 
 ### 기대 효과
 - 다음 실행에서 매매가 적을 때 단순히 "빈도 낮음"이 아니라

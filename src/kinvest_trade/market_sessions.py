@@ -38,8 +38,8 @@ def get_us_trading_session(
     current_time = current.time()
     is_dst = _is_new_york_dst(now_utc)
 
-    daytime_start = time(9, 0)
-    daytime_end = time(15, 0) if is_dst else time(16, 0)
+    daytime_start = time(10, 0)
+    daytime_end = time(17, 0) if is_dst else time(18, 0)
     premarket_end = time(22, 30) if is_dst else time(23, 30)
     regular_end = time(5, 0) if is_dst else time(6, 0)
     aftermarket_end = time(7, 0)
@@ -114,8 +114,12 @@ def minutes_until_next_tradeable_session(
             break
 
     is_dst = _is_new_york_dst(now_utc)
-    premarket_hour = 22 if is_dst else 23
-    premarket_minute = 30
+    if env == "prod":
+        us_start_hour = 10
+        us_start_minute = 0
+    else:
+        us_start_hour = 22 if is_dst else 23
+        us_start_minute = 30
     us_candidates: list[datetime] = []
     for delta in range(0, 4):
         candidate_date = today_kst + timedelta(days=delta)
@@ -123,8 +127,8 @@ def minutes_until_next_tradeable_session(
             candidate_date.year,
             candidate_date.month,
             candidate_date.day,
-            premarket_hour,
-            premarket_minute,
+            us_start_hour,
+            us_start_minute,
             0,
             tzinfo=KST,
         )

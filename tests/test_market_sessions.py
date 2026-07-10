@@ -30,6 +30,10 @@ def test_us_session_classified_as_daytime_during_kis_daytime() -> None:
     assert get_us_trading_session(datetime(2026, 6, 25, 2, 0, tzinfo=timezone.utc)) == "daytime"
 
 
+def test_us_session_closed_before_kis_daytime_10am() -> None:
+    assert get_us_trading_session(datetime(2026, 6, 25, 0, 30, tzinfo=timezone.utc)) == "closed"
+
+
 def test_us_session_classified_as_premarket_during_kis_premarket() -> None:
     assert get_us_trading_session(datetime(2026, 6, 25, 8, 13, tzinfo=timezone.utc)) == "premarket"
 
@@ -67,6 +71,17 @@ def test_minutes_until_next_session_during_both_closed() -> None:
     now = datetime(2026, 6, 25, 23, 0, tzinfo=timezone.utc)
     mins = minutes_until_next_tradeable_session(now, "prod")
     assert 55 <= mins <= 65
+
+
+def test_minutes_until_next_session_zero_during_daytime_for_prod() -> None:
+    now = datetime(2026, 6, 25, 7, 0, tzinfo=timezone.utc)
+    assert minutes_until_next_tradeable_session(now, "prod") == 0
+
+
+def test_minutes_until_next_session_waits_for_regular_during_daytime_for_mock() -> None:
+    now = datetime(2026, 6, 25, 7, 0, tzinfo=timezone.utc)
+    mins = minutes_until_next_tradeable_session(now, "vps")
+    assert 385 <= mins <= 395
 
 
 def test_determine_loop_interval_returns_20_during_krx() -> None:

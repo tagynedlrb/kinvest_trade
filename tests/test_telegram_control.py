@@ -1040,6 +1040,8 @@ def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> Non
     assert "기준=실제 체결성 SELL_REAL만 집계" in message
     assert "제외=감시 신호 BUY/SELL/HOLD" in message
     assert "전체=1건" in message
+    assert "─── 상위 전략 ───" in message
+    assert "─── 하위 전략 ───" in message
     assert "해외 VWAP 진입=VWAP 청산=손절 1건" in message
     assert "손익=-$12.50/-16,875원" in message
 

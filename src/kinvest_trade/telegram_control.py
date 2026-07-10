@@ -1835,6 +1835,32 @@ class TelegramLiquidityLabController:
             parts.append(format_krw(krw))
         return "/".join(parts) if parts else "0"
 
+    @staticmethod
+    def _performance_row_score(row: dict) -> tuple[float, float]:
+        return (
+            float(row.get("total_net_pnl_krw") or 0.0),
+            float(row.get("total_net_pnl_usd") or 0.0),
+        )
+
+    def _format_performance_row(self, row: dict) -> str:
+        market = format_market_korean(str(row.get("market") or "-"))
+        strategy = str(row.get("strategy_flag") or "-")
+        entry_by = str(row.get("entry_by") or "-")
+        exit_by = str(row.get("exit_by") or "-")
+        trade_count = int(row.get("trade_count") or 0)
+        win_rate = float(row.get("win_rate") or 0.0)
+        avg_pnl = float(row.get("avg_pnl_pct") or 0.0)
+        pnl_label = self._format_mixed_pnl(
+            usd=float(row.get("total_net_pnl_usd") or 0.0),
+            krw=float(row.get("total_net_pnl_krw") or 0.0),
+        )
+        return (
+            f"{market} {strategy} "
+            f"진입={entry_by} 청산={format_reason_korean(exit_by)} "
+            f"{trade_count}건 승률={win_rate * 100:.0f}% "
+            f"평균={format_pct(avg_pnl)} 손익={pnl_label}"
+        )
+
     def _build_performance_message(self, hours_text: str | None = None) -> str:
         hours = self._parse_performance_hours(hours_text)
         now = datetime.now(timezone.utc)
@@ -1864,28 +1890,14 @@ class TelegramLiquidityLabController:
             f"{total_trades}건 승률={total_win_rate * 100:.0f}% "
             f"손익={self._format_mixed_pnl(usd=total_usd, krw=total_krw)}"
         )
-        lines.append("─── 전략별 ───")
-        display_rows = rows[:10]
-        if len(rows) > len(display_rows):
-            lines.append(f"표시=상위 {len(display_rows)}/{len(rows)}개 그룹")
-        for row in display_rows:
-            market = format_market_korean(str(row.get("market") or "-"))
-            strategy = str(row.get("strategy_flag") or "-")
-            entry_by = str(row.get("entry_by") or "-")
-            exit_by = str(row.get("exit_by") or "-")
-            trade_count = int(row.get("trade_count") or 0)
-            win_rate = float(row.get("win_rate") or 0.0)
-            avg_pnl = float(row.get("avg_pnl_pct") or 0.0)
-            pnl_label = self._format_mixed_pnl(
-                usd=float(row.get("total_net_pnl_usd") or 0.0),
-                krw=float(row.get("total_net_pnl_krw") or 0.0),
-            )
-            lines.append(
-                f"{market} {strategy} "
-                f"진입={entry_by} 청산={format_reason_korean(exit_by)} "
-                f"{trade_count}건 승률={win_rate * 100:.0f}% "
-                f"평균={format_pct(avg_pnl)} 손익={pnl_label}"
-            )
+        best_rows = rows[:5]
+        worst_rows = sorted(rows, key=self._performance_row_score)[:5]
+        lines.append("─── 상위 전략 ───")
+        for row in best_rows:
+            lines.append(self._format_performance_row(row))
+        lines.append("─── 하위 전략 ───")
+        for row in worst_rows:
+            lines.append(self._format_performance_row(row))
         return "\n".join(lines)
 
     async def _send_recent_order_events(self) -> None:

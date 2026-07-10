@@ -68,7 +68,7 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.strategy_guard_min_trades == 3
     assert config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct == -0.003
     assert config.liquidity_lab.strategy_guard_markets == ["overseas"]
-    assert config.liquidity_lab.strategy_guard_strategy_flags == ["VWAP", "RSI"]
+    assert config.liquidity_lab.strategy_guard_strategy_flags == ["VWAP", "RSI", "VOL"]
     assert (
         config.liquidity_lab.tv_min_price_usd
         == config.liquidity_lab.overseas_min_price_usd

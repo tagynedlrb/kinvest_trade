@@ -219,7 +219,7 @@
         "strategy_guard_min_trades": 3,
         "strategy_guard_max_avg_net_pnl_pct": -0.003,
         "strategy_guard_markets": ["overseas"],
-        "strategy_guard_strategy_flags": ["VWAP", "RSI"],
+        "strategy_guard_strategy_flags": ["VWAP", "RSI", "VOL"],
         "inverse_etf_symbols": ["SQQQ", "SOXS", "UVXY", "SPXU"],
         "leveraged_etf_symbols": ["TQQQ", "SOXL"]
     },

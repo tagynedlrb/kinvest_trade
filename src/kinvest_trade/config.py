@@ -864,7 +864,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ],
             strategy_guard_strategy_flags=[
                 str(value).strip().upper()
-                for value in liquidity_lab_raw.get("strategy_guard_strategy_flags", ["VWAP", "RSI"])
+                for value in liquidity_lab_raw.get("strategy_guard_strategy_flags", ["VWAP", "RSI", "VOL"])
                 if str(value).strip()
             ],
             inverse_etf_symbols=[

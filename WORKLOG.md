@@ -2230,3 +2230,46 @@
 
 ### 검증
 - `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_marks_mock_us_extended_session_not_orderable tests/test_telegram_control.py::test_build_status_message_shows_stopped_loop_notice -q` → 2개 통과
+
+## [2026-07-10] 계정 만료 전 전방위 점검 — status 위험 가시성/서비스 안정화
+
+### 점검 결과
+- 현 서비스는 `kinvest-telegram-control.service`가 `active`이고 거래 루프는
+  `stopped` 상태다. 새 매매를 재개하려면 `/lab_start`가 필요하다.
+- DB 기준 가상 포지션 15종목, 해외 가상 노출 약 `$393,294.92`가 남아 있었다.
+  최근 주문가능 USD 기반 가상 한도(`max_virtual_exposure_pct=0.5`) 대비 초과 상태다.
+- 최근 이벤트 로그에서 `MSEX`의 `no_orderable_qty`가 반복되어,
+  매도 가능 수량/미체결/정산 지연 문제를 status에서 바로 볼 필요가 있었다.
+- systemd 재시작 시 정상 종료인데도 과거 `SystemExit(0)` 스택트레이스가 journal에
+  남을 수 있었고, 서비스 재시작 때 `TELEGRAM_CONTROL_START` 알림도 반복될 수 있었다.
+
+### 수정 사항
+- `telegram_control.py`
+  - `/lab_status`에 `가상노출=... 상태=초과 감시=중지 확인=/lab_portfolio` 한 줄 추가
+  - `/lab_status`에 최근 12시간 반복 매도장애 요약 추가
+    (`매도가능0`, `주문거부`, 확인 명령 `/lab_orders`)
+  - `SIGTERM` 핸들러가 `SystemExit`를 던지지 않고 stop event로 정상 종료되도록 변경
+  - `TELEGRAM_CONTROL_START` 시작 알림은 10분 내 재시작 시 생략하도록 throttle 추가
+  - 시작 알림 마지막 전송 시각을 `state/runtime_state.json`에 저장/복구
+- `liquidity_lab.py`
+  - KIS 모의 미국 확장세션 차단 에러 문구는 현재 시각 판정과 무관하게
+    `session_not_orderable_in_profile`로 분류해 `order_rejected` 오분류를 방지
+- `README.md`
+  - `/lab_status`가 가상 노출과 반복 매도장애를 함께 보여준다는 설명 추가
+
+### 검증
+- `/lab_status` 실제 DB 렌더링:
+  - `가상노출=해외 $393,294.92 15종목 상태=초과 감시=중지 확인=/lab_portfolio`
+  - `매도장애(12h)=해외 MSEX 매도가능0 48회 ... 확인=/lab_orders`
+- `python3 -m pytest tests -q` → 392개 통과
+- 연속 `systemctl --user restart kinvest-telegram-control.service` 후 서비스 `active`
+- 재시작 journal에서 신규 `SystemExit` 스택트레이스 미발생 확인
+- 10분 내 재시작 시 `telegram_control_start_notified_at`이 갱신되지 않아
+  시작 알림 throttle 경로 동작 확인
+
+### 커밋
+- `18c64eb` Show virtual exposure in status
+- `27c123b` Handle telegram service shutdown gracefully
+- `0162fd8` Surface recent sell blocks in status
+- `3d07407` Document status risk summaries
+- `049c68f` Throttle telegram startup notifications

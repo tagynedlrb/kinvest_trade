@@ -1443,6 +1443,54 @@ def test_build_recent_order_events_message_includes_live_open_orders(tmp_path) -
     assert "주문기록=없음" in message
 
 
+def test_build_recent_order_events_message_marks_audit_order_live_open_status(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders_audit_live.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:00:00+00:00",
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=3,
+        requested_price=210.5,
+        status="SUBMITTED",
+        reason="stop_loss",
+        broker_order_no="999",
+        is_virtual=0,
+        payload={},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_recent_order_events_message(
+        live_open_orders=[
+            {
+                "created_at": datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc),
+                "symbol": "AAPL",
+                "sll_buy_dvsn_cd": "01",
+                "open_qty": 3,
+                "order_price": 210.5,
+                "order_no": "999",
+            }
+        ]
+    )
+    closed_or_filled_message = controller._build_recent_order_events_message(
+        live_open_orders=[]
+    )
+
+    assert "해외 AAPL 매도접수 $210.5000 x3 확인필요=MTS/잔고 주문번호=999 브로커상태=미체결" in message
+    assert "브로커상태=미체결목록없음" in closed_or_filled_message
+
+
 def test_build_recent_order_events_message_includes_live_domestic_open_orders(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_orders_live_domestic.db")
     controller = TelegramLiquidityLabController(

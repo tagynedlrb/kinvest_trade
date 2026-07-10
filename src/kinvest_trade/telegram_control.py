@@ -2781,6 +2781,18 @@ class TelegramLiquidityLabController:
     ) -> str:
         rows = self.repository.list_broker_order_events(limit=limit)
         audit_rows = self.repository.list_submitted_order_audit_rows(limit=5, source_limit=500)
+        live_open_order_keys: set[tuple[str, str]] = set()
+        live_checked_markets: set[str] = set()
+        if live_open_domestic_orders is not None and not live_open_domestic_error:
+            live_checked_markets.add("domestic")
+            live_open_order_keys.update(
+                self._live_open_order_keys("domestic", live_open_domestic_orders)
+            )
+        if live_open_orders is not None and not live_open_error:
+            live_checked_markets.add("overseas")
+            live_open_order_keys.update(
+                self._live_open_order_keys("overseas", live_open_orders)
+            )
         lines = [
             "[KIS][주문기록]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
@@ -2808,7 +2820,13 @@ class TelegramLiquidityLabController:
             lines.append("─── 접수 후 체결확정 추적 필요 ───")
             lines.append("기준=실주문 SUBMITTED, DB상 체결확정 이벤트 없음")
             for row in audit_rows:
-                lines.append(self._format_submitted_order_audit_line(row))
+                lines.append(
+                    self._format_submitted_order_audit_line(
+                        row,
+                        live_open_order_keys=live_open_order_keys,
+                        live_checked_markets=live_checked_markets,
+                    )
+                )
         if rows:
             lines.append("─── 내부 주문 이벤트 ───")
         if not rows:
@@ -2849,6 +2867,15 @@ class TelegramLiquidityLabController:
                 parts.append(f"원시구분={side}")
             lines.append(" ".join(parts))
         return "\n".join(lines)
+
+    @staticmethod
+    def _live_open_order_keys(market: str, rows: list[dict]) -> set[tuple[str, str]]:
+        result: set[tuple[str, str]] = set()
+        for row in rows:
+            order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+            if order_no:
+                result.add((market, order_no))
+        return result
 
     async def _load_live_open_domestic_orders(self, *, limit: int = 12) -> list[dict]:
         now_kst = datetime.now(timezone.utc).astimezone(KST)
@@ -3120,7 +3147,13 @@ class TelegramLiquidityLabController:
             return "매도접수"
         return status or "-"
 
-    def _format_submitted_order_audit_line(self, row: dict) -> str:
+    def _format_submitted_order_audit_line(
+        self,
+        row: dict,
+        *,
+        live_open_order_keys: set[tuple[str, str]] | None = None,
+        live_checked_markets: set[str] | None = None,
+    ) -> str:
         created_at = parse_datetime(row.get("created_at"))
         time_text = format_kst_korean(created_at) if created_at else "-"
         market = str(row.get("market", "overseas"))
@@ -3141,6 +3174,11 @@ class TelegramLiquidityLabController:
         ]
         if order_no:
             parts.append(f"주문번호={order_no}")
+            live_key = (market, order_no)
+            if live_key in (live_open_order_keys or set()):
+                parts.append("브로커상태=미체결")
+            elif market in (live_checked_markets or set()):
+                parts.append("브로커상태=미체결목록없음")
         followup_status = str(row.get("followup_status") or "").strip().upper()
         if followup_status:
             followup_reason = format_reason_korean(str(row.get("followup_reason") or "-"))

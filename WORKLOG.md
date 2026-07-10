@@ -2428,7 +2428,9 @@
 - `telegram_control.py`
   - `/lab_orders`에 `접수 후 체결확정 추적 필요` 섹션 추가
   - 각 주문에 `확인필요=MTS/잔고`를 표시하여 접수 기록과 체결 확정을 분리
+  - KIS live 미체결 조회가 성공한 경우 주문번호를 대조해
+    `브로커상태=미체결` 또는 `브로커상태=미체결목록없음`을 함께 표시
 
 ### 검증
 - 실제 운영 DB 기준 최근 `SUBMITTED` 주문 감사 대상이 조회됨
-- `python3 -m pytest tests -q` → 409개 통과
+- `python3 -m pytest tests -q` → 410개 통과

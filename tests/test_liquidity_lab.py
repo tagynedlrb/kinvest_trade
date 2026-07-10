@@ -2355,6 +2355,48 @@ def test_restore_strategy_contexts_recovers_held_position_after_restart() -> Non
     assert manager.position.entry_price == 165.03
 
 
+def test_clear_stale_lab_position_states_uses_refreshed_positions() -> None:
+    service = _build_run_service()
+    for symbol in ("COIN", "ADBE"):
+        service.repository.upsert_lab_symbol_state(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            action_bias="SELL",
+            signal_state="SELL_READY",
+            note="atr_hard_stop",
+            holding_qty=10,
+            last_price=100.0,
+            pnl_pct=-0.02,
+            strategy_flag="VWAP",
+            entry_by="VWAP",
+            has_position=1,
+            updated_at="2026-07-06T07:00:36+00:00",
+        )
+    held = OverseasHeldPosition(
+        symbol="COIN",
+        exchange_code="NASD",
+        quantity=10,
+        orderable_qty=10,
+        avg_price=100.0,
+        current_price=101.0,
+        pnl_pct=0.01,
+    )
+
+    service._clear_stale_lab_position_states(
+        domestic_positions=[],
+        overseas_positions=[held],
+        refreshed_markets={"overseas"},
+    )
+
+    assert service.repository.get_lab_symbol_state("overseas", "COIN")["has_position"] == 1
+    adbe = service.repository.get_lab_symbol_state("overseas", "ADBE")
+    assert adbe["has_position"] == 0
+    assert adbe["note"] == "stale_position_cleared"
+    events = service.repository.list_event_log(event_type="lab_position_state_cleanup", limit=1)
+    assert events[0]["event_type"] == "lab_position_state_cleanup"
+
+
 def test_build_watch_target_status_uses_persisted_snapshot_when_signal_unavailable() -> None:
     service = _build_run_service()
     persisted_snapshot = _snapshot(

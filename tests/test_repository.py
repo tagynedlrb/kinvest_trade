@@ -303,6 +303,51 @@ def test_get_lab_symbol_state_falls_back_to_cycle_log(tmp_path) -> None:
     assert state["holding_qty"] == 57
 
 
+def test_clear_stale_lab_positions_preserves_active_keys(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    for symbol in ("COIN", "ADBE"):
+        repository.upsert_lab_symbol_state(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            action_bias="SELL",
+            signal_state="SELL_READY",
+            note="atr_hard_stop",
+            holding_qty=10,
+            last_price=100.0,
+            pnl_pct=-0.02,
+            has_position=1,
+            updated_at="2026-07-06T09:00:00+00:00",
+        )
+    repository.upsert_lab_symbol_state(
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        action_bias="SELL",
+        signal_state="SELL_READY",
+        note="trend_filter_lost",
+        holding_qty=3,
+        last_price=82000.0,
+        pnl_pct=-0.01,
+        has_position=1,
+        updated_at="2026-07-06T09:00:00+00:00",
+    )
+
+    cleared = repository.clear_stale_lab_positions(
+        markets={"overseas"},
+        active_keys={("overseas", "COIN")},
+        updated_at="2026-07-10T08:00:00+00:00",
+    )
+
+    assert [row["symbol"] for row in cleared] == ["ADBE"]
+    assert repository.get_lab_symbol_state("overseas", "COIN")["has_position"] == 1
+    adbe = repository.get_lab_symbol_state("overseas", "ADBE")
+    assert adbe["has_position"] == 0
+    assert adbe["holding_qty"] == 0
+    assert adbe["note"] == "stale_position_cleared"
+    assert repository.get_lab_symbol_state("domestic", "005930")["has_position"] == 1
+
+
 def test_backup_db_creates_copy(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
 

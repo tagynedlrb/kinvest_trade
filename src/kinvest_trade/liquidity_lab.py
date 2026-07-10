@@ -1530,12 +1530,20 @@ class LiquidityLabService:
                 overseas_order={"skipped": True, "reason": "market_closed"},
             )
 
+        refreshed_position_markets: set[str] = set()
         domestic_ranked = await self.scan_domestic() if krx_open else []
         domestic_positions = (
             await self._load_domestic_positions(domestic_ranked)
             if krx_open
             else []
         )
+        domestic_balance_cache = getattr(self, "_domestic_balance_cache", {})
+        if (
+            krx_open
+            and domestic_balance_cache.get("cycle") == getattr(self, "_cycle_count", 0)
+            and domestic_balance_cache.get("data")
+        ):
+            refreshed_position_markets.add("domestic")
         if us_open:
             overseas_ranked, held_symbols_cache = await self.scan_overseas()
             overseas_positions = await self._load_overseas_positions(
@@ -1551,10 +1559,21 @@ class LiquidityLabService:
                 *overseas_positions,
                 *virtual_overseas_positions,
             ]
+            overseas_balance_cache = getattr(self, "_overseas_balance_cache", {})
+            if (
+                overseas_balance_cache.get("cycle") == getattr(self, "_cycle_count", 0)
+                and overseas_balance_cache.get("data")
+            ):
+                refreshed_position_markets.add("overseas")
         else:
             overseas_ranked = []
             overseas_positions = []
             monitored_overseas_positions = []
+        self._clear_stale_lab_position_states(
+            domestic_positions=domestic_positions,
+            overseas_positions=monitored_overseas_positions,
+            refreshed_markets=refreshed_position_markets,
+        )
         self._restore_strategy_contexts(
             domestic_positions=domestic_positions,
             overseas_positions=monitored_overseas_positions,
@@ -3319,6 +3338,58 @@ class LiquidityLabService:
         )
         self._remember_persisted_symbol_state(
             repository.get_lab_symbol_state(market, symbol.strip().upper())
+        )
+
+    def _clear_stale_lab_position_states(
+        self,
+        *,
+        domestic_positions: list[DomesticHeldPosition],
+        overseas_positions: list[OverseasHeldPosition],
+        refreshed_markets: set[str],
+    ) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None or not refreshed_markets:
+            return
+        active_keys: set[tuple[str, str]] = set()
+        if "domestic" in refreshed_markets:
+            active_keys.update(
+                ("domestic", position.stock_code.strip())
+                for position in domestic_positions
+                if position.quantity > 0 and position.stock_code.strip()
+            )
+        if "overseas" in refreshed_markets:
+            active_keys.update(
+                ("overseas", position.symbol.strip().upper())
+                for position in overseas_positions
+                if position.quantity > 0 and position.symbol.strip()
+            )
+        cleared = repository.clear_stale_lab_positions(
+            markets=refreshed_markets,
+            active_keys=active_keys,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if not cleared:
+            return
+        persisted = getattr(self, "_persisted_symbol_state", None)
+        if persisted is not None:
+            for row in cleared:
+                persisted.pop(
+                    (
+                        str(row.get("market", "")).strip().lower(),
+                        str(row.get("symbol", "")).strip().upper(),
+                    ),
+                    None,
+                )
+        self._save_event(
+            event_type="lab_position_state_cleanup",
+            detail={
+                "count": len(cleared),
+                "markets": sorted(refreshed_markets),
+                "symbols": [
+                    f"{row.get('market')}:{row.get('symbol')}"
+                    for row in cleared[:30]
+                ],
+            },
         )
 
     def _restore_strategy_contexts(

@@ -879,6 +879,58 @@ class SqliteRepository:
             result.append(item)
         return result
 
+    def clear_stale_lab_positions(
+        self,
+        *,
+        markets: set[str],
+        active_keys: set[tuple[str, str]],
+        updated_at: str,
+    ) -> list[dict]:
+        market_keys = {market.strip().lower() for market in markets if market.strip()}
+        if not market_keys:
+            return []
+        active_normalized = {
+            (market.strip().lower(), symbol.strip().upper())
+            for market, symbol in active_keys
+            if market.strip() and symbol.strip()
+        }
+        placeholders = ",".join("?" for _ in market_keys)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM lab_symbol_state
+                WHERE has_position = 1
+                  AND market IN ({placeholders})
+                """,
+                sorted(market_keys),
+            ).fetchall()
+            stale_rows = [
+                dict(row)
+                for row in rows
+                if (
+                    str(row["market"]).strip().lower(),
+                    str(row["symbol"]).strip().upper(),
+                )
+                not in active_normalized
+            ]
+            for row in stale_rows:
+                conn.execute(
+                    """
+                    UPDATE lab_symbol_state
+                    SET has_position = 0,
+                        holding_qty = 0,
+                        action_bias = 'HOLD',
+                        signal_state = 'HOLD',
+                        note = 'stale_position_cleared',
+                        updated_at = ?
+                    WHERE market = ?
+                      AND symbol = ?
+                    """,
+                    (updated_at, row["market"], row["symbol"]),
+                )
+        return stale_rows
+
     def get_latest_strategy_context(self, market: str, symbol: str) -> dict | None:
         symbol_upper = symbol.strip().upper()
         with self._connect() as conn:

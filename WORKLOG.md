@@ -1261,3 +1261,24 @@
 ### 기대 효과
 - 단일 이상호가로 인한 대형 가상손실 기록 방지
 - 정산대기 잔재가 포트폴리오와 다음 판단을 오염시키는 현상 감소
+
+## [2026-07-10] stale lab position 상태 자동 정리
+
+### 추가 점검 결과
+- `lab_symbol_state`에 7월 6~9일의 과거 `has_position=1` 상태가 남아 있어
+  실제/가상 보유가 아닌 종목이 watchlist와 전략 복구 문맥을 오염시킬 수 있었음
+- 이 상태는 포트폴리오의 실보유/가상보유 계산보다 watchlist, cached signal,
+  restart 후 strategy context 복구에 더 큰 영향을 줄 수 있음
+
+### 수정 사항
+- `SqliteRepository.clear_stale_lab_positions()` 추가
+  - 현재 활성 포지션 목록에 없는 `has_position=1` 행만 `has_position=0`,
+    `holding_qty=0`, `note=stale_position_cleared`로 갱신
+- `LiquidityLabService._clear_stale_lab_position_states()` 추가
+  - KIS 잔고 조회가 성공한 시장만 대상으로 stale state 정리
+  - 일시적 API 실패/미조회 시장은 건드리지 않음
+  - 정리 결과는 `lab_position_state_cleanup` event로 저장
+
+### 기대 효과
+- 오래된 포지션 상태가 watchlist/전략 복구를 오염시키는 현상 감소
+- 재시작 후 실제 보유가 아닌 과거 종목에 대한 SELL_READY/HOLD 표시 감소

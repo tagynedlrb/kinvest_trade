@@ -504,6 +504,56 @@ def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
     assert summary["virtual"]["overseas_USD"]["total_pnl"] == -1.0
 
 
+def test_virtual_performance_summary_excludes_flagged_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    keep_id = repository.save_virtual_order(
+        created_at="2026-07-01 10:00:00 KST",
+        market="overseas",
+        symbol="KEEP",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=21.0,
+        currency="USD",
+        session="regular",
+        reason="take_profit",
+        realized_pnl=1.0,
+        realized_pnl_pct=0.05,
+    )
+    excluded_id = repository.save_virtual_order(
+        created_at="2026-07-01 10:10:00 KST",
+        market="overseas",
+        symbol="BAD",
+        exchange_code="NASD",
+        side="sell",
+        qty=1,
+        fill_price=1.0,
+        currency="USD",
+        session="regular",
+        reason="bad_quote",
+        realized_pnl=-100.0,
+        realized_pnl_pct=-0.50,
+    )
+
+    updated = repository.exclude_virtual_orders_from_performance(
+        [excluded_id],
+        reason="bad_quote_audit",
+        excluded_at="2026-07-01T00:00:00+00:00",
+    )
+    summary = repository.get_virtual_performance_summary()
+    session_summary = repository.get_session_pnl_summary(include_virtual=True)
+    rows = {int(row["id"]): row for row in repository.list_virtual_orders(limit=10)}
+
+    assert updated == 1
+    assert rows[keep_id]["excluded_from_performance"] == 0
+    assert rows[excluded_id]["excluded_from_performance"] == 1
+    assert rows[excluded_id]["exclude_reason"] == "bad_quote_audit"
+    assert summary["overseas_USD"]["trade_count"] == 1
+    assert summary["overseas_USD"]["total_pnl"] == 1.0
+    assert session_summary["virtual"]["overseas_USD"]["trade_count"] == 1
+    assert session_summary["virtual"]["overseas_USD"]["total_pnl"] == 1.0
+
+
 def test_get_session_pnl_summary_after_filter(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_cycle_log(

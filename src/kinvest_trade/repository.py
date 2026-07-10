@@ -133,7 +133,10 @@ class SqliteRepository:
                     session TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     realized_pnl REAL NOT NULL DEFAULT 0,
-                    realized_pnl_pct REAL NOT NULL DEFAULT 0
+                    realized_pnl_pct REAL NOT NULL DEFAULT 0,
+                    excluded_from_performance INTEGER NOT NULL DEFAULT 0,
+                    exclude_reason TEXT NOT NULL DEFAULT '',
+                    excluded_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS virtual_sell_pending (
@@ -326,6 +329,14 @@ class SqliteRepository:
             self._ensure_column(conn, "auto_trade_actions", "fx_rate_krw", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_actions", "fx_pnl_krw", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_actions", "estimated_tax_delta_krw", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(
+                conn,
+                "virtual_orders",
+                "excluded_from_performance",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(conn, "virtual_orders", "exclude_reason", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "virtual_orders", "excluded_at", "TEXT")
             self._ensure_column(conn, "cycle_log", "realized_pnl_usd", "REAL")
             self._ensure_column(conn, "cycle_log", "realized_pnl_krw", "REAL")
             self._ensure_column(conn, "cycle_log", "session_id", "TEXT NOT NULL DEFAULT ''")
@@ -993,7 +1004,11 @@ class SqliteRepository:
                 virtual_rows = [
                     dict(row)
                     for row in conn.execute(
-                        "SELECT * FROM virtual_orders WHERE side = 'sell'"
+                        """
+                        SELECT * FROM virtual_orders
+                        WHERE side = 'sell'
+                          AND COALESCE(excluded_from_performance, 0) = 0
+                        """
                     ).fetchall()
                 ]
 
@@ -1300,14 +1315,18 @@ class SqliteRepository:
         reason: str,
         realized_pnl: float = 0.0,
         realized_pnl_pct: float = 0.0,
+        excluded_from_performance: bool = False,
+        exclude_reason: str = "",
+        excluded_at: str | None = None,
     ) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO virtual_orders
                     (created_at, market, symbol, exchange_code, side, qty,
-                     fill_price, currency, session, reason, realized_pnl, realized_pnl_pct)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     fill_price, currency, session, reason, realized_pnl, realized_pnl_pct,
+                     excluded_from_performance, exclude_reason, excluded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -1322,6 +1341,9 @@ class SqliteRepository:
                     reason,
                     realized_pnl,
                     realized_pnl_pct,
+                    1 if excluded_from_performance else 0,
+                    exclude_reason,
+                    excluded_at,
                 ),
             )
             return int(cursor.lastrowid)
@@ -1334,6 +1356,29 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def exclude_virtual_orders_from_performance(
+        self,
+        order_ids: list[int],
+        *,
+        reason: str,
+        excluded_at: str,
+    ) -> int:
+        if not order_ids:
+            return 0
+        placeholders = ",".join("?" for _ in order_ids)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE virtual_orders
+                SET excluded_from_performance = 1,
+                    exclude_reason = ?,
+                    excluded_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                [reason, excluded_at, *order_ids],
+            )
+            return int(cursor.rowcount)
+
     def get_virtual_performance_summary(self) -> dict:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1344,6 +1389,7 @@ class SqliteRepository:
                        SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS win_count
                 FROM virtual_orders
                 WHERE side = 'sell'
+                  AND COALESCE(excluded_from_performance, 0) = 0
                 GROUP BY market, currency
                 """
             ).fetchall()

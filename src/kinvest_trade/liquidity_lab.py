@@ -6719,6 +6719,20 @@ class LiquidityLabService:
             )
             if real is None and virtual_buy is None:
                 self.repository.delete_virtual_sell_pending("overseas", symbol)
+                self._persist_trade_state(
+                    market="overseas",
+                    symbol=symbol,
+                    exchange_code=exchange_code,
+                    action_bias="HOLD",
+                    signal_state="HOLD",
+                    note="orphan_virtual_sell_pending_cleared",
+                    holding_qty=0,
+                    last_price=pending_avg_price,
+                    pnl_pct=None,
+                    strategy_flag="",
+                    entry_by="",
+                    has_position=False,
+                )
                 self._save_event(
                     event_type="virtual_pending_cleanup",
                     market="overseas",

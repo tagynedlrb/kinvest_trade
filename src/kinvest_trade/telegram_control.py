@@ -1350,7 +1350,12 @@ class TelegramLiquidityLabController:
                 lines.append(self._build_positions_message())
             return "\n".join(lines)
 
+        hidden_closed_count = 0
+        visible_count = 0
         for watch_target in watch_targets:
+            if self._is_closed_stale_watch_target(watch_target):
+                hidden_closed_count += 1
+                continue
             market = str(watch_target.get("market", "overseas"))
             symbol = str(watch_target.get("code", "")).upper()
             lines.append(
@@ -1364,7 +1369,35 @@ class TelegramLiquidityLabController:
                     ),
                 )
             )
+            visible_count += 1
+        if visible_count <= 0:
+            lines.append("감시종목=없음")
+        if hidden_closed_count > 0:
+            lines.append(f"숨김=정리된 보유잔상 {hidden_closed_count}개")
         return "\n".join(lines)
+
+    def _is_closed_stale_watch_target(self, watch_target: dict) -> bool:
+        try:
+            holding_qty = int(float(str(watch_target.get("holding_qty", 0) or 0)))
+        except (TypeError, ValueError):
+            holding_qty = 0
+        if holding_qty <= 0:
+            return False
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "get_lab_symbol_state"):
+            return False
+        market = str(watch_target.get("market", "overseas") or "overseas").strip().lower()
+        symbol = str(watch_target.get("code", "") or "").strip().upper()
+        if not market or not symbol:
+            return False
+        state = repository.get_lab_symbol_state(market, symbol)
+        if state is None:
+            return False
+        try:
+            has_position = int(state.get("has_position", 0) or 0)
+        except (TypeError, ValueError):
+            has_position = 0
+        return has_position <= 0
 
     def _build_positions_message(self) -> str:
         last_report = self.last_report_summary or {}

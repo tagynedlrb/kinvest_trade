@@ -272,10 +272,30 @@ def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
         currency="USD",
         updated_at="2026-07-10 05:40:25 KST",
     )
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="stale_signal_cache",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=522,
+        last_price=54.53,
+        pnl_pct=0.007,
+        has_position=1,
+        updated_at="2026-07-10T09:00:37+00:00",
+    )
 
     asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=[]))
 
     assert service.repository.get_virtual_sell_pending("overseas", "MSEX") is None
+    state = service.repository.get_lab_symbol_state("overseas", "MSEX")
+    assert state is not None
+    assert state["has_position"] == 0
+    assert state["holding_qty"] == 0
+    assert state["note"] == "orphan_virtual_sell_pending_cleared"
     events = service.repository.list_event_log(event_type="virtual_pending_cleanup", limit=5)
     assert events[0]["symbol"] == "MSEX"
 

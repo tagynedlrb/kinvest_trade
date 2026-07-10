@@ -2179,6 +2179,60 @@ def test_build_watchlist_message_uses_balance_cache_for_held_pnl() -> None:
     assert "해외 HOOD 상태=보유중 전략=VWAP 가격=$28.5000 보유=2주 손익=+14.00%" in message
 
 
+def test_build_watchlist_message_hides_closed_stale_position_state(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_watchlist_closed_stale.db")
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="manual_orphan_lab_state_cleared",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=0,
+        last_price=54.53,
+        pnl_pct=None,
+        has_position=0,
+        updated_at="2026-07-10T13:58:58+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "watch_targets": [
+            {
+                "market": "overseas",
+                "code": "MSEX",
+                "action_bias": "HOLD",
+                "signal_state": "HOLD",
+                "strategy_flag": "VWAP",
+                "note": "stale_signal_cache",
+                "price": 54.53,
+                "holding_qty": 522,
+            }
+        ],
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "estimated_api_calls_per_cycle": 12,
+    }
+    controller.current_cycle_no = 1149
+    controller.mode = "stopped"
+
+    message = controller._build_watchlist_message()
+
+    assert "MSEX 상태=보유중" not in message
+    assert "감시종목=없음" in message
+    assert "숨김=정리된 보유잔상 1개" in message
+
+
 def test_build_watchlist_message_uses_domestic_name_when_available() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
     controller.last_report_summary = {

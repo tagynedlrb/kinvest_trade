@@ -13,6 +13,8 @@
   - 전후 비교에서 실제 net PnL과 진입 원금이 있으면
     `net_pnl / (entry_price * qty_executed)`를 우선 사용
   - 실제 net 계산이 불가능한 과거 로그만 기존 `pnl_pct - 0.5%` 추정값 사용
+- `scripts/analyze_trades.py`
+  - 일반 실거래/전략별 분석 출력에 `평균Gross`와 `평균Net`을 함께 표시
 - `repository.py`
   - `get_recent_strategy_guard_performance()`도 동일한 실제 net 기반 순손익률을 사용
   - 승률도 gross가 아니라 net 기준으로 계산해 전략가드 판단과 표시를 일치화

@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from kinvest_trade.trade_analysis import compare_before_after
+from kinvest_trade.trade_analysis import _net_pnl_pct_expr, compare_before_after
 
 
 def _where_sql(column: str, since: str) -> tuple[str, list[str]]:
@@ -51,6 +51,7 @@ def main() -> None:
     has_strategy_flag = _has_column(conn, "cycle_log", "strategy_flag")
     has_exit_by = _has_column(conn, "cycle_log", "exit_by")
     has_virtual_excluded = _has_column(conn, "virtual_orders", "excluded_from_performance")
+    net_pct_expr = _net_pnl_pct_expr(conn)
     krw_expr = (
         "SUM(COALESCE(net_pnl_krw, realized_pnl_krw, 0))"
         if has_cycle_net_krw
@@ -97,12 +98,13 @@ def main() -> None:
     rows = conn.execute(
         f"""
         SELECT market,
-               COUNT(*) AS trade_count,
-               SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
-               AVG(pnl_pct) * 100 AS avg_pnl_pct,
-               MIN(pnl_pct) * 100 AS min_pnl_pct,
-               MAX(pnl_pct) * 100 AS max_pnl_pct,
-               {krw_expr} AS total_krw,
+	               COUNT(*) AS trade_count,
+	               SUM(CASE WHEN ({net_pct_expr}) > 0 THEN 1 ELSE 0 END) AS win_count,
+	               AVG(pnl_pct) * 100 AS avg_gross_pnl_pct,
+	               AVG(({net_pct_expr})) * 100 AS avg_net_pnl_pct,
+	               MIN(pnl_pct) * 100 AS min_pnl_pct,
+	               MAX(pnl_pct) * 100 AS max_pnl_pct,
+	               {krw_expr} AS total_krw,
                {usd_expr} AS total_usd
         FROM cycle_log
         {cycle_where}
@@ -112,12 +114,13 @@ def main() -> None:
         if cycle_where
         else f"""
         SELECT market,
-               COUNT(*) AS trade_count,
-               SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
-               AVG(pnl_pct) * 100 AS avg_pnl_pct,
-               MIN(pnl_pct) * 100 AS min_pnl_pct,
-               MAX(pnl_pct) * 100 AS max_pnl_pct,
-               {krw_expr} AS total_krw,
+	               COUNT(*) AS trade_count,
+	               SUM(CASE WHEN ({net_pct_expr}) > 0 THEN 1 ELSE 0 END) AS win_count,
+	               AVG(pnl_pct) * 100 AS avg_gross_pnl_pct,
+	               AVG(({net_pct_expr})) * 100 AS avg_net_pnl_pct,
+	               MIN(pnl_pct) * 100 AS min_pnl_pct,
+	               MAX(pnl_pct) * 100 AS max_pnl_pct,
+	               {krw_expr} AS total_krw,
                {usd_expr} AS total_usd
         FROM cycle_log
         WHERE action_bias = 'SELL_REAL'
@@ -130,7 +133,8 @@ def main() -> None:
         win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
         print(
             f"  {row['market']:10s} 거래={row['trade_count']}건 승률={win_rate:.0f}% "
-            f"평균={row['avg_pnl_pct']:.3f}% 범위=[{row['min_pnl_pct']:.3f}%, {row['max_pnl_pct']:.3f}%] "
+            f"평균Gross={row['avg_gross_pnl_pct']:.3f}% 평균Net={row['avg_net_pnl_pct']:.3f}% "
+            f"범위=[{row['min_pnl_pct']:.3f}%, {row['max_pnl_pct']:.3f}%] "
             f"누적={int(row['total_krw'] or 0):,}원"
         )
 
@@ -149,10 +153,11 @@ def main() -> None:
             f"""
             SELECT {strategy_cols},
                    COUNT(*) AS trade_count,
-                   SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
-                   AVG(pnl_pct) * 100 AS avg_pnl_pct,
-                   {krw_expr} AS total_krw,
-                   {usd_expr} AS total_usd
+	                   SUM(CASE WHEN ({net_pct_expr}) > 0 THEN 1 ELSE 0 END) AS win_count,
+	                   AVG(pnl_pct) * 100 AS avg_gross_pnl_pct,
+	                   AVG(({net_pct_expr})) * 100 AS avg_net_pnl_pct,
+	                   {krw_expr} AS total_krw,
+	                   {usd_expr} AS total_usd
             FROM cycle_log
             {cycle_where}
             AND action_bias = 'SELL_REAL'
@@ -163,10 +168,11 @@ def main() -> None:
             else f"""
             SELECT {strategy_cols},
                    COUNT(*) AS trade_count,
-                   SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
-                   AVG(pnl_pct) * 100 AS avg_pnl_pct,
-                   {krw_expr} AS total_krw,
-                   {usd_expr} AS total_usd
+	                   SUM(CASE WHEN ({net_pct_expr}) > 0 THEN 1 ELSE 0 END) AS win_count,
+	                   AVG(pnl_pct) * 100 AS avg_gross_pnl_pct,
+	                   AVG(({net_pct_expr})) * 100 AS avg_net_pnl_pct,
+	                   {krw_expr} AS total_krw,
+	                   {usd_expr} AS total_usd
             FROM cycle_log
             WHERE action_bias = 'SELL_REAL'
             GROUP BY market, strategy, exit_reason
@@ -179,7 +185,8 @@ def main() -> None:
             win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
             print(
                 f"  {row['market']:10s} {row['strategy']:12s} exit={row['exit_reason']:22s} "
-                f"거래={row['trade_count']:3d} 승률={win_rate:3.0f}% 평균={row['avg_pnl_pct']:7.3f}% "
+                f"거래={row['trade_count']:3d} 승률={win_rate:3.0f}% "
+                f"평균Gross={row['avg_gross_pnl_pct']:7.3f}% 평균Net={row['avg_net_pnl_pct']:7.3f}% "
                 f"누적={int(row['total_krw'] or 0):,}원"
             )
 

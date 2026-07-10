@@ -128,6 +128,7 @@ class AutoTradeConfig:
     min_intraday_momentum_pct: float
     min_bar_return_pct: float
     max_breakout_extension_pct: float
+    vwap_min_price_above_pct: float
     pullback_distance_lower_pct: float
     pullback_distance_upper_pct: float
     pullback_rsi_low: float
@@ -152,6 +153,7 @@ class AutoTradeConfig:
     ma20_partial_exit_buffer_pct: float
     trend_chase_limit_pct: float
     max_entry_rsi14: float
+    rsi_entry_threshold: float
     trend_require_price_above_slow: bool
     min_hold_before_trend_exit: int
     max_hold_cycles: int
@@ -609,6 +611,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             max_breakout_extension_pct=float(
                 auto_trade_raw.get("max_breakout_extension_pct", 0.01)
             ),
+            vwap_min_price_above_pct=float(
+                auto_trade_raw.get("vwap_min_price_above_pct", 0.0)
+            ),
             pullback_distance_lower_pct=float(
                 auto_trade_raw.get("pullback_distance_lower_pct", 0.015)
             ),
@@ -661,6 +666,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("trend_chase_limit_pct", 0.02)
             ),
             max_entry_rsi14=float(auto_trade_raw.get("max_entry_rsi14", 62.0)),
+            rsi_entry_threshold=float(
+                auto_trade_raw.get("rsi_entry_threshold", 50.0)
+            ),
             trend_require_price_above_slow=bool(
                 auto_trade_raw.get("trend_require_price_above_slow", True)
             ),

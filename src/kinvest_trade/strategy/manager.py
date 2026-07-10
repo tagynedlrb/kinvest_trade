@@ -32,11 +32,12 @@ class PriorityStrategyManager:
     Priority-based entry routing plus strategy-scoped exit metadata.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, auto_trade_config: object | None = None) -> None:
         from .rsi_macd import RSIMACDStrategy
         from .volume_breakout import VolumeBreakoutStrategy
         from .vwap_pullback import VWAPPullbackStrategy
 
+        self._auto_trade_config = auto_trade_config
         self._strategies: dict[StrategyID, object] = {
             StrategyID.VWAP_PULLBACK: VWAPPullbackStrategy(),
             StrategyID.VOLUME_BREAKOUT: VolumeBreakoutStrategy(),
@@ -83,12 +84,16 @@ class PriorityStrategyManager:
 
     def buy_score(self, snapshot: MovingAverageSnapshot) -> float:
         """Sum the scores of strategies that emit BUY on this snapshot."""
-        total = 0.0
-        for strategy in self._strategies.values():
-            signal = strategy.evaluate(snapshot, None)  # type: ignore[attr-defined]
-            if signal.buy:
-                total += signal.score
-        return total
+        signals: dict[StrategyID, StrategySignal] = {}
+        for strategy_id, strategy in self._strategies.items():
+            signals[strategy_id] = strategy.evaluate(snapshot, None)  # type: ignore[attr-defined]
+        triggered = self._filter_triggered_entry_ids(
+            frozenset(
+                strategy_id for strategy_id, signal in signals.items() if signal.buy
+            ),
+            snapshot,
+        )
+        return sum(signals[strategy_id].score for strategy_id in triggered)
 
     def _check_entry(
         self,
@@ -98,8 +103,11 @@ class PriorityStrategyManager:
         *,
         commit: bool,
     ) -> StrategyResult:
-        triggered = frozenset(
+        triggered = self._filter_triggered_entry_ids(
+            frozenset(
             strategy_id for strategy_id, signal in signals.items() if signal.buy
+            ),
+            snapshot,
         )
         if not triggered:
             watching_ids = [
@@ -139,6 +147,35 @@ class PriorityStrategyManager:
             pnl_pct=None,
             triggered_by=triggered,
         )
+
+    def _filter_triggered_entry_ids(
+        self,
+        triggered: frozenset[StrategyID],
+        snapshot: MovingAverageSnapshot,
+    ) -> frozenset[StrategyID]:
+        if not triggered:
+            return triggered
+        config = self._auto_trade_config
+        filtered = set(triggered)
+        if filtered == {StrategyID.VWAP_PULLBACK}:
+            vwap = snapshot.vwap
+            min_above_pct = float(
+                getattr(config, "vwap_min_price_above_pct", 0.0) or 0.0
+            )
+            if vwap is None or vwap <= 0:
+                filtered.clear()
+            else:
+                above_pct = (snapshot.price - vwap) / vwap
+                if above_pct < min_above_pct:
+                    filtered.clear()
+        if filtered == {StrategyID.RSI_MACD}:
+            rsi = snapshot.rsi14
+            entry_threshold = float(
+                getattr(config, "rsi_entry_threshold", 50.0) or 50.0
+            )
+            if rsi is None or rsi > entry_threshold:
+                filtered.clear()
+        return frozenset(filtered)
 
     def _check_exit(
         self,

@@ -2428,6 +2428,11 @@ class LiquidityLabService:
                 and real is not None
                 and self._is_no_orderable_retry_active("overseas", symbol)
             ):
+                self._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=real.quantity,
+                )
                 continue
 
             avg_price = 0.0
@@ -2448,6 +2453,13 @@ class LiquidityLabService:
                 and real is not None
                 and real.quantity > already_pending_qty
             ):
+                if self._cooldown_remaining_minutes("overseas", symbol) > 0:
+                    self._track_no_orderable_stall(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=real.quantity,
+                    )
+                    continue
                 # KIS orderable_qty reflects unsettled state inconsistently, so
                 # fall back to held quantity and let the actual sell API decide.
                 effective_orderable = max(0, real.quantity - already_pending_qty)
@@ -2459,6 +2471,11 @@ class LiquidityLabService:
             if avg_price <= 0:
                 continue
             if not is_virtual_only and effective_orderable <= 0:
+                self._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=0 if real is None else real.quantity,
+                )
                 self._defer_no_orderable_position(
                     market="overseas",
                     symbol=symbol,
@@ -2472,6 +2489,7 @@ class LiquidityLabService:
                 else effective_orderable
             )
             self._clear_no_orderable_retry("overseas", symbol)
+            self._reset_no_orderable_stall("overseas", symbol)
 
             exit_reason: str | None = None
             priority: tuple[int, float] | None = None
@@ -2511,9 +2529,21 @@ class LiquidityLabService:
                 remaining_real_orderable <= 0
                 and self._is_no_orderable_retry_active("overseas", symbol)
             ):
+                self._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                )
                 continue
             effective_orderable = remaining_real_orderable
             if effective_orderable <= 0 and held.quantity > already_pending_qty:
+                if self._cooldown_remaining_minutes("overseas", symbol) > 0:
+                    self._track_no_orderable_stall(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=held.quantity,
+                    )
+                    continue
                 effective_orderable = max(0, held.quantity - already_pending_qty)
                 if effective_orderable > 0:
                     _logger.warning(
@@ -2521,6 +2551,11 @@ class LiquidityLabService:
                         held.quantity,
                     )
             if effective_orderable <= 0:
+                self._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                )
                 self._defer_no_orderable_position(
                     market="overseas",
                     symbol=symbol,
@@ -2529,6 +2564,7 @@ class LiquidityLabService:
                 )
                 continue
             self._clear_no_orderable_retry("overseas", symbol)
+            self._reset_no_orderable_stall("overseas", symbol)
             signal_snapshot = self._signal_cache.get(held.symbol.upper())
             if signal_snapshot is None:
                 continue
@@ -5156,11 +5192,37 @@ class LiquidityLabService:
                     "reason": "no_orderable_qty",
                     "error": str(exc),
                 }
+            reject_reason = (
+                "session_not_orderable_in_profile"
+                if not is_us_orderable_session_for_env(
+                    datetime.now(timezone.utc),
+                    self.config.credentials.env,
+                )
+                else "order_rejected"
+            )
+            if reject_reason == "order_rejected":
+                self._set_exit_cooldown_minutes("overseas", candidate.symbol, 20)
+                _logger.warning(
+                    "[SELL] order_rejected %s -> 20분 쿨다운 등록 (error=%s)",
+                    candidate.symbol,
+                    exc,
+                )
+                self._save_event(
+                    event_type="trade_skip",
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    detail={
+                        "reason": "order_rejected",
+                        "side": "sell",
+                        "error": str(exc)[:100],
+                        "cooldown_applied_min": 20,
+                    },
+                )
             self._record_trade_skip(
                 market="overseas",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
-                reason="session_not_orderable_in_profile" if is_session_blocked else "order_rejected",
+                reason=reject_reason,
                 side="sell",
                 price=sell_price,
                 signal_snapshot=signal_snapshot,
@@ -5180,7 +5242,7 @@ class LiquidityLabService:
                 "held_position": asdict(held),
                 "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
                 "exit_reason": exit_reason,
-                "reason": "session_not_orderable_in_profile" if is_session_blocked else "order_rejected",
+                "reason": reject_reason,
                 "error": str(exc),
             }
         existing_pending = self.repository.get_virtual_sell_pending("overseas", candidate.symbol)
@@ -6090,7 +6152,7 @@ class LiquidityLabService:
             self._strategy_managers = managers
         manager = managers.get(key)
         if manager is None:
-            manager = PriorityStrategyManager()
+            manager = PriorityStrategyManager(getattr(self.config, "auto_trade", None))
             managers[key] = manager
         return manager
 
@@ -6414,6 +6476,49 @@ class LiquidityLabService:
         )
         return True
 
+    def _track_no_orderable_stall(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        holding_qty: int,
+    ) -> int:
+        counts = getattr(self, "_no_orderable_counts", None)
+        if counts is None:
+            counts = {}
+            self._no_orderable_counts = counts
+        key = f"{market}:{symbol.strip().upper()}"
+        count = int(counts.get(key, 0) or 0) + 1
+        counts[key] = count
+        if count == 30:
+            notifier = getattr(self, "notifier", None)
+            if notifier is not None and getattr(notifier, "enabled", True):
+                loop_interval_sec = max(
+                    1,
+                    int(getattr(self.config.liquidity_lab, "loop_interval_sec", 25) or 25),
+                )
+                duration_min = max(1, int((count * loop_interval_sec) // 60))
+                asyncio.create_task(
+                    notifier.send(
+                        "\n".join(
+                            [
+                                "⚠️ orderable_qty=0 장기지속",
+                                f"종목={symbol.strip().upper()}",
+                                f"지속={duration_min}분",
+                                f"보유={holding_qty}주",
+                                "참고=자본 동결 가능성, KIS 잔고/미체결 확인 필요",
+                            ]
+                        )
+                    )
+                )
+        return count
+
+    def _reset_no_orderable_stall(self, market: str, symbol: str) -> None:
+        counts = getattr(self, "_no_orderable_counts", None)
+        if not counts:
+            return
+        counts.pop(f"{market}:{symbol.strip().upper()}", None)
+
     def _is_no_orderable_retry_active(self, market: str, symbol: str) -> bool:
         retry_map = getattr(self, "_no_orderable_retry", None) or {}
         retry_until = retry_map.get(f"{market}:{symbol.strip().upper()}")
@@ -6508,10 +6613,6 @@ class LiquidityLabService:
         symbol: str,
         exit_reason: str,
     ) -> None:
-        exit_cooldown = getattr(self, "_exit_cooldown", None)
-        if exit_cooldown is None:
-            exit_cooldown = {}
-            self._exit_cooldown = exit_cooldown
         if exit_reason in ("stop_loss", "atr_hard_stop"):
             cooldown_minutes = 25
         elif exit_reason in ("momentum_loss_cut", "trend_filter_lost"):
@@ -6520,6 +6621,18 @@ class LiquidityLabService:
             cooldown_minutes = 15
         else:
             cooldown_minutes = 8
+        self._set_exit_cooldown_minutes(market, symbol, cooldown_minutes)
+
+    def _set_exit_cooldown_minutes(
+        self,
+        market: str,
+        symbol: str,
+        cooldown_minutes: int,
+    ) -> None:
+        exit_cooldown = getattr(self, "_exit_cooldown", None)
+        if exit_cooldown is None:
+            exit_cooldown = {}
+            self._exit_cooldown = exit_cooldown
         exit_cooldown[f"{market}:{symbol.strip().upper()}"] = (
             datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
         )

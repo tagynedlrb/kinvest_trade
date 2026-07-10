@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from kinvest_trade.indicators import compute_macd
 from kinvest_trade.strategy import PriorityStrategyManager
 from kinvest_trade.strategy.rsi_macd import RSIMACDStrategy
@@ -166,3 +168,51 @@ def test_priority_strategy_manager_sell_uses_triggered_strategy_exit() -> None:
 def result_triggered():
     preview = PriorityStrategyManager().evaluate("SOXL", _snapshot(), commit=False)
     return preview.triggered_by
+
+
+def test_priority_strategy_manager_filters_single_vwap_entry_below_configured_margin() -> None:
+    manager = PriorityStrategyManager(
+        SimpleNamespace(vwap_min_price_above_pct=0.003, rsi_entry_threshold=35.0)
+    )
+
+    result = manager.evaluate(
+        "SOXL",
+        _snapshot(
+            price=100.1,
+            vwap=100.0,
+            rsi14=45.0,
+            volume_ratio=1.0,
+            breakout_distance_pct=-0.01,
+            macd_golden=False,
+            macd_line=0.1,
+            macd_signal=0.2,
+        ),
+        commit=False,
+    )
+
+    assert result.signal == "HOLD"
+    assert result.flag == "VWAP+VOL"
+
+
+def test_priority_strategy_manager_filters_single_rsi_entry_above_threshold() -> None:
+    manager = PriorityStrategyManager(
+        SimpleNamespace(vwap_min_price_above_pct=0.003, rsi_entry_threshold=35.0)
+    )
+
+    result = manager.evaluate(
+        "SOXL",
+        _snapshot(
+            price=100.0,
+            vwap=105.0,
+            rsi14=40.0,
+            volume_ratio=1.0,
+            breakout_distance_pct=-0.01,
+            macd_golden=True,
+            macd_line=0.5,
+            macd_signal=0.3,
+        ),
+        commit=False,
+    )
+
+    assert result.signal == "HOLD"
+    assert result.flag == "VOL+RSI"

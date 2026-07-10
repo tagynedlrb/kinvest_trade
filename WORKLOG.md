@@ -1171,3 +1171,31 @@
 ### 검증
 - `python3 -m pytest tests -q`
   - `311 passed`
+
+## [2026-07-10] 지시문 #62 — order_rejected(both waiting) 수정 / 전략 개선
+
+### order_rejected 분석
+- ALNY 52분 방치의 직접 원인은 `orderable_qty=0` 상태에서
+  held quantity fallback으로 실매도를 계속 재시도한 데 있었음
+- KIS 내부 pending 매도 주문이 정리되지 않은 상태에서 추가 SELL이 들어가며
+  `Both-sided waiting order exists` 계열 `order_rejected`가 반복될 수 있었음
+- BBIO처럼 `orderable_qty=0`가 길게 유지되는 종목은 장시간 자본이 묶일 수 있음
+
+### 수정 사항
+- `_place_overseas_sell_order()`
+  - `order_rejected` 발생 시 20분 exit cooldown 즉시 등록
+  - event log에 cooldown 적용 사실 함께 저장
+- `_select_overseas_exit_targets()`
+  - `orderable_qty=0` + exit cooldown 활성화 상태면 held quantity fallback 재시도 차단
+  - 장기 `no_orderable_qty` 종목은 사이클 카운트를 누적하고 30사이클 시 텔레그램 경고 발송
+- `PriorityStrategyManager`
+  - `VWAP` 단독 진입은 `vwap_min_price_above_pct` 이상일 때만 허용
+  - `RSI` 단독 진입은 `rsi_entry_threshold` 이하일 때만 허용
+- `config/fixed_config.json`
+  - `vwap_min_price_above_pct=0.003`
+  - `rsi_entry_threshold=35.0`
+
+### 검증 포인트
+- `Both-sided waiting` 류 거부가 반복되더라도 동일 종목은 20분간 재시도하지 않음
+- `orderable_qty=0` 장기 지속 종목은 텔레그램 경고로 조기 식별 가능
+- `VWAP 단독`, `RSI 단독` 진입은 기존보다 보수적으로 제한됨

@@ -987,25 +987,47 @@ class TelegramLiquidityLabController:
         if not self.last_report_summary:
             return "감시데이터=없음 (/lab_start 후 생성)"
 
-        ref_time = getattr(self, "last_completed_at", None)
-        if ref_time is None:
-            ref_time = parse_datetime(str(self.last_report_summary.get("scanned_at") or ""))
-        if ref_time is None:
+        age_min = self._last_report_age_minutes(now)
+        if age_min is None:
             return "감시데이터=저장상태(시각불명)"
 
-        current = now or datetime.now(timezone.utc)
-        age_min = int(max((current - ref_time).total_seconds(), 0.0) // 60)
         age_text = "방금" if age_min <= 0 else f"{age_min}분 전"
         if self.mode != "running":
             return f"감시데이터={age_text} (루프 {self.mode})"
 
+        if age_min >= self._status_stale_threshold_min():
+            return f"감시데이터={age_text} (지연)"
+        return f"감시데이터={age_text}"
+
+    def _last_report_age_minutes(self, now: datetime | None = None) -> int | None:
+        if not self.last_report_summary:
+            return None
+        ref_time = getattr(self, "last_completed_at", None)
+        if ref_time is None:
+            ref_time = parse_datetime(str(self.last_report_summary.get("scanned_at") or ""))
+        if ref_time is None:
+            return None
+
+        current = now or datetime.now(timezone.utc)
+        return int(max((current - ensure_timezone(ref_time)).total_seconds(), 0.0) // 60)
+
+    def _status_stale_threshold_min(self) -> int:
         config = getattr(self, "config", None)
         liquidity_lab = getattr(config, "liquidity_lab", None)
         interval_sec = max(int(getattr(liquidity_lab, "loop_interval_sec", 20) or 20), 1)
-        stale_threshold_min = max(5, int((interval_sec * 6) // 60))
-        if age_min >= stale_threshold_min:
-            return f"감시데이터={age_text} (지연)"
-        return f"감시데이터={age_text}"
+        return max(5, int((interval_sec * 6) // 60))
+
+    def _estimated_pnl_suffix(self, now: datetime | None = None) -> str:
+        if not self.last_report_summary:
+            return ""
+        if self.mode != "running":
+            return " (저장값)"
+        age_min = self._last_report_age_minutes(now)
+        if age_min is None:
+            return " (저장값)"
+        if age_min >= self._status_stale_threshold_min():
+            return " (지연값)"
+        return ""
 
     async def _send_status_message(self) -> None:
         domestic_open_count: int | None = None
@@ -1095,7 +1117,9 @@ class TelegramLiquidityLabController:
             f"최근완료={self._short_time(snapshot.last_completed_at)}",
             f"최근타겟={last_report.get('primary_target') or '-'}",
             f"확정손익={int(session.get('domestic_paper_realized_pnl_krw', 0) or 0):,}원",
-            f"추정청산손익={int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원",
+            "추정청산손익="
+            f"{int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원"
+            f"{self._estimated_pnl_suffix(now)}",
             f"감시수={len(last_report.get('watch_targets') or [])}",
         ]
         signal_cache_status = self._build_signal_cache_status_line(last_report)

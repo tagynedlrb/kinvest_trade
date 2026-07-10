@@ -389,6 +389,22 @@ def test_build_status_message_shows_stale_signal_cache_summary() -> None:
     assert "신호캐시=2/2 전체 캐시 확인=/lab_watchlist" in message
 
 
+def test_build_status_message_marks_estimated_pnl_as_stored_when_stopped() -> None:
+    controller = _build_async_controller()
+    controller.mode = "stopped"
+    controller.last_report_summary = {
+        "scanned_at": "2026-07-10 17:59:42 KST",
+        "watch_targets": [],
+    }
+    controller.last_completed_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    controller.session_performance.estimated_overseas_realized_pnl_krw = -11229211
+
+    message = controller._build_status_message()
+
+    assert "감시데이터=30분 전 (루프 stopped)" in message
+    assert "추정청산손익=-11,229,211원 (저장값)" in message
+
+
 def test_build_status_message_shows_recent_sell_block_events(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_status_sell_block.db")
     for _ in range(3):

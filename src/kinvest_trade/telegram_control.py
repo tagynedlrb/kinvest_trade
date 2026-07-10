@@ -332,7 +332,7 @@ class TelegramLiquidityLabController:
             await self.notifier.send(HELP_MESSAGE)
             return
         if command_name == "status":
-            await self.notifier.send(self._build_status_message())
+            await self._send_status_message()
             return
         if command_name == "watchlist":
             await self.notifier.send(self._build_watchlist_message())
@@ -948,7 +948,37 @@ class TelegramLiquidityLabController:
             return f"감시데이터={age_text} (지연)"
         return f"감시데이터={age_text}"
 
-    def _build_status_message(self) -> str:
+    async def _send_status_message(self) -> None:
+        domestic_open_count: int | None = None
+        overseas_open_count: int | None = None
+        open_order_error = ""
+        try:
+            domestic_orders, overseas_orders = await asyncio.wait_for(
+                asyncio.gather(
+                    self._load_live_open_domestic_orders(limit=20),
+                    self._load_live_open_overseas_orders(limit=20),
+                ),
+                timeout=8.0,
+            )
+            domestic_open_count = len(domestic_orders)
+            overseas_open_count = len(overseas_orders)
+        except Exception as exc:  # noqa: BLE001
+            open_order_error = str(exc)[:80]
+        await self.notifier.send(
+            self._build_status_message(
+                domestic_open_count=domestic_open_count,
+                overseas_open_count=overseas_open_count,
+                open_order_error=open_order_error,
+            )
+        )
+
+    def _build_status_message(
+        self,
+        *,
+        domestic_open_count: int | None = None,
+        overseas_open_count: int | None = None,
+        open_order_error: str = "",
+    ) -> str:
         snapshot = self._snapshot()
         session = snapshot.session_performance or {}
         last_report = snapshot.last_report_summary or {}
@@ -988,27 +1018,42 @@ class TelegramLiquidityLabController:
         )
         next_run_text = "-" if snapshot.mode != "running" else self._short_time(snapshot.next_run_at)
         next_interval_text = "-" if snapshot.mode != "running" else f"{next_interval}초"
-        return "\n".join(
+        lines = [
+            "[KIS][TELEGRAM_CONTROL_STATUS]",
+            f"시각={format_kst_korean(now)}",
+            f"모드={snapshot.mode}",
+            f"거래루프={self._loop_mode_notice()}",
+            f"사이클={snapshot.current_cycle_no}",
+            f"시장상태={market_status}",
+            self._report_freshness_notice(now),
+            f"다음실행={next_run_text}",
+            f"다음간격={next_interval_text}",
+            f"최근명령={snapshot.last_command or '-'}",
+            f"최근완료={self._short_time(snapshot.last_completed_at)}",
+            f"최근타겟={last_report.get('primary_target') or '-'}",
+            f"확정손익={int(session.get('domestic_paper_realized_pnl_krw', 0) or 0):,}원",
+            f"추정청산손익={int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원",
+            f"감시수={len(last_report.get('watch_targets') or [])}",
+        ]
+        if open_order_error:
+            lines.append(f"미체결=조회실패 ({open_order_error})")
+        elif domestic_open_count is not None or overseas_open_count is not None:
+            domestic_count = 0 if domestic_open_count is None else domestic_open_count
+            overseas_count = 0 if overseas_open_count is None else overseas_open_count
+            lines.append(f"미체결=국내 {domestic_count} / 해외 {overseas_count}")
+            if domestic_count or overseas_count:
+                lines.append("미체결확인=/lab_orders")
+            if domestic_count:
+                lines.append("국내장기취소=/lab_cancel_stale_domestic")
+            if overseas_count:
+                lines.append("해외장기취소=/lab_cancel_stale_overseas")
+        lines.extend(
             [
-                "[KIS][TELEGRAM_CONTROL_STATUS]",
-                f"시각={format_kst_korean(now)}",
-                f"모드={snapshot.mode}",
-                f"거래루프={self._loop_mode_notice()}",
-                f"사이클={snapshot.current_cycle_no}",
-                f"시장상태={market_status}",
-                self._report_freshness_notice(now),
-                f"다음실행={next_run_text}",
-                f"다음간격={next_interval_text}",
-                f"최근명령={snapshot.last_command or '-'}",
-                f"최근완료={self._short_time(snapshot.last_completed_at)}",
-                f"최근타겟={last_report.get('primary_target') or '-'}",
-                f"확정손익={int(session.get('domestic_paper_realized_pnl_krw', 0) or 0):,}원",
-                f"추정청산손익={int(session.get('estimated_overseas_realized_pnl_krw', 0) or 0):,}원",
-                f"감시수={len(last_report.get('watch_targets') or [])}",
                 f"오류연속={self._consecutive_errors}",
                 f"최근오류={snapshot.last_error or '-'}",
             ]
         )
+        return "\n".join(lines)
 
     def _build_watchlist_message(self) -> str:
         last_report = self.last_report_summary or {}

@@ -2190,3 +2190,26 @@
 
 ### 검증
 - `python3 -m pytest tests/test_liquidity_lab.py::test_overseas_buy_uses_slot_sizing_when_balance_is_available tests/test_liquidity_lab.py::test_overseas_buy_saves_buy_real_cycle_log tests/test_liquidity_lab.py::test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available -q` → 3개 통과
+
+## [2026-07-10] `/lab_status` live 미체결 요약 추가
+
+### 배경
+- 과거 `BBIO`, `ALNY`, `PCAP`, `073240`처럼 기존 미체결 주문 때문에
+  신규 주문/청산 주문이 막힌 사례가 반복됐다.
+- `/lab_orders`에서는 live 미체결을 볼 수 있지만, 사용자가 가장 자주 확인하는
+  `/lab_status`에는 미체결 요약이 없어 문제를 늦게 발견할 수 있었다.
+
+### 수정 사항
+- `telegram_control.py`
+  - `/lab_status` 처리 경로를 `_send_status_message()`로 분리
+  - 상태 조회 시 live 국내/해외 미체결 주문 개수를 최대 8초 안에 조회
+  - 조회 성공 시 `미체결=국내 N / 해외 M` 표시
+  - 미체결이 있으면 `/lab_orders`, `/lab_cancel_stale_domestic`,
+    `/lab_cancel_stale_overseas` 안내를 함께 표시
+  - 조회 실패 시에도 기존 상태 메시지는 보내고 `미체결=조회실패`만 표시
+- `tests/test_telegram_control.py`
+  - 상태 메시지에 live 미체결 개수와 후속 명령이 표시되는지 검증
+  - `_send_status_message()`가 live 조회 결과를 포함해 전송하는지 검증
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_shows_stopped_loop_notice tests/test_telegram_control.py::test_build_status_message_shows_live_open_order_counts tests/test_telegram_control.py::test_send_status_message_includes_live_open_order_counts -q` → 3개 통과

@@ -328,6 +328,38 @@ def test_build_status_message_shows_stopped_loop_notice() -> None:
     assert "다음간격=-" in message
 
 
+def test_build_status_message_shows_live_open_order_counts() -> None:
+    controller = _build_async_controller()
+
+    message = controller._build_status_message(
+        domestic_open_count=1,
+        overseas_open_count=2,
+    )
+
+    assert "미체결=국내 1 / 해외 2" in message
+    assert "미체결확인=/lab_orders" in message
+    assert "국내장기취소=/lab_cancel_stale_domestic" in message
+    assert "해외장기취소=/lab_cancel_stale_overseas" in message
+
+
+def test_send_status_message_includes_live_open_order_counts() -> None:
+    controller = _build_async_controller()
+
+    async def fake_domestic_orders(limit: int = 20):
+        return [{"symbol": "073240"}]
+
+    async def fake_overseas_orders(limit: int = 20):
+        return []
+
+    controller._load_live_open_domestic_orders = fake_domestic_orders  # type: ignore[method-assign]
+    controller._load_live_open_overseas_orders = fake_overseas_orders  # type: ignore[method-assign]
+
+    asyncio.run(controller._send_status_message())
+
+    assert "미체결=국내 1 / 해외 0" in controller.notifier.messages[-1]
+    assert "국내장기취소=/lab_cancel_stale_domestic" in controller.notifier.messages[-1]
+
+
 def test_build_watchlist_message_explains_missing_report() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
     controller.last_report_summary = None

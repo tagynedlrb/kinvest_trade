@@ -2129,3 +2129,22 @@
 ### 검증
 - `python3 -m pytest tests/test_liquidity_lab.py::test_overseas_buy_uses_slot_sizing_when_balance_is_available tests/test_liquidity_lab.py::test_get_overseas_available_usd_caps_large_theoretical_amount_by_orderable_qty tests/test_liquidity_lab.py::test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available -q` → 3개 통과
 - 실제 KIS 가능금액 조회(`MSEX`, NASD, $54.53) → `available_usd_capped=66363.01`
+
+## [2026-07-10] 가상 매수 한도 스킵 로그 보강
+
+### 배경
+- 해외 모의투자 정규장 외에는 실제 주문 대신 가상 매수로 전략을 평가한다.
+- 가능금액 캡을 보수화하면 기존 가상 포지션 노출이 한도를 초과해 신규 가상 매수가
+  스킵될 수 있는데, 기존에는 반환값만 있고 `trade_skip` 로그가 남지 않아
+  다음 분석 시 "왜 매수가 안 됐는지" 추적이 어려웠다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - `_record_trade_skip()`에 선택적 `extra_detail` 인자 추가
+  - `_record_virtual_overseas_buy()`에서 `virtual_exposure_limit`,
+    `slot_budget_insufficient` 발생 시 `cycle_log`와 `event_log`에 스킵 기록
+  - 스킵 detail에 `available_usd`, `virtual_notional_usd`,
+    `remaining_virtual_budget` 저장
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_virtual_overseas_buy_respects_total_virtual_exposure_limit -q` → 1개 통과

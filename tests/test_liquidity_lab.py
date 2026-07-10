@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -4662,6 +4663,15 @@ def test_virtual_overseas_buy_respects_total_virtual_exposure_limit() -> None:
     assert result["skipped"] is True
     assert result["reason"] == "virtual_exposure_limit"
     assert service.virtual_trades.get_position("overseas", "SOXL") is None
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    events = service.repository.list_event_log(event_type="trade_skip", limit=5)
+    assert rows[0]["symbol"] == "SOXL"
+    assert rows[0]["action_reason"] == "buy:virtual_exposure_limit"
+    assert events[0]["symbol"] == "SOXL"
+    detail = json.loads(events[0]["detail"])
+    assert detail["reason"] == "virtual_exposure_limit"
+    assert detail["available_usd"] == 1000.0
+    assert detail["virtual_notional_usd"] == 1000.0
 
 
 def test_send_summary_skips_virtual_trade_messages() -> None:

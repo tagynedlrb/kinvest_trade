@@ -5339,6 +5339,11 @@ class LiquidityLabService:
     ) -> dict:
         config = self.config.liquidity_lab
         qty = int(config.overseas_test_order_qty)
+        snapshot = signal_snapshot or self._signal_cache.get(candidate.symbol.upper())
+        strategy_flag = "" if watch_target is None else watch_target.strategy_flag
+        entry_by = "" if watch_target is None else watch_target.entry_by
+        if snapshot is not None and (not strategy_flag or not entry_by):
+            strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, snapshot)
         if config.use_slot_sizing:
             try:
                 available_usd = await self._get_overseas_available_usd(
@@ -5350,6 +5355,26 @@ class LiquidityLabService:
                 available_usd = 0.0
             remaining_virtual_budget = self._remaining_virtual_overseas_budget(available_usd)
             if remaining_virtual_budget <= 0:
+                virtual_notional_usd = self._open_virtual_overseas_notional()
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="virtual_exposure_limit",
+                    side="buy",
+                    price=candidate.last_price,
+                    signal_snapshot=snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                    extra_detail={
+                        "available_usd": round(available_usd, 4),
+                        "virtual_notional_usd": round(virtual_notional_usd, 4),
+                        "remaining_virtual_budget": round(remaining_virtual_budget, 4),
+                    },
+                )
                 return {
                     "skipped": True,
                     "market": "overseas",
@@ -5357,7 +5382,7 @@ class LiquidityLabService:
                     "candidate": asdict(candidate),
                     "reason": "virtual_exposure_limit",
                     "available_usd": available_usd,
-                    "virtual_notional_usd": self._open_virtual_overseas_notional(),
+                    "virtual_notional_usd": virtual_notional_usd,
                 }
             slot_qty = self._slot_based_qty(
                 available_amount=available_usd,
@@ -5367,6 +5392,24 @@ class LiquidityLabService:
             if slot_qty > 0:
                 qty = slot_qty
             elif available_usd > 0:
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason="slot_budget_insufficient",
+                    side="buy",
+                    price=candidate.last_price,
+                    signal_snapshot=snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=candidate.orderable_qty,
+                    extra_detail={
+                        "available_usd": round(available_usd, 4),
+                        "remaining_virtual_budget": round(remaining_virtual_budget, 4),
+                    },
+                )
                 return {
                     "skipped": True,
                     "market": "overseas",
@@ -5387,11 +5430,6 @@ class LiquidityLabService:
         now = datetime.now(timezone.utc)
         session = get_us_trading_session(now)
         created_at = format_kst(now) or now.isoformat()
-        snapshot = signal_snapshot or self._signal_cache.get(candidate.symbol.upper())
-        strategy_flag = "" if watch_target is None else watch_target.strategy_flag
-        entry_by = "" if watch_target is None else watch_target.entry_by
-        if snapshot is not None and (not strategy_flag or not entry_by):
-            strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, snapshot)
         position = self.virtual_trades.record_buy(
             market="overseas",
             symbol=candidate.symbol,
@@ -7328,6 +7366,7 @@ class LiquidityLabService:
         orderable_qty: int | None = None,
         holding_qty: int = 0,
         error: str | None = None,
+        extra_detail: dict | None = None,
     ) -> None:
         repository = getattr(self, "repository", None)
         if repository is None:
@@ -7385,6 +7424,8 @@ class LiquidityLabService:
         }
         if error:
             detail["error"] = error[:160]
+        if extra_detail:
+            detail.update(extra_detail)
         self._save_event(
             event_type="trade_skip",
             market=market,

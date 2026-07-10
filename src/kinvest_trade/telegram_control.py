@@ -2113,9 +2113,14 @@ class TelegramLiquidityLabController:
     def _format_order_event_action(row: dict) -> str:
         status = str(row.get("status", "") or "").upper()
         side = str(row.get("side", "") or "").upper()
+        order_kind = str(row.get("order_kind", "") or "").lower()
         is_virtual = bool(int(row.get("is_virtual", 0) or 0))
         if status == "CANCELED":
             return "취소"
+        if status in {"REJECTED", "FAILED"}:
+            if order_kind == "cancel":
+                return "취소거부"
+            return "주문거부"
         if status == "RECORDED":
             if is_virtual and side == "BUY":
                 return "가상매수기록"

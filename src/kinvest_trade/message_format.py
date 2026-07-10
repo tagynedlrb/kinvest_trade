@@ -76,6 +76,7 @@ REASON_KOREAN_MAP = {
     "strategy_buy_signal": "전략 매수 신호",
     "stale_exit_replace": "미체결 정리 후 재주문",
     "stale_live_order_cancel": "장기미체결 취소",
+    "stale_live_order_cancel_failed": "장기미체결 취소거부",
     "session_not_orderable_in_profile": "현재 계정에서 거래 불가한 세션",
     "order_rejected": "주문 거부",
     "trail_stop": "트레일링 스탑",

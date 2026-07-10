@@ -1112,7 +1112,11 @@ class TelegramLiquidityLabController:
     async def _send_virtual_portfolio_message(self) -> None:
         await self.notifier.send(self._build_virtual_portfolio_message())
 
-    def _build_portfolio_message(self, real_positions_override: list[dict] | None = None) -> str:
+    def _build_portfolio_message(
+        self,
+        real_positions_override: list[dict] | None = None,
+        price_lookup_override: dict[tuple[str, str], float] | None = None,
+    ) -> str:
         now = datetime.now(timezone.utc)
         lines = [
             "[KIS][포트폴리오]",
@@ -1169,6 +1173,14 @@ class TelegramLiquidityLabController:
                 last_price = float(row.get("last_price", 0) or 0)
                 if last_price > 0:
                     price_lookup[key] = last_price
+        if price_lookup_override:
+            price_lookup.update(
+                {
+                    (market, symbol): price
+                    for (market, symbol), price in price_lookup_override.items()
+                    if symbol and price > 0
+                }
+            )
         lines.append("─── 실보유 종목 ───")
         if not real_positions:
             lines.append("보유종목=없음")
@@ -1336,9 +1348,45 @@ class TelegramLiquidityLabController:
 
     async def _send_portfolio_message(self) -> None:
         live_real_positions = await self._load_live_portfolio_positions()
+        live_virtual_prices = await self._load_live_virtual_price_lookup()
         await self.notifier.send(
-            self._build_portfolio_message(real_positions_override=live_real_positions)
+            self._build_portfolio_message(
+                real_positions_override=live_real_positions,
+                price_lookup_override=live_virtual_prices,
+            )
         )
+
+    async def _load_live_virtual_price_lookup(self) -> dict[tuple[str, str], float]:
+        lab = self.lab_service
+        if lab is None:
+            return {}
+
+        result: dict[tuple[str, str], float] = {}
+        manager = VirtualTradeManager(self.repository)
+        positions = [position for position in manager.list_positions("overseas") if position.qty > 0]
+        for position in positions[:25]:
+            symbol = position.symbol.upper()
+            exchange_code = str(position.exchange_code or "NASD").upper()
+            try:
+                quote = await lab.client.get_overseas_price(symbol, exchange_code)
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "portfolio_live_virtual_quote_failed symbol=%s error=%s",
+                    symbol,
+                    exc,
+                )
+                continue
+            last_price = self._parse_float(quote.get("last_price"))
+            if last_price <= 0:
+                bid = self._parse_float(quote.get("bid"))
+                ask = self._parse_float(quote.get("ask"))
+                if bid > 0 and ask > 0:
+                    last_price = (bid + ask) / 2.0
+                else:
+                    last_price = max(bid, ask)
+            if last_price > 0:
+                result[("overseas", symbol)] = last_price
+        return result
 
     async def _load_live_portfolio_positions(self) -> list[dict] | None:
         lab = self.lab_service

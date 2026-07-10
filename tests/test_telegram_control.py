@@ -349,6 +349,51 @@ def test_build_portfolio_message_uses_live_real_position_override(tmp_path) -> N
     assert "해외 AAPL 수량=3 매입=$193.3333 현재=$210.0000 손익=+8.62%" in message
 
 
+def test_build_portfolio_message_uses_live_virtual_price_override(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_virtual_price.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=1,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="stale",
+        holding_qty=1,
+        last_price=210.0,
+        pnl_pct=0.05,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        updated_at="2026-07-01T00:00:00+00:00",
+        has_position=1,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_portfolio_message(
+        price_lookup_override={("overseas", "AAPL"): 220.0}
+    )
+
+    assert "해외 AAPL 수량=1 매입=$200.0000 현재=$220.0000 손익=+10.00%" in message
+
+
 def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_portfolio_pending.db")
     repository.upsert_virtual_sell_pending(

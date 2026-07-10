@@ -1988,6 +1988,14 @@ class TelegramLiquidityLabController:
             if virtual_risk_lines:
                 lines.append("─── 가상보유 리스크 ───")
                 lines.extend(virtual_risk_lines)
+            cleanup_lines = self._build_virtual_position_cleanup_lines(
+                effective_positions,
+                price_lookup,
+                last_report=last_report,
+            )
+            if cleanup_lines:
+                lines.append("─── 가상보유 정리 후보 ───")
+                lines.extend(cleanup_lines)
 
         exposure_lines = self._build_virtual_exposure_lines(
             available_usd_override=virtual_exposure_available_usd
@@ -2123,6 +2131,99 @@ class TelegramLiquidityLabController:
         if risk_lines and self.mode != "running":
             risk_lines.append("주의=거래루프가 중지되어 가상 포지션 청산 감시가 동작하지 않습니다")
         return risk_lines
+
+    def _build_virtual_position_cleanup_lines(
+        self,
+        effective_positions: list[dict[str, object]],
+        price_lookup: dict[tuple[str, str], float],
+        *,
+        last_report: dict,
+    ) -> list[str]:
+        max_overseas_positions = int(
+            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
+        )
+        if max_overseas_positions <= 0:
+            return []
+        overseas_positions = [
+            position
+            for position in effective_positions
+            if str(position.get("market")) == "overseas" and int(position.get("qty", 0) or 0) > 0
+        ]
+        excess_count = len(overseas_positions) - max_overseas_positions
+        if excess_count <= 0:
+            return []
+
+        opened_lookup: dict[tuple[str, str], datetime] = {}
+        for row in self.repository.list_virtual_positions():
+            market = str(row.get("market", "overseas"))
+            symbol = str(row.get("symbol", "")).strip().upper()
+            parsed = parse_datetime(row.get("opened_at"))
+            if market and symbol and parsed is not None:
+                opened_lookup[(market, symbol)] = ensure_timezone(parsed)
+
+        now = datetime.now(timezone.utc)
+        candidates: list[dict[str, object]] = []
+        for position in overseas_positions:
+            market_key = str(position["market"])
+            symbol_raw = str(position["symbol"]).strip().upper()
+            qty = int(position["qty"])
+            avg_price = float(position["avg_price"])
+            currency = str(position["currency"])
+            current_price = float(price_lookup.get((market_key, symbol_raw), 0.0) or 0.0)
+            pnl_pct = (
+                (current_price - avg_price) / avg_price
+                if avg_price > 0 and current_price > 0
+                else None
+            )
+            opened_at = opened_lookup.get((market_key, symbol_raw))
+            age_hours = (
+                max(0.0, (now - opened_at).total_seconds() / 3600)
+                if opened_at is not None
+                else 0.0
+            )
+            candidates.append(
+                {
+                    "market": market_key,
+                    "symbol": symbol_raw,
+                    "label": self._format_symbol_label(
+                        market_key,
+                        symbol_raw,
+                        last_report=last_report,
+                    ),
+                    "qty": qty,
+                    "currency": currency,
+                    "notional": max(0.0, qty * avg_price),
+                    "pnl_pct": pnl_pct,
+                    "age_hours": age_hours,
+                }
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                float(item["pnl_pct"]) if item["pnl_pct"] is not None else 0.0,
+                -float(item["age_hours"]),
+                -float(item["notional"]),
+            )
+        )
+        lines = [
+            f"초과={len(overseas_positions)}/{max_overseas_positions} "
+            f"정리필요={excess_count}종목",
+        ]
+        for item in candidates[: min(3, len(candidates))]:
+            pnl_text = (
+                format_pct(float(item["pnl_pct"]))
+                if item["pnl_pct"] is not None
+                else "현재가없음"
+            )
+            age_hours = float(item["age_hours"])
+            age_text = f"{age_hours:.1f}h" if age_hours < 48 else f"{age_hours / 24:.1f}d"
+            lines.append(
+                f"{format_market_korean(str(item['market']))} {item['label']} "
+                f"손익={pnl_text} "
+                f"노출={self._format_notional_price(float(item['notional']), str(item['currency']))} "
+                f"보유={age_text}"
+            )
+        return lines
 
     def _build_virtual_exposure_lines(
         self,

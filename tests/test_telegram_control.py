@@ -910,6 +910,77 @@ def test_build_recent_order_events_message_formats_submission_cancel_and_virtual
     assert "해외 AAPL 매수접수 $210.5000 x2 상태=SUBMITTED 사유=strategy_buy_signal 주문번호=12345" in message
 
 
+def test_build_recent_order_events_message_includes_live_open_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders_live.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    live_open_orders = [
+        {
+            "created_at": datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc),
+            "symbol": "AAPL",
+            "sll_buy_dvsn_cd": "01",
+            "open_qty": 3,
+            "order_price": 210.5,
+            "order_no": "999",
+        }
+    ]
+
+    message = controller._build_recent_order_events_message(
+        live_open_orders=live_open_orders
+    )
+
+    assert "─── live 해외 미체결 ───" in message
+    assert "해외 AAPL 매도미체결 $210.5000 x3 주문번호=999" in message
+    assert "주문기록=없음" in message
+
+
+def test_parse_live_open_overseas_order_rows_filters_zero_open_qty(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders_parse_live.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    parsed = controller._parse_live_open_overseas_order_rows(
+        [
+            {
+                "pdno": "AAPL",
+                "nccs_qty": "0",
+                "odno": "zero",
+                "ft_ord_unpr3": "210.5",
+            },
+            {
+                "pdno": "MSFT",
+                "nccs_qty": "1,200",
+                "odno": "open",
+                "ft_ord_unpr3": "300.25",
+                "dmst_ord_dt": "20260710",
+                "thco_ord_tmd": "010203",
+            },
+        ]
+    )
+
+    assert len(parsed) == 1
+    assert parsed[0]["symbol"] == "MSFT"
+    assert parsed[0]["open_qty"] == 1200
+    assert parsed[0]["order_no"] == "open"
+    assert parsed[0]["order_price"] == 300.25
+
+
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_orders_command.db")
     repository.save_broker_order_event(
@@ -938,6 +1009,7 @@ def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
         repository=repository,
         notifier=notifier,
     )
+    controller._load_live_open_overseas_orders = lambda: asyncio.sleep(0, result=[])  # type: ignore[method-assign]
 
     asyncio.run(
         controller._handle_update(

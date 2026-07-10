@@ -2438,3 +2438,23 @@
 ### 검증
 - 실제 운영 DB 기준 최근 `SUBMITTED` 주문 감사 대상이 조회됨
 - `python3 -m pytest tests -q` → 410개 통과
+
+## [2026-07-11] `/lab_guard` 전략 가드 상태 명령 추가
+
+### 배경
+- 성과 기반 전략 guard는 내부적으로 작동하지만, 텔레그램에서 현재 어떤 전략이
+  차단/감시/참고 상태인지 즉시 확인할 명령이 없었다.
+- 해외 단독 전략 손실이 반복되는 상황에서는 차단 기준과 현재 집계 상태를 운영자가
+  빠르게 확인할 수 있어야 한다.
+
+### 수정
+- `telegram_control.py`
+  - `/lab_guard` 명령 추가
+  - 최근 `strategy_guard_lookback_hours` 동안의 `SELL_REAL` 성과를
+    시장/전략별로 표시
+  - `strategy_guard_min_trades`, `strategy_guard_max_avg_net_pnl_pct`,
+    감시 시장/전략 목록을 함께 표시
+  - 각 전략을 `차단`, `감시`, `참고` 상태로 구분
+
+### 검증
+- `/lab_guard` 테스트에서 해외 VWAP 3건 손실 → `상태=차단` 표시 확인

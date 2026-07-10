@@ -34,6 +34,7 @@ def test_parse_command() -> None:
         "report",
         "compare 2026-07-10",
     )
+    assert TelegramLiquidityLabController.parse_command("/lab_guard") == "guard"
     assert TelegramLiquidityLabController.parse_command("/lab_orders") == "orders"
     assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic") == "cancel_stale_domestic"
     assert (
@@ -1324,6 +1325,80 @@ def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> N
     assert "overseas VWAP" in message
     assert "[이후 2026-07-10]" in message
     assert "overseas RSI" in message
+
+
+def test_lab_guard_command_reports_current_strategy_guard_state(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_guard_command.db")
+    logged_at = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        repository.save_cycle_log(
+            logged_at=logged_at,
+            market="overseas",
+            symbol=f"BAD{idx}",
+            exchange_code="NASD",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP",
+            entry_by="VWAP",
+            pnl_pct=-0.01,
+            qty_executed=10,
+            net_pnl_usd=-10.0,
+            net_pnl_krw=-13500.0,
+        )
+    repository.save_cycle_log(
+        logged_at=logged_at,
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="time_exit_profit",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=0.02,
+        qty_executed=1,
+        net_pnl_krw=10_000.0,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                strategy_guard_enabled=True,
+                strategy_guard_lookback_hours=48,
+                strategy_guard_min_trades=3,
+                strategy_guard_max_avg_net_pnl_pct=-0.003,
+                strategy_guard_markets=["overseas"],
+                strategy_guard_strategy_flags=["VWAP", "RSI", "VOL"],
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(
+                usd_krw_fallback_rate=1350.0,
+                overseas_commission_rate=0.0025,
+            ),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_guard",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][전략가드]" in message
+    assert "상태=활성" in message
+    assert "차단조건=3건 이상, 평균순손익 -0.30% 이하" in message
+    assert "감시대상=overseas:RSI,VOL,VWAP" in message
+    assert "해외 VWAP 상태=차단 3건 승률=0% 평균순=-1.50%" in message
+    assert "국내 VWAP 상태=참고 1건 승률=100% 평균순=+1.50%" in message
 
 
 def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:

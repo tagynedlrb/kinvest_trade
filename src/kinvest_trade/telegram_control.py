@@ -63,6 +63,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_log - 최근 매매 내역 조회",
         "/lab_performance [시간] - 최근 실제 체결 전략 성과",
         "/lab_report compare <YYYY-MM-DD> - 기준일 전후 전략 성과 비교",
+        "/lab_guard - 현재 성과 기반 전략 차단 상태",
         "/lab_orders - 최근 주문 접수/취소 기록",
         "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
         "/lab_cancel_stale_overseas - 30분 이상 해외 미체결 취소 확인",
@@ -89,6 +90,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_performance", "description": "최근 실제 체결 전략 성과"},
     {"command": "lab_report", "description": "기준일 전후 전략 성과 비교"},
+    {"command": "lab_guard", "description": "전략 차단 상태"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
     {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
     {"command": "lab_cancel_stale_overseas", "description": "장기 해외 미체결 취소 확인"},
@@ -375,6 +377,9 @@ class TelegramLiquidityLabController:
         if command_name == "report":
             report_args = parsed_command[1] if isinstance(parsed_command, tuple) else None
             await self._send_report_message(report_args)
+            return
+        if command_name == "guard":
+            await self._send_guard_message()
             return
         if command_name == "orders":
             await self._send_recent_order_events()
@@ -2147,6 +2152,9 @@ class TelegramLiquidityLabController:
     async def _send_report_message(self, report_args: str | None = None) -> None:
         await self.notifier.send(self._build_report_message(report_args))
 
+    async def _send_guard_message(self) -> None:
+        await self.notifier.send(self._build_guard_message())
+
     def _build_report_message(self, report_args: str | None = None) -> str:
         now = datetime.now(timezone.utc)
         args = str(report_args or "").strip().split()
@@ -2182,6 +2190,79 @@ class TelegramLiquidityLabController:
                 comparison,
             ]
         )
+
+    def _build_guard_message(self) -> str:
+        now = datetime.now(timezone.utc)
+        config = getattr(self.config, "liquidity_lab", object())
+        auto_trade = getattr(self.config, "auto_trade", object())
+        enabled = bool(getattr(config, "strategy_guard_enabled", False))
+        lookback_hours = max(1, int(getattr(config, "strategy_guard_lookback_hours", 48) or 48))
+        min_trades = max(1, int(getattr(config, "strategy_guard_min_trades", 3) or 3))
+        max_avg_net = float(getattr(config, "strategy_guard_max_avg_net_pnl_pct", -0.003) or -0.003)
+        guard_markets = {
+            str(market).strip().lower()
+            for market in getattr(config, "strategy_guard_markets", ["overseas"])
+            if str(market).strip()
+        }
+        guard_flags = {
+            str(flag).strip().upper()
+            for flag in getattr(config, "strategy_guard_strategy_flags", ["VWAP", "RSI", "VOL"])
+            if str(flag).strip()
+        }
+        cost_pct = max(
+            0.005,
+            float(getattr(auto_trade, "overseas_commission_rate", 0.0025) or 0.0025) * 2,
+        )
+        after_logged_at = (now - timedelta(hours=lookback_hours)).isoformat()
+        lines = [
+            "[KIS][전략가드]",
+            f"시각={format_kst_korean(now)}",
+            f"상태={'활성' if enabled else '비활성'}",
+            f"범위=최근 {lookback_hours}시간",
+            (
+                f"차단조건={min_trades}건 이상, 평균순손익 "
+                f"{format_pct(max_avg_net)} 이하"
+            ),
+            f"감시대상={','.join(sorted(guard_markets))}:{','.join(sorted(guard_flags))}",
+            "주의=실주문접수 SELL_REAL 기준, 체결확정은 /lab_orders 확인",
+        ]
+        if not enabled:
+            return "\n".join(lines)
+        if not hasattr(self.repository, "get_recent_strategy_guard_performance"):
+            lines.append("성과=조회불가")
+            return "\n".join(lines)
+
+        rows = self.repository.get_recent_strategy_guard_performance(
+            after_logged_at=after_logged_at,
+            cost_pct=cost_pct,
+        )
+        if not rows:
+            lines.append("성과=없음")
+            return "\n".join(lines)
+
+        for row in rows[:10]:
+            market = str(row.get("market") or "").strip().lower()
+            strategy = str(row.get("strategy_flag") or "").strip().upper()
+            trade_count = int(row.get("trade_count") or 0)
+            win_count = int(row.get("win_count") or 0)
+            avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
+            win_rate = (win_count / trade_count) if trade_count else 0.0
+            monitored = (not guard_markets or market in guard_markets) and (
+                not guard_flags or strategy in guard_flags
+            )
+            blocked = monitored and trade_count >= min_trades and avg_net <= max_avg_net
+            if blocked:
+                state = "차단"
+            elif monitored:
+                state = "감시"
+            else:
+                state = "참고"
+            lines.append(
+                f"{format_market_korean(market)} {strategy or '-'} "
+                f"상태={state} {trade_count}건 승률={win_rate * 100:.0f}% "
+                f"평균순={format_pct(avg_net)}"
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _parse_performance_hours(hours_text: str | None) -> int:
@@ -3528,6 +3609,7 @@ class TelegramLiquidityLabController:
             "/lab_watchlist": "watchlist",
             "/lab_log": "log",
             "/lab_report": "report",
+            "/lab_guard": "guard",
             "/lab_orders": "orders",
             "/lab_cancel_stale_domestic": "cancel_stale_domestic",
             "/lab_cancel_stale_domestic_confirm": "cancel_stale_domestic_confirm",

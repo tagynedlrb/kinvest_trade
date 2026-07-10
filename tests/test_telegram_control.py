@@ -2582,6 +2582,7 @@ def test_restore_runtime_state_recovers_update_offset() -> None:
         json.dumps(
             {
                 "telegram_update_offset": 4321,
+                "telegram_control_start_notified_at": "2026-07-09 20:50:00 KST",
                 "last_error": "prev_error",
                 "telegram_control": {
                     "mode": "running",
@@ -2622,6 +2623,7 @@ def test_restore_runtime_state_recovers_update_offset() -> None:
     assert controller.last_error == "cycle_timeout"
     assert controller.session_performance.cycles_completed == 12
     assert controller.session_performance.primary_targets == {"SOLS": 12}
+    assert controller._last_startup_notification_at is not None
 
 
 def test_restore_runtime_state_ignores_cancelled_cycle_error() -> None:
@@ -2654,6 +2656,7 @@ def test_write_runtime_state_persists_update_offset() -> None:
 
     payload = json.loads(controller.config.storage.runtime_state_path.read_text(encoding="utf-8"))
     assert payload["telegram_update_offset"] == 9876
+    assert "telegram_control_start_notified_at" in payload
 
 
 def test_handle_service_restart_rejects_when_service_missing() -> None:
@@ -2824,6 +2827,8 @@ def test_handle_gitlog_reports_success() -> None:
 
 def test_run_calls_set_commands_before_start_message() -> None:
     controller = _build_async_controller()
+    controller._restore_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
 
     async def fake_scheduler_loop() -> None:
         raise asyncio.CancelledError
@@ -2849,6 +2854,8 @@ def test_run_calls_set_commands_before_start_message() -> None:
 
 def test_run_continues_when_set_commands_raises() -> None:
     controller = _build_async_controller()
+    controller._restore_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
     controller.notifier.raise_on_set_commands = True
 
     async def fake_scheduler_loop() -> None:
@@ -2873,8 +2880,41 @@ def test_run_continues_when_set_commands_raises() -> None:
     assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)
 
 
+def test_run_suppresses_recent_startup_message() -> None:
+    controller = _build_async_controller()
+    controller._restore_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller._last_startup_notification_at = datetime.now(timezone.utc)
+
+    async def fake_scheduler_loop() -> None:
+        raise asyncio.CancelledError
+
+    async def fake_command_loop() -> None:
+        raise asyncio.CancelledError
+
+    controller._scheduler_loop = fake_scheduler_loop  # type: ignore[method-assign]
+    controller._command_loop = fake_command_loop  # type: ignore[method-assign]
+    original_acquire = telegram_control_module._acquire_pid_lock
+    original_release = telegram_control_module._release_pid_lock
+    telegram_control_module._acquire_pid_lock = lambda: None
+    telegram_control_module._release_pid_lock = lambda: None
+    try:
+        asyncio.run(controller.run())
+    finally:
+        telegram_control_module._acquire_pid_lock = original_acquire
+        telegram_control_module._release_pid_lock = original_release
+
+    assert controller.notifier.command_calls == [BOT_COMMANDS]
+    assert not any(
+        message.startswith("[KIS][TELEGRAM_CONTROL_START]")
+        for message in controller.notifier.messages
+    )
+
+
 def test_run_sigterm_handler_stops_without_system_exit() -> None:
     controller = _build_async_controller()
+    controller._restore_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
     captured_handlers = {}
 
     async def fake_scheduler_loop() -> None:

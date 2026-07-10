@@ -38,7 +38,14 @@ from .message_format import (
 from .notifier import TelegramNotifier
 from .paper import PaperTradingService
 from .repository import SqliteRepository
-from .time_utils import KST, format_display_times, format_kst, format_kst_korean, parse_datetime
+from .time_utils import (
+    KST,
+    ensure_timezone,
+    format_display_times,
+    format_kst,
+    format_kst_korean,
+    parse_datetime,
+)
 
 
 HELP_MESSAGE = "\n".join(
@@ -95,6 +102,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
 ParsedCommand: TypeAlias = str | tuple[str, str | None]
 SERVICE_UNIT_NAME = "kinvest-telegram-control.service"
 _PID_FILE = "data/telegram_control.pid"
+_STARTUP_NOTIFICATION_THROTTLE_MINUTES = 10
 _logger = logging.getLogger(__name__)
 
 
@@ -228,6 +236,7 @@ class TelegramLiquidityLabController:
         self.manual_overseas_pool: list[dict[str, str]] | None = None
         self._last_auto_stale_domestic_cancel_at: datetime | None = None
         self._last_auto_stale_overseas_cancel_at: datetime | None = None
+        self._last_startup_notification_at: datetime | None = None
 
     async def run(self) -> None:
         _acquire_pid_lock()
@@ -248,17 +257,7 @@ class TelegramLiquidityLabController:
             await self.notifier.set_commands(BOT_COMMANDS)
         except Exception:  # noqa: BLE001
             pass
-        await self.notifier.send(
-            "\n".join(
-                [
-                    "[KIS][TELEGRAM_CONTROL_START]",
-                    f"profile={self.config.credentials.profile_name}",
-                    f"loop_interval_sec={self.config.liquidity_lab.loop_interval_sec}",
-                    "controller_mode=persistent_service",
-                    "use /lab_help for commands",
-                ]
-            )
-        )
+        await self._send_startup_message_if_due()
         scheduler = asyncio.create_task(self._scheduler_loop())
         command_loop = asyncio.create_task(self._command_loop())
         stop_task = asyncio.create_task(stop_event.wait())
@@ -857,6 +856,9 @@ class TelegramLiquidityLabController:
             "updated_at": format_kst(datetime.now(timezone.utc)),
             "linked_account": self.config.credentials.profile_name,
             "telegram_update_offset": self.update_offset,
+            "telegram_control_start_notified_at": format_kst(
+                self._last_startup_notification_at
+            ),
             "watch_targets": (self.last_report_summary or {}).get("watch_targets", []),
             "last_error": self.last_error,
             "notes": [
@@ -878,6 +880,9 @@ class TelegramLiquidityLabController:
         stored_offset = payload.get("telegram_update_offset")
         if isinstance(stored_offset, int) and stored_offset >= 0:
             self.update_offset = stored_offset
+        self._last_startup_notification_at = parse_datetime(
+            str(payload.get("telegram_control_start_notified_at") or "")
+        )
         snapshot = payload.get("telegram_control") or {}
         mode = snapshot.get("mode")
         if mode in {"running", "paused", "stopped"}:
@@ -925,6 +930,33 @@ class TelegramLiquidityLabController:
                 primary_targets=dict(session.get("primary_targets") or {}),
                 symbol_stats=dict(session.get("symbol_stats") or {}),
             )
+
+    async def _send_startup_message_if_due(self) -> None:
+        now = datetime.now(timezone.utc)
+        last_notified = self._last_startup_notification_at
+        if last_notified is not None:
+            elapsed = now - ensure_timezone(last_notified)
+            if elapsed < timedelta(minutes=_STARTUP_NOTIFICATION_THROTTLE_MINUTES):
+                _logger.info(
+                    "startup notification suppressed; last_sent=%s elapsed_sec=%.1f",
+                    format_kst(last_notified),
+                    elapsed.total_seconds(),
+                )
+                return
+
+        await self.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][TELEGRAM_CONTROL_START]",
+                    f"profile={self.config.credentials.profile_name}",
+                    f"loop_interval_sec={self.config.liquidity_lab.loop_interval_sec}",
+                    "controller_mode=persistent_service",
+                    "use /lab_help for commands",
+                ]
+            )
+        )
+        self._last_startup_notification_at = now
+        self._write_runtime_state()
 
     def _snapshot(self) -> ControllerSnapshot:
         return ControllerSnapshot(

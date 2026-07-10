@@ -340,6 +340,7 @@ def test_overseas_exit_price_shock_requires_confirmation(tmp_path) -> None:
     service.virtual_trades = None
     service._signal_cache = {}
     service._exit_price_shock_guard = {}
+    service._cycle_exit_reference_prices = {"overseas:PLBL": 10.01}
     service._cycle_count = 1
     service._session_id = "test"
     service._exit_cooldown = {}
@@ -352,7 +353,7 @@ def test_overseas_exit_price_shock_requires_confirmation(tmp_path) -> None:
         signal_state="SELL_READY",
         note="time_exit_profit",
         holding_qty=2027,
-        last_price=10.01,
+        last_price=6.42,
         pnl_pct=0.0,
         strategy_flag="VWAP+RSI",
         entry_by="VWAP",

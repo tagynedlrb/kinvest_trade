@@ -2822,3 +2822,26 @@
 ### 검증
 - 현재 운영 runtime 기준 `/lab_watchlist` 샘플에서
   `감시데이터=... (저장값·루프 중지)`와 주의 문구 표시 확인
+
+## [2026-07-11] 해외 청산 가격 쇼크 기준값 보강
+
+### 배경
+- PLBL 가상 청산 사례처럼 감시 상태 저장이 먼저 실행되면
+  `lab_symbol_state.last_price`가 같은 사이클의 급락/오염 가격으로 덮일 수 있다.
+- 이 경우 기존 가격 쇼크 가드가 이전 가격이 아니라 방금 저장된 가격과 비교해
+  비정상 가격을 첫 사이클에 통과시킬 위험이 있었다.
+
+### 수정
+- `liquidity_lab.py`
+  - 해외 보유/가상보유 포지션의 직전 저장 가격을 사이클 초입에
+    `_cycle_exit_reference_prices`로 스냅샷
+  - `_overseas_exit_price_guard_reason()`이 이 스냅샷을 최우선 기준가격으로 사용
+  - DB 값이 이미 현재 가격으로 덮인 경우에도 평균단가 기준 방어가 남도록 조정
+- `tests/test_liquidity_lab.py`
+  - DB의 현재 가격이 이미 급락 가격으로 덮인 상황에서도, 사이클 기준가격으로
+    첫 청산을 보류하고 2회 확인 후 통과하는 회귀 테스트 보강
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_overseas_exit_price_shock_requires_confirmation -q`
+  → 통과
+- `python3 -m pytest tests -q` → 431개 통과

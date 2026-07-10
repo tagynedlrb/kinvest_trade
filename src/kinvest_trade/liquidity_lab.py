@@ -585,6 +585,7 @@ class LiquidityLabService:
         self._session_start_logged: bool = False
         self._no_orderable_retry: dict[str, datetime] = {}
         self._exit_price_shock_guard: dict[str, dict[str, float | str]] = {}
+        self._cycle_exit_reference_prices: dict[str, float] = {}
         self._recent_trade_count: int = 0
         self._recent_cycle_count: int = 0
         self._recent_order_reason_counts: dict[str, int] = {}
@@ -1988,6 +1989,7 @@ class LiquidityLabService:
                 *overseas_positions,
                 *virtual_overseas_positions,
             ]
+            self._prime_cycle_exit_reference_prices(monitored_overseas_positions)
             overseas_balance_cache = getattr(self, "_overseas_balance_cache", {})
             if (
                 overseas_balance_cache.get("cycle") == getattr(self, "_cycle_count", 0)
@@ -1998,6 +2000,7 @@ class LiquidityLabService:
             overseas_ranked = []
             overseas_positions = []
             monitored_overseas_positions = []
+            self._cycle_exit_reference_prices = {}
         self._clear_stale_lab_position_states(
             domestic_positions=domestic_positions,
             overseas_positions=monitored_overseas_positions,
@@ -3216,12 +3219,20 @@ class LiquidityLabService:
                 return reason
 
         reference_price = float(avg_price or 0.0)
+        key = f"overseas:{symbol.strip().upper()}"
+        cycle_refs = getattr(self, "_cycle_exit_reference_prices", {}) or {}
+        cycle_reference_price = float(cycle_refs.get(key, 0.0) or 0.0)
+        if cycle_reference_price > 0:
+            reference_price = cycle_reference_price
         repository = getattr(self, "repository", None)
-        if repository is not None:
+        if cycle_reference_price <= 0 and repository is not None:
             state = repository.get_lab_symbol_state("overseas", symbol)
             if state is not None:
                 previous_price = float(state.get("last_price") or 0.0)
-                if previous_price > 0:
+                if previous_price > 0 and (
+                    reference_price <= 0
+                    or abs(previous_price - last_price) / previous_price > 0.000001
+                ):
                     reference_price = previous_price
 
         if reference_price <= 0:
@@ -3241,7 +3252,6 @@ class LiquidityLabService:
         if guard is None:
             guard = {}
             self._exit_price_shock_guard = guard
-        key = f"overseas:{symbol.strip().upper()}"
         previous = guard.get(key)
         confirm_pct = float(
             getattr(self.config.liquidity_lab, "overseas_exit_price_shock_confirm_pct", 0.02)
@@ -3585,6 +3595,41 @@ class LiquidityLabService:
         if state is not None:
             self._remember_persisted_symbol_state(state)
         return state
+
+    def _prime_cycle_exit_reference_prices(
+        self,
+        overseas_positions: list[OverseasHeldPosition],
+    ) -> None:
+        """
+        Capture previous persisted prices before watch-target refreshes.
+
+        Watchlist state is persisted before exit selection in a cycle. Keeping
+        this small snapshot prevents a sudden bad quote from overwriting the
+        previous price and then bypassing the exit price-shock guard.
+        """
+        refs: dict[str, float] = {}
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            self._cycle_exit_reference_prices = refs
+            return
+
+        for position in overseas_positions:
+            symbol = position.symbol.strip().upper()
+            if not symbol:
+                continue
+            state = repository.get_lab_symbol_state("overseas", symbol)
+            if state is None:
+                continue
+            try:
+                last_price = float(state.get("last_price") or 0.0)
+            except (TypeError, ValueError):
+                last_price = 0.0
+            if last_price <= 0:
+                continue
+            refs[f"overseas:{symbol}"] = last_price
+            self._remember_persisted_symbol_state(state)
+
+        self._cycle_exit_reference_prices = refs
 
     @staticmethod
     def _snapshot_from_payload(

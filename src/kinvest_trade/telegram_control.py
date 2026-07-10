@@ -48,6 +48,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_log - 최근 매매 내역 조회",
         "/lab_orders - 최근 주문 접수/취소 기록",
         "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
+        "/lab_cancel_stale_overseas - 30분 이상 해외 미체결 취소 확인",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
@@ -71,6 +72,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_log", "description": "최근 매매 내역"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
     {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
+    {"command": "lab_cancel_stale_overseas", "description": "장기 해외 미체결 취소 확인"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
@@ -349,6 +351,12 @@ class TelegramLiquidityLabController:
             return
         if command_name == "cancel_stale_domestic_confirm":
             await self._execute_cancel_stale_domestic_orders()
+            return
+        if command_name == "cancel_stale_overseas":
+            await self._send_cancel_stale_overseas_prompt()
+            return
+        if command_name == "cancel_stale_overseas_confirm":
+            await self._execute_cancel_stale_overseas_orders(source="manual")
             return
         if command_name == "paper_test":
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -1877,6 +1885,45 @@ class TelegramLiquidityLabController:
                 lines.append(f"{symbol_text} 취소요청 x{open_qty} 원주문={order_no} 취소주문={cancel_order_no}")
         await self.notifier.send("\n".join(lines))
 
+    async def _send_cancel_stale_overseas_prompt(self) -> None:
+        try:
+            live_open_orders = await self._load_live_open_overseas_orders()
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][해외미체결취소]",
+                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                        "상태=조회실패",
+                        f"사유={str(exc)[:120]}",
+                    ]
+                )
+            )
+            return
+
+        stale_orders = self._filter_stale_live_open_orders(live_open_orders)
+        lines = [
+            "[KIS][해외미체결취소]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            "동작=확인",
+        ]
+        if not stale_orders:
+            lines.append("대상=없음 (30분 이상 해외 미체결 없음)")
+            await self.notifier.send("\n".join(lines))
+            return
+        lines.append(f"대상={len(stale_orders)}건")
+        for row in stale_orders[:8]:
+            lines.append(self._format_live_open_overseas_order_line(row))
+        if len(stale_orders) > 8:
+            lines.append(f"외 {len(stale_orders) - 8}건")
+        lines.extend(
+            [
+                "주의=확정 명령을 보내면 위 해외 미체결 주문을 KIS에 취소 요청합니다.",
+                "실행=/lab_cancel_stale_overseas_confirm",
+            ]
+        )
+        await self.notifier.send("\n".join(lines))
+
     async def _maybe_auto_cancel_stale_domestic_orders(
         self,
         *,
@@ -2015,13 +2062,37 @@ class TelegramLiquidityLabController:
         source: str = "auto",
         candidate_orders: list[dict] | None = None,
     ) -> None:
-        live_open_orders = (
-            candidate_orders
-            if candidate_orders is not None
-            else await self._load_live_open_overseas_orders()
-        )
+        try:
+            live_open_orders = (
+                candidate_orders
+                if candidate_orders is not None
+                else await self._load_live_open_overseas_orders()
+            )
+        except Exception as exc:  # noqa: BLE001
+            if source != "auto":
+                await self.notifier.send(
+                    "\n".join(
+                        [
+                            "[KIS][해외미체결취소]",
+                            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                            "상태=조회실패",
+                            f"사유={str(exc)[:120]}",
+                        ]
+                    )
+                )
+            return
         stale_orders = self._filter_stale_live_open_orders(live_open_orders)
         if not stale_orders:
+            if source != "auto":
+                await self.notifier.send(
+                    "\n".join(
+                        [
+                            "[KIS][해외미체결취소]",
+                            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                            "대상=없음 (30분 이상 해외 미체결 없음)",
+                        ]
+                    )
+                )
             return
 
         lines = [
@@ -2768,6 +2839,8 @@ class TelegramLiquidityLabController:
             "/lab_orders": "orders",
             "/lab_cancel_stale_domestic": "cancel_stale_domestic",
             "/lab_cancel_stale_domestic_confirm": "cancel_stale_domestic_confirm",
+            "/lab_cancel_stale_overseas": "cancel_stale_overseas",
+            "/lab_cancel_stale_overseas_confirm": "cancel_stale_overseas_confirm",
             "/lab_portfolio": "portfolio",
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",

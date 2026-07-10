@@ -1888,3 +1888,24 @@
 ### 검증
 - 해외 VWAP 단독 차단/복합 신호 허용 테스트 추가
 - `python3 -m pytest tests -q` → 363개 통과
+
+## [2026-07-10] 해외 장기 미체결 수동 취소 명령 추가
+
+### 배경
+- 해외 장기 미체결은 자동 취소 루틴이 있지만,
+  사용자가 텔레그램에서 즉시 확인/확정 취소할 수 있는 명령은 국내만 있었다.
+- `both waiting`, `no_orderable_qty`류 주문 꼬임이 다시 발생할 때
+  자동 주기까지 기다리지 않고 직접 정리할 수 있는 운영 수단이 필요했다.
+
+### 수정 사항
+- `telegram_control.py`
+  - `/lab_cancel_stale_overseas` 명령 추가
+  - `/lab_cancel_stale_overseas_confirm` 확정 취소 명령 추가
+  - 해외 confirm 조회 실패/대상 없음도 텔레그램 메시지로 응답
+- `README.md`
+  - 해외 장기 미체결 확인/확정 취소 명령 문서화
+- 테스트
+  - 명령 파서, 해외 prompt, 해외 취소 실행 경로 검증
+
+### 검증
+- `python3 -m pytest tests -q` → 364개 통과

@@ -322,6 +322,8 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록과 KIS 실시간 미체결 주문 조회
 - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
 - `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)
+- `/lab_cancel_stale_overseas`: 30분 이상 해외 미체결 취소 대상 확인
+- `/lab_cancel_stale_overseas_confirm`: 확인된 해외 장기 미체결 취소 실행(메뉴에는 숨김)
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
 

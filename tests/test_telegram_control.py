@@ -34,6 +34,11 @@ def test_parse_command() -> None:
         TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic_confirm")
         == "cancel_stale_domestic_confirm"
     )
+    assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_overseas") == "cancel_stale_overseas"
+    assert (
+        TelegramLiquidityLabController.parse_command("/lab_cancel_stale_overseas_confirm")
+        == "cancel_stale_overseas_confirm"
+    )
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
     assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
@@ -1187,6 +1192,39 @@ def test_send_cancel_stale_domestic_prompt_lists_stale_orders(tmp_path) -> None:
     assert "대상=1건" in message
     assert "073240(금호타이어) 매수미체결" in message
     assert "실행=/lab_cancel_stale_domestic_confirm" in message
+
+
+def test_send_cancel_stale_overseas_prompt_lists_stale_orders(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_cancel_overseas_prompt.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
+        "symbol": "AAPL",
+        "exchange_code": "NASD",
+        "sll_buy_dvsn_cd": "02",
+        "open_qty": 2,
+        "order_price": 210.5,
+        "order_no": "ov-001",
+    }
+    controller._load_live_open_overseas_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
+
+    asyncio.run(controller._send_cancel_stale_overseas_prompt())
+
+    message = notifier.messages[-1]
+    assert "[KIS][해외미체결취소]" in message
+    assert "대상=1건" in message
+    assert "해외 AAPL 매수미체결" in message
+    assert "실행=/lab_cancel_stale_overseas_confirm" in message
 
 
 def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> None:

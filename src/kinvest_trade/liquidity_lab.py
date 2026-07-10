@@ -613,12 +613,35 @@ class LiquidityLabService:
             price=f"{price:.4f}",
         )
         raw = possible.get("raw", {}) or {}
-        result = max(
+        # Prefer fields that KIS exposes as immediately orderable foreign cash.
+        # Some simulation responses also include larger pre-exchange or max
+        # theoretical amounts (for example frcr_ord_psbl_amt1), so cap the
+        # usable budget by the actual max orderable quantity when available.
+        direct_amounts = [
             self._parse_float(possible.get("cash_available")),
+            self._parse_float(raw.get("ord_psbl_frcr_amt")),
             self._parse_float(raw.get("ord_psbl_frcr_amt_wcrc")),
-            self._parse_float(raw.get("frcr_ord_psbl_amt1")),
+            self._parse_float(raw.get("ovrs_ord_psbl_amt")),
+            self._parse_float(raw.get("echm_af_ord_psbl_amt")),
             self._parse_float(raw.get("frcr_dncl_amt_2")),
-        )
+        ]
+        result = max(direct_amounts)
+        if result <= 0:
+            result = max(
+                self._parse_float(raw.get("frcr_ord_psbl_amt1")),
+                self._parse_float(possible.get("overseas_max_order_amount")),
+            )
+        qty_candidates = [
+            self._parse_float(possible.get("max_order_quantity")),
+            self._parse_float(raw.get("max_ord_psbl_qty")),
+            self._parse_float(raw.get("ord_psbl_qty")),
+            self._parse_float(raw.get("echm_af_ord_psbl_qty")),
+        ]
+        positive_qty = [qty for qty in qty_candidates if qty > 0]
+        if positive_qty:
+            quantity_cap_amount = min(positive_qty) * price
+            if quantity_cap_amount > 0:
+                result = min(result, quantity_cap_amount) if result > 0 else quantity_cap_amount
         self._last_overseas_available_usd = result
         self._last_overseas_available_usd_at = datetime.now(timezone.utc)
         return result

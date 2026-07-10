@@ -2106,3 +2106,26 @@
 - `python3 -m pytest tests/test_liquidity_lab.py::test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderable_zero tests/test_liquidity_lab.py::test_place_domestic_sell_order_sends_telegram_on_success tests/test_liquidity_lab.py::test_domestic_sell_rejected_adds_10min_cooldown -q` → 3개 통과
 - `python3 -m pytest tests/test_liquidity_lab.py::test_select_domestic_exit_target_keeps_zero_orderable_positions_for_pending_repair tests/test_liquidity_lab.py::test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderable_zero -q` → 2개 통과
 - `python3 -m pytest tests -q` → 374개 통과
+
+## [2026-07-10] 해외 가능금액 과대평가 방지
+
+### 발견
+- KIS 해외 주문가능 조회에서 `MSEX` 기준 원문은 `ord_psbl_frcr_amt=67071.63`,
+  `max_ord_psbl_qty=1217`인데 `frcr_ord_psbl_amt1=171292.388229`도 함께 내려왔다.
+- 기존 `_get_overseas_available_usd()`는 여러 필드의 최댓값을 사용해,
+  실제 주문가능 수량보다 큰 이론/환전 관련 금액이 슬롯 매수 수량과
+  가상 노출 한도를 키울 수 있었다.
+- 실제 새 계산 검증 결과: `1217 * 54.53 = 66363.01`달러로 보수적 캡 적용.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - 해외 가능금액은 실제 주문가능 외화금액 필드(`ord_psbl_frcr_amt`,
+    `ovrs_ord_psbl_amt`, `echm_af_ord_psbl_amt` 등)를 우선 사용
+  - `max_ord_psbl_qty`, `ord_psbl_qty`, `echm_af_ord_psbl_qty`가 있으면
+    `수량 * 현재가`로 최종 상한 적용
+  - `frcr_ord_psbl_amt1` 같은 큰 이론 금액은 직접 필드가 없을 때만
+    fallback으로 사용
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_overseas_buy_uses_slot_sizing_when_balance_is_available tests/test_liquidity_lab.py::test_get_overseas_available_usd_caps_large_theoretical_amount_by_orderable_qty tests/test_liquidity_lab.py::test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available -q` → 3개 통과
+- 실제 KIS 가능금액 조회(`MSEX`, NASD, $54.53) → `available_usd_capped=66363.01`

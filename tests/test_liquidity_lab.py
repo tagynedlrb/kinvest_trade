@@ -4459,6 +4459,42 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     assert result["qty"] == 4
 
 
+def test_get_overseas_available_usd_caps_large_theoretical_amount_by_orderable_qty() -> None:
+    class DummyPossibleOrderClient:
+        async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
+            return {
+                "cash_available": None,
+                "max_order_quantity": "1217",
+                "overseas_max_order_amount": None,
+                "raw": {
+                    "tr_crcy_cd": "USD",
+                    "ord_psbl_frcr_amt": "67071.63",
+                    "ovrs_ord_psbl_amt": "67071.63",
+                    "echm_af_ord_psbl_amt": "67071.63",
+                    "max_ord_psbl_qty": "1217",
+                    "ord_psbl_qty": "1217",
+                    "echm_af_ord_psbl_qty": "1217",
+                    # Larger theoretical/pre-exchange amount must not drive sizing.
+                    "frcr_ord_psbl_amt1": "171292.388229",
+                },
+            }
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.client = DummyPossibleOrderClient()
+
+    available_usd = asyncio.run(
+        service._get_overseas_available_usd(
+            symbol="MSEX",
+            exchange_code="NASD",
+            price=54.53,
+        )
+    )
+
+    expected = 1217 * 54.53
+    assert abs(available_usd - expected) < 0.000001
+    assert abs(service._last_overseas_available_usd - expected) < 0.000001
+
+
 def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     class DummyOverseasSlotClient:
         async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):

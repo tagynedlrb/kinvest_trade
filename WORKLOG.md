@@ -1933,3 +1933,13 @@
 ### 검증
 - KRX 휴장, NYSE 휴장, KIS 세션 기준 날짜 회귀 테스트 추가
 - `python3 -m pytest tests -q` → 369개 통과
+
+## [2026-07-10] README 기본 주기/스캔 수 동기화
+
+### 수정 사항
+- README에 남아 있던 오래된 기본값을 현재 `config/fixed_config.json`과 일치시킴
+  - `poll_interval_sec`: 10초 표기 → 25초
+  - `overseas_scan_top_n`: 12 표기 → 25
+
+### 기대 효과
+- 실제 운영 주기와 문서 설명이 달라 사용자가 감시 빈도/스캔 범위를 오해하는 문제 감소

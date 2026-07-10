@@ -1990,3 +1990,26 @@
 ### 검증
 - `python3 -m pytest tests/test_telegram_control.py::test_build_portfolio_message_uses_available_usd_override_for_virtual_exposure tests/test_telegram_control.py::test_build_portfolio_message_warns_virtual_risk_and_exposure_when_stopped -q` → 2개 통과
 - `python3 -m pytest tests -q` → 371개 통과
+
+## [2026-07-10] 주문 거부 원문 로깅 보강
+
+### 배경
+- 최근 국내 `sell:order_rejected` 이벤트는 남아 있었지만,
+  실제 KIS 거부 메시지가 `event_log.detail`에 남지 않아
+  장종료/미체결/잔고/주문 대기 중 어느 원인인지 사후 분석이 어려웠다.
+- 해외 `Both-sided waiting order exists`처럼 원문이 있어야 바로 판단되는
+  주문 오류도 동일한 관측성 보강이 필요했다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - `_record_trade_skip()`에 선택적 `error` 필드 추가
+  - 국내 매수/매도 주문 거부 시 `event_log.detail.error`에 KIS 원문 저장
+  - 해외 매수/매도 주문 거부 및 `no_orderable_qty`성 API 거부 시 원문 저장
+  - 실제 주문 요청이 KIS에서 거부된 경우 `broker_order_events`에
+    `status=REJECTED`, `payload.error`를 남기도록 보강
+- `tests/test_liquidity_lab.py`
+  - 국내/해외 매도 거부 시 이벤트 로그와 broker event에 오류 원문이 남는지 검증
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_place_overseas_sell_order_rejected_adds_20min_cooldown tests/test_liquidity_lab.py::test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it tests/test_liquidity_lab.py::test_domestic_sell_rejected_adds_10min_cooldown tests/test_liquidity_lab.py::test_domestic_buy_rejected_marks_skipped_true -q` → 4개 통과
+- `python3 -m pytest tests -q` → 371개 통과

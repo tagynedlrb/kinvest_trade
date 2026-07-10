@@ -4126,6 +4126,7 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            error_text = str(exc)
             self._record_trade_skip(
                 market="domestic",
                 symbol=candidate.stock_code,
@@ -4139,6 +4140,21 @@ class LiquidityLabService:
                 stock_name=candidate.stock_name,
                 activity_score=candidate.activity_score,
                 orderable_qty=qty,
+                error=error_text,
+            )
+            self._record_broker_order_event(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                side="BUY",
+                order_kind="limit",
+                requested_qty=qty,
+                requested_price=float(candidate.best_ask or candidate.current_price),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                status="REJECTED",
+                reason="order_rejected",
+                payload={"error": error_text},
             )
             return {
                 "submitted": False,
@@ -4147,7 +4163,7 @@ class LiquidityLabService:
                 "side": "buy",
                 "candidate": asdict(candidate),
                 "reason": "order_rejected",
-                "error": str(exc),
+                "error": error_text,
             }
         self._record_broker_order_event(
             market="domestic",
@@ -4376,6 +4392,7 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            error_text = str(exc)
             self._set_exit_cooldown_minutes("domestic", candidate.stock_code, 10)
             _logger.warning(
                 "[SELL] domestic order_rejected %s -> 10분 쿨다운 등록 (error=%s)",
@@ -4389,7 +4406,7 @@ class LiquidityLabService:
                 detail={
                     "reason": "order_rejected",
                     "side": "sell",
-                    "error": str(exc)[:100],
+                    "error": error_text[:100],
                     "cooldown_applied_min": 10,
                 },
             )
@@ -4407,6 +4424,22 @@ class LiquidityLabService:
                 activity_score=candidate.activity_score,
                 orderable_qty=held.orderable_qty,
                 holding_qty=held.quantity,
+                error=error_text,
+            )
+            self._record_broker_order_event(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                side="SELL",
+                order_kind="limit",
+                requested_qty=sell_qty,
+                requested_price=sell_price,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                status="REJECTED",
+                reason="order_rejected",
+                payload={"error": error_text},
             )
             return {
                 "submitted": False,
@@ -4418,7 +4451,7 @@ class LiquidityLabService:
                 "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
                 "exit_reason": exit_reason,
                 "reason": "order_rejected",
-                "error": str(exc),
+                "error": error_text,
             }
 
         lines = [
@@ -4836,11 +4869,12 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            error_text = str(exc)
             if self._is_mock_us_session_blocked_error(str(exc)):
                 return await self._record_virtual_overseas_buy(
                     candidate,
                     signal_snapshot=signal_snapshot,
-                    rejected_error=str(exc),
+                    rejected_error=error_text,
                 )
             self._record_trade_skip(
                 market="overseas",
@@ -4855,6 +4889,21 @@ class LiquidityLabService:
                 stock_name=candidate.symbol,
                 activity_score=candidate.activity_score,
                 orderable_qty=candidate.orderable_qty,
+                error=error_text,
+            )
+            self._record_broker_order_event(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                side="BUY",
+                order_kind="limit",
+                requested_qty=qty,
+                requested_price=buy_price,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                status="REJECTED",
+                reason="order_rejected",
+                payload={"error": error_text},
             )
             return {
                 "submitted": False,
@@ -4863,7 +4912,8 @@ class LiquidityLabService:
                 "candidate": asdict(candidate),
                 "signal_snapshot": asdict(signal_snapshot),
                 "qty": qty,
-                "error": str(exc),
+                "reason": "order_rejected",
+                "error": error_text,
             }
         repository = getattr(self, "repository", None)
         if repository is not None:
@@ -5584,6 +5634,7 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            error_text = str(exc)
             if self._is_mock_us_balance_missing_error(str(exc)):
                 self._defer_no_orderable_position(
                     market="overseas",
@@ -5605,6 +5656,22 @@ class LiquidityLabService:
                     activity_score=candidate.activity_score,
                     orderable_qty=0,
                     holding_qty=held.quantity,
+                    error=error_text,
+                )
+                self._record_broker_order_event(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    side="SELL",
+                    order_kind="limit",
+                    requested_qty=real_sell_qty,
+                    requested_price=sell_price,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    status="REJECTED",
+                    reason="no_orderable_qty",
+                    payload={"error": error_text},
                 )
                 return {
                     "submitted": False,
@@ -5616,7 +5683,7 @@ class LiquidityLabService:
                     "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
                     "exit_reason": exit_reason,
                     "reason": "no_orderable_qty",
-                    "error": str(exc),
+                    "error": error_text,
                 }
             reject_reason = (
                 "session_not_orderable_in_profile"
@@ -5640,7 +5707,7 @@ class LiquidityLabService:
                     detail={
                         "reason": "order_rejected",
                         "side": "sell",
-                        "error": str(exc)[:100],
+                        "error": error_text[:100],
                         "cooldown_applied_min": 20,
                     },
                 )
@@ -5658,6 +5725,22 @@ class LiquidityLabService:
                 activity_score=candidate.activity_score,
                 orderable_qty=held.orderable_qty,
                 holding_qty=held.quantity,
+                error=error_text,
+            )
+            self._record_broker_order_event(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                side="SELL",
+                order_kind="limit",
+                requested_qty=real_sell_qty,
+                requested_price=sell_price,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                status="REJECTED",
+                reason=reject_reason,
+                payload={"error": error_text},
             )
             return {
                 "submitted": False,
@@ -5669,7 +5752,7 @@ class LiquidityLabService:
                 "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
                 "exit_reason": exit_reason,
                 "reason": reject_reason,
-                "error": str(exc),
+                "error": error_text,
             }
         existing_pending = self.repository.get_virtual_sell_pending("overseas", candidate.symbol)
         if existing_pending is not None and tracker is not None:
@@ -7010,6 +7093,7 @@ class LiquidityLabService:
         activity_score: float | None = None,
         orderable_qty: int | None = None,
         holding_qty: int = 0,
+        error: str | None = None,
     ) -> None:
         repository = getattr(self, "repository", None)
         if repository is None:
@@ -7053,22 +7137,25 @@ class LiquidityLabService:
             cb_active=self._cb_active_flag(),
             pool_size=self._pool_size_for_market(market),
         )
+        detail = {
+            "reason": reason,
+            "side": side,
+            "rsi14": round(signal_snapshot.rsi14, 2)
+            if signal_snapshot and signal_snapshot.rsi14 is not None
+            else None,
+            "volume_ratio": round(signal_snapshot.volume_ratio, 3)
+            if signal_snapshot and signal_snapshot.volume_ratio is not None
+            else None,
+            "exit_cooldown_remaining": self._cooldown_remaining_minutes(market, symbol),
+            "cb_active": self._cb_active_flag(),
+        }
+        if error:
+            detail["error"] = error[:160]
         self._save_event(
             event_type="trade_skip",
             market=market,
             symbol=symbol,
-            detail={
-                "reason": reason,
-                "side": side,
-                "rsi14": round(signal_snapshot.rsi14, 2)
-                if signal_snapshot and signal_snapshot.rsi14 is not None
-                else None,
-                "volume_ratio": round(signal_snapshot.volume_ratio, 3)
-                if signal_snapshot and signal_snapshot.volume_ratio is not None
-                else None,
-                "exit_cooldown_remaining": self._cooldown_remaining_minutes(market, symbol),
-                "cb_active": self._cb_active_flag(),
-            },
+            detail=detail,
         )
 
     def _register_exit_cooldown(

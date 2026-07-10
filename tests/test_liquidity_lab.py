@@ -1231,6 +1231,12 @@ def test_place_overseas_sell_order_rejected_adds_20min_cooldown() -> None:
     assert result["submitted"] is False
     assert result["reason"] == "order_rejected"
     assert service._cooldown_remaining_minutes("overseas", "ALNY") > 19.0
+    events = service.repository.list_event_log(event_type="trade_skip", limit=5)
+    assert any("Both-sided waiting order exists" in row["detail"] for row in events)
+    broker_rows = service.repository.list_broker_order_events(limit=1)
+    assert broker_rows[0]["status"] == "REJECTED"
+    assert broker_rows[0]["reason"] == "order_rejected"
+    assert "Both-sided waiting order exists" in broker_rows[0]["payload_json"]["error"]
 
 
 def test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it() -> None:
@@ -1268,6 +1274,12 @@ def test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it() ->
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
     assert rows[0]["action_reason"] == "sell:order_rejected"
     assert rows[0]["exit_cooldown_remaining"] > 9.0
+    events = service.repository.list_event_log(event_type="trade_skip", limit=5)
+    assert any("already waiting order exists" in row["detail"] for row in events)
+    broker_rows = service.repository.list_broker_order_events(limit=1)
+    assert broker_rows[0]["status"] == "REJECTED"
+    assert broker_rows[0]["reason"] == "order_rejected"
+    assert "already waiting order exists" in broker_rows[0]["payload_json"]["error"]
 
 
 def test_overseas_sell_session_blocked_does_not_convert_real_to_virtual_trade() -> None:

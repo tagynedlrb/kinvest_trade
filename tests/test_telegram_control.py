@@ -568,6 +568,25 @@ def test_build_status_message_marks_mock_us_extended_session_not_orderable(monke
     assert "시장상태=US premarket (모의 주문불가·감시만)" in message
 
 
+def test_build_status_message_prioritizes_open_us_market_over_krx_holiday(monkeypatch) -> None:
+    controller = _build_async_controller()
+    controller.config.credentials.env = "vps"
+    monkeypatch.setattr(telegram_control_module, "is_krx_regular_session", lambda now: False)
+    monkeypatch.setattr(telegram_control_module, "is_krx_holiday", lambda day: True)
+    monkeypatch.setattr(telegram_control_module, "is_nyse_holiday", lambda day: False)
+    monkeypatch.setattr(telegram_control_module, "get_us_trading_session", lambda now: "regular")
+    monkeypatch.setattr(
+        telegram_control_module,
+        "is_us_orderable_session_for_env",
+        lambda now, env: True,
+    )
+
+    message = controller._build_status_message()
+
+    assert "시장상태=US regular ✓" in message
+    assert "시장상태=KRX 휴장" not in message
+
+
 def test_send_status_message_includes_live_open_order_counts() -> None:
     controller = _build_async_controller()
 

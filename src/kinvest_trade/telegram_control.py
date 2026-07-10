@@ -1313,22 +1313,23 @@ class TelegramLiquidityLabController:
         krx_open = is_krx_regular_session(now) and not krx_holiday
         us_session = get_us_trading_session(now)
         us_tradeable = is_us_orderable_session_for_env(now, self.config.credentials.env) and not nyse_holiday
-        if krx_holiday and nyse_holiday:
-            market_status = "KRX/US 휴장"
-        elif krx_holiday:
-            market_status = "KRX 휴장"
-        elif nyse_holiday:
-            market_status = "US 휴장"
-        elif krx_open:
+        us_watchable = us_session != "closed" and not nyse_holiday
+        if krx_open:
             market_status = "KRX 정규장 ✓"
         elif us_tradeable:
             market_status = f"US {us_session} ✓"
-        elif us_session in {"premarket", "aftermarket"}:
+        elif us_watchable and us_session in {"daytime", "premarket", "aftermarket"}:
             env = str(getattr(self.config.credentials, "env", "vps") or "vps")
             if env == "prod":
                 market_status = f"US {us_session} (감시중)"
             else:
                 market_status = f"US {us_session} (모의 주문불가·감시만)"
+        elif krx_holiday and nyse_holiday:
+            market_status = "KRX/US 휴장"
+        elif krx_holiday:
+            market_status = "KRX 휴장"
+        elif nyse_holiday:
+            market_status = "US 휴장"
         else:
             mins = minutes_until_next_tradeable_session(now, self.config.credentials.env)
             hours, minutes = divmod(mins, 60)

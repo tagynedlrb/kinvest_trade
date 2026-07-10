@@ -650,7 +650,13 @@ class LiquidityLabService:
             _logger.warning("domestic_balance_parse_failed error=%s", exc)
             return 0.0
 
-    def _slot_based_qty(self, *, available_amount: float, price: float) -> int:
+    def _slot_based_qty(
+        self,
+        *,
+        available_amount: float,
+        price: float,
+        max_budget: float | None = None,
+    ) -> int:
         config = self.config.liquidity_lab
         if available_amount <= 0 or price <= 0:
             return 0
@@ -659,7 +665,28 @@ class LiquidityLabService:
         if slot_max_pct <= 0 or slot_entry_pct <= 0:
             return 0
         budget = available_amount * slot_entry_pct
+        if max_budget is not None:
+            budget = min(budget, max(0.0, float(max_budget)))
         return max(int(math.floor(budget / price)), 0)
+
+    def _open_virtual_overseas_notional(self) -> float:
+        manager = getattr(self, "virtual_trades", None)
+        if manager is None:
+            return 0.0
+        return sum(
+            max(0, position.qty) * max(0.0, position.avg_price)
+            for position in manager.list_positions("overseas")
+        )
+
+    def _remaining_virtual_overseas_budget(self, available_usd: float) -> float:
+        if available_usd <= 0:
+            return 0.0
+        max_exposure_pct = max(
+            0.0,
+            float(getattr(self.config.liquidity_lab, "max_virtual_exposure_pct", 1.0)),
+        )
+        max_exposure = available_usd * max_exposure_pct
+        return max(0.0, max_exposure - self._open_virtual_overseas_notional())
 
     @staticmethod
     def _extract_broker_order_no(response: object) -> str:
@@ -4968,9 +4995,21 @@ class LiquidityLabService:
                 )
             except KisApiError:
                 available_usd = 0.0
+            remaining_virtual_budget = self._remaining_virtual_overseas_budget(available_usd)
+            if remaining_virtual_budget <= 0:
+                return {
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "reason": "virtual_exposure_limit",
+                    "available_usd": available_usd,
+                    "virtual_notional_usd": self._open_virtual_overseas_notional(),
+                }
             slot_qty = self._slot_based_qty(
                 available_amount=available_usd,
                 price=candidate.last_price,
+                max_budget=remaining_virtual_budget,
             )
             if slot_qty > 0:
                 qty = slot_qty

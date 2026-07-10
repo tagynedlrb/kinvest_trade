@@ -239,6 +239,7 @@ class LiquidityLabConfig:
     use_slot_sizing: bool
     slot_entry_pct: float
     slot_max_pct: float
+    max_virtual_exposure_pct: float
     domestic_paper_iterations: int
     domestic_paper_interval_sec: int
     unified_watch_top_n: int
@@ -781,6 +782,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             use_slot_sizing=bool(liquidity_lab_raw.get("use_slot_sizing", False)),
             slot_entry_pct=float(liquidity_lab_raw.get("slot_entry_pct", 0.10)),
             slot_max_pct=float(liquidity_lab_raw.get("slot_max_pct", 0.20)),
+            max_virtual_exposure_pct=float(
+                liquidity_lab_raw.get("max_virtual_exposure_pct", 1.0)
+            ),
             domestic_paper_iterations=int(
                 liquidity_lab_raw.get("domestic_paper_iterations", 6)
             ),

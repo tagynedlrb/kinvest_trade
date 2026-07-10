@@ -4271,6 +4271,52 @@ def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> No
     assert service.virtual_trades.get_position("overseas", "SOXL") is not None
 
 
+def test_virtual_overseas_buy_respects_total_virtual_exposure_limit() -> None:
+    class DummyVirtualSlotClient:
+        async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
+            return {
+                "cash_available": "1000",
+                "raw": {
+                    "ord_psbl_frcr_amt_wcrc": "1000",
+                },
+            }
+
+    service = _build_run_service()
+    service.config.liquidity_lab.use_slot_sizing = True
+    service.config.liquidity_lab.max_virtual_exposure_pct = 1.0
+    service.client = DummyVirtualSlotClient()
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="FULL",
+        exchange_code="NASD",
+        qty=10,
+        fill_price=100.0,
+        currency="USD",
+        session="daytime",
+        reason="seed",
+        created_at="2026-07-10 10:00:00 KST",
+    )
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+
+    result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "virtual_exposure_limit"
+    assert service.virtual_trades.get_position("overseas", "SOXL") is None
+
+
 def test_send_summary_skips_virtual_trade_messages() -> None:
     service = _build_run_service()
     service._build_action_summary = lambda report: {  # type: ignore[method-assign]

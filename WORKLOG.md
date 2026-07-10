@@ -2032,3 +2032,20 @@
 ### 검증
 - `python3 -m pytest tests/test_telegram_control.py::test_format_watch_target_line_is_compact tests/test_telegram_control.py::test_format_watch_target_line_ready_status_is_readable tests/test_telegram_control.py::test_format_watch_target_line_marks_stale_signal_cache -q` → 3개 통과
 - `python3 -m pytest tests -q` → 372개 통과
+
+## [2026-07-10] 주문기록 거부 오류 표시 보강
+
+### 배경
+- 주문 거부 원문은 `broker_order_events.payload.error`에 저장되도록 보강했지만,
+  `/lab_orders` 출력에서는 상태와 사유만 보여 실제 거부 원문을 바로 볼 수 없었다.
+
+### 수정 사항
+- `telegram_control.py`
+  - 내부 주문 이벤트가 `status=REJECTED`이고 `payload.error`가 있으면
+    `/lab_orders` 한 줄에 `오류=...`를 추가
+- `tests/test_telegram_control.py`
+  - 거부된 국내 취소 주문에 오류 원문이 표시되는지 검증
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_build_recent_order_events_message_formats_submission_cancel_and_virtual -q` → 1개 통과
+- `python3 -m pytest tests -q` → 372개 통과

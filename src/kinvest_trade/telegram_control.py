@@ -2292,6 +2292,11 @@ class TelegramLiquidityLabController:
             ]
             if order_no:
                 parts.append(f"주문번호={order_no}")
+            payload = row.get("payload_json") or {}
+            if status == "REJECTED" and isinstance(payload, dict):
+                error_text = str(payload.get("error") or "").strip()
+                if error_text:
+                    parts.append(f"오류={error_text[:80]}")
             if side and side not in {"BUY", "SELL"}:
                 parts.append(f"원시구분={side}")
             lines.append(" ".join(parts))

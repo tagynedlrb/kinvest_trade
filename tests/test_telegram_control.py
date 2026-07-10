@@ -1008,6 +1008,7 @@ def test_build_recent_order_events_message_formats_submission_cancel_and_virtual
     assert "[KIS][주문기록]" in message
     assert "기준=주문 접수/취소/가상기록 (체결확정 아님)" in message
     assert "국내 073240 취소거부 6,990원 x126 상태=REJECTED" in message
+    assert "오류=모의투자 장종료 입니다." in message
     assert "해외 MSFT virtual 가상매도기록 $300.0000 x1 상태=RECORDED 사유=손절" in message
     assert "해외 AAPL 취소 $210.5000 x2 상태=CANCELED 사유=미체결 정리 후 재주문 주문번호=12346" in message
     assert "해외 AAPL 매수접수 $210.5000 x2 상태=SUBMITTED 사유=전략 매수 신호 주문번호=12345" in message

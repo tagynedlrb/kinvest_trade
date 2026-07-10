@@ -302,6 +302,53 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     assert "─── 누적 성과 (virtual) ───" in message
 
 
+def test_build_portfolio_message_uses_live_real_position_override(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_live.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=1,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "watch_targets": [{"market": "overseas", "code": "AAPL", "price": 210.0}],
+    }
+
+    message = controller._build_portfolio_message(
+        real_positions_override=[
+            {
+                "market": "overseas",
+                "symbol": "AAPL",
+                "quantity": 2,
+                "orderable_qty": 2,
+                "avg_price": 190.0,
+                "current_price": 210.0,
+                "pnl_pct": (210.0 - 190.0) / 190.0,
+                "currency": "USD",
+            }
+        ]
+    )
+
+    assert "해외 AAPL 수량=2 매입=$190.0000 현재=$210.0000 손익=+10.53%" in message
+    assert "해외 AAPL 수량=3 매입=$193.3333 현재=$210.0000 손익=+8.62%" in message
+
+
 def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_portfolio_pending.db")
     repository.upsert_virtual_sell_pending(

@@ -10,7 +10,7 @@ import signal
 import subprocess
 import traceback
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TypeAlias
 
@@ -1112,7 +1112,7 @@ class TelegramLiquidityLabController:
     async def _send_virtual_portfolio_message(self) -> None:
         await self.notifier.send(self._build_virtual_portfolio_message())
 
-    def _build_portfolio_message(self) -> str:
+    def _build_portfolio_message(self, real_positions_override: list[dict] | None = None) -> str:
         now = datetime.now(timezone.utc)
         lines = [
             "[KIS][포트폴리오]",
@@ -1120,7 +1120,11 @@ class TelegramLiquidityLabController:
         ]
 
         last_report = self.last_report_summary or {}
-        real_positions = self._combined_positions(last_report)
+        real_positions = (
+            real_positions_override
+            if real_positions_override is not None
+            else self._combined_positions(last_report)
+        )
         price_lookup: dict[tuple[str, str], float] = {}
         for wt in last_report.get("watch_targets", []):
             market = str(wt.get("market", "overseas"))
@@ -1196,7 +1200,10 @@ class TelegramLiquidityLabController:
                 )
 
         manager = VirtualTradeManager(self.repository)
-        effective_positions = self._build_effective_positions(last_report)
+        effective_positions = self._build_effective_positions(
+            last_report,
+            real_positions_override=real_positions,
+        )
         lines.append("─── 가상보유 종목 ───")
         if not effective_positions:
             lines.append("가상보유=없음")
@@ -1328,7 +1335,63 @@ class TelegramLiquidityLabController:
         return lines
 
     async def _send_portfolio_message(self) -> None:
-        await self.notifier.send(self._build_portfolio_message())
+        live_real_positions = await self._load_live_portfolio_positions()
+        await self.notifier.send(
+            self._build_portfolio_message(real_positions_override=live_real_positions)
+        )
+
+    async def _load_live_portfolio_positions(self) -> list[dict] | None:
+        lab = self.lab_service
+        if lab is None:
+            return None
+
+        positions: list[dict] = []
+        loaded_any = False
+
+        try:
+            balance = await lab.client.get_balance()
+            loaded_any = True
+            for row in balance.get("positions", []) or []:
+                qty = int(float(str(row.get("hldg_qty", 0) or 0).replace(",", "")))
+                if qty <= 0:
+                    continue
+                stock_code = str(row.get("pdno", "")).strip()
+                if not stock_code:
+                    continue
+                avg_price = self._parse_float(row.get("pchs_avg_pric"))
+                current_price = self._parse_float(row.get("prpr")) or avg_price
+                pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0.0
+                positions.append(
+                    {
+                        "market": "domestic",
+                        "stock_code": stock_code,
+                        "quantity": qty,
+                        "orderable_qty": int(
+                            float(str(row.get("ord_psbl_qty", qty) or qty).replace(",", ""))
+                        ),
+                        "avg_price": avg_price,
+                        "current_price": current_price,
+                        "pnl_pct": pnl_pct,
+                        "currency": "KRW",
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("portfolio_live_domestic_balance_failed error=%s", exc)
+
+        try:
+            overseas_positions = await lab._load_overseas_positions([])
+            loaded_any = True
+            for position in overseas_positions:
+                item = asdict(position)
+                item["market"] = "overseas"
+                item["currency"] = "USD"
+                positions.append(item)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("portfolio_live_overseas_balance_failed error=%s", exc)
+
+        if not loaded_any:
+            return None
+        return positions
 
     async def _send_recent_trade_log(self) -> None:
         started_at = (
@@ -1790,8 +1853,17 @@ class TelegramLiquidityLabController:
             *(last_report.get("overseas_positions") or []),
         ]
 
-    def _build_effective_positions(self, last_report: dict) -> list[dict[str, object]]:
-        positions = self._combined_positions(last_report)
+    def _build_effective_positions(
+        self,
+        last_report: dict,
+        *,
+        real_positions_override: list[dict] | None = None,
+    ) -> list[dict[str, object]]:
+        positions = (
+            real_positions_override
+            if real_positions_override is not None
+            else self._combined_positions(last_report)
+        )
         effective: dict[tuple[str, str], dict[str, object]] = {}
 
         for pos in positions:

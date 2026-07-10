@@ -162,7 +162,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def get_order_submission_status(config: AppConfig) -> dict[str, str]:
+    """Describe which safety gate controls order submission for this profile."""
+    dry_run = config.credentials.dry_run
+    env = config.credentials.env
+    live_enabled = config.credentials.live_trading_enabled
+
+    if env == "prod":
+        paper_status = "not_applicable_prod_env"
+        if dry_run:
+            prod_status = "blocked_by_dry_run"
+        elif not live_enabled:
+            prod_status = "blocked_by_live_guard"
+        else:
+            prod_status = "enabled"
+    else:
+        paper_status = "blocked_by_dry_run" if dry_run else "enabled"
+        prod_status = "not_applicable_paper_env"
+
+    return {
+        "paper_order_submission": paper_status,
+        "prod_order_submission": prod_status,
+        "live_guard_scope": "prod_only",
+    }
+
+
 def print_doctor(config: AppConfig) -> None:
+    submission_status = get_order_submission_status(config)
     print("== KIS Trade Doctor ==")
     print(f"project_root: {config.project_root}")
     print(f"active_env: {config.credentials.env}")
@@ -173,6 +199,9 @@ def print_doctor(config: AppConfig) -> None:
     print(f"websocket_url: {config.credentials.websocket_url}")
     print(f"dry_run: {config.credentials.dry_run}")
     print(f"live_trading_enabled: {config.credentials.live_trading_enabled}")
+    print(f"paper_order_submission: {submission_status['paper_order_submission']}")
+    print(f"prod_order_submission: {submission_status['prod_order_submission']}")
+    print(f"live_guard_scope: {submission_status['live_guard_scope']}")
     print(f"db_path: {config.storage.db_path}")
     print(f"log_dir: {config.storage.log_dir}")
     print(f"runtime_state_path: {config.storage.runtime_state_path}")
@@ -216,6 +245,7 @@ def print_doctor(config: AppConfig) -> None:
 
 
 async def run_auth_check(config: AppConfig) -> None:
+    submission_status = get_order_submission_status(config)
     try:
         async with KisRestClient(config.credentials) as client:
             token = await client.ensure_token()
@@ -225,6 +255,7 @@ async def run_auth_check(config: AppConfig) -> None:
                 {
                     "token_ok": False,
                     "ready_for_live_test": False,
+                    **submission_status,
                     "reason": str(exc),
                 },
                 ensure_ascii=False,
@@ -242,6 +273,7 @@ async def run_auth_check(config: AppConfig) -> None:
                 "base_url": config.credentials.base_url,
                 "account_configured": bool(config.credentials.account_no),
                 "account_product_code_configured": bool(config.credentials.account_product_code),
+                **submission_status,
                 "ready_for_live_test": bool(
                     token
                     and config.credentials.account_no
@@ -310,6 +342,7 @@ async def run_order_test(
     execute: bool,
     confirm_live: str,
 ) -> None:
+    submission_status = get_order_submission_status(config)
     preview = {
         "env": config.credentials.env,
         "profile": config.credentials.profile_name,
@@ -320,6 +353,7 @@ async def run_order_test(
         "order_division": order_division,
         "dry_run": config.credentials.dry_run,
         "live_trading_enabled": config.credentials.live_trading_enabled,
+        **submission_status,
         "execute_requested": execute,
     }
 
@@ -457,6 +491,7 @@ async def run_overseas_order_test(
     execute: bool,
     confirm_live: str,
 ) -> None:
+    submission_status = get_order_submission_status(config)
     preview = {
         "env": config.credentials.env,
         "profile": config.credentials.profile_name,
@@ -468,6 +503,7 @@ async def run_overseas_order_test(
         "order_division": order_division,
         "dry_run": config.credentials.dry_run,
         "live_trading_enabled": config.credentials.live_trading_enabled,
+        **submission_status,
         "execute_requested": execute,
     }
 

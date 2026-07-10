@@ -589,6 +589,7 @@ class LiquidityLabService:
         self._recent_cycle_count: int = 0
         self._recent_order_reason_counts: dict[str, int] = {}
         self._rsi_blocked_count: int = 0
+        self._last_low_trade_frequency_alert_cycle: int = 0
         self._last_trend_filter_alert_cycle: int = 0
         self._strategy_guard_cache: dict[str, object] = {}
         self._last_strategy_guard_blocked_keys: set[tuple[str, str]] = set()
@@ -7729,9 +7730,55 @@ class LiquidityLabService:
                     "top_reasons": top_reasons,
                 },
             )
+            self._maybe_notify_low_trade_frequency(
+                cycle_count=self._recent_cycle_count,
+                trade_count=self._recent_trade_count,
+                trade_ratio=trade_ratio,
+                top_reasons=top_reasons,
+            )
         self._recent_trade_count = 0
         self._recent_cycle_count = 0
         self._recent_order_reason_counts = {}
+
+    def _maybe_notify_low_trade_frequency(
+        self,
+        *,
+        cycle_count: int,
+        trade_count: int,
+        trade_ratio: float,
+        top_reasons: dict[str, int],
+    ) -> None:
+        notifier = getattr(self, "notifier", None)
+        if notifier is None:
+            return
+        cycle_no = int(getattr(self, "_cycle_count", 0) or 0)
+        last_alert_cycle = int(getattr(self, "_last_low_trade_frequency_alert_cycle", 0) or 0)
+        if cycle_no > 0 and last_alert_cycle > 0 and cycle_no - last_alert_cycle < 200:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        self._last_low_trade_frequency_alert_cycle = (
+            cycle_no if cycle_no > 0 else last_alert_cycle + 200
+        )
+        top_reason_text = ", ".join(
+            f"{reason} {count}회" for reason, count in list(top_reasons.items())[:3]
+        )
+        loop.create_task(
+            notifier.send(
+                "\n".join(
+                    [
+                        "⚠️ 매매 빈도 낮음",
+                        f"범위=최근 {cycle_count}사이클",
+                        f"매매={trade_count}건 비율={trade_ratio * 100:.1f}%",
+                        f"주요원인={top_reason_text or '-'}",
+                        "확인=/lab_status /lab_report compare 2026-07-10",
+                    ]
+                )
+            )
+        )
 
     def _track_rsi_threshold_blocks(self, watch_targets: list[WatchTargetStatus]) -> None:
         rsi_threshold = float(
@@ -7757,6 +7804,17 @@ class LiquidityLabService:
                     self._rsi_blocked_count,
                     rsi14,
                     rsi_threshold,
+                )
+                self._save_event(
+                    event_type="rsi_threshold_blocked",
+                    detail={
+                        "blocked_count": self._rsi_blocked_count,
+                        "symbol": watch_target.code,
+                        "rsi14": round(float(rsi14), 2),
+                        "threshold": round(float(rsi_threshold), 2),
+                        "strategy_flag": watch_target.strategy_flag,
+                        "action_bias": watch_target.action_bias,
+                    },
                 )
 
     def _check_trend_filter_lost_ratio(self) -> None:

@@ -2582,6 +2582,7 @@ def _build_run_service() -> LiquidityLabService:
     service._recent_cycle_count = 0
     service._recent_order_reason_counts = {}
     service._rsi_blocked_count = 0
+    service._last_low_trade_frequency_alert_cycle = 0
     service._last_trend_filter_alert_cycle = 0
     return service
 
@@ -2609,6 +2610,36 @@ def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
     assert service._recent_order_reason_counts == {}
 
 
+def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() -> None:
+    async def run_case() -> None:
+        service = _build_run_service()
+        service._cycle_count = 200
+
+        for _ in range(50):
+            service._record_cycle_trade_frequency(
+                domestic_orders=[{"skipped": True, "reason": "no_action"}],
+                overseas_orders=[{"skipped": True, "reason": "overseas_position_cap_reached"}],
+            )
+        await asyncio.sleep(0)
+
+        assert len(service.notifier.messages) == 1
+        assert "매매 빈도 낮음" in service.notifier.messages[0]
+        assert "overseas:skip:overseas_position_cap_reached 50회" in service.notifier.messages[0]
+        assert service._last_low_trade_frequency_alert_cycle == 200
+
+        service._cycle_count = 300
+        for _ in range(50):
+            service._record_cycle_trade_frequency(
+                domestic_orders=[{"skipped": True, "reason": "no_action"}],
+                overseas_orders=[{"skipped": True, "reason": "no_overseas_candidate"}],
+            )
+        await asyncio.sleep(0)
+
+        assert len(service.notifier.messages) == 1
+
+    asyncio.run(run_case())
+
+
 def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:
     service = _build_run_service()
     service._rsi_blocked_count = 19
@@ -2630,6 +2661,13 @@ def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:
     service._track_rsi_threshold_blocks([watch_target])
 
     assert service._rsi_blocked_count == 20
+    events = service.repository.list_event_log(event_type="rsi_threshold_blocked", limit=1)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["blocked_count"] == 20
+    assert detail["symbol"] == "PLTR"
+    assert detail["rsi14"] == 42.0
+    assert detail["threshold"] == 30.0
 
 
 def test_check_trend_filter_lost_ratio_saves_warning_event() -> None:

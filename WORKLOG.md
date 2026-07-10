@@ -1,5 +1,28 @@
 # WORKLOG
 
+## [2026-07-10] 지시문 #65 저빈도·RSI 차단 관측 보강
+
+### 배경
+- 지시문 #65의 전략 보수화 효과 검증 장치는 구현되어 있었지만,
+  `low_trade_frequency`는 로그/DB 이벤트 중심이라 텔레그램 운영 중 즉시 놓칠 수 있었음
+- RSI 30 임계값이 너무 강한지 판단하려면 차단 누적 시점의 종목, RSI, threshold가
+  DB 이벤트로 남아야 재평가가 쉬움
+
+### 수정
+- `liquidity_lab.py`
+  - 최근 50사이클 매매율이 1% 미만이면 기존 `low_trade_frequency` 이벤트 저장에 더해
+    텔레그램으로 주요 스킵 원인 상위 3개를 요약 경고
+  - 저빈도 텔레그램 경고는 200사이클 쿨다운을 적용해 과도한 알림을 방지
+  - RSI 임계값 차단 누적 20건마다 `rsi_threshold_blocked` 이벤트를 저장
+- `tests/test_liquidity_lab.py`
+  - 저빈도 텔레그램 경고 및 쿨다운 회귀 테스트 추가
+  - RSI 차단 이벤트 detail 저장 회귀 테스트 추가
+
+### 기대 효과
+- 매매가 줄어든 원인이 `overseas_position_cap_reached`, `no_overseas_candidate`,
+  `market_not_orderable` 등 무엇인지 텔레그램과 DB 이벤트에서 바로 확인 가능
+- RSI 30 기준이 하루 진입 기회를 과도하게 막는지 사후 분석 가능
+
 ## [2026-07-10] 가상 포지션 한도 초과 감시중지 경고 보강
 
 ### 배경

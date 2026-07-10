@@ -1633,15 +1633,18 @@ class LiquidityLabService:
             )
             domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
             _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
-            _real_os = sum(1 for position in overseas_positions if not position.is_virtual)
-            if _real_os >= _max_os:
+            remaining_overseas_slots = self._remaining_overseas_entry_slots(
+                monitored_overseas_positions,
+                max_positions=_max_os,
+            )
+            if remaining_overseas_slots <= 0:
                 overseas_buy_targets = []
                 overseas_buy_target = None
             else:
                 overseas_buy_targets = self._select_overseas_buy_targets(
                     overseas_ranked,
                     overseas_watch_targets,
-                    max_concurrent=max(1, _max_os - _real_os),
+                    max_concurrent=remaining_overseas_slots,
                     held_positions=monitored_overseas_positions,
                 )
                 overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
@@ -3930,6 +3933,19 @@ class LiquidityLabService:
             if len(selected) >= max_concurrent:
                 break
         return selected
+
+    @staticmethod
+    def _remaining_overseas_entry_slots(
+        positions: list[OverseasHeldPosition],
+        *,
+        max_positions: int,
+    ) -> int:
+        open_symbols = {
+            position.symbol.strip().upper()
+            for position in positions
+            if position.symbol.strip() and position.quantity > 0
+        }
+        return max(0, int(max_positions) - len(open_symbols))
 
     @staticmethod
     def _select_primary_target(

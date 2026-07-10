@@ -3006,6 +3006,48 @@ def test_select_overseas_buy_targets_excludes_already_held_symbols() -> None:
     assert [item.symbol for item in selected] == ["AMD", "AAPL"]
 
 
+def test_remaining_overseas_entry_slots_counts_virtual_positions() -> None:
+    positions = [
+        OverseasHeldPosition(
+            symbol="REAL",
+            exchange_code="NASD",
+            quantity=1,
+            orderable_qty=1,
+            avg_price=10.0,
+            current_price=10.0,
+            pnl_pct=0.0,
+            is_virtual=False,
+        ),
+        OverseasHeldPosition(
+            symbol="VIRT",
+            exchange_code="NASD",
+            quantity=1,
+            orderable_qty=1,
+            avg_price=10.0,
+            current_price=10.0,
+            pnl_pct=0.0,
+            is_virtual=True,
+        ),
+        OverseasHeldPosition(
+            symbol="REAL",
+            exchange_code="NASD",
+            quantity=1,
+            orderable_qty=1,
+            avg_price=10.0,
+            current_price=10.0,
+            pnl_pct=0.0,
+            is_virtual=True,
+        ),
+    ]
+
+    remaining = LiquidityLabService._remaining_overseas_entry_slots(
+        positions,
+        max_positions=2,
+    )
+
+    assert remaining == 0
+
+
 def test_unified_watch_excludes_closed_market() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.unified_watch_top_n = 3

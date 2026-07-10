@@ -84,3 +84,156 @@
 291,2026-07-09T17:15:49.813855+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",621
 292,2026-07-09T17:19:08.353120+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",627
 293,2026-07-09T17:20:52.341856+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",630
+294,2026-07-09T17:24:12.247172+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",636
+295,2026-07-09T17:25:52.704842+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",639
+296,2026-07-09T17:26:22.761535+00:00,80c833411326,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 2.0, ""fallback_used"": false}",641
+297,2026-07-09T17:29:12.422942+00:00,80c833411326,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 2763, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",645
+298,2026-07-09T17:31:27.423670+00:00,80c833411326,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",649
+299,2026-07-09T17:34:34.174854+00:00,fd0fd634740f,session_start,,,"{""profile"": ""paper""}",1
+300,2026-07-09T17:34:39.574080+00:00,fd0fd634740f,tv_scan,overseas,,"{""pool_size"": 18, ""threshold"": 1.8, ""fallback_used"": false}",1
+301,2026-07-09T17:35:28.542227+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",1
+302,2026-07-09T17:36:05.884076+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",2
+303,2026-07-09T17:36:55.139936+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",3
+304,2026-07-09T17:37:33.214218+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",4
+305,2026-07-09T17:38:23.087654+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",5
+306,2026-07-09T17:39:00.216344+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",6
+307,2026-07-09T17:39:51.137155+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",7
+308,2026-07-09T17:40:27.417224+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",8
+309,2026-07-09T17:41:18.244696+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",9
+310,2026-07-09T17:41:57.006457+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",10
+311,2026-07-09T17:42:48.684555+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",11
+312,2026-07-09T17:43:26.032036+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",12
+313,2026-07-09T17:44:18.975437+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",13
+314,2026-07-09T17:44:57.232310+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",14
+315,2026-07-09T17:45:50.028606+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",15
+316,2026-07-09T17:46:27.168749+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",16
+317,2026-07-09T17:47:18.091148+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",17
+318,2026-07-09T17:47:53.075156+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",18
+319,2026-07-09T17:48:43.190361+00:00,fd0fd634740f,trade_skip,overseas,ALNY,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",19
+320,2026-07-09T17:49:05.583298+00:00,7e84485347cd,session_start,,,"{""profile"": ""paper""}",1
+321,2026-07-09T17:49:11.353941+00:00,7e84485347cd,tv_scan,overseas,,"{""pool_size"": 19, ""threshold"": 1.8, ""fallback_used"": false}",1
+322,2026-07-09T17:50:00.700841+00:00,7e84485347cd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",1
+323,2026-07-09T17:50:00.710283+00:00,7e84485347cd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",1
+324,2026-07-09T17:55:46.143513+00:00,7e84485347cd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",9
+325,2026-07-09T17:55:46.152511+00:00,7e84485347cd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",9
+326,2026-07-09T18:01:35.562606+00:00,302ac412ff47,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",17
+327,2026-07-09T18:01:35.574221+00:00,302ac412ff47,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",17
+328,2026-07-09T18:01:57.430137+00:00,ccc8b1b9499d,session_start,,,"{""profile"": ""paper""}",1
+329,2026-07-09T18:02:03.100184+00:00,ccc8b1b9499d,tv_scan,overseas,,"{""pool_size"": 21, ""threshold"": 1.8, ""fallback_used"": false}",1
+330,2026-07-09T18:02:58.854875+00:00,ccc8b1b9499d,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",1
+331,2026-07-09T18:02:58.864116+00:00,ccc8b1b9499d,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",1
+332,2026-07-09T18:08:15.663882+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",8
+333,2026-07-09T18:08:15.674998+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",8
+334,2026-07-09T18:14:04.050367+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",15
+335,2026-07-09T18:14:04.060062+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",15
+336,2026-07-09T18:18:39.629603+00:00,d4c59a0b86dd,tv_scan,overseas,,"{""pool_size"": 21, ""threshold"": 1.8, ""fallback_used"": false}",21
+337,2026-07-09T18:19:35.567603+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",21
+338,2026-07-09T18:19:35.577809+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",21
+339,2026-07-09T18:24:42.631461+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",27
+340,2026-07-09T18:24:42.640198+00:00,d4c59a0b86dd,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",27
+341,2026-07-09T18:26:05.655547+00:00,0d5e3918d02d,session_start,,,"{""profile"": ""paper""}",1
+342,2026-07-09T18:26:11.307754+00:00,0d5e3918d02d,tv_scan,overseas,,"{""pool_size"": 21, ""threshold"": 1.8, ""fallback_used"": false}",1
+343,2026-07-09T18:27:15.425516+00:00,0d5e3918d02d,cb_fired,,,"{""daily_loss_limit_pct"": 0.02, ""session_realised_krw"": -1340740.35, ""type"": ""daily_limit""}",1
+344,2026-07-09T18:27:56.035607+00:00,0d5e3918d02d,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 61, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",2
+345,2026-07-09T18:27:56.051521+00:00,0d5e3918d02d,trade_skip,overseas,ALNY,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 24.32, ""cb_active"": 1}",2
+346,2026-07-09T18:29:01.635544+00:00,0d5e3918d02d,trade_skip,overseas,SMPL,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 1801, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",3
+347,2026-07-09T18:29:01.644788+00:00,0d5e3918d02d,trade_skip,overseas,SMPL,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": 40.43, ""volume_ratio"": 0.978, ""exit_cooldown_remaining"": 10.95, ""cb_active"": 1}",3
+348,2026-07-09T18:39:46.985518+00:00,1249ea10d7b3,session_start,,,"{""profile"": ""paper""}",1
+349,2026-07-09T18:39:52.445946+00:00,1249ea10d7b3,tv_scan,overseas,,"{""pool_size"": 23, ""threshold"": 1.8, ""fallback_used"": false}",1
+350,2026-07-09T19:02:03.212722+00:00,1249ea10d7b3,tv_scan,overseas,,"{""pool_size"": 25, ""threshold"": 1.8, ""fallback_used"": false}",21
+351,2026-07-09T19:21:26.344988+00:00,1249ea10d7b3,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 610, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",37
+352,2026-07-09T19:21:26.355164+00:00,1249ea10d7b3,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": 59.29, ""volume_ratio"": 0.383, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",37
+353,2026-07-09T19:21:29.143565+00:00,1249ea10d7b3,trade_skip,overseas,BBIO,"{""reason"": ""net_profit_below_cost"", ""side"": ""sell"", ""rsi14"": 48.0, ""volume_ratio"": 0.02, ""exit_cooldown_remaining"": 8.0, ""cb_active"": 0}",37
+354,2026-07-09T19:25:03.117200+00:00,1249ea10d7b3,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",41
+355,2026-07-09T19:27:46.449366+00:00,1249ea10d7b3,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 213, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",42
+356,2026-07-09T19:27:46.459152+00:00,1249ea10d7b3,trade_skip,overseas,PCAP,"{""reason"": ""no_orderable_qty"", ""side"": ""sell"", ""rsi14"": 56.99, ""volume_ratio"": 0.52, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",42
+357,2026-07-09T19:31:45.523057+00:00,1249ea10d7b3,trade_skip,overseas,BCAR,"{""reason"": ""net_profit_below_cost"", ""side"": ""sell"", ""rsi14"": 44.34, ""volume_ratio"": 0.009, ""exit_cooldown_remaining"": 8.0, ""cb_active"": 0}",45
+358,2026-07-09T20:38:55.159938+00:00,91ac639b6d9f,session_start,,,"{""profile"": ""paper""}",1
+359,2026-07-09T20:39:00.642933+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",1
+360,2026-07-09T20:41:49.702827+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",2
+361,2026-07-09T20:47:34.371004+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",6
+362,2026-07-09T20:53:12.790228+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",10
+363,2026-07-09T20:59:00.450052+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",14
+364,2026-07-09T21:04:43.218476+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",18
+365,2026-07-09T21:07:30.473438+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",21
+366,2026-07-09T21:10:15.702427+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",22
+367,2026-07-09T21:15:54.401603+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",26
+368,2026-07-09T21:21:28.830310+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",30
+369,2026-07-09T21:22:53.673877+00:00,91ac639b6d9f,cooldown_blocked,overseas,SMPL,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 20}",31
+370,2026-07-09T21:27:06.291078+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",34
+371,2026-07-09T21:32:48.760441+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",38
+372,2026-07-09T21:35:37.013592+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",41
+373,2026-07-09T21:38:41.136175+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",42
+374,2026-07-09T21:44:43.070809+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",46
+375,2026-07-09T21:50:51.221552+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",50
+376,2026-07-09T21:56:55.105564+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",54
+377,2026-07-09T22:02:32.212887+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",57
+378,2026-07-10T00:00:14.006402+00:00,91ac639b6d9f,pool_refresh,domestic,,"{""pool_size"": 4, ""top_names"": [""KODEX 코스닥150레버리지"", ""KODEX SK하이닉스단일종목레버리지"", ""TIGER SK하이닉스단일종목레버리지"", ""라이콤""]}",161
+379,2026-07-10T00:02:10.689003+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",161
+380,2026-07-10T00:06:41.567125+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",164
+381,2026-07-10T00:08:21.764336+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",164
+382,2026-07-10T00:10:20.886774+00:00,91ac639b6d9f,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",165
+383,2026-07-10T00:14:29.958454+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",167
+384,2026-07-10T00:18:24.635008+00:00,91ac639b6d9f,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 6}",169
+385,2026-07-10T00:20:32.244336+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",170
+386,2026-07-10T00:26:36.229147+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",173
+387,2026-07-10T00:33:06.370474+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",176
+388,2026-07-10T00:39:19.071950+00:00,91ac639b6d9f,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 22}",179
+389,2026-07-10T00:39:19.156589+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",179
+390,2026-07-10T00:41:21.238572+00:00,91ac639b6d9f,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 20}",180
+391,2026-07-10T00:41:25.153034+00:00,91ac639b6d9f,pool_refresh,domestic,,"{""pool_size"": 20, ""top_names"": [""SOL SK하이닉스선물단일종목인버스2X"", ""KODEX SK하이닉스단일종목레버리지"", ""KODEX 코스닥150레버리지"", ""TIGER SK하이닉스단일종목레버리지"", ""KODEX 삼성전자단일종목레버리지""]}",181
+392,2026-07-10T00:45:53.256090+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",181
+393,2026-07-10T00:49:36.135695+00:00,91ac639b6d9f,cooldown_blocked,domestic,233740,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 12}",182
+394,2026-07-10T00:50:18.047308+00:00,91ac639b6d9f,cooldown_blocked,domestic,0162Z0,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 3}",182
+395,2026-07-10T00:54:31.289046+00:00,91ac639b6d9f,cooldown_blocked,domestic,069500,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",183
+396,2026-07-10T00:55:02.148146+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",183
+397,2026-07-10T00:57:24.416042+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",184
+398,2026-07-10T00:59:50.986761+00:00,91ac639b6d9f,trade_skip,domestic,229200,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 71, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",184
+399,2026-07-10T01:05:30.168312+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",185
+400,2026-07-10T01:14:42.118738+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",187
+401,2026-07-10T01:24:55.782381+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",189
+402,2026-07-10T01:30:44.452538+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",190
+403,2026-07-10T01:35:47.028377+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",191
+404,2026-07-10T01:41:02.821319+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",192
+405,2026-07-10T01:46:05.469930+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",193
+406,2026-07-10T01:55:50.344787+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",195
+407,2026-07-10T02:01:54.281236+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",196
+408,2026-07-10T02:08:47.051196+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",197
+409,2026-07-10T02:16:41.341725+00:00,91ac639b6d9f,cooldown_blocked,domestic,0162Z0,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 4}",198
+410,2026-07-10T02:16:43.477825+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",198
+411,2026-07-10T02:23:23.861276+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",199
+412,2026-07-10T02:23:23.869549+00:00,91ac639b6d9f,trade_skip,domestic,263800,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 104, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",199
+413,2026-07-10T02:23:27.840771+00:00,91ac639b6d9f,cb_fired,,,"{""consecutive_losses"": 3, ""type"": ""consecutive""}",199
+414,2026-07-10T02:29:30.924349+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",200
+415,2026-07-10T02:29:32.810926+00:00,91ac639b6d9f,pool_refresh,domestic,,"{""pool_size"": 20, ""top_names"": [""SOL SK하이닉스선물단일종목인버스2X"", ""KODEX SK하이닉스단일종목레버리지"", ""KODEX 코스닥150레버리지"", ""TIGER 미국S&P500"", ""TIGER SK하이닉스단일종목레버리지""]}",201
+416,2026-07-10T02:36:46.302571+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",201
+417,2026-07-10T02:42:07.930607+00:00,91ac639b6d9f,cooldown_blocked,domestic,360750,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 2}",202
+418,2026-07-10T02:43:03.512001+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",202
+419,2026-07-10T02:49:28.212985+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",203
+420,2026-07-10T02:52:08.060955+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",204
+421,2026-07-10T02:54:55.952814+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",204
+422,2026-07-10T03:02:52.356903+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",205
+423,2026-07-10T03:10:17.814866+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",206
+424,2026-07-10T03:18:42.646947+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",207
+425,2026-07-10T03:18:44.914098+00:00,91ac639b6d9f,cb_released,,,"{""elapsed_min"": 55.3, ""trigger"": ""auto_cooldown"", ""type"": ""consecutive""}",207
+426,2026-07-10T03:25:25.866410+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",208
+427,2026-07-10T03:32:14.672249+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",209
+428,2026-07-10T03:38:46.816290+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",210
+429,2026-07-10T03:48:25.178602+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",211
+430,2026-07-10T03:55:54.978502+00:00,91ac639b6d9f,cooldown_blocked,domestic,360750,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 1}",212
+431,2026-07-10T03:56:48.783529+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",212
+432,2026-07-10T04:04:55.253315+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",213
+433,2026-07-10T04:16:54.134873+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",214
+434,2026-07-10T04:28:38.800217+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",215
+435,2026-07-10T04:40:49.124620+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",216
+436,2026-07-10T04:40:49.135007+00:00,91ac639b6d9f,trade_skip,domestic,0167A0,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 41, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",216
+437,2026-07-10T04:53:47.313926+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",217
+438,2026-07-10T05:05:47.319356+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",218
+439,2026-07-10T05:33:48.871362+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",219
+440,2026-07-10T05:34:21.931851+00:00,91ac639b6d9f,trade_skip,domestic,069500,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",219
+441,2026-07-10T06:24:29.591247+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",221
+442,2026-07-10T06:29:30.819097+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",222
+443,2026-07-10T06:33:38.989811+00:00,91ac639b6d9f,cooldown_blocked,domestic,360750,"{""reason"": ""reentry_cooldown"", ""remaining_min"": 7}",223
+444,2026-07-10T06:34:17.118609+00:00,91ac639b6d9f,trade_skip,domestic,379800,"{""reason"": ""order_rejected"", ""side"": ""sell"", ""rsi14"": null, ""volume_ratio"": null, ""exit_cooldown_remaining"": 0.0, ""cb_active"": 0}",223
+445,2026-07-10T06:34:21.579571+00:00,91ac639b6d9f,tv_scan,overseas,,"{""pool_size"": 30, ""threshold"": 1.8, ""fallback_used"": false}",224
+446,2026-07-10T06:35:51.360191+00:00,91ac639b6d9f,trade_skip,overseas,MSEX,"{""reason"": ""no_orderable_qty"", ""holding_qty"": 522, ""orderable_qty"": 0, ""note"": ""T+2 pending or API delay""}",224

@@ -148,6 +148,7 @@ def _acquire_pid_lock() -> None:
 class ControllerSnapshot:
     mode: str
     current_cycle_no: int
+    active_session_id: str
     active_cycle_started_at: str | None
     next_run_at: str | None
     last_command: str | None
@@ -161,6 +162,7 @@ class ControllerSnapshot:
         return {
             "mode": self.mode,
             "current_cycle_no": self.current_cycle_no,
+            "active_session_id": self.active_session_id,
             "active_cycle_started_at": self.active_cycle_started_at,
             "next_run_at": self.next_run_at,
             "last_command": self.last_command,
@@ -940,6 +942,7 @@ class TelegramLiquidityLabController:
         if mode in {"running", "paused", "stopped"}:
             self.mode = mode
         self.current_cycle_no = int(snapshot.get("current_cycle_no", 0) or 0)
+        self.active_session_id = str(snapshot.get("active_session_id") or "").strip()
         self.last_command = snapshot.get("last_command") or None
         self.last_command_at = parse_datetime(str(snapshot.get("last_command_at") or ""))
         self.last_completed_at = parse_datetime(str(snapshot.get("last_completed_at") or ""))
@@ -1014,6 +1017,7 @@ class TelegramLiquidityLabController:
         return ControllerSnapshot(
             mode=self.mode,
             current_cycle_no=self.current_cycle_no,
+            active_session_id=self.active_session_id,
             active_cycle_started_at=None
             if self.current_task_started_at is None
             else format_kst(self.current_task_started_at),

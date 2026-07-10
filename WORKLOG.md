@@ -1,5 +1,23 @@
 # WORKLOG
 
+## [2026-07-10] 텔레그램 제어 세션 ID 복원 개선
+
+### 배경
+- 텔레그램 제어 서비스가 재시작되면 `current_cycle_no`, `session_performance`는 복원되지만
+  `active_session_id`는 runtime state에 저장되지 않았음
+- 이 상태에서 거래 루프가 running으로 복구되면 같은 사용자 세션의 `cycle_log`/`event_log`가
+  새 `session_id`로 쪼개져 세션별 손익 분석과 stop 요약의 근거가 약해질 수 있음
+
+### 수정
+- `ControllerSnapshot`에 `active_session_id` 추가
+- `_write_runtime_state()`에서 현재 세션 ID 저장
+- `_restore_runtime_state()`에서 세션 ID 복원
+- `_run_cycle()`이 복원된 세션 ID를 `LiquidityLabService._session_id`에 주입하는 회귀 테스트 추가
+
+### 기대 효과
+- 서비스 재시작 후에도 같은 텔레그램 거래 세션의 로그와 성과 집계가 이어짐
+- `session_start` 이벤트와 세션별 분석이 불필요하게 분리되는 현상 완화
+
 ## [2026-07-10] 전략 검증 순손익률 정확도 개선
 
 ### 배경

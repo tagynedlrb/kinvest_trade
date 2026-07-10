@@ -3038,6 +3038,32 @@ def test_run_cycle_resets_consecutive_errors_on_success() -> None:
     assert controller.last_error is None
 
 
+def test_run_cycle_applies_restored_active_session_id_to_lab_service() -> None:
+    controller = _build_async_controller()
+    controller.active_session_id = "restored-session"
+    seen_session_ids: list[str] = []
+
+    class SessionAwareLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            self._session_id = ""
+
+        async def run(self):
+            seen_session_ids.append(self._session_id)
+            return DummyReport("watchlist_wait")
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = SessionAwareLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(4))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert seen_session_ids == ["restored-session"]
+
+
 def test_run_sends_fatal_notification_and_reraises() -> None:
     controller = _build_async_controller()
     controller._restore_runtime_state = lambda: None  # type: ignore[method-assign]
@@ -3080,6 +3106,7 @@ def test_restore_runtime_state_recovers_update_offset() -> None:
                 "telegram_control": {
                     "mode": "running",
                     "current_cycle_no": 12,
+                    "active_session_id": "restored-session",
                     "next_run_at": "2026-07-09 20:55:00 KST",
                     "last_command": "watchlist",
                     "last_command_at": "2026-07-09 20:54:00 KST",
@@ -3111,6 +3138,7 @@ def test_restore_runtime_state_recovers_update_offset() -> None:
     assert controller.update_offset == 4321
     assert controller.mode == "running"
     assert controller.current_cycle_no == 12
+    assert controller.active_session_id == "restored-session"
     assert controller.last_command == "watchlist"
     assert controller.last_report_summary == {"primary_target": "SOLS"}
     assert controller.last_error == "cycle_timeout"
@@ -3144,11 +3172,13 @@ def test_restore_runtime_state_ignores_cancelled_cycle_error() -> None:
 def test_write_runtime_state_persists_update_offset() -> None:
     controller = _build_async_controller()
     controller.update_offset = 9876
+    controller.active_session_id = "persisted-session"
 
     controller._write_runtime_state()
 
     payload = json.loads(controller.config.storage.runtime_state_path.read_text(encoding="utf-8"))
     assert payload["telegram_update_offset"] == 9876
+    assert payload["telegram_control"]["active_session_id"] == "persisted-session"
     assert "telegram_control_start_notified_at" in payload
 
 

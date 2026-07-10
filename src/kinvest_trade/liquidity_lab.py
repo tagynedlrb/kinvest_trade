@@ -583,6 +583,7 @@ class LiquidityLabService:
         self._trade_notification_max_batch_size: int = 8
         self._session_start_logged: bool = False
         self._no_orderable_retry: dict[str, datetime] = {}
+        self._exit_price_shock_guard: dict[str, dict[str, float | str]] = {}
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -2493,6 +2494,24 @@ class LiquidityLabService:
 
             exit_reason: str | None = None
             priority: tuple[int, float] | None = None
+            signal_snapshot = getattr(self, "_signal_cache", {}).get(symbol)
+            strategy_flag, entry_by, exit_by = self._get_strategy_labels(symbol, signal_snapshot)
+            if self._overseas_exit_price_guard_reason(
+                symbol=symbol,
+                quote=quote,
+                avg_price=avg_price,
+                holding_qty=(
+                    virtual_buy.qty
+                    if is_virtual_only and virtual_buy
+                    else real.quantity
+                    if real
+                    else 0
+                ),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+            ):
+                continue
             if pnl_pct <= -config.overseas_stop_loss_pct:
                 exit_reason = "stop_loss"
                 priority = (0, pnl_pct)
@@ -2565,8 +2584,19 @@ class LiquidityLabService:
                 continue
             self._clear_no_orderable_retry("overseas", symbol)
             self._reset_no_orderable_stall("overseas", symbol)
-            signal_snapshot = self._signal_cache.get(held.symbol.upper())
+            signal_snapshot = getattr(self, "_signal_cache", {}).get(held.symbol.upper())
             if signal_snapshot is None:
+                continue
+            strategy_flag, entry_by, exit_by = self._get_strategy_labels(symbol, signal_snapshot)
+            if self._overseas_exit_price_guard_reason(
+                symbol=symbol,
+                quote=quote,
+                avg_price=held.avg_price,
+                holding_qty=held.quantity,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+            ):
                 continue
             should_exit, exit_reason = self._should_exit_overseas_position(signal_snapshot, held)
             if not should_exit:
@@ -2642,6 +2672,123 @@ class LiquidityLabService:
         if approx_daily_turnover < min_daily_turnover:
             reasons.append("thin_turnover")
         return reasons
+
+    def _overseas_exit_price_guard_reason(
+        self,
+        *,
+        symbol: str,
+        quote: OverseasScanResult,
+        avg_price: float,
+        holding_qty: int,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        exit_by: str = "",
+    ) -> str | None:
+        """
+        Guard exits from one-off bad overseas quotes.
+
+        A real crash should still exit on the next confirmed cycle. The first
+        anomalous print is logged and skipped so stale/daytime quotes do not
+        erase virtual positions with fabricated PnL.
+        """
+        last_price = float(quote.last_price or 0.0)
+        if last_price <= 0:
+            return "invalid_exit_price"
+
+        if quote.bid > 0 and quote.ask > 0:
+            mid_price = (quote.bid + quote.ask) / 2.0
+            mid_mismatch_pct = abs(last_price - mid_price) / mid_price if mid_price > 0 else 0.0
+            max_mid_mismatch = float(
+                getattr(self.config.liquidity_lab, "overseas_exit_mid_mismatch_pct", 0.03)
+            )
+            if mid_mismatch_pct >= max_mid_mismatch:
+                reason = f"price_mid_mismatch:{mid_mismatch_pct:.1%}"
+                self._record_trade_skip(
+                    market="overseas",
+                    symbol=symbol,
+                    exchange_code=quote.exchange_code,
+                    reason=reason,
+                    side="sell",
+                    price=last_price,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    stock_name=symbol,
+                    activity_score=quote.activity_score,
+                    holding_qty=holding_qty,
+                )
+                return reason
+
+        reference_price = float(avg_price or 0.0)
+        repository = getattr(self, "repository", None)
+        if repository is not None:
+            state = repository.get_lab_symbol_state("overseas", symbol)
+            if state is not None:
+                previous_price = float(state.get("last_price") or 0.0)
+                if previous_price > 0:
+                    reference_price = previous_price
+
+        if reference_price <= 0:
+            return None
+
+        shock_pct = (last_price - reference_price) / reference_price
+        shock_threshold = float(
+            getattr(self.config.liquidity_lab, "overseas_exit_price_shock_pct", 0.20)
+        )
+        if abs(shock_pct) <= shock_threshold:
+            guard = getattr(self, "_exit_price_shock_guard", None)
+            if guard is not None:
+                guard.pop(f"overseas:{symbol.strip().upper()}", None)
+            return None
+
+        guard = getattr(self, "_exit_price_shock_guard", None)
+        if guard is None:
+            guard = {}
+            self._exit_price_shock_guard = guard
+        key = f"overseas:{symbol.strip().upper()}"
+        previous = guard.get(key)
+        confirm_pct = float(
+            getattr(self.config.liquidity_lab, "overseas_exit_price_shock_confirm_pct", 0.02)
+        )
+        if previous is not None:
+            previous_price = float(previous.get("price", 0.0) or 0.0)
+            if previous_price > 0 and abs(last_price - previous_price) / reference_price <= confirm_pct:
+                guard.pop(key, None)
+                self._save_event(
+                    event_type="trade_guard",
+                    market="overseas",
+                    symbol=symbol,
+                    detail={
+                        "reason": "price_shock_confirmed",
+                        "reference_price": reference_price,
+                        "last_price": last_price,
+                        "shock_pct": shock_pct,
+                    },
+                )
+                return None
+
+        guard[key] = {
+            "price": last_price,
+            "reference_price": reference_price,
+            "shock_pct": shock_pct,
+            "seen_at": datetime.now(timezone.utc).isoformat(),
+        }
+        reason = f"price_shock_confirm:{shock_pct:+.1%}"
+        self._record_trade_skip(
+            market="overseas",
+            symbol=symbol,
+            exchange_code=quote.exchange_code,
+            reason=reason,
+            side="sell",
+            price=last_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            stock_name=symbol,
+            activity_score=quote.activity_score,
+            holding_qty=holding_qty,
+        )
+        return reason
 
     async def _build_domestic_watch_targets(
         self,
@@ -5872,6 +6019,7 @@ class LiquidityLabService:
             for position in overseas_positions
             if not position.is_virtual
         }
+        virtual_manager = getattr(self, "virtual_trades", None)
 
         for row in pending_rows:
             symbol = str(row["symbol"]).upper()
@@ -5881,6 +6029,25 @@ class LiquidityLabService:
             currency = str(row["currency"])
 
             real = real_by_symbol.get(symbol)
+            virtual_buy = (
+                None
+                if virtual_manager is None
+                else virtual_manager.get_position("overseas", symbol)
+            )
+            if real is None and virtual_buy is None:
+                self.repository.delete_virtual_sell_pending("overseas", symbol)
+                self._save_event(
+                    event_type="virtual_pending_cleanup",
+                    market="overseas",
+                    symbol=symbol,
+                    detail={
+                        "reason": "orphan_virtual_sell_pending",
+                        "qty": pending_qty,
+                        "avg_sell_price": pending_avg_price,
+                    },
+                )
+                continue
+
             real_qty = 0 if real is None else real.quantity
             orderable_qty = 0 if real is None else real.orderable_qty
             settle_qty = min(pending_qty, orderable_qty)
@@ -5923,11 +6090,25 @@ class LiquidityLabService:
                 real.quantity = max(0, real.quantity - settle_qty)
                 real.orderable_qty = max(0, real.orderable_qty - settle_qty)
 
-            if tracker is not None:
-                tracker.settle(
+            remaining_pending_qty = max(0, pending_qty - settle_qty)
+            if remaining_pending_qty <= 0:
+                if tracker is not None:
+                    tracker.settle(
+                        market="overseas",
+                        symbol=symbol,
+                        real_qty_after_settlement=max(0, real_qty - settle_qty),
+                    )
+                else:
+                    self.repository.delete_virtual_sell_pending("overseas", symbol)
+            elif settle_qty > 0:
+                self.repository.upsert_virtual_sell_pending(
                     market="overseas",
                     symbol=symbol,
-                    real_qty_after_settlement=max(0, real_qty - settle_qty),
+                    exchange_code=exchange_code,
+                    qty=remaining_pending_qty,
+                    avg_sell_price=pending_avg_price,
+                    currency=currency,
+                    updated_at=format_kst(datetime.now(timezone.utc)),
                 )
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:

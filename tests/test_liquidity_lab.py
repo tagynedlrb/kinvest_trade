@@ -287,6 +287,92 @@ def test_select_overseas_exit_target_works_with_empty_ranked_list() -> None:
     assert signal_snapshot is None
 
 
+def test_overseas_exit_price_shock_requires_confirmation(tmp_path) -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.025,
+                    "overseas_stop_loss_pct": 0.015,
+                    "overseas_exit_price_shock_pct": 0.20,
+                    "overseas_exit_price_shock_confirm_pct": 0.02,
+                    "overseas_exit_mid_mismatch_pct": 0.03,
+                },
+            )()
+        },
+    )()
+    service.repository = SqliteRepository(tmp_path / "price_shock.db")
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    service._exit_price_shock_guard = {}
+    service._cycle_count = 1
+    service._session_id = "test"
+    service._exit_cooldown = {}
+    service._dynamic_overseas_pool = []
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="PLBL",
+        exchange_code="NASD",
+        action_bias="SELL",
+        signal_state="SELL_READY",
+        note="time_exit_profit",
+        holding_qty=2027,
+        last_price=10.01,
+        pnl_pct=0.0,
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+        has_position=1,
+    )
+    ranked = [
+        OverseasScanResult(
+            symbol="PLBL",
+            exchange_code="NASD",
+            last_price=6.42,
+            bid=6.41,
+            ask=6.43,
+            spread_pct=0.0031,
+            change_rate_pct=-35.0,
+            volume=100_000,
+            orderable_qty=2027,
+            fx_rate_krw=1350.0,
+            activity_score=5.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="PLBL",
+            exchange_code="NASD",
+            quantity=2027,
+            orderable_qty=2027,
+            avg_price=10.01,
+            current_price=6.42,
+            pnl_pct=(6.42 - 10.01) / 10.01,
+        )
+    ]
+
+    first = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert first == []
+    with service.repository._connect() as conn:
+        skip_row = conn.execute(
+            "SELECT action_bias, action_reason FROM cycle_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert skip_row["action_bias"] == "SKIP"
+    assert "sell:price_shock_confirm" in skip_row["action_reason"]
+
+    second = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert len(second) == 1
+    assert second[0][0].symbol == "PLBL"
+    assert second[0][2] == "stop_loss"
+
+
 def test_select_overseas_exit_targets_returns_multiple_candidates() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(

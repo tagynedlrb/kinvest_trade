@@ -256,7 +256,28 @@ def test_reconcile_settles_min_of_pending_and_orderable() -> None:
     asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
 
     assert service.client.order_calls[0]["qty"] == 3
-    assert service.repository.get_virtual_sell_pending("overseas", "NVDA") is None
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert pending["qty"] == 2
+
+
+def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        qty=522,
+        avg_sell_price=54.53,
+        currency="USD",
+        updated_at="2026-07-10 05:40:25 KST",
+    )
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=[]))
+
+    assert service.repository.get_virtual_sell_pending("overseas", "MSEX") is None
+    events = service.repository.list_event_log(event_type="virtual_pending_cleanup", limit=5)
+    assert events[0]["symbol"] == "MSEX"
 
 
 def test_reconcile_uses_virtual_sell_price_for_pnl_log() -> None:

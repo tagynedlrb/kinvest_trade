@@ -2383,9 +2383,6 @@ class LiquidityLabService:
         self,
         domestic_ranked: list[DomesticScanResult],
     ) -> list[DomesticHeldPosition]:
-        if not domestic_ranked:
-            return []
-
         quote_map = {item.stock_code: item for item in domestic_ranked}
         try:
             balance = await self.client.get_balance()
@@ -2399,16 +2396,31 @@ class LiquidityLabService:
         positions: list[DomesticHeldPosition] = []
         rows = balance.get("positions", []) or balance.get("output1", [])
         for row in rows:
-            qty = int(float(str(row.get("hldg_qty", 0) or 0)))
+            qty = int(parse_kis_number(row.get("hldg_qty")))
             if qty <= 0:
                 continue
             stock_code = str(row.get("pdno", "")).strip()
             if not stock_code:
                 continue
             avg_price = self._parse_float(row.get("pchs_avg_pric"))
-            orderable_qty = int(float(str(row.get("ord_psbl_qty", qty) or qty)))
+            orderable_qty = int(parse_kis_number(row.get("ord_psbl_qty")) or qty)
             quote = quote_map.get(stock_code)
-            current_price = quote.current_price if quote is not None else avg_price
+            if quote is not None:
+                current_price = quote.current_price
+            else:
+                current_price = next(
+                    (
+                        price
+                        for price in (
+                            self._parse_float(row.get("prpr")),
+                            self._parse_float(row.get("stck_prpr")),
+                            self._parse_float(row.get("now_pric")),
+                            self._parse_float(row.get("last_price")),
+                        )
+                        if price > 0
+                    ),
+                    avg_price,
+                )
             pnl_pct = (
                 (current_price - avg_price) / avg_price
                 if avg_price > 0

@@ -1534,6 +1534,40 @@ def test_load_domestic_positions_reads_balance() -> None:
     ]
 
 
+def test_load_domestic_positions_reads_balance_without_ranked_candidates() -> None:
+    class DomesticBalanceOnlyClient:
+        async def get_balance(self):
+            return {
+                "positions": [
+                    {
+                        "pdno": "058730",
+                        "hldg_qty": "1,184",
+                        "ord_psbl_qty": "184",
+                        "pchs_avg_pric": "5,310",
+                        "prpr": "5,030",
+                    }
+                ]
+            }
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.client = DomesticBalanceOnlyClient()
+    service._cycle_count = 7
+
+    positions = asyncio.run(service._load_domestic_positions([]))
+
+    assert positions == [
+        DomesticHeldPosition(
+            stock_code="058730",
+            quantity=1184,
+            orderable_qty=184,
+            avg_price=5310.0,
+            current_price=5030.0,
+            pnl_pct=(5030.0 - 5310.0) / 5310.0,
+        )
+    ]
+    assert service._domestic_balance_cache["cycle"] == 7
+
+
 def test_get_domestic_available_krw_uses_cycle_cache() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service._cycle_count = 11

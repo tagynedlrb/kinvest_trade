@@ -98,6 +98,7 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         session_id="sess-a",
         strategy_flag="VWAP+VOL",
         entry_by="VWAP",
+        exit_by="",
         vwap=20.4,
         macd_line=0.5,
         macd_signal=0.3,
@@ -131,6 +132,7 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
         action_reason="marginal_profit_exit",
         cycle_no=8,
         session_id="sess-a",
+        exit_by="VWAP",
     )
 
     buy_rows = repository.query_cycle_log(symbol="SOXL", action_bias="BUY", limit=10)
@@ -157,6 +159,7 @@ def test_cycle_log_can_be_saved_and_filtered(tmp_path) -> None:
     assert buy_rows[0]["pool_size"] == 12
     assert len(sell_rows) == 1
     assert sell_rows[0]["action_reason"] == "marginal_profit_exit"
+    assert sell_rows[0]["exit_by"] == "VWAP"
 
 
 def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
@@ -167,6 +170,7 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
 
     assert "strategy_flag" in columns
     assert "entry_by" in columns
+    assert "exit_by" in columns
     assert "is_session_trade" in columns
     assert "vwap" in columns
     assert "macd_line" in columns

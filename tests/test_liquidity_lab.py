@@ -1741,6 +1741,34 @@ def test_domestic_sell_rejected_marks_skipped_true() -> None:
     assert result["reason"] == "order_rejected"
 
 
+def test_domestic_sell_rejected_adds_10min_cooldown() -> None:
+    service = _build_domestic_sell_service(error=KisApiError("domestic rejected"))
+    candidate = DomesticScanResult(
+        stock_code="379800",
+        current_price=25600,
+        best_ask=25605,
+        best_bid=25595,
+        spread_pct=0.0004,
+        minute_change_pct=-0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=124.0,
+    )
+    held = DomesticHeldPosition(
+        stock_code="379800",
+        quantity=34,
+        orderable_qty=34,
+        avg_price=25770.0,
+        current_price=25600.0,
+        pnl_pct=-0.0066,
+    )
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "time_exit_loss"))
+
+    assert result["reason"] == "order_rejected"
+    assert service._cooldown_remaining_minutes("domestic", "379800") > 9.0
+
+
 def test_domestic_buy_rejected_marks_skipped_true() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = SimpleNamespace(

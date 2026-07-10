@@ -3537,6 +3537,7 @@ class LiquidityLabService:
             session_id=getattr(self, "_session_id", ""),
             strategy_flag=watch_target.strategy_flag,
             entry_by=watch_target.entry_by,
+            exit_by=exit_by,
             vwap=signal_snapshot.vwap if signal_snapshot else None,
             macd_line=signal_snapshot.macd_line if signal_snapshot else None,
             macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
@@ -3602,9 +3603,15 @@ class LiquidityLabService:
             and watch_target.action_bias == "SELL"
             and watch_target.code in held_map
             and held_map[watch_target.code].orderable_qty > 0
+            and self._cooldown_remaining_minutes("domestic", watch_target.code) <= 0
         ]
         for held in held_positions:
             if held.orderable_qty <= 0:
+                self._track_no_orderable_stall(
+                    market="domestic",
+                    symbol=held.stock_code,
+                    holding_qty=held.quantity,
+                )
                 self._defer_no_orderable_position(
                     market="domestic",
                     symbol=held.stock_code,
@@ -3613,6 +3620,7 @@ class LiquidityLabService:
                 )
             else:
                 self._clear_no_orderable_retry("domestic", held.stock_code)
+                self._reset_no_orderable_stall("domestic", held.stock_code)
         if not ready_targets:
             return None
         best_target = min(
@@ -3943,6 +3951,7 @@ class LiquidityLabService:
                 signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                exit_by=exit_by,
                 stock_name=candidate.stock_name,
                 activity_score=candidate.activity_score,
                 orderable_qty=held.orderable_qty,
@@ -4016,6 +4025,23 @@ class LiquidityLabService:
                 order_division="00",
             )
         except KisApiError as exc:
+            self._set_exit_cooldown_minutes("domestic", candidate.stock_code, 10)
+            _logger.warning(
+                "[SELL] domestic order_rejected %s -> 10분 쿨다운 등록 (error=%s)",
+                candidate.stock_code,
+                exc,
+            )
+            self._save_event(
+                event_type="trade_skip",
+                market="domestic",
+                symbol=candidate.stock_code,
+                detail={
+                    "reason": "order_rejected",
+                    "side": "sell",
+                    "error": str(exc)[:100],
+                    "cooldown_applied_min": 10,
+                },
+            )
             self._record_trade_skip(
                 market="domestic",
                 symbol=candidate.stock_code,
@@ -4158,6 +4184,7 @@ class LiquidityLabService:
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                exit_by=exit_by,
                 is_session_trade=1 if self._is_session_owned(candidate.stock_code) else 0,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
                 hold_cycles=self._estimate_hold_cycles(candidate.stock_code),
@@ -4889,6 +4916,7 @@ class LiquidityLabService:
                 signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                exit_by=exit_by,
                 stock_name=candidate.symbol,
                 activity_score=candidate.activity_score,
                 orderable_qty=held.orderable_qty,
@@ -5408,6 +5436,7 @@ class LiquidityLabService:
                 session_id=getattr(self, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
+                exit_by=exit_by,
                 is_session_trade=1 if self._is_session_owned(candidate.symbol) else 0,
                 consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
                 hold_cycles=self._estimate_hold_cycles(candidate.symbol),
@@ -6544,6 +6573,7 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
         strategy_flag: str = "",
         entry_by: str = "",
+        exit_by: str = "",
         stock_name: str = "",
         activity_score: float | None = None,
         orderable_qty: int | None = None,
@@ -6573,6 +6603,7 @@ class LiquidityLabService:
             session_id=getattr(self, "_session_id", ""),
             strategy_flag=strategy_flag,
             entry_by=entry_by,
+            exit_by=exit_by,
             vwap=signal_snapshot.vwap if signal_snapshot else None,
             macd_line=signal_snapshot.macd_line if signal_snapshot else None,
             macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,

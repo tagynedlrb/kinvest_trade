@@ -331,6 +331,7 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "session_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "entry_by", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "cycle_log", "exit_by", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "cycle_log", "is_session_trade", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "cycle_log", "vwap", "REAL")
             self._ensure_column(conn, "cycle_log", "macd_line", "REAL")
@@ -469,6 +470,7 @@ class SqliteRepository:
         session_id: str = "",
         strategy_flag: str = "",
         entry_by: str = "",
+        exit_by: str = "",
         is_session_trade: int = 1,
         vwap: float | None = None,
         macd_line: float | None = None,
@@ -518,6 +520,7 @@ class SqliteRepository:
                 "session_id",
                 "strategy_flag",
                 "entry_by",
+                "exit_by",
                 "is_session_trade",
                 "vwap",
                 "macd_line",
@@ -566,6 +569,7 @@ class SqliteRepository:
                 session_id,
                 strategy_flag,
                 entry_by,
+                exit_by,
                 is_session_trade,
                 vwap,
                 macd_line,

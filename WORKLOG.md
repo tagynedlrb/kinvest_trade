@@ -1199,3 +1199,23 @@
 - `Both-sided waiting` 류 거부가 반복되더라도 동일 종목은 20분간 재시도하지 않음
 - `orderable_qty=0` 장기 지속 종목은 텔레그램 경고로 조기 식별 가능
 - `VWAP 단독`, `RSI 단독` 진입은 기존보다 보수적으로 제한됨
+
+## [2026-07-10] 국내 매도거부 반복 억제 / exit_by 분석 컬럼 추가
+
+### 추가 점검 결과
+- 최근 `cycle_log`에서 국내 `069500`, `379800` 매도도 `sell:order_rejected`가
+  발생한 흔적이 확인됨
+- 해외처럼 반복 폭주까지는 아니지만, 같은 pending/처리 지연류 거부가 국내에서도
+  연속 재시도로 이어질 수 있음
+- `cycle_log`에는 `strategy_flag`, `entry_by`는 있었지만 `exit_by`가 없어
+  청산 전략별 성과 분석이 끊겼음
+
+### 수정 사항
+- 국내 매도 `order_rejected` 발생 시 10분 exit cooldown 등록
+- 국내 exit target 선정 시 cooldown 중인 종목은 매도 재시도 대상에서 제외
+- `cycle_log.exit_by` 컬럼을 런타임 마이그레이션에 추가
+- SELL/WAIT/SKIP 로그에 가능한 경우 `exit_by`를 함께 저장
+
+### 기대 효과
+- 국내 매도 주문 거부가 반복 알림/반복 주문으로 번지는 현상 감소
+- 다음 성과 분석에서 `entry_by`, `exit_by`, `action_reason` 조합별 손익 분석 가능

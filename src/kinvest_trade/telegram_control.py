@@ -1364,18 +1364,22 @@ class TelegramLiquidityLabController:
         result: dict[tuple[str, str], float] = {}
         manager = VirtualTradeManager(self.repository)
         positions = [position for position in manager.list_positions("overseas") if position.qty > 0]
-        for position in positions[:25]:
+
+        async def fetch_price(position) -> tuple[tuple[str, str], float] | None:
             symbol = position.symbol.upper()
             exchange_code = str(position.exchange_code or "NASD").upper()
             try:
-                quote = await lab.client.get_overseas_price(symbol, exchange_code)
+                quote = await asyncio.wait_for(
+                    lab.client.get_overseas_price(symbol, exchange_code),
+                    timeout=6.0,
+                )
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
                     "portfolio_live_virtual_quote_failed symbol=%s error=%s",
                     symbol,
                     exc,
                 )
-                continue
+                return None
             last_price = self._parse_float(quote.get("last_price"))
             if last_price <= 0:
                 bid = self._parse_float(quote.get("bid"))
@@ -1385,7 +1389,22 @@ class TelegramLiquidityLabController:
                 else:
                     last_price = max(bid, ask)
             if last_price > 0:
-                result[("overseas", symbol)] = last_price
+                return ("overseas", symbol), last_price
+            return None
+
+        fetched = []
+        limited_positions = positions[:25]
+        batch_size = 2
+        for start in range(0, len(limited_positions), batch_size):
+            if start > 0:
+                await asyncio.sleep(1.05)
+            batch = limited_positions[start : start + batch_size]
+            fetched.extend(await asyncio.gather(*(fetch_price(position) for position in batch)))
+        for item in fetched:
+            if item is None:
+                continue
+            key, price = item
+            result[key] = price
         return result
 
     async def _load_live_portfolio_positions(self) -> list[dict] | None:

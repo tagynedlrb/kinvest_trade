@@ -394,6 +394,57 @@ def test_build_portfolio_message_uses_live_virtual_price_override(tmp_path) -> N
     assert "해외 AAPL 수량=1 매입=$200.0000 현재=$220.0000 손익=+10.00%" in message
 
 
+def test_load_live_virtual_price_lookup_fetches_quotes_with_fallback(tmp_path) -> None:
+    class FakeQuoteClient:
+        async def get_overseas_price(self, symbol, exchange_code):
+            if symbol == "AAPL":
+                return {"last_price": "220.5", "bid": "220.4", "ask": "220.6"}
+            if symbol == "MSFT":
+                return {"last_price": "", "bid": "300.0", "ask": "302.0"}
+            raise AssertionError(symbol)
+
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_live_quote.db")
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=1,
+        fill_price=200.0,
+        currency="USD",
+        session="regular",
+        reason="test",
+        created_at="2026-07-01T00:00:00+00:00",
+    )
+    manager.record_buy(
+        market="overseas",
+        symbol="MSFT",
+        exchange_code="NASD",
+        qty=1,
+        fill_price=290.0,
+        currency="USD",
+        session="regular",
+        reason="test",
+        created_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.lab_service = SimpleNamespace(client=FakeQuoteClient())
+
+    prices = asyncio.run(controller._load_live_virtual_price_lookup())
+
+    assert prices[("overseas", "AAPL")] == 220.5
+    assert prices[("overseas", "MSFT")] == 301.0
+
+
 def test_build_portfolio_message_applies_pending_sell_to_effective_qty(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_portfolio_pending.db")
     repository.upsert_virtual_sell_pending(

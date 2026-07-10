@@ -2703,7 +2703,65 @@ def test_strategy_buy_can_override_entry_setup_wait() -> None:
     assert watch_target.action_bias == "BUY"
     assert watch_target.signal_state == "BUY"
     assert watch_target.strategy_flag == "VWAP+RSI"
-    assert watch_target.entry_by == "VWAP"
+
+
+def test_overseas_single_vwap_buy_waits_for_entry_confirmation() -> None:
+    service = _build_run_service()
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="AAPL",
+        exchange_code="NASD",
+        price=100.5,
+        activity_score=20.0,
+        signal_snapshot=_snapshot(
+            price=100.5,
+            vwap=100.0,
+            rsi14=45.0,
+            volume_ratio=1.0,
+            macd_golden=False,
+            macd_dead=False,
+            macd_line=0.1,
+            macd_signal=0.2,
+            breakout_distance_pct=-0.01,
+            intraday_momentum=0.0002,
+            intraday_bar_return=0.0001,
+        ),
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.strategy_flag == "VWAP"
+    assert watch_target.note.startswith("[VWAP] confirm_wait:")
+
+
+def test_overseas_single_rsi_buy_waits_for_entry_confirmation() -> None:
+    service = _build_run_service()
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="ALNY",
+        exchange_code="NASD",
+        price=100.0,
+        activity_score=20.0,
+        signal_snapshot=_snapshot(
+            price=100.0,
+            vwap=105.0,
+            rsi14=30.0,
+            volume_ratio=1.0,
+            macd_golden=True,
+            macd_dead=False,
+            macd_line=0.4,
+            macd_signal=0.2,
+            breakout_distance_pct=-0.01,
+            intraday_momentum=0.0002,
+            intraday_bar_return=0.0001,
+        ),
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.strategy_flag == "RSI"
+    assert watch_target.note.startswith("[RSI] confirm_wait:")
+    assert watch_target.entry_by == "RSI"
 
 
 def test_strategy_buy_blocked_by_exit_cooldown() -> None:

@@ -3414,6 +3414,27 @@ class LiquidityLabService:
             commit=False,
         )
         if strategy_result.signal == "BUY":
+            if (
+                market == "overseas"
+                and strategy_result.flag in {"VWAP", "RSI"}
+                and not entry_setup.ready
+            ):
+                return WatchTargetStatus(
+                    market=market,
+                    code=code,
+                    exchange_code=exchange_code,
+                    price=price,
+                    activity_score=activity_score,
+                    signal_score=entry_setup.score,
+                    action_bias="WAIT",
+                    signal_state="WAIT",
+                    ma_summary=self._ma_relation_summary(signal_snapshot),
+                    note=f"[{strategy_result.flag}] confirm_wait:{entry_setup.reason}",
+                    holding_qty=holding_qty,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_result.flag,
+                    entry_by=strategy_result.entry_by,
+                )
             exit_cooldown = getattr(self, "_exit_cooldown", None)
             if exit_cooldown is None:
                 exit_cooldown = {}

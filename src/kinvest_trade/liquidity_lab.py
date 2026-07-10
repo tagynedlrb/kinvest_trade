@@ -907,6 +907,123 @@ class LiquidityLabService:
         )
 
     @staticmethod
+    def _parse_domestic_order_history_timestamp(row: dict) -> datetime | None:
+        ord_dt = str(row.get("ord_dt") or "").strip()
+        ord_tmd = str(row.get("ord_tmd") or "").strip()
+        if not ord_dt or not ord_tmd:
+            return None
+        ord_tmd = ord_tmd.zfill(6)[:6]
+        try:
+            parsed = datetime.strptime(f"{ord_dt}{ord_tmd}", "%Y%m%d%H%M%S")
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=KST).astimezone(timezone.utc)
+
+    def _parse_open_domestic_order_rows(
+        self,
+        rows: list[dict],
+        *,
+        symbol: str,
+    ) -> list[dict]:
+        parsed: list[dict] = []
+        target_symbol = symbol.strip().upper()
+        for row in rows:
+            row_symbol = str(row.get("pdno") or "").strip().upper()
+            if target_symbol and row_symbol != target_symbol:
+                continue
+            open_qty = parse_kis_number(row.get("rmn_qty"))
+            if open_qty <= 0:
+                order_qty = parse_kis_number(row.get("ord_qty"))
+                filled_qty = parse_kis_number(row.get("tot_ccld_qty"))
+                canceled_qty = parse_kis_number(row.get("cncl_cfrm_qty"))
+                rejected_qty = parse_kis_number(row.get("rjct_qty"))
+                open_qty = max(0, order_qty - filled_qty - canceled_qty - rejected_qty)
+            if open_qty <= 0:
+                continue
+            if str(row.get("cncl_yn", "") or "").strip().upper() == "Y":
+                continue
+            item = dict(row)
+            item["open_qty"] = open_qty
+            item["symbol"] = row_symbol
+            item["order_no"] = str(row.get("odno") or "").strip()
+            item["order_price"] = self._parse_float(row.get("ord_unpr"))
+            item["created_at"] = self._parse_domestic_order_history_timestamp(row)
+            parsed.append(item)
+        parsed.sort(
+            key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        return parsed
+
+    async def _list_open_domestic_orders(self, *, symbol: str) -> list[dict]:
+        now_kst = datetime.now(timezone.utc).astimezone(KST)
+        trade_date = now_kst.strftime("%Y%m%d")
+        try:
+            history = await self.client.get_domestic_order_history(
+                symbol=symbol.strip().upper(),
+                start_date=trade_date,
+                end_date=trade_date,
+                side_filter="00",
+                fill_filter="02",
+                query_order="00",
+                query_type="00",
+                exchange_code="KRX",
+            )
+        except Exception:
+            return []
+        return self._parse_open_domestic_order_rows(history.get("orders", []), symbol=symbol)
+
+    async def _find_open_domestic_order(self, *, symbol: str, side: str) -> dict | None:
+        side_code = "01" if side.upper() == "SELL" else "02"
+        for row in await self._list_open_domestic_orders(symbol=symbol):
+            side_name = str(row.get("sll_buy_dvsn_cd_name") or "").strip()
+            row_side = str(row.get("sll_buy_dvsn_cd") or "").strip()
+            if row_side == side_code:
+                return row
+            if side.upper() == "SELL" and side_name == "매도":
+                return row
+            if side.upper() == "BUY" and side_name == "매수":
+                return row
+        return None
+
+    async def _cancel_open_domestic_order(
+        self,
+        *,
+        symbol: str,
+        pending_order: dict,
+    ) -> dict:
+        order_no = str(pending_order.get("order_no") or pending_order.get("odno") or "").strip()
+        orgno = str(
+            pending_order.get("ord_gno_brno")
+            or pending_order.get("krx_fwdg_ord_orgno")
+            or pending_order.get("KRX_FWDG_ORD_ORGNO")
+            or ""
+        ).strip()
+        qty = int(pending_order.get("open_qty") or parse_kis_number(pending_order.get("rmn_qty")))
+        if not order_no:
+            raise KisApiError("pending_domestic_order_missing_order_no")
+        if not orgno:
+            raise KisApiError("pending_domestic_order_missing_orgno")
+        if qty <= 0:
+            raise KisApiError("pending_domestic_order_missing_open_qty")
+        order_division = str(pending_order.get("ord_dvsn_cd") or "00").strip() or "00"
+        exchange_code = str(
+            pending_order.get("excg_id_dvsn_cd")
+            or pending_order.get("EXCG_ID_DVSN_CD")
+            or "KRX"
+        ).strip() or "KRX"
+        return await self.client.revise_or_cancel_domestic_order(
+            krx_order_orgno=orgno,
+            original_order_no=order_no,
+            order_division=order_division,
+            rvse_cncl_dvsn_cd="02",
+            qty=0,
+            price=0,
+            qty_all_order_yn="Y",
+            exchange_code=exchange_code,
+        )
+
+    @staticmethod
     def _pending_order_age_seconds(pending_order: dict | None, *, now: datetime | None = None) -> float:
         if pending_order is None:
             return 0.0
@@ -3940,7 +4057,7 @@ class LiquidityLabService:
             if watch_target.market == "domestic"
             and watch_target.action_bias == "SELL"
             and watch_target.code in held_map
-            and held_map[watch_target.code].orderable_qty > 0
+            and held_map[watch_target.code].quantity > 0
             and self._cooldown_remaining_minutes("domestic", watch_target.code) <= 0
         ]
         for held in held_positions:
@@ -4307,6 +4424,98 @@ class LiquidityLabService:
 
         sell_price = float(candidate.best_bid or candidate.current_price)
         sell_qty = min(held.quantity, max(held.orderable_qty, 0))
+        replacement_note = ""
+        pending_sell_order = await self._find_open_domestic_order(
+            symbol=candidate.stock_code,
+            side="SELL",
+        )
+        if pending_sell_order is not None:
+            pending_age_sec = self._pending_order_age_seconds(pending_sell_order)
+            if exit_reason not in self._protective_exit_reasons() or pending_age_sec < 45:
+                self._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason="pending_exit_order",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "pending_exit_order",
+                }
+            try:
+                cancel_response = await self._cancel_open_domestic_order(
+                    symbol=candidate.stock_code,
+                    pending_order=pending_sell_order,
+                )
+            except KisApiError as exc:
+                error_text = str(exc)
+                self._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason="pending_exit_cancel_failed",
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                    error=error_text,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": None if signal_snapshot is None else asdict(signal_snapshot),
+                    "exit_reason": exit_reason,
+                    "reason": "pending_exit_cancel_failed",
+                    "error": error_text,
+                }
+            self._record_broker_order_event(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                side="SELL",
+                order_kind="cancel",
+                requested_qty=int(pending_sell_order.get("open_qty") or 0),
+                requested_price=float(pending_sell_order.get("order_price") or 0.0),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                status="CANCELED",
+                reason="stale_exit_replace",
+                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+            )
+            replacement_note = "미체결 매도 정정 후 재주문"
+            if sell_qty <= 0:
+                sell_qty = min(
+                    held.quantity,
+                    int(pending_sell_order.get("open_qty") or held.quantity),
+                )
         if sell_qty <= 0:
             self._record_trade_skip(
                 market="domestic",
@@ -4465,6 +4674,8 @@ class LiquidityLabService:
             f"매수전략={entry_label}",
             f"청산전략={exit_label}",
         ]
+        if replacement_note:
+            lines.append(f"참고={replacement_note}")
         if held.avg_price > 0:
             gross_pnl = (sell_price - held.avg_price) * sell_qty
             pnl_pct = (sell_price - held.avg_price) / held.avg_price
@@ -4486,20 +4697,19 @@ class LiquidityLabService:
             reason=exit_reason,
             payload=response if isinstance(response, dict) else {"response": response},
         )
-        self._queue_trade_notification(
-            " ".join(
-                [
-                    format_market_korean("domestic"),
-                    self._format_trade_symbol_label("domestic", candidate.stock_code),
-                    "매도접수",
-                    format_krw(sell_price),
-                    f"x{sell_qty}",
-                    f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
-                    f"매수={entry_label}",
-                    f"청산={exit_label}",
-                ]
-            )
-        )
+        queue_parts = [
+            format_market_korean("domestic"),
+            self._format_trade_symbol_label("domestic", candidate.stock_code),
+            "매도접수",
+            format_krw(sell_price),
+            f"x{sell_qty}",
+            f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
+            f"매수={entry_label}",
+            f"청산={exit_label}",
+        ]
+        if replacement_note:
+            queue_parts.append(f"참고={replacement_note}")
+        self._queue_trade_notification(" ".join(queue_parts))
         await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         entry_price, entry_time_iso, hold_duration_min = self._get_entry_context(
             "domestic",
@@ -4617,6 +4827,7 @@ class LiquidityLabService:
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
             "exit_by": exit_by,
+            "replacement_note": replacement_note,
             "response": response,
         }
 

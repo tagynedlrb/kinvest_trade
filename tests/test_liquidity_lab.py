@@ -1655,9 +1655,16 @@ def test_get_domestic_available_krw_uses_cycle_cache() -> None:
 
 
 class DummyDomesticSellClient:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        pending_orders: list[dict] | None = None,
+    ) -> None:
         self.error = error
         self.order_calls: list[dict] = []
+        self.cancel_calls: list[dict] = []
+        self.pending_orders = list(pending_orders or [])
 
     async def place_cash_order(
         self,
@@ -1679,6 +1686,19 @@ class DummyDomesticSellClient:
         }
         self.order_calls.append(payload)
         return payload
+
+    async def get_domestic_order_history(self, **kwargs):
+        del kwargs
+        return {"orders": list(self.pending_orders)}
+
+    async def revise_or_cancel_domestic_order(self, **kwargs):
+        self.cancel_calls.append(kwargs)
+        return {
+            "rt_cd": "0",
+            "msg_cd": "00000000",
+            "msg1": "취소 완료",
+            "output": {"ODNO": kwargs.get("original_order_no", "")},
+        }
 
 
 class DummyOverseasBalanceClient:
@@ -1804,7 +1824,12 @@ def test_overseas_balance_cache_reused_within_cycle() -> None:
     assert service.client.calls == 1
 
 
-def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | None = None) -> LiquidityLabService:
+def _build_domestic_sell_service(
+    *,
+    dry_run: bool = False,
+    error: Exception | None = None,
+    pending_orders: list[dict] | None = None,
+) -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
         "Config",
@@ -1813,7 +1838,7 @@ def _build_domestic_sell_service(*, dry_run: bool = False, error: Exception | No
             "credentials": type("Creds", (), {"dry_run": dry_run})(),
         },
     )()
-    service.client = DummyDomesticSellClient(error=error)
+    service.client = DummyDomesticSellClient(error=error, pending_orders=pending_orders)
     service.repository = _build_repository()
     service.virtual_trades = VirtualTradeManager(service.repository)
     service.position_tracker = UnifiedPositionTracker(service.repository, service.virtual_trades)
@@ -1892,6 +1917,80 @@ def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert rows[0]["symbol"] == "005930"
     assert rows[0]["session_id"] == "sess-domestic"
     assert rows[0]["realized_pnl_krw"] == 3900.0
+
+
+def test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderable_zero() -> None:
+    pending_orders = [
+        {
+            "pdno": "058730",
+            "prdt_name": "다스코",
+            "sll_buy_dvsn_cd": "01",
+            "sll_buy_dvsn_cd_name": "매도",
+            "rmn_qty": "184",
+            "ord_qty": "184",
+            "tot_ccld_qty": "0",
+            "cncl_cfrm_qty": "0",
+            "rjct_qty": "0",
+            "odno": "0000015789",
+            "ord_gno_brno": "00950",
+            "ord_dvsn_cd": "00",
+            "excg_id_dvsn_cd": "KRX",
+            "ord_unpr": "5710",
+            "ord_dt": "20000101",
+            "ord_tmd": "100816",
+        }
+    ]
+    service = _build_domestic_sell_service(pending_orders=pending_orders)
+    candidate = DomesticScanResult(
+        stock_code="058730",
+        current_price=4925,
+        best_ask=4930,
+        best_bid=4925,
+        spread_pct=0.001,
+        minute_change_pct=-0.015,
+        intraday_turnover_krw=5_000_000_000,
+        volume_sum=500_000,
+        activity_score=18.0,
+        stock_name="다스코",
+    )
+    held = DomesticHeldPosition(
+        stock_code="058730",
+        quantity=184,
+        orderable_qty=0,
+        avg_price=5310.0,
+        current_price=4925.0,
+        pnl_pct=(4925.0 - 5310.0) / 5310.0,
+    )
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is True
+    assert result["replacement_note"] == "미체결 매도 정정 후 재주문"
+    assert service.client.cancel_calls == [
+        {
+            "krx_order_orgno": "00950",
+            "original_order_no": "0000015789",
+            "order_division": "00",
+            "rvse_cncl_dvsn_cd": "02",
+            "qty": 0,
+            "price": 0,
+            "qty_all_order_yn": "Y",
+            "exchange_code": "KRX",
+        }
+    ]
+    assert service.client.order_calls == [
+        {
+            "side": "sell",
+            "stock_code": "058730",
+            "qty": 184,
+            "price": 4925,
+            "order_division": "00",
+        }
+    ]
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["reason"] == "stale_exit_replace"
+    assert "참고=미체결 매도 정정 후 재주문" in service.notifier.messages[0]
 
 
 def test_place_domestic_sell_order_defers_unprofitable_time_exit_profit() -> None:
@@ -2143,7 +2242,7 @@ def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
     assert signal_snapshot is None
 
 
-def test_select_domestic_exit_target_skips_zero_orderable_positions() -> None:
+def test_select_domestic_exit_target_keeps_zero_orderable_positions_for_pending_repair() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     ranked = [
         DomesticScanResult(
@@ -2183,7 +2282,11 @@ def test_select_domestic_exit_target_skips_zero_orderable_positions() -> None:
 
     result = service._select_domestic_exit_target(ranked, watch_targets, held_positions)
 
-    assert result is None
+    assert result is not None
+    candidate, held, exit_reason, _snapshot = result
+    assert candidate.stock_code == "005930"
+    assert held.orderable_qty == 0
+    assert exit_reason == "stop_loss"
 
 
 def test_select_domestic_buy_targets_returns_multiple() -> None:

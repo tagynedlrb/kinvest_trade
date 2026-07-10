@@ -2072,3 +2072,37 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_records_cancel_event tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_records_rejected_event tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_defers_when_market_closed -q` → 3개 통과
 - `python3 -m pytest tests/test_telegram_control.py::test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_defers_when_market_closed -q` → 2개 통과
 - `python3 -m pytest tests -q` → 373개 통과
+
+## [2026-07-10] 국내 보호청산 미체결 재주문 보강
+
+### 발견 사고
+- `058730(다스코)`:
+  - 2026-07-09 09:20 KST 매수 184주 @ 5,310원
+  - 10:08 KST 5,710원 매도 주문 접수(`partial_profit_lock`) 후 실제 체결되지 않음
+  - 이후 보유수량 184주, 주문가능수량 0으로 반복되어 손절/ATR 청산 신호가
+    `sell:no_orderable_qty`로 스킵됨
+  - 2026-07-10 잔고 조회 결과 실제 모의계좌에 184주가 여전히 남아 있고,
+    주문가능수량은 184주로 풀려 있음
+
+### 원인
+- 해외 매도 경로는 오래된 미체결 매도를 취소 후 재주문하는 정책이 있었지만,
+  국내 매도 경로에는 동일한 보호청산 재주문 로직이 없었다.
+- 국내 SELL 후보 선정도 `orderable_qty > 0` 조건 때문에,
+  미체결 매도 주문에 수량이 묶인 손절 후보가 매도 함수까지 도달하지 못했다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - 국내 미체결 주문 조회/파싱/취소 헬퍼 추가
+  - 국내 SELL 후보 선정에서 `orderable_qty > 0` 대신 보유수량 기준으로 후보 유지
+  - 보호청산(`stop_loss`, `atr_hard_stop`, `momentum_loss_cut`,
+    `trend_filter_lost`, `time_exit_loss`)이고 기존 매도 미체결이 오래됐으면
+    취소 후 현재 매도호가 기준으로 재주문
+  - 보호청산이 아니거나 미체결 주문이 너무 최근이면 `pending_exit_order`로 중복 주문 방지
+- `tests/test_liquidity_lab.py`
+  - `058730`과 같은 `orderable_qty=0 + 오래된 매도 미체결 + atr_hard_stop`
+    상황에서 취소 후 재매도 주문이 발생하는 회귀 테스트 추가
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderable_zero tests/test_liquidity_lab.py::test_place_domestic_sell_order_sends_telegram_on_success tests/test_liquidity_lab.py::test_domestic_sell_rejected_adds_10min_cooldown -q` → 3개 통과
+- `python3 -m pytest tests/test_liquidity_lab.py::test_select_domestic_exit_target_keeps_zero_orderable_positions_for_pending_repair tests/test_liquidity_lab.py::test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderable_zero -q` → 2개 통과
+- `python3 -m pytest tests -q` → 374개 통과

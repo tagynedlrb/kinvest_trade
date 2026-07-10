@@ -1314,7 +1314,7 @@ class TelegramLiquidityLabController:
             count = int(item["count"])
             notional = float(item["notional"])
             parts = [
-                f"{format_market_korean(market)} 가상매수노출={self._format_price(notional, currency)}",
+                f"{format_market_korean(market)} 가상매수노출={self._format_notional_price(notional, currency)}",
                 f"{count}종목",
             ]
             if market == "overseas" and currency == "USD":
@@ -1322,7 +1322,7 @@ class TelegramLiquidityLabController:
                 if last_available_usd is not None and float(last_available_usd) > 0:
                     limit = float(last_available_usd) * max_pct
                     status = "초과" if notional > limit else "정상"
-                    parts.append(f"최근한도={self._format_price(limit, currency)}")
+                    parts.append(f"최근한도={self._format_notional_price(limit, currency)}")
                     parts.append(f"상태={status}")
             lines.append(" ".join(parts))
         return lines
@@ -1760,6 +1760,12 @@ class TelegramLiquidityLabController:
         if currency == "KRW":
             return f"{int(round(value)):,}원"
         return f"${value:.4f}"
+
+    @staticmethod
+    def _format_notional_price(value: float, currency: str) -> str:
+        if currency == "KRW":
+            return f"{int(round(value)):,}원"
+        return f"${value:,.2f}"
 
     @staticmethod
     def _short_time(value: str | None) -> str:

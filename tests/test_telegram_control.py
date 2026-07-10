@@ -399,10 +399,13 @@ def test_build_status_message_shows_virtual_position_cap(tmp_path) -> None:
         repository=repository,
         notifier=DummyNotifier(),
     )
+    controller.mode = "stopped"
 
     message = controller._build_status_message()
 
     assert "포지션한도=2/1 초과" in message
+    assert "감시=중지" in message
+    assert "조치=/lab_start 또는 /lab_reset" in message
 
 
 def test_build_status_message_shows_stale_signal_cache_summary() -> None:
@@ -738,11 +741,14 @@ def test_build_portfolio_message_shows_virtual_position_cap(tmp_path) -> None:
         repository=repository,
         notifier=DummyNotifier(),
     )
+    controller.mode = "stopped"
 
     message = controller._build_portfolio_message(virtual_exposure_available_usd=1000.0)
 
     assert "해외 가상매수노출=$200.00 2종목" in message
-    assert "포지션한도=2/1 초과" in message
+    assert "포지션한도=2/1 초과 감시=중지" in message
+    assert "주의=가상 포지션 한도 초과 상태에서 거래루프가 중지되어 있습니다" in message
+    assert "조치=/lab_start 재개 또는 /lab_reset 초기화 검토" in message
 
 
 def test_build_portfolio_message_warns_virtual_risk_and_exposure_when_stopped(tmp_path) -> None:

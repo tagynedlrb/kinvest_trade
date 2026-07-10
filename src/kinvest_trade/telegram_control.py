@@ -1448,6 +1448,7 @@ class TelegramLiquidityLabController:
                 status = "초과" if notional > limit else "정상"
 
         suffix: list[str] = []
+        position_cap_exceeded = False
         if status:
             suffix.append(f"상태={status}")
             if status == "초과" and self.mode != "running":
@@ -1459,10 +1460,15 @@ class TelegramLiquidityLabController:
                 if market == "overseas" and currency == "USD"
             )
             if overseas_count > 0:
-                cap_status = "초과" if overseas_count > max_overseas_positions else "정상"
+                position_cap_exceeded = overseas_count > max_overseas_positions
+                cap_status = "초과" if position_cap_exceeded else "정상"
                 suffix.append(
                     f"포지션한도={overseas_count}/{max_overseas_positions} {cap_status}"
                 )
+        if position_cap_exceeded and self.mode != "running":
+            if "감시=중지" not in suffix:
+                suffix.append("감시=중지")
+            suffix.append("조치=/lab_start 또는 /lab_reset")
         suffix.append("확인=/lab_portfolio")
         return f"가상노출={' / '.join(parts)} {' '.join(suffix)}"
 
@@ -2156,6 +2162,7 @@ class TelegramLiquidityLabController:
                 else getattr(lab, "_last_overseas_available_usd", None)
             )
         lines: list[str] = []
+        position_cap_exceeded = False
         for (market, currency), item in sorted(by_market_currency.items()):
             count = int(item["count"])
             notional = float(item["notional"])
@@ -2173,11 +2180,19 @@ class TelegramLiquidityLabController:
                     if status == "초과" and self.mode != "running":
                         parts.append("감시=중지")
                 if max_overseas_positions > 0:
-                    cap_status = "초과" if count > max_overseas_positions else "정상"
+                    cap_exceeded = count > max_overseas_positions
+                    if cap_exceeded:
+                        position_cap_exceeded = True
+                    cap_status = "초과" if cap_exceeded else "정상"
                     parts.append(f"포지션한도={count}/{max_overseas_positions} {cap_status}")
+                    if cap_exceeded and self.mode != "running":
+                        parts.append("감시=중지")
             lines.append(" ".join(parts))
         if any("상태=초과 감시=중지" in line for line in lines):
             lines.append("주의=가상 노출 한도 초과 상태에서 거래루프가 중지되어 있습니다")
+        if position_cap_exceeded and self.mode != "running":
+            lines.append("주의=가상 포지션 한도 초과 상태에서 거래루프가 중지되어 있습니다")
+            lines.append("조치=/lab_start 재개 또는 /lab_reset 초기화 검토")
         return lines
 
     async def _send_portfolio_message(self) -> None:

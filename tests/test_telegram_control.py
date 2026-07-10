@@ -1370,6 +1370,8 @@ def test_lab_guard_command_reports_current_strategy_guard_state(tmp_path) -> Non
                 strategy_guard_max_avg_net_pnl_pct=-0.003,
                 strategy_guard_markets=["overseas"],
                 strategy_guard_strategy_flags=["VWAP", "RSI", "VOL"],
+                overseas_block_standalone_vwap=True,
+                overseas_block_standalone_rsi=True,
             ),
             storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
             auto_trade=SimpleNamespace(
@@ -1397,6 +1399,7 @@ def test_lab_guard_command_reports_current_strategy_guard_state(tmp_path) -> Non
     assert "상태=활성" in message
     assert "차단조건=3건 이상, 평균순손익 -0.30% 이하" in message
     assert "감시대상=overseas:RSI,VOL,VWAP" in message
+    assert "고정차단=해외 VWAP단독,해외 RSI단독" in message
     assert "해외 VWAP 상태=차단 3건 승률=0% 평균순=-1.50%" in message
     assert "국내 VWAP 상태=참고 1건 승률=100% 평균순=+1.50%" in message
 

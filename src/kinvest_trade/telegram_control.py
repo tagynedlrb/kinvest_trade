@@ -2273,6 +2273,13 @@ class TelegramLiquidityLabController:
             f"감시대상={','.join(sorted(guard_markets))}:{','.join(sorted(guard_flags))}",
             "주의=실주문접수 SELL_REAL 기준, 체결확정은 /lab_orders 확인",
         ]
+        hard_blocks: list[str] = []
+        if bool(getattr(config, "overseas_block_standalone_vwap", False)):
+            hard_blocks.append("해외 VWAP단독")
+        if bool(getattr(config, "overseas_block_standalone_rsi", False)):
+            hard_blocks.append("해외 RSI단독")
+        if hard_blocks:
+            lines.insert(6, f"고정차단={','.join(hard_blocks)}")
         if not enabled:
             return "\n".join(lines)
         if not hasattr(self.repository, "get_recent_strategy_guard_performance"):

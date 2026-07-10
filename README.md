@@ -324,7 +324,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
 - `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실주문접수 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
 - `/lab_report compare <YYYY-MM-DD>`: 기준일 전후 전략별 실주문접수 성과 비교
-- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`로 표시하며, 현재 기본 감시 대상은 해외 `VWAP`, `RSI`, `VOL`이다
+- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`와 고정차단(`해외 VWAP단독`, `해외 RSI단독`)을 함께 표시한다
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
 - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
 - `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)

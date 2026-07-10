@@ -106,7 +106,7 @@
         "ma20_partial_exit_buffer_pct": 0.0025,
         "trend_chase_limit_pct": 0.02,
         "max_entry_rsi14": 80.0,
-        "rsi_entry_threshold": 35.0,
+        "rsi_entry_threshold": 30.0,
         "trend_require_price_above_slow": true,
         "min_hold_before_trend_exit": 12,
         "max_hold_cycles": 120,

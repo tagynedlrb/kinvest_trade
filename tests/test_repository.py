@@ -278,6 +278,91 @@ def test_broker_order_events_table_and_save(tmp_path) -> None:
     assert rows[0]["payload_json"]["output"]["ODNO"] == "12345678"
 
 
+def test_submitted_order_audit_rows_excludes_canceled_and_keeps_cancel_rejected(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:00:00+00:00",
+        market="overseas",
+        symbol="FOO",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=10,
+        requested_price=10.0,
+        status="SUBMITTED",
+        reason="stop_loss",
+        broker_order_no="ord-001",
+        is_virtual=0,
+        payload={},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:05:00+00:00",
+        market="overseas",
+        symbol="FOO",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="cancel",
+        requested_qty=10,
+        requested_price=10.0,
+        status="REJECTED",
+        reason="stale_live_overseas_order_cancel_failed",
+        broker_order_no="ord-001",
+        is_virtual=0,
+        payload={"original_order_no": "ord-001"},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:10:00+00:00",
+        market="overseas",
+        symbol="BAR",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=20,
+        requested_price=20.0,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no="ord-002",
+        is_virtual=0,
+        payload={},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:15:00+00:00",
+        market="overseas",
+        symbol="BAR",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=20,
+        requested_price=20.0,
+        status="CANCELED",
+        reason="stale_live_overseas_order_cancel",
+        broker_order_no="cancel-002",
+        is_virtual=0,
+        payload={"original_order_no": "ord-002"},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:20:00+00:00",
+        market="overseas",
+        symbol="VIRT",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="virtual_limit",
+        requested_qty=1,
+        requested_price=30.0,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no="virt-001",
+        is_virtual=1,
+        payload={},
+    )
+
+    rows = repository.list_submitted_order_audit_rows(limit=10)
+
+    assert [row["symbol"] for row in rows] == ["FOO"]
+    assert rows[0]["followup_status"] == "REJECTED"
+    assert rows[0]["followup_reason"] == "stale_live_overseas_order_cancel_failed"
+
+
 def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     snapshot = {"price": 170.0, "volume_ratio": 2.1}

@@ -2780,6 +2780,7 @@ class TelegramLiquidityLabController:
         live_open_error: str = "",
     ) -> str:
         rows = self.repository.list_broker_order_events(limit=limit)
+        audit_rows = self.repository.list_submitted_order_audit_rows(limit=5, source_limit=500)
         lines = [
             "[KIS][주문기록]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
@@ -2803,6 +2804,11 @@ class TelegramLiquidityLabController:
             else:
                 for row in live_open_orders[:8]:
                     lines.append(self._format_live_open_overseas_order_line(row))
+        if audit_rows:
+            lines.append("─── 접수 후 체결확정 추적 필요 ───")
+            lines.append("기준=실주문 SUBMITTED, DB상 체결확정 이벤트 없음")
+            for row in audit_rows:
+                lines.append(self._format_submitted_order_audit_line(row))
         if rows:
             lines.append("─── 내부 주문 이벤트 ───")
         if not rows:
@@ -3113,6 +3119,42 @@ class TelegramLiquidityLabController:
         if side == "SELL":
             return "매도접수"
         return status or "-"
+
+    def _format_submitted_order_audit_line(self, row: dict) -> str:
+        created_at = parse_datetime(row.get("created_at"))
+        time_text = format_kst_korean(created_at) if created_at else "-"
+        market = str(row.get("market", "overseas"))
+        symbol = str(row.get("symbol", "-")).upper()
+        side = str(row.get("side", "")).upper()
+        side_text = "매수접수" if side == "BUY" else "매도접수" if side == "SELL" else "접수"
+        qty = int(row.get("requested_qty", 0) or 0)
+        price = float(row.get("requested_price", 0.0) or 0.0)
+        currency = "KRW" if market == "domestic" else "USD"
+        price_text = "-" if price <= 0 else self._format_price(price, currency)
+        order_no = str(row.get("broker_order_no", "") or "").strip()
+        parts = [
+            f"{time_text} {format_market_korean(market)} {symbol}",
+            side_text,
+            price_text,
+            f"x{qty}",
+            "확인필요=MTS/잔고",
+        ]
+        if order_no:
+            parts.append(f"주문번호={order_no}")
+        followup_status = str(row.get("followup_status") or "").strip().upper()
+        if followup_status:
+            followup_reason = format_reason_korean(str(row.get("followup_reason") or "-"))
+            followup_action = self._format_order_event_action(
+                {
+                    "status": followup_status,
+                    "order_kind": "cancel",
+                    "side": side,
+                    "is_virtual": 0,
+                }
+            )
+            parts.append(f"후속={followup_action}")
+            parts.append(f"후속사유={followup_reason}")
+        return " ".join(parts)
 
     def _build_session_pnl_message(
         self,

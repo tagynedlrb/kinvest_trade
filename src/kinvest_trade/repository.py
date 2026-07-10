@@ -774,6 +774,65 @@ class SqliteRepository:
             result.append(item)
         return result
 
+    def list_submitted_order_audit_rows(
+        self,
+        *,
+        limit: int = 20,
+        source_limit: int = 500,
+        include_canceled: bool = False,
+    ) -> list[dict]:
+        """Return real SUBMITTED orders that still need external fill confirmation.
+
+        The broker_order_events table records order submission/cancel attempts, not
+        broker fill events.  This helper keeps the distinction explicit for
+        operator-facing audits.
+        """
+        rows = self.list_broker_order_events(limit=source_limit)
+        followups_by_original_order_no: dict[str, dict] = {}
+        terminal_cancel_statuses = {"CANCELED", "CANCELLED"}
+
+        for row in rows:
+            status = str(row.get("status") or "").strip().upper()
+            order_kind = str(row.get("order_kind") or "").strip().lower()
+            if status == "SUBMITTED" and order_kind != "cancel":
+                continue
+            payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+            order_numbers: set[str] = set()
+            broker_order_no = str(row.get("broker_order_no") or "").strip()
+            if broker_order_no:
+                order_numbers.add(broker_order_no)
+            if isinstance(payload, dict):
+                original_order_no = str(payload.get("original_order_no") or "").strip()
+                if original_order_no:
+                    order_numbers.add(original_order_no)
+            for order_no in order_numbers:
+                followups_by_original_order_no.setdefault(order_no, row)
+
+        result: list[dict] = []
+        for row in rows:
+            status = str(row.get("status") or "").strip().upper()
+            order_kind = str(row.get("order_kind") or "").strip().lower()
+            if status != "SUBMITTED" or order_kind == "cancel":
+                continue
+            if int(row.get("is_virtual") or 0):
+                continue
+
+            item = dict(row)
+            broker_order_no = str(item.get("broker_order_no") or "").strip()
+            followup = followups_by_original_order_no.get(broker_order_no)
+            if followup is not None:
+                followup_status = str(followup.get("status") or "").strip().upper()
+                item["followup_status"] = followup_status
+                item["followup_reason"] = str(followup.get("reason") or "")
+                item["followup_created_at"] = str(followup.get("created_at") or "")
+                if followup_status in terminal_cancel_statuses and not include_canceled:
+                    continue
+
+            result.append(item)
+            if len(result) >= limit:
+                break
+        return result
+
     def upsert_lab_symbol_state(
         self,
         *,

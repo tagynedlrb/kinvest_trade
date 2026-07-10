@@ -4428,6 +4428,7 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
         strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.stock_code, signal_snapshot)
+        exit_by = exit_by or exit_reason
         entry_label, exit_label = self._build_sell_strategy_labels(
             strategy_flag=strategy_flag,
             entry_by=entry_by,
@@ -5540,6 +5541,7 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
     ) -> dict:
         strategy_flag, entry_by, exit_by = self._get_strategy_labels(candidate.symbol, signal_snapshot)
+        exit_by = exit_by or exit_reason
         entry_label, exit_label = self._build_sell_strategy_labels(
             strategy_flag=strategy_flag,
             entry_by=entry_by,
@@ -7012,7 +7014,7 @@ class LiquidityLabService:
 
         exit_reason_korean = format_reason_korean(exit_reason) if exit_reason else ""
         exit_strategy_korean = format_reason_korean(exit_by) if exit_by else ""
-        if exit_strategy_korean and exit_reason_korean:
+        if exit_strategy_korean and exit_reason_korean and exit_by != exit_reason:
             exit_label = f"{exit_strategy_korean}·{exit_reason_korean}"
         elif exit_strategy_korean:
             exit_label = exit_strategy_korean

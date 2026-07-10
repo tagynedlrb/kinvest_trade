@@ -1090,6 +1090,7 @@ def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert len(rows) == 1
     assert rows[0]["symbol"] == "TSLA"
     assert rows[0]["session_id"] == "sess-test"
+    assert rows[0]["exit_by"] == "atr_hard_stop"
     assert abs(rows[0]["realized_pnl_usd"] - 3.8) < 1e-9
     assert abs(rows[0]["realized_pnl_krw"] - 5244.0) < 1e-6
 
@@ -1917,6 +1918,7 @@ def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert len(rows) == 1
     assert rows[0]["symbol"] == "005930"
     assert rows[0]["session_id"] == "sess-domestic"
+    assert rows[0]["exit_by"] == "stop_loss"
     assert rows[0]["realized_pnl_krw"] == 3900.0
 
 

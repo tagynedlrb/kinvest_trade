@@ -2148,3 +2148,24 @@
 
 ### 검증
 - `python3 -m pytest tests/test_liquidity_lab.py::test_virtual_overseas_buy_respects_total_virtual_exposure_limit -q` → 1개 통과
+
+## [2026-07-10] 청산 정책 컬럼 누락 보강
+
+### 배경
+- 최근 7일 `cycle_log` 성과 분석에서 `strategy_flag`는 채워졌지만
+  `exit_by`가 대부분 `-`로 남아 있었다.
+- 실제 청산은 VWAP/VOL/RSI 전략 매니저의 SELL 신호보다
+  `stop_loss`, `atr_hard_stop`, `trend_filter_lost`, `time_exit_profit`
+  같은 정책 청산에서 주로 발생한다.
+- `exit_by`가 비면 전략별/청산정책별 성과 분석이 어려워진다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - 국내/해외 매도 주문에서 전략 매니저의 `exit_by`가 비어 있으면
+    저장용으로 `exit_reason`을 fallback 사용
+  - 알림 라벨에서는 `exit_by == exit_reason`이면 중복 표기하지 않도록 처리
+- `tests/test_liquidity_lab.py`
+  - 국내/해외 `SELL_REAL` cycle_log에 청산 정책이 `exit_by`로 저장되는지 검증
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_place_overseas_sell_order_saves_realized_pnl_cycle_log tests/test_liquidity_lab.py::test_place_domestic_sell_order_saves_realized_pnl_cycle_log tests/test_liquidity_lab.py::test_place_overseas_sell_order_sends_telegram_on_success tests/test_liquidity_lab.py::test_place_domestic_sell_order_sends_telegram_on_success -q` → 4개 통과

@@ -612,12 +612,15 @@ class LiquidityLabService:
             price=f"{price:.4f}",
         )
         raw = possible.get("raw", {}) or {}
-        return max(
+        result = max(
             self._parse_float(possible.get("cash_available")),
             self._parse_float(raw.get("ord_psbl_frcr_amt_wcrc")),
             self._parse_float(raw.get("frcr_ord_psbl_amt1")),
             self._parse_float(raw.get("frcr_dncl_amt_2")),
         )
+        self._last_overseas_available_usd = result
+        self._last_overseas_available_usd_at = datetime.now(timezone.utc)
+        return result
 
     async def _get_domestic_available_krw(self) -> float:
         cycle = getattr(self, "_cycle_count", 0)

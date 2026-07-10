@@ -1236,6 +1236,11 @@ class TelegramLiquidityLabController:
                         f"(현재가 없음)"
                     )
 
+        exposure_lines = self._build_virtual_exposure_lines()
+        if exposure_lines:
+            lines.append("─── 가상 노출 ───")
+            lines.extend(exposure_lines)
+
         pending_sells = self.repository.list_virtual_sell_pending(market="overseas")
         lines.append("─── 정산 대기 매도 ───")
         if not pending_sells:
@@ -1274,6 +1279,53 @@ class TelegramLiquidityLabController:
                 )
 
         return "\n".join(lines)
+
+    def _build_virtual_exposure_lines(self) -> list[str]:
+        rows = self.repository.list_virtual_positions()
+        if not rows:
+            return []
+        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
+        for row in rows:
+            market = str(row.get("market", "overseas"))
+            currency = str(row.get("currency", "USD"))
+            qty = int(row.get("qty", 0) or 0)
+            avg_price = float(row.get("avg_price", 0.0) or 0.0)
+            if qty <= 0 or avg_price <= 0:
+                continue
+            key = (market, currency)
+            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
+            item["count"] = int(item["count"]) + 1
+            item["notional"] = float(item["notional"]) + qty * avg_price
+
+        if not by_market_currency:
+            return []
+
+        max_pct = float(
+            getattr(self.config.liquidity_lab, "max_virtual_exposure_pct", 1.0) or 1.0
+        )
+        lab = self.lab_service
+        last_available_usd = (
+            None
+            if lab is None
+            else getattr(lab, "_last_overseas_available_usd", None)
+        )
+        lines: list[str] = []
+        for (market, currency), item in sorted(by_market_currency.items()):
+            count = int(item["count"])
+            notional = float(item["notional"])
+            parts = [
+                f"{format_market_korean(market)} 가상매수노출={self._format_price(notional, currency)}",
+                f"{count}종목",
+            ]
+            if market == "overseas" and currency == "USD":
+                parts.append(f"한도=주문가능USD x{max_pct * 100:.0f}%")
+                if last_available_usd is not None and float(last_available_usd) > 0:
+                    limit = float(last_available_usd) * max_pct
+                    status = "초과" if notional > limit else "정상"
+                    parts.append(f"최근한도={self._format_price(limit, currency)}")
+                    parts.append(f"상태={status}")
+            lines.append(" ".join(parts))
+        return lines
 
     async def _send_portfolio_message(self) -> None:
         await self.notifier.send(self._build_portfolio_message())

@@ -2169,3 +2169,24 @@
 
 ### 검증
 - `python3 -m pytest tests/test_liquidity_lab.py::test_place_overseas_sell_order_saves_realized_pnl_cycle_log tests/test_liquidity_lab.py::test_place_domestic_sell_order_saves_realized_pnl_cycle_log tests/test_liquidity_lab.py::test_place_overseas_sell_order_sends_telegram_on_success tests/test_liquidity_lab.py::test_place_domestic_sell_order_sends_telegram_on_success -q` → 4개 통과
+
+## [2026-07-10] 해외 실매수 슬롯 산정 기준가 보정
+
+### 발견
+- 국내 매수는 `best_ask` 기준으로 슬롯 수량을 계산하지만,
+  해외 실매수는 `last_price`로 가능금액/슬롯 수량을 계산한 뒤
+  실제 주문은 `ask` 가격으로 제출하고 있었다.
+- 스프레드가 작아도 `$100` 예산에서 `last=$25.00`, `ask=$25.01`이면
+  기존 로직은 4주(`$100.04`)를 주문할 수 있어 슬롯 예산을 소폭 초과한다.
+
+### 수정 사항
+- `liquidity_lab.py`
+  - 해외 실제 매수 `_place_overseas_test_order()`에서 주문 예정가(`ask` 우선)를
+    먼저 계산
+  - KIS 주문가능 조회와 슬롯 수량 계산 모두 실제 주문 예정가 기준으로 수행
+- `tests/test_liquidity_lab.py`
+  - `$1000 x 10%` 예산, `ask=$25.01`이면 3주로 산정되는지 검증
+  - KIS 가능금액 조회 가격이 `25.0100`으로 전달되는지 검증
+
+### 검증
+- `python3 -m pytest tests/test_liquidity_lab.py::test_overseas_buy_uses_slot_sizing_when_balance_is_available tests/test_liquidity_lab.py::test_overseas_buy_saves_buy_real_cycle_log tests/test_liquidity_lab.py::test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available -q` → 3개 통과

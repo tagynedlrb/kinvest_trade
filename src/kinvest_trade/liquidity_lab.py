@@ -4902,18 +4902,19 @@ class LiquidityLabService:
 
         config = self.config.liquidity_lab
         qty = config.overseas_test_order_qty
+        buy_price = self._overseas_buy_order_price(candidate)
         if config.use_slot_sizing:
             try:
                 available_usd = await self._get_overseas_available_usd(
                     symbol=candidate.symbol,
                     exchange_code=candidate.exchange_code,
-                    price=candidate.last_price,
+                    price=buy_price,
                 )
             except KisApiError:
                 available_usd = 0.0
             slot_qty = self._slot_based_qty(
                 available_amount=available_usd,
-                price=candidate.last_price,
+                price=buy_price,
             )
             if slot_qty > 0:
                 qty = slot_qty
@@ -4951,7 +4952,6 @@ class LiquidityLabService:
                 "candidate": asdict(candidate),
                 "signal_snapshot": asdict(signal_snapshot),
             }
-        buy_price = self._overseas_buy_order_price(candidate)
         conflicting_sell_order = await self._find_conflicting_overseas_order(
             symbol=candidate.symbol,
             side="BUY",

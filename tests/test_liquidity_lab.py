@@ -4395,7 +4395,11 @@ def test_virtual_buy_does_not_touch_real_broker_balance() -> None:
 
 def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     class DummyOverseasSlotClient:
+        def __init__(self) -> None:
+            self.possible_order_prices: list[str] = []
+
         async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
+            self.possible_order_prices.append(price)
             return {
                 "cash_available": "1000",
                 "raw": {
@@ -4432,7 +4436,8 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
             slot_max_pct=0.20,
         ),
     )
-    service.client = DummyOverseasSlotClient()
+    client = DummyOverseasSlotClient()
+    service.client = client
     service.notifier = DummyNotifier()
     service._signal_cache = {
         "SOXL": _snapshot(
@@ -4459,7 +4464,8 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     result = asyncio.run(service._place_overseas_test_order(candidate))
 
     assert result["submitted"] is True
-    assert result["qty"] == 4
+    assert result["qty"] == 3
+    assert client.possible_order_prices == ["25.0100"]
 
 
 def test_get_overseas_available_usd_caps_large_theoretical_amount_by_orderable_qty() -> None:
@@ -4572,6 +4578,7 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     broker_rows = service.repository.list_broker_order_events(limit=5)
 
     assert result["submitted"] is True
+    assert result["qty"] == 3
     assert len(rows) == 1
     assert rows[0]["symbol"] == "SOXL"
     assert rows[0]["session_id"] == "sess-overseas-buy"

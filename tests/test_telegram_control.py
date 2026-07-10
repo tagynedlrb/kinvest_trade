@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1058,6 +1058,19 @@ def test_parse_live_open_overseas_order_rows_filters_zero_open_qty(tmp_path) -> 
     assert parsed[0]["open_qty"] == 1200
     assert parsed[0]["order_no"] == "open"
     assert parsed[0]["order_price"] == 300.25
+
+
+def test_format_open_order_age_parts_marks_stale_order() -> None:
+    now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+    created_at = now - timedelta(minutes=95)
+
+    parts = TelegramLiquidityLabController._format_open_order_age_parts(
+        created_at,
+        now=now,
+        stale_threshold_min=30,
+    )
+
+    assert parts == ["경과=1시간35분", "주의=장기미체결"]
 
 
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:

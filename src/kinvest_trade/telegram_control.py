@@ -1788,6 +1788,8 @@ class TelegramLiquidityLabController:
         ]
         if order_no:
             parts.append(f"주문번호={order_no}")
+        age_parts = self._format_open_order_age_parts(created_at)
+        parts.extend(age_parts)
         return " ".join(parts)
 
     async def _load_live_open_overseas_orders(self, *, limit: int = 12) -> list[dict]:
@@ -1873,7 +1875,32 @@ class TelegramLiquidityLabController:
         ]
         if order_no:
             parts.append(f"주문번호={order_no}")
+        age_parts = self._format_open_order_age_parts(created_at)
+        parts.extend(age_parts)
         return " ".join(parts)
+
+    @staticmethod
+    def _format_open_order_age_parts(
+        created_at: object,
+        *,
+        stale_threshold_min: int = 30,
+        now: datetime | None = None,
+    ) -> list[str]:
+        if not isinstance(created_at, datetime):
+            return []
+        current = now or datetime.now(timezone.utc)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_min = int(max((current - created_at).total_seconds(), 0.0) // 60)
+        if age_min < 60:
+            age_text = f"{age_min}분"
+        else:
+            hours, minutes = divmod(age_min, 60)
+            age_text = f"{hours}시간{minutes:02d}분"
+        parts = [f"경과={age_text}"]
+        if age_min >= stale_threshold_min:
+            parts.append("주의=장기미체결")
+        return parts
 
     @staticmethod
     def _format_order_event_action(row: dict) -> str:

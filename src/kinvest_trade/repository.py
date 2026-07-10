@@ -1261,17 +1261,39 @@ class SqliteRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
+                WITH evaluated AS (
+                    SELECT
+                        market,
+                        COALESCE(NULLIF(strategy_flag, ''), 'N/A') AS strategy_flag,
+                        COALESCE(pnl_pct, 0) AS gross_pnl_pct,
+                        CASE
+                            WHEN lower(market) = 'overseas'
+                              AND net_pnl_usd IS NOT NULL
+                              AND COALESCE(entry_price, 0) > 0
+                              AND COALESCE(qty_executed, 0) > 0
+                            THEN net_pnl_usd / (entry_price * qty_executed)
+                            WHEN lower(market) = 'domestic'
+                              AND net_pnl_krw IS NOT NULL
+                              AND COALESCE(entry_price, 0) > 0
+                              AND COALESCE(qty_executed, 0) > 0
+                            THEN net_pnl_krw / (entry_price * qty_executed)
+                            ELSE COALESCE(pnl_pct, 0) - ?
+                        END AS net_pnl_pct,
+                        COALESCE(net_pnl_usd, realized_pnl_usd, 0) AS net_pnl_usd_value,
+                        COALESCE(net_pnl_krw, realized_pnl_krw, 0) AS net_pnl_krw_value
+                    FROM cycle_log
+                    WHERE {' AND '.join(where)}
+                )
                 SELECT
                     market,
-                    COALESCE(NULLIF(strategy_flag, ''), 'N/A') AS strategy_flag,
+                    strategy_flag,
                     COUNT(*) AS trade_count,
-                    SUM(CASE WHEN COALESCE(pnl_pct, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
-                    AVG(COALESCE(pnl_pct, 0)) AS avg_gross_pnl_pct,
-                    AVG(COALESCE(pnl_pct, 0)) - ? AS avg_net_pnl_pct,
-                    SUM(COALESCE(net_pnl_usd, realized_pnl_usd, 0)) AS total_net_pnl_usd,
-                    SUM(COALESCE(net_pnl_krw, realized_pnl_krw, 0)) AS total_net_pnl_krw
-                FROM cycle_log
-                WHERE {' AND '.join(where)}
+                    SUM(CASE WHEN net_pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
+                    AVG(gross_pnl_pct) AS avg_gross_pnl_pct,
+                    AVG(net_pnl_pct) AS avg_net_pnl_pct,
+                    SUM(net_pnl_usd_value) AS total_net_pnl_usd,
+                    SUM(net_pnl_krw_value) AS total_net_pnl_krw
+                FROM evaluated
                 GROUP BY market, strategy_flag
                 ORDER BY avg_net_pnl_pct ASC, trade_count DESC
                 """,

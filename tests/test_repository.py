@@ -760,6 +760,49 @@ def test_get_recent_strategy_guard_performance_groups_executed_sell_real(tmp_pat
     assert row["total_net_pnl_krw"] == 1000.0
 
 
+def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "strategy_guard_recorded_net.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:00:00+00:00",
+        market="domestic",
+        symbol="AAA",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP",
+        pnl_pct=0.10,
+        entry_price=1000.0,
+        qty_executed=10,
+        net_pnl_krw=-200.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-02T00:01:00+00:00",
+        market="domestic",
+        symbol="BBB",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        pnl_pct=0.10,
+        entry_price=1000.0,
+        qty_executed=10,
+        net_pnl_krw=100.0,
+    )
+
+    rows = repository.get_recent_strategy_guard_performance(
+        after_logged_at="2026-07-02T00:00:00+00:00",
+        cost_pct=0.005,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["trade_count"] == 2
+    assert row["win_count"] == 1
+    assert round(row["avg_gross_pnl_pct"], 6) == 0.10
+    assert round(row["avg_net_pnl_pct"], 6) == -0.005
+    assert row["total_net_pnl_krw"] == -100.0
+
+
 def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_virtual_order(

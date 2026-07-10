@@ -1,5 +1,30 @@
 # WORKLOG
 
+## [2026-07-10] 전략 검증 순손익률 정확도 개선
+
+### 배경
+- 지시문 #65 이후 `/lab_report compare`와 `/lab_guard`가 전략 보수화 전후를 판단하지만,
+  일부 계산이 `pnl_pct - 0.5%` 고정 비용 추정에 의존하고 있었음
+- `cycle_log`에는 이미 `net_pnl_usd`, `net_pnl_krw`, `entry_price`, `qty_executed`가
+  저장되어 있어 실제 기록 기반 순손익률 계산이 가능함
+
+### 수정
+- `trade_analysis.py`
+  - 전후 비교에서 실제 net PnL과 진입 원금이 있으면
+    `net_pnl / (entry_price * qty_executed)`를 우선 사용
+  - 실제 net 계산이 불가능한 과거 로그만 기존 `pnl_pct - 0.5%` 추정값 사용
+- `repository.py`
+  - `get_recent_strategy_guard_performance()`도 동일한 실제 net 기반 순손익률을 사용
+  - 승률도 gross가 아니라 net 기준으로 계산해 전략가드 판단과 표시를 일치화
+- `tests/`
+  - 실제 net 컬럼이 있는 경우 고정 비용 추정이 아니라 기록 기반 순손익률을 쓰는 회귀 테스트 추가
+
+### 확인
+- `scripts/analyze_trades.py data/trading.db --compare-date 2026-07-10`
+  - 보수화 이후 국내 `VWAP` net `+0.980%`, 국내 `VWAP+RSI` net `+1.694%`
+  - 보수화 이후 해외 `RSI` net `-2.025%`, 해외 `VWAP` net `-1.011%`
+- 해석: 국내 전략 비중 확대와 해외 단독 전략 차단/가드 유지 방향이 실제 net 기준으로도 타당함
+
 ## [2026-07-10] 지시문 #61 — 매매 빈도 저하 핵심 원인 수정
 
 ### 분석 (07/07~07/10 통합)

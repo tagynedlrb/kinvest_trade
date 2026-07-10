@@ -58,3 +58,39 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
     assert "net=-2.500%" in output
     assert "domestic VOL" in output
     assert "signal_only" not in output
+
+
+def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "analysis_recorded_net.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-09T16:00:00+00:00",
+        market="domestic",
+        symbol="AAA",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP",
+        pnl_pct=0.10,
+        entry_price=1000.0,
+        qty_executed=10,
+        net_pnl_krw=-200.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-09T16:01:00+00:00",
+        market="domestic",
+        symbol="BBB",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        pnl_pct=0.10,
+        entry_price=1000.0,
+        qty_executed=10,
+        net_pnl_krw=100.0,
+    )
+
+    output = compare_before_after(repository.db_path, "2026-07-10")
+
+    assert "domestic VWAP" in output
+    assert "net=-0.500%" in output
+    assert "승률=50%" in output

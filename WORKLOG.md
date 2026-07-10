@@ -2298,37 +2298,41 @@
 ### 커밋
 - `a1057f5` Show stale signal cache count in status
 
-## [2026-07-10] 닫힌 보유 잔상 정리 및 `/lab_watchlist` 숨김 처리
+## [2026-07-10] 보유 잔상 표시 정비 및 MSEX 잔고 검증 정정
 
 ### 배경
-- 운영 DB 점검 중 `virtual_positions`와 `virtual_sell_pending`에는 없는 `MSEX`가
-  `lab_symbol_state.has_position=1`로 남아 있었다.
-- 원인: orphan `virtual_sell_pending` 정리 시 pending 테이블만 삭제하고,
-  같은 심볼의 `lab_symbol_state` 보유 플래그를 닫지 않았다.
-- 거래 루프가 `stopped`인 동안에는 다음 정상 사이클의 stale cleanup이 돌지 않아
-  `/lab_watchlist`에 오래된 보유 종목처럼 보일 수 있었다.
+- 초기 DB-only 점검에서 `virtual_positions`와 `virtual_sell_pending`에 없는
+  `MSEX`를 닫힌 보유 잔상으로 오판했다.
+- 이후 KIS 해외 잔고 API(`overseas-balance-check`)로 검증한 결과,
+  `MSEX`는 실제 모의계좌에 522주 존재했고 주문가능수량도 522주였다.
+- 교훈: 실보유 여부는 `lab_symbol_state`/virtual 테이블이 아니라
+  KIS 잔고 API가 최종 기준이어야 한다.
 
 ### 수정 사항
 - `liquidity_lab.py`
-  - orphan `virtual_sell_pending` 삭제 시 `lab_symbol_state`도
-    `has_position=0`, `holding_qty=0`, `note=orphan_virtual_sell_pending_cleared`로 정리
+  - orphan `virtual_sell_pending` 삭제만으로는 `lab_symbol_state` 보유 플래그를
+    자동으로 닫지 않도록 보수화
 - `telegram_control.py`
   - 마지막 리포트의 watch target이 보유 수량을 갖고 있더라도,
     최신 `lab_symbol_state.has_position=0`이면 `/lab_watchlist`에서 숨김
   - 숨겨진 항목은 `숨김=정리된 보유잔상 N개`로만 간단히 표시
+  - 최신 `lab_symbol_state`가 실제 보유 수량/가격/손익을 갖고 있으면
+    오래된 마지막 리포트의 watchlist 표시값보다 우선
   - `/lab_status`의 `감시수`와 `신호캐시` 요약도 같은 숨김 기준을 적용해
     닫힌 잔상 수를 별도 표기
 - 운영 DB
-  - 백업 생성: `data/trading_backup_20260710_135858_pre_msex_lab_state_cleanup.db`
-  - `MSEX` lab 보유 잔상 1건을 수동 정리
+  - 오판 전 백업: `data/trading_backup_20260710_135858_pre_msex_lab_state_cleanup.db`
+  - 복구 전 백업: `data/trading_backup_20260710_141256_pre_msex_live_balance_restore.db`
+  - `MSEX` lab 상태를 KIS 잔고 기준으로 복구
+    (`수량=522`, `주문가능=522`, `평균=$54.1040`, `현재=$54.8800`)
 
 ### 검증
-- 운영 `/lab_watchlist` 렌더링에서 `MSEX` 보유 라인이 사라지고
-  `숨김=정리된 보유잔상 1개`로 표시됨
-- 운영 `/lab_status` 렌더링에서 `감시수=15 (숨김 1)`,
-  `신호캐시=15/15 전체 캐시 숨김=정리잔상1 확인=/lab_watchlist`로 표시됨
+- `python3 main.py --settings config/fixed_config.json overseas-balance-check` →
+  `MSEX` 522주, `ord_psbl_qty=522` 확인
+- 운영 DB의 `lab_symbol_state`에서 `MSEX has_position=1`, `holding_qty=522`로 복구됨
+- 운영 `/lab_watchlist` 렌더링에서 `MSEX` 가격 `$54.8800`, 손익 `+1.43%`로 표시됨
 - `python3 -m pytest tests/test_unified_position_tracker.py::test_reconcile_clears_orphan_virtual_sell_pending tests/test_telegram_control.py::test_build_watchlist_message_hides_closed_stale_position_state tests/test_telegram_control.py::test_build_watchlist_message_uses_balance_cache_for_held_pnl -q` → 3개 통과
-- `python3 -m pytest tests -q` → 395개 통과
+- `python3 -m pytest tests -q` → 398개 통과
 
 ## [2026-07-10] stale signal cache 신규 매수 차단
 

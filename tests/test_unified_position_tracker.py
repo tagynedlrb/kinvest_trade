@@ -293,9 +293,9 @@ def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
     assert service.repository.get_virtual_sell_pending("overseas", "MSEX") is None
     state = service.repository.get_lab_symbol_state("overseas", "MSEX")
     assert state is not None
-    assert state["has_position"] == 0
-    assert state["holding_qty"] == 0
-    assert state["note"] == "orphan_virtual_sell_pending_cleared"
+    assert state["has_position"] == 1
+    assert state["holding_qty"] == 522
+    assert state["note"] == "stale_signal_cache"
     events = service.repository.list_event_log(event_type="virtual_pending_cleanup", limit=5)
     assert events[0]["symbol"] == "MSEX"
 

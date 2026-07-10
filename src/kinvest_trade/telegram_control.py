@@ -1354,7 +1354,7 @@ class TelegramLiquidityLabController:
                 sym = str(row.get("symbol", "")).strip().upper()
                 if not sym:
                     continue
-                pnl_map.setdefault((market, sym), float(row.get("pnl_pct", 0) or 0))
+                pnl_map[(market, sym)] = float(row.get("pnl_pct", 0) or 0)
         lines = [
             "[KIS][TELEGRAM_CONTROL_WATCHLIST]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
@@ -1375,11 +1375,12 @@ class TelegramLiquidityLabController:
             if self._is_closed_stale_watch_target(watch_target):
                 hidden_closed_count += 1
                 continue
-            market = str(watch_target.get("market", "overseas"))
-            symbol = str(watch_target.get("code", "")).upper()
+            display_target = self._watch_target_with_persisted_position(watch_target)
+            market = str(display_target.get("market", "overseas"))
+            symbol = str(display_target.get("code", "")).upper()
             lines.append(
                 self._format_watch_target_line(
-                    watch_target,
+                    display_target,
                     pnl_pct=pnl_map.get((market, symbol)),
                     symbol_label=self._format_symbol_label(
                         market,
@@ -1394,6 +1395,44 @@ class TelegramLiquidityLabController:
         if hidden_closed_count > 0:
             lines.append(f"숨김=정리된 보유잔상 {hidden_closed_count}개")
         return "\n".join(lines)
+
+    def _watch_target_with_persisted_position(self, watch_target: dict) -> dict:
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "get_lab_symbol_state"):
+            return watch_target
+        try:
+            holding_qty = int(float(str(watch_target.get("holding_qty", 0) or 0)))
+        except (TypeError, ValueError):
+            holding_qty = 0
+        if holding_qty <= 0:
+            return watch_target
+        market = str(watch_target.get("market", "overseas") or "overseas").strip().lower()
+        symbol = str(watch_target.get("code", "") or "").strip().upper()
+        if not market or not symbol:
+            return watch_target
+        state = repository.get_lab_symbol_state(market, symbol)
+        if state is None:
+            return watch_target
+        try:
+            has_position = int(state.get("has_position", 0) or 0)
+        except (TypeError, ValueError):
+            has_position = 0
+        if has_position <= 0:
+            return watch_target
+        display_target = dict(watch_target)
+        try:
+            state_qty = int(float(str(state.get("holding_qty", 0) or 0)))
+        except (TypeError, ValueError):
+            state_qty = 0
+        if state_qty > 0:
+            display_target["holding_qty"] = state_qty
+        try:
+            last_price = float(state.get("last_price", 0) or 0)
+        except (TypeError, ValueError):
+            last_price = 0.0
+        if last_price > 0:
+            display_target["price"] = last_price
+        return display_target
 
     def _is_closed_stale_watch_target(self, watch_target: dict) -> bool:
         try:

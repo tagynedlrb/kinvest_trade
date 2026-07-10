@@ -1012,6 +1012,51 @@ class LiquidityLabService:
             "reference_price": reference_price,
         }
 
+    def _broker_cancel_payload(
+        self,
+        cancel_response: object,
+        pending_order: dict,
+        *,
+        reference_price: float | None = None,
+    ) -> dict[str, object]:
+        order_price = float(
+            pending_order.get("order_price")
+            or self._parse_float(pending_order.get("ord_unpr"))
+            or self._parse_float(pending_order.get("ft_ord_unpr3"))
+            or 0.0
+        )
+        order_division = str(
+            pending_order.get("ord_dvsn_cd")
+            or pending_order.get("order_division")
+            or "00"
+        ).strip() or "00"
+        original_order_no = str(
+            pending_order.get("order_no") or pending_order.get("odno") or ""
+        ).strip()
+        original_order_orgno = str(
+            pending_order.get("ord_gno_brno")
+            or pending_order.get("krx_fwdg_ord_orgno")
+            or pending_order.get("KRX_FWDG_ORD_ORGNO")
+            or ""
+        ).strip()
+        open_qty = int(
+            pending_order.get("open_qty")
+            or parse_kis_number(pending_order.get("rmn_qty"))
+            or parse_kis_number(pending_order.get("nccs_qty"))
+            or 0
+        )
+        payload: dict[str, object] = {
+            "response": cancel_response,
+            "original_order_no": original_order_no,
+            "order_division": order_division,
+            "original_order_price": order_price,
+            "reference_price": order_price if reference_price is None else reference_price,
+            "open_qty": open_qty,
+        }
+        if original_order_orgno:
+            payload["original_order_orgno"] = original_order_orgno
+        return payload
+
     def _overseas_order_history_exchange_param(self, exchange_code: str) -> str:
         env = str(getattr(self.config.credentials, "env", "vps") or "vps")
         if env != "prod":
@@ -4817,7 +4862,11 @@ class LiquidityLabService:
                 exit_by=exit_by,
                 status="CANCELED",
                 reason="stale_exit_replace",
-                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+                payload=self._broker_cancel_payload(
+                    cancel_response,
+                    pending_sell_order,
+                    reference_price=sell_price,
+                ),
             )
             replacement_note = "미체결 매도 정정 후 재주문"
             if sell_qty <= 0:
@@ -5356,7 +5405,11 @@ class LiquidityLabService:
                 entry_by=entry_by,
                 status="CANCELED",
                 reason="conflicting_pending_sell_cleared",
-                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+                payload=self._broker_cancel_payload(
+                    cancel_response,
+                    conflicting_sell_order,
+                    reference_price=buy_price,
+                ),
             )
         pending_buy_order = await self._find_open_overseas_order(
             symbol=candidate.symbol,
@@ -5391,7 +5444,7 @@ class LiquidityLabService:
                     "reason": "pending_buy_order",
                 }
             try:
-                await self._cancel_open_overseas_order(
+                cancel_response = await self._cancel_open_overseas_order(
                     symbol=candidate.symbol,
                     exchange_code=candidate.exchange_code,
                     pending_order=pending_buy_order,
@@ -5422,6 +5475,24 @@ class LiquidityLabService:
                     "reason": "pending_buy_cancel_failed",
                     "error": str(exc),
                 }
+            self._record_broker_order_event(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                side="BUY",
+                order_kind="cancel",
+                requested_qty=int(pending_buy_order.get("open_qty") or 0),
+                requested_price=float(pending_buy_order.get("order_price") or 0.0),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                status="CANCELED",
+                reason="stale_buy_replace",
+                payload=self._broker_cancel_payload(
+                    cancel_response,
+                    pending_buy_order,
+                    reference_price=buy_price,
+                ),
+            )
         order_division = "00"
         order_kind = "limit"
         submit_price = f"{buy_price:.4f}"
@@ -6275,7 +6346,11 @@ class LiquidityLabService:
                 exit_by=exit_by,
                 status="CANCELED",
                 reason="stale_exit_replace",
-                payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
+                payload=self._broker_cancel_payload(
+                    cancel_response,
+                    pending_sell_order,
+                    reference_price=sell_price,
+                ),
             )
             replacement_note = "미체결 매도 정정 후 재주문"
 

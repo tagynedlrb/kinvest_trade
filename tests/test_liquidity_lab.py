@@ -1531,6 +1531,14 @@ def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() ->
     assert len(service.client.cancel_calls) == 1
     assert service.client.cancel_calls[0]["original_order_no"] == "52821"
     assert service.client.order_calls[0]["price"] == "316.9000"
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["reason"] == "stale_exit_replace"
+    assert broker_rows[1]["payload_json"]["original_order_no"] == "52821"
+    assert broker_rows[1]["payload_json"]["order_division"] == "00"
+    assert broker_rows[1]["payload_json"]["original_order_price"] == 337.57
+    assert broker_rows[1]["payload_json"]["reference_price"] == 316.9
+    assert broker_rows[1]["payload_json"]["open_qty"] == 61
 
 
 def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None:
@@ -1569,6 +1577,12 @@ def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None
     assert len(service.client.cancel_calls) == 1
     assert service.client.cancel_calls[0]["original_order_no"] == "61001"
     assert service.client.order_calls[0]["price"] == "23.1100"
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["reason"] == "conflicting_pending_sell_cleared"
+    assert broker_rows[1]["payload_json"]["original_order_no"] == "61001"
+    assert broker_rows[1]["payload_json"]["original_order_price"] == 23.5
+    assert broker_rows[1]["payload_json"]["reference_price"] == 23.11
 
 
 def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None:
@@ -1605,6 +1619,51 @@ def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None
 
     assert result["skipped"] is True
     assert result["reason"] == "pending_buy_order"
+
+
+def test_place_overseas_buy_order_records_cancel_event_for_stale_pending_buy() -> None:
+    service = _build_run_service()
+    service.client = DummySellClient(
+        pending_orders=[
+            {
+                "pdno": "PLTR",
+                "sll_buy_dvsn_cd": "02",
+                "nccs_qty": "3",
+                "odno": "60001",
+                "ft_ord_unpr3": "23.15000000",
+                "dmst_ord_dt": "20260710",
+                "thco_ord_tmd": "000000",
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NASD",
+        last_price=23.10,
+        bid=23.09,
+        ask=23.11,
+        spread_pct=0.0008,
+        change_rate_pct=1.1,
+        volume=1_200_000,
+        orderable_qty=5,
+        fx_rate_krw=0.0,
+        activity_score=11.0,
+    )
+    service._signal_cache["PLTR"] = _snapshot(price=23.10)
+
+    result = asyncio.run(service._place_overseas_test_order(candidate))
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    assert service.client.cancel_calls[0]["original_order_no"] == "60001"
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["side"] == "BUY"
+    assert broker_rows[1]["reason"] == "stale_buy_replace"
+    assert broker_rows[1]["payload_json"]["original_order_no"] == "60001"
+    assert broker_rows[1]["payload_json"]["original_order_price"] == 23.15
+    assert broker_rows[1]["payload_json"]["reference_price"] == 23.11
+    assert broker_rows[1]["payload_json"]["open_qty"] == 3
 
 
 def test_place_overseas_sell_order_cancels_conflicting_buy_order_before_stop_loss() -> None:
@@ -2098,6 +2157,12 @@ def test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderab
     assert broker_rows[0]["order_kind"] == "market"
     assert broker_rows[0]["requested_price"] == 0.0
     assert broker_rows[1]["reason"] == "stale_exit_replace"
+    assert broker_rows[1]["payload_json"]["original_order_no"] == "0000015789"
+    assert broker_rows[1]["payload_json"]["original_order_orgno"] == "00950"
+    assert broker_rows[1]["payload_json"]["order_division"] == "00"
+    assert broker_rows[1]["payload_json"]["original_order_price"] == 5710.0
+    assert broker_rows[1]["payload_json"]["reference_price"] == 4925.0
+    assert broker_rows[1]["payload_json"]["open_qty"] == 184
     assert "참고=미체결 매도 정정 후 재주문" in service.notifier.messages[0]
 
 

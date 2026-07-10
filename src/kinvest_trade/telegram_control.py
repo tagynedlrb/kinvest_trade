@@ -2734,6 +2734,10 @@ class TelegramLiquidityLabController:
                         payload={
                             "original_order_no": order_no,
                             "original_order_orgno": orgno,
+                            "order_division": order_division,
+                            "original_order_price": price,
+                            "reference_price": price,
+                            "open_qty": open_qty,
                             "error": str(exc),
                         },
                     )
@@ -2760,6 +2764,10 @@ class TelegramLiquidityLabController:
                     payload={
                         "original_order_no": order_no,
                         "original_order_orgno": orgno,
+                        "order_division": order_division,
+                        "original_order_price": price,
+                        "reference_price": price,
+                        "open_qty": open_qty,
                         "response": response,
                     },
                 )
@@ -3023,6 +3031,10 @@ class TelegramLiquidityLabController:
                         is_virtual=0,
                         payload={
                             "original_order_no": order_no,
+                            "order_division": str(row.get("ord_dvsn_cd") or "00").strip() or "00",
+                            "original_order_price": price,
+                            "reference_price": price,
+                            "open_qty": open_qty,
                             "error": str(exc),
                         },
                     )
@@ -3048,6 +3060,10 @@ class TelegramLiquidityLabController:
                     is_virtual=0,
                     payload={
                         "original_order_no": order_no,
+                        "order_division": str(row.get("ord_dvsn_cd") or "00").strip() or "00",
+                        "original_order_price": price,
+                        "reference_price": price,
+                        "open_qty": open_qty,
                         "response": response,
                     },
                 )

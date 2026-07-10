@@ -1,5 +1,30 @@
 # WORKLOG
 
+## [2026-07-10] 미체결 취소 audit 메타데이터 보강
+
+### 배경
+- 최근 `both waiting`, `no_orderable_qty`, 미체결 정정/취소 이슈가 반복되면서
+  취소 이벤트만으로 원 주문의 가격·수량·주문구분을 복기해야 하는 경우가 늘었음
+- BUY/SELL 제출 이벤트는 `order_division`, `reference_price`를 남기도록 보강됐지만,
+  stale pending 주문 취소 이벤트는 일부 경로에서 KIS 응답 원문만 저장하거나 이벤트 자체가 누락됨
+
+### 수정
+- `liquidity_lab.py`
+  - `_broker_cancel_payload()` 추가
+  - 자동 stale exit 교체, conflicting sell 취소, stale buy 교체 취소 이벤트에
+    `original_order_no`, `order_division`, `original_order_price`, `reference_price`, `open_qty`,
+    `response`를 일관되게 기록
+  - 오래된 해외 pending BUY를 취소 후 재매수하는 경로에 `stale_buy_replace` broker event 추가
+- `telegram_control.py`
+  - `/lab_cancel_stale_domestic_confirm`, `/lab_cancel_stale_overseas_confirm` 수동 취소 이벤트도
+    동일한 원 주문 메타데이터를 payload에 기록
+- `tests/`
+  - 자동/수동 취소 성공·거부 경로의 payload 필드 회귀 테스트 보강
+
+### 기대 효과
+- `/lab_orders`와 DB에서 미체결 정정/취소 흐름을 주문번호뿐 아니라 가격·수량·주문구분까지 추적 가능
+- 기존 주문 때문에 신규 주문이 막힌 상황의 사후 분석 정확도 개선
+
 ## [2026-07-10] 지시문 #65 점검 — 빈도 경고 원인 요약 보강
 
 ### 실DB 확인

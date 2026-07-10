@@ -1937,6 +1937,13 @@ def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> 
     assert rows[0]["status"] == "CANCELED"
     assert rows[0]["reason"] == "stale_live_order_cancel"
     assert rows[0]["broker_order_no"] == "0000014000"
+    payload = rows[0]["payload_json"]
+    assert payload["original_order_no"] == "0000013669"
+    assert payload["original_order_orgno"] == "00950"
+    assert payload["order_division"] == "00"
+    assert payload["original_order_price"] == 6990
+    assert payload["reference_price"] == 6990
+    assert payload["open_qty"] == 126
 
 
 def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -> None:
@@ -2001,6 +2008,10 @@ def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -
     assert rows[0]["broker_order_no"] == "0000013669"
     payload = rows[0]["payload_json"]
     assert "장종료" in payload["error"]
+    assert payload["order_division"] == "00"
+    assert payload["original_order_price"] == 6990
+    assert payload["reference_price"] == 6990
+    assert payload["open_qty"] == 126
 
 
 def test_execute_cancel_stale_domestic_orders_defers_when_market_closed(tmp_path) -> None:
@@ -2324,6 +2335,12 @@ def test_execute_cancel_stale_overseas_orders_records_cancel_event(tmp_path) -> 
     assert rows[0]["status"] == "CANCELED"
     assert rows[0]["reason"] == "stale_live_overseas_order_cancel"
     assert rows[0]["broker_order_no"] == "ov-cancel-001"
+    payload = rows[0]["payload_json"]
+    assert payload["original_order_no"] == "ov-001"
+    assert payload["order_division"] == "00"
+    assert payload["original_order_price"] == 210.5
+    assert payload["reference_price"] == 210.5
+    assert payload["open_qty"] == 2
 
 
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:

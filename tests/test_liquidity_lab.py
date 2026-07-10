@@ -2294,12 +2294,22 @@ def test_domestic_buy_saves_buy_real_cycle_log() -> None:
 
     result = asyncio.run(service._place_domestic_test_order(candidate))
     rows = service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5)
+    broker_rows = service.repository.list_broker_order_events(limit=5)
 
     assert result["submitted"] is True
+    assert result["order_kind"] == "limit"
+    assert result["order_division"] == "00"
+    assert result["submit_price"] == 80000.0
+    assert result["reference_price"] == 80000.0
     assert len(rows) == 1
     assert rows[0]["symbol"] == "005930"
     assert rows[0]["session_id"] == "sess-domestic-buy"
     assert rows[0]["action_reason"] == "domestic_buy"
+    assert len(broker_rows) == 1
+    assert broker_rows[0]["order_kind"] == "limit"
+    assert broker_rows[0]["requested_price"] == 80000.0
+    assert broker_rows[0]["payload_json"]["order_division"] == "00"
+    assert broker_rows[0]["payload_json"]["reference_price"] == 80000.0
 
 
 def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
@@ -5026,12 +5036,19 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
 
     assert result["submitted"] is True
     assert result["qty"] == 3
+    assert result["order_kind"] == "limit"
+    assert result["order_division"] == "00"
+    assert result["submit_price"] == "25.0100"
+    assert result["reference_price"] == 25.01
     assert len(rows) == 1
     assert rows[0]["symbol"] == "SOXL"
     assert rows[0]["session_id"] == "sess-overseas-buy"
     assert len(broker_rows) == 1
     assert broker_rows[0]["symbol"] == "SOXL"
+    assert broker_rows[0]["order_kind"] == "limit"
     assert broker_rows[0]["requested_price"] == 25.01
+    assert broker_rows[0]["payload_json"]["order_division"] == "00"
+    assert broker_rows[0]["payload_json"]["reference_price"] == 25.01
     assert service.notifier.messages[0].startswith("[KIS][거래알림]")
     assert rows[0]["action_reason"] == "strategy_buy_signal"
     assert rows[0]["vwap"] is not None

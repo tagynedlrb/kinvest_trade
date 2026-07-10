@@ -1,5 +1,24 @@
 # WORKLOG
 
+## [2026-07-10] 매수 주문 audit 메타데이터 보강
+
+### 배경
+- 보호성 매도 주문은 `broker_order_events`에 주문 방식과 기준가가 비교적 명확히 남지만,
+  매수 주문은 KIS 응답 원문 중심으로만 남아 사후 분석 시 지정가/시장가 여부와 제출 기준가를
+  빠르게 확인하기 어려웠음
+- 최근 미체결/정정/거부 이슈를 복기하려면 BUY/SELL 양쪽 이벤트 포맷이 일관되어야 함
+
+### 수정
+- `liquidity_lab.py`
+  - 국내/해외 BUY 실주문 이벤트에 `order_division`, `reference_price`, `response`를 구조화해 기록
+  - BUY 주문 결과 dict에도 `order_kind`, `order_division`, `submit_price`, `reference_price` 추가
+- `tests/test_liquidity_lab.py`
+  - 국내/해외 BUY_REAL 경로가 broker order audit 메타데이터를 남기는지 회귀 테스트 보강
+
+### 기대 효과
+- `/lab_orders`와 DB 분석에서 매수 주문의 지정가 제출 여부와 기준가 추적 가능
+- 향후 시장가/지정가 정책 변경 시 BUY/SELL 주문 audit 비교가 쉬워짐
+
 ## [2026-07-10] 주문 안정 런타임 상태 복원
 
 ### 배경

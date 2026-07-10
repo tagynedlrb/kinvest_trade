@@ -4504,13 +4504,16 @@ class LiquidityLabService:
                 "reason": "dry_run_enabled",
                 "candidate": asdict(candidate),
             }
+        order_division = "00"
+        order_kind = "limit"
+        submit_price = buy_price
         try:
             response = await self.client.place_cash_order(
                 side="buy",
                 stock_code=candidate.stock_code,
                 qty=qty,
-                price=candidate.best_ask or candidate.current_price,
-                order_division="00",
+                price=submit_price,
+                order_division=order_division,
             )
         except KisApiError as exc:
             error_text = str(exc)
@@ -4534,14 +4537,18 @@ class LiquidityLabService:
                 symbol=candidate.stock_code,
                 exchange_code=None,
                 side="BUY",
-                order_kind="limit",
+                order_kind=order_kind,
                 requested_qty=qty,
-                requested_price=float(candidate.best_ask or candidate.current_price),
+                requested_price=submit_price,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 status="REJECTED",
                 reason="order_rejected",
-                payload={"error": error_text},
+                payload={
+                    "error": error_text,
+                    "order_division": order_division,
+                    "reference_price": buy_price,
+                },
             )
             return {
                 "submitted": False,
@@ -4557,14 +4564,18 @@ class LiquidityLabService:
             symbol=candidate.stock_code,
             exchange_code=None,
             side="BUY",
-            order_kind="limit",
+            order_kind=order_kind,
             requested_qty=qty,
-            requested_price=float(candidate.best_ask or candidate.current_price),
+            requested_price=submit_price,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             status="SUBMITTED",
             reason="domestic_buy",
-            payload=response if isinstance(response, dict) else {"response": response},
+            payload={
+                "response": response,
+                "order_division": order_division,
+                "reference_price": buy_price,
+            },
         )
         self._queue_trade_notification(
             " ".join(
@@ -4664,6 +4675,10 @@ class LiquidityLabService:
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
             "qty": qty,
+            "order_kind": order_kind,
+            "order_division": order_division,
+            "submit_price": submit_price,
+            "reference_price": buy_price,
             "response": response,
         }
 
@@ -5392,14 +5407,17 @@ class LiquidityLabService:
                     "reason": "pending_buy_cancel_failed",
                     "error": str(exc),
                 }
+        order_division = "00"
+        order_kind = "limit"
+        submit_price = f"{buy_price:.4f}"
         try:
             response = await self.client.place_overseas_order_for_current_session(
                 side="buy",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 qty=qty,
-                price=f"{buy_price:.4f}",
-                order_division="00",
+                price=submit_price,
+                order_division=order_division,
             )
         except KisApiError as exc:
             error_text = str(exc)
@@ -5429,14 +5447,18 @@ class LiquidityLabService:
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 side="BUY",
-                order_kind="limit",
+                order_kind=order_kind,
                 requested_qty=qty,
                 requested_price=buy_price,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 status="REJECTED",
                 reason="order_rejected",
-                payload={"error": error_text},
+                payload={
+                    "error": error_text,
+                    "order_division": order_division,
+                    "reference_price": buy_price,
+                },
             )
             return {
                 "submitted": False,
@@ -5447,6 +5469,10 @@ class LiquidityLabService:
                 "qty": qty,
                 "reason": "order_rejected",
                 "error": error_text,
+                "order_kind": order_kind,
+                "order_division": order_division,
+                "submit_price": submit_price,
+                "reference_price": buy_price,
             }
         repository = getattr(self, "repository", None)
         if repository is not None:
@@ -5509,14 +5535,18 @@ class LiquidityLabService:
             symbol=candidate.symbol,
             exchange_code=candidate.exchange_code,
             side="BUY",
-            order_kind="limit",
+            order_kind=order_kind,
             requested_qty=qty,
             requested_price=buy_price,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             status="SUBMITTED",
             reason=buy_reason,
-            payload=response if isinstance(response, dict) else {"response": response},
+            payload={
+                "response": response,
+                "order_division": order_division,
+                "reference_price": buy_price,
+            },
         )
         self._queue_trade_notification(
             " ".join(
@@ -5565,6 +5595,10 @@ class LiquidityLabService:
             "reason": buy_reason,
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
+            "order_kind": order_kind,
+            "order_division": order_division,
+            "submit_price": submit_price,
+            "reference_price": buy_price,
             "response": response,
         }
 

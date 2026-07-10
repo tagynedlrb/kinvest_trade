@@ -3396,7 +3396,61 @@ def test_send_reset_virtual_prompt() -> None:
     asyncio.run(controller._send_reset_virtual_prompt())
 
     assert "가상거래 초기화" in controller.notifier.messages[-1]
+    assert "현재상태=가상보유/정산대기 없음" in controller.notifier.messages[-1]
     assert "/lab_reset_confirm" in controller.notifier.messages[-1]
+
+
+def test_send_reset_virtual_prompt_shows_current_virtual_exposure(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "reset_virtual_prompt.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=2,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="MSFT",
+        exchange_code="NASD",
+        qty=1,
+        avg_price=300.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="TSLA",
+        exchange_code="NASD",
+        qty=1,
+        avg_sell_price=250.0,
+        currency="USD",
+        updated_at="2026-07-01T00:01:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_concurrent_overseas_orders=1,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    asyncio.run(controller._send_reset_virtual_prompt())
+
+    message = controller.notifier.messages[-1]
+    assert "해외 가상보유=$700.00 2종목 포지션한도=2/1 초과" in message
+    assert "정산대기=1건" in message
+    assert "/lab_reset_confirm" in message
 
 
 def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> None:

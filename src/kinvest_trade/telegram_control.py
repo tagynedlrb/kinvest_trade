@@ -525,6 +525,8 @@ class TelegramLiquidityLabController:
         lines = [
             "⚠️ [가상거래 초기화]",
             "",
+            *self._build_virtual_reset_summary_lines(),
+            "",
             "삭제 대상:",
             "  • virtual_positions  (현재 가상 보유)",
             "  • virtual_orders     (체결 이력)",
@@ -537,6 +539,56 @@ class TelegramLiquidityLabController:
             "취소: 무시",
         ]
         await self.notifier.send("\n".join(lines))
+
+    def _build_virtual_reset_summary_lines(self) -> list[str]:
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(repository, "list_virtual_positions"):
+            return ["현재상태=조회불가"]
+        try:
+            positions = repository.list_virtual_positions()
+        except Exception as exc:  # noqa: BLE001
+            return [f"현재상태=조회실패 ({str(exc)[:80]})"]
+        pending_sells: list[dict] = []
+        if hasattr(repository, "list_virtual_sell_pending"):
+            try:
+                pending_sells = repository.list_virtual_sell_pending()
+            except Exception:  # noqa: BLE001
+                pending_sells = []
+
+        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
+        for row in positions:
+            market = str(row.get("market", "overseas"))
+            currency = str(row.get("currency", "USD"))
+            qty = int(row.get("qty", 0) or 0)
+            avg_price = float(row.get("avg_price", 0.0) or 0.0)
+            if qty <= 0 or avg_price <= 0:
+                continue
+            key = (market, currency)
+            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
+            item["count"] = int(item["count"]) + 1
+            item["notional"] = float(item["notional"]) + qty * avg_price
+
+        if not by_market_currency and not pending_sells:
+            return ["현재상태=가상보유/정산대기 없음"]
+
+        max_overseas_positions = int(
+            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
+        )
+        lines = ["현재상태:"]
+        for (market, currency), item in sorted(by_market_currency.items()):
+            count = int(item["count"])
+            notional = float(item["notional"])
+            parts = [
+                f"  • {format_market_korean(market)} 가상보유={self._format_notional_price(notional, currency)}",
+                f"{count}종목",
+            ]
+            if market == "overseas" and currency == "USD" and max_overseas_positions > 0:
+                cap_status = "초과" if count > max_overseas_positions else "정상"
+                parts.append(f"포지션한도={count}/{max_overseas_positions} {cap_status}")
+            lines.append(" ".join(parts))
+        if pending_sells:
+            lines.append(f"  • 정산대기={len(pending_sells)}건")
+        return lines
 
     async def _execute_reset_virtual(self) -> None:
         now = datetime.now(timezone.utc)

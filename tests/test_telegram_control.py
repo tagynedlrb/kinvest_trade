@@ -3185,6 +3185,96 @@ def test_write_runtime_state_persists_update_offset() -> None:
     assert "telegram_control_start_notified_at" in payload
 
 
+def test_write_runtime_state_persists_lab_runtime_state() -> None:
+    controller = _build_async_controller()
+    controller.config.storage.runtime_state_path = Path(
+        "/tmp/kinvest_trade_test_lab_runtime_state.json"
+    )
+    future = datetime.now(timezone.utc) + timedelta(minutes=20)
+    expired = datetime.now(timezone.utc) - timedelta(minutes=1)
+    controller.lab_service = SimpleNamespace(
+        _exit_cooldown={
+            "overseas:SOXL": future,
+            "overseas:OLD": expired,
+        },
+        _no_orderable_retry={
+            "overseas:MSEX": future,
+            "overseas:OLD": expired,
+        },
+        _no_orderable_counts={
+            "overseas:MSEX": 42,
+            "overseas:OTHER": 99,
+        },
+    )
+
+    controller._write_runtime_state()
+
+    payload = json.loads(controller.config.storage.runtime_state_path.read_text(encoding="utf-8"))
+    lab_state = payload["lab_runtime_state"]
+    assert set(lab_state["exit_cooldown"]) == {"overseas:SOXL"}
+    assert set(lab_state["no_orderable_retry"]) == {"overseas:MSEX"}
+    assert lab_state["no_orderable_counts"] == {"overseas:MSEX": 42}
+
+
+def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
+    controller = _build_async_controller()
+    future = datetime.now(timezone.utc) + timedelta(minutes=20)
+    controller.config.storage.runtime_state_path.write_text(
+        json.dumps(
+            {
+                "lab_runtime_state": {
+                    "exit_cooldown": {"overseas:SOXL": future.isoformat()},
+                    "no_orderable_retry": {"overseas:MSEX": future.isoformat()},
+                    "no_orderable_counts": {
+                        "overseas:MSEX": 42,
+                        "overseas:STALE": 7,
+                        "bad": "not-an-int",
+                    },
+                },
+                "telegram_control": {
+                    "mode": "running",
+                    "current_cycle_no": 12,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller._restore_runtime_state()
+    seen: list[dict] = []
+
+    class RuntimeAwareLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            self._session_id = ""
+            self._exit_cooldown = {}
+            self._no_orderable_retry = {}
+            self._no_orderable_counts = {}
+
+        async def run(self):
+            seen.append(
+                {
+                    "exit_cooldown": dict(self._exit_cooldown),
+                    "no_orderable_retry": dict(self._no_orderable_retry),
+                    "no_orderable_counts": dict(self._no_orderable_counts),
+                }
+            )
+            return DummyReport("watchlist_wait")
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = RuntimeAwareLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(5))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert "overseas:SOXL" in seen[0]["exit_cooldown"]
+    assert "overseas:MSEX" in seen[0]["no_orderable_retry"]
+    assert seen[0]["no_orderable_counts"] == {"overseas:MSEX": 42}
+    assert controller._restored_lab_runtime_state == {}
+
+
 def test_handle_service_restart_rejects_when_service_missing() -> None:
     controller = _build_async_controller()
     controller._service_restart_supported = lambda: False  # type: ignore[method-assign]

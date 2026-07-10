@@ -240,6 +240,7 @@ class TelegramLiquidityLabController:
         self._last_market_state: str = ""
         self.active_session_id: str = ""
         self.lab_service: LiquidityLabService | None = None
+        self._restored_lab_runtime_state: dict = {}
         self.manual_overseas_pool: list[dict[str, str]] | None = None
         self._last_auto_stale_domestic_cancel_at: datetime | None = None
         self._last_auto_stale_overseas_cancel_at: datetime | None = None
@@ -824,6 +825,7 @@ class TelegramLiquidityLabController:
                 service = self.lab_service
                 if service is None:
                     service = LiquidityLabService(self.config, client, self.repository, self.notifier)
+                    self._apply_restored_lab_runtime_state(service)
                     self.lab_service = service
                 else:
                     service.config = self.config
@@ -902,6 +904,124 @@ class TelegramLiquidityLabController:
         self.current_task_started_at = None
         self._write_runtime_state()
 
+    def _lab_runtime_state_payload(self) -> dict:
+        service = self.lab_service
+        if service is None:
+            return self._normalise_lab_runtime_state(self._restored_lab_runtime_state)
+
+        now = datetime.now(timezone.utc)
+        exit_cooldown = self._future_datetime_map(
+            getattr(service, "_exit_cooldown", None),
+            now=now,
+        )
+        no_orderable_retry = self._future_datetime_map(
+            getattr(service, "_no_orderable_retry", None),
+            now=now,
+        )
+        active_retry_keys = set(no_orderable_retry)
+        raw_counts = getattr(service, "_no_orderable_counts", None) or {}
+        no_orderable_counts = self._normalise_count_map(raw_counts, active_retry_keys)
+        payload: dict[str, object] = {}
+        if exit_cooldown:
+            payload["exit_cooldown"] = exit_cooldown
+        if no_orderable_retry:
+            payload["no_orderable_retry"] = no_orderable_retry
+        if no_orderable_counts:
+            payload["no_orderable_counts"] = no_orderable_counts
+        return payload
+
+    def _apply_restored_lab_runtime_state(self, service: LiquidityLabService) -> None:
+        state = self._normalise_lab_runtime_state(self._restored_lab_runtime_state)
+        if not state:
+            return
+        exit_cooldown = self._parse_datetime_state_map(state.get("exit_cooldown"))
+        no_orderable_retry = self._parse_datetime_state_map(state.get("no_orderable_retry"))
+        if exit_cooldown:
+            service._exit_cooldown.update(exit_cooldown)
+        if no_orderable_retry:
+            service._no_orderable_retry.update(no_orderable_retry)
+        counts = self._normalise_count_map(
+            state.get("no_orderable_counts"),
+            set(no_orderable_retry),
+        )
+        if counts:
+            existing = getattr(service, "_no_orderable_counts", None)
+            if existing is None:
+                existing = {}
+                service._no_orderable_counts = existing
+            existing.update(counts)
+        self._restored_lab_runtime_state = {}
+
+    @classmethod
+    def _normalise_lab_runtime_state(cls, state: object) -> dict:
+        if not isinstance(state, dict):
+            return {}
+        now = datetime.now(timezone.utc)
+        exit_cooldown = cls._future_datetime_map(state.get("exit_cooldown"), now=now)
+        no_orderable_retry = cls._future_datetime_map(
+            state.get("no_orderable_retry"),
+            now=now,
+        )
+        active_retry_keys = set(no_orderable_retry)
+        raw_counts = state.get("no_orderable_counts") if isinstance(state, dict) else {}
+        no_orderable_counts = cls._normalise_count_map(raw_counts, active_retry_keys)
+        result: dict[str, object] = {}
+        if exit_cooldown:
+            result["exit_cooldown"] = exit_cooldown
+        if no_orderable_retry:
+            result["no_orderable_retry"] = no_orderable_retry
+        if no_orderable_counts:
+            result["no_orderable_counts"] = no_orderable_counts
+        return result
+
+    @staticmethod
+    def _future_datetime_map(raw: object, *, now: datetime) -> dict[str, str]:
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, str] = {}
+        for key, value in raw.items():
+            parsed = value if isinstance(value, datetime) else parse_datetime(str(value or ""))
+            if parsed is None:
+                continue
+            parsed = ensure_timezone(parsed)
+            if parsed <= now:
+                continue
+            result[str(key)] = parsed.isoformat()
+        return result
+
+    @staticmethod
+    def _parse_datetime_state_map(raw: object) -> dict[str, datetime]:
+        if not isinstance(raw, dict):
+            return {}
+        now = datetime.now(timezone.utc)
+        result: dict[str, datetime] = {}
+        for key, value in raw.items():
+            parsed = parse_datetime(str(value or ""))
+            if parsed is None:
+                continue
+            parsed = ensure_timezone(parsed)
+            if parsed <= now:
+                continue
+            result[str(key)] = parsed
+        return result
+
+    @staticmethod
+    def _normalise_count_map(raw: object, active_keys: set[str]) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, int] = {}
+        for key, value in raw.items():
+            key_text = str(key)
+            if key_text not in active_keys:
+                continue
+            try:
+                count = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if count > 0:
+                result[key_text] = count
+        return result
+
     def _write_runtime_state(self) -> None:
         path = self.config.storage.runtime_state_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -915,6 +1035,7 @@ class TelegramLiquidityLabController:
             ),
             "watch_targets": (self.last_report_summary or {}).get("watch_targets", []),
             "last_error": self.last_error,
+            "lab_runtime_state": self._lab_runtime_state_payload(),
             "notes": [
                 "telegram-control daemon manages liquidity-lab loop state.",
                 "Use Telegram commands to start, pause, resume, stop, or terminate.",
@@ -938,6 +1059,14 @@ class TelegramLiquidityLabController:
             str(payload.get("telegram_control_start_notified_at") or "")
         )
         snapshot = payload.get("telegram_control") or {}
+        lab_runtime_state = payload.get("lab_runtime_state")
+        if not isinstance(lab_runtime_state, dict):
+            lab_runtime_state = snapshot.get("lab_runtime_state")
+        self._restored_lab_runtime_state = (
+            self._normalise_lab_runtime_state(lab_runtime_state)
+            if isinstance(lab_runtime_state, dict)
+            else {}
+        )
         mode = snapshot.get("mode")
         if mode in {"running", "paused", "stopped"}:
             self.mode = mode

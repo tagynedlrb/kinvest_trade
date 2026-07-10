@@ -1,5 +1,28 @@
 # WORKLOG
 
+## [2026-07-10] 주문 안정 런타임 상태 복원
+
+### 배경
+- `exit_cooldown`, `no_orderable_retry`, `no_orderable_counts`는 `LiquidityLabService`
+  메모리 상태라 서비스 재시작 시 사라졌음
+- 이 경우 `order_rejected`/`no_orderable_qty` 이후 적용한 쿨다운과 백오프가
+  재시작 직후 초기화되어 같은 주문 장애를 다시 반복할 수 있었음
+
+### 수정
+- `telegram_control.py`
+  - `runtime_state.json`에 `lab_runtime_state` 추가
+  - 미래 시각의 `exit_cooldown`, `no_orderable_retry`만 저장
+  - `no_orderable_counts`는 활성 retry 키에 대해서만 저장
+  - 새 `LiquidityLabService` 생성 시 복원 상태를 한 번만 주입
+  - 이미 살아 있는 서비스에는 저장값을 다시 덮어쓰지 않아, 정상 해소된 상태가 되살아나는 위험 방지
+- `tests/test_telegram_control.py`
+  - runtime state 저장 테스트 추가
+  - 재시작 후 새 lab service에 쿨다운/백오프가 복원되는지 테스트 추가
+
+### 기대 효과
+- 서비스 재시작 후에도 주문거부/매도가능0 재시도 억제 상태 유지
+- 장기 고착 주문 장애의 반복 API 호출과 텔레그램/DB 소음 감소
+
 ## [2026-07-10] no_orderable_qty 장기 지속 재시도 백오프
 
 ### 분석

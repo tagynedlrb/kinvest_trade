@@ -315,7 +315,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_stop`: 현재 사이클 취소 요청 후 정지. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_terminate`: 현재 lab 실행을 강제 종료하고 대기 상태로 복귀. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_service_restart`: `kinvest-telegram-control.service` 자체를 재시작
-- `/lab_status`: 현재 상태 조회
+- `/lab_status`: 현재 상태, 가상 노출, 최근 반복 매도장애 요약 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
 - `/lab_portfolio`: 실제 계좌 보유, 통합 가상보유, 정산 대기 매도, 누적 성과 조회
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
@@ -352,7 +352,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - 텔레그램 long polling 시간은 `notifications.telegram_command_poll_timeout_sec`으로 조절한다.
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
-- `/lab_status`에는 현재 장 상태, 다음 루프 간격, 연속 오류 횟수가 함께 표시된다.
+- `/lab_status`에는 현재 장 상태, 다음 루프 간격, 연속 오류 횟수, 가상 노출, 최근 12시간 반복 매도장애(`매도가능0`, `주문거부`)가 함께 표시된다.
 - 장 상태가 `krx_open`, `us_regular`, `both_closed` 등으로 바뀌면 텔레그램에 자동 알림을 보낸다.
 - 현재 기본 해외 감시는 `TV scan -> dynamic pool`, `overseas_scan_top_n=25`, `loop_interval_sec=25` 기준이다. TV 스캔 실패 시에는 자동 fallback 대신 relist 요청 알림을 보내고, 보유 종목은 풀 상태와 무관하게 계속 감시한다.
 - 자동매매 SELL 알림은 `종목 / 매수·매도 / 가격 / 수량 / RSI·거래량 / 손익 / 보유시간` 위주로 짧게 보낸다.

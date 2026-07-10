@@ -1,5 +1,28 @@
 # WORKLOG
 
+## [2026-07-10] 해외 단독 RSI 진입 차단
+
+### 분석
+- `scripts/analyze_trades.py data/trading.db --compare-date 2026-07-10` 기준
+  - 보수화 이후 해외 `RSI` 단독: 4건, 평균 net `-2.025%`, 승률 `0%`
+  - 보수화 이후 해외 `VWAP` 단독: 4건, 평균 net `-1.011%`, 승률 `0%`
+  - 보수화 이후 국내 `VWAP`: 15건, 평균 net `+0.980%`
+  - 보수화 이후 국내 `VWAP+RSI`: 3건, 평균 net `+1.694%`
+- 해석: 국내 VWAP 계열은 유지하고, 해외는 단독 RSI/VWAP보다 복합 확인 신호를 우선해야 함
+
+### 수정
+- `config/fixed_config.json`
+  - `overseas_block_standalone_rsi: true` 추가
+- `liquidity_lab.py`
+  - 해외 `strategy_flag == "RSI"` 단독 BUY를 `standalone_rsi_blocked`로 차단
+  - `VWAP+RSI`, `VOL+RSI` 같은 복합 전략은 계속 허용
+- `tests/`
+  - 감시 목록 생성 단계와 주문 직전 단계 모두에서 해외 단독 RSI가 차단되는지 회귀 테스트 추가
+
+### 기대 효과
+- 손실이 컸던 해외 RSI 단독 진입 재발 방지
+- 해외 매수는 복합 신호 중심으로 축소하고, 성과가 좋은 국내 VWAP 계열은 유지
+
 ## [2026-07-10] 보호성 매도 주문 방식 개선
 
 ### 배경

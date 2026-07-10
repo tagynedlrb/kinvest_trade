@@ -739,6 +739,24 @@ class LiquidityLabService:
             )
         )
 
+    def _should_block_overseas_standalone_rsi(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+    ) -> bool:
+        return (
+            market == "overseas"
+            and strategy_flag == "RSI"
+            and bool(
+                getattr(
+                    self.config.liquidity_lab,
+                    "overseas_block_standalone_rsi",
+                    False,
+                )
+            )
+        )
+
     def _strategy_guard_blocked_keys(self) -> set[tuple[str, str]]:
         config = getattr(self.config, "liquidity_lab", object())
         if not bool(getattr(config, "strategy_guard_enabled", False)):
@@ -835,6 +853,11 @@ class LiquidityLabService:
             strategy_flag=strategy,
         ):
             return "standalone_vwap_blocked"
+        if self._should_block_overseas_standalone_rsi(
+            market=market_key,
+            strategy_flag=strategy,
+        ):
+            return "standalone_rsi_blocked"
         if (market_key, strategy) in self._strategy_guard_blocked_keys():
             return "recent_strategy_underperformance"
         return ""

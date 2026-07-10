@@ -62,6 +62,7 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.paper.max_spread_pct == 0.003
     assert config.paper.trailing_stop_pct == 0.004
     assert config.liquidity_lab.overseas_block_standalone_vwap is True
+    assert config.liquidity_lab.overseas_block_standalone_rsi is True
     assert config.liquidity_lab.max_concurrent_domestic_orders == 8
     assert config.liquidity_lab.strategy_guard_enabled is True
     assert config.liquidity_lab.strategy_guard_lookback_hours == 48

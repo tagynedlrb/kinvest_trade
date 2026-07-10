@@ -273,7 +273,7 @@ python3 main.py liquidity-lab
 - 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
-- 최근 성과 기준으로 해외 `VWAP` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`). 해외에서는 `VWAP+RSI`, `VOL`처럼 보조 확인이 붙은 신호를 우선한다.
+- 최근 성과 기준으로 해외 `VWAP` 단독 진입과 해외 `RSI` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`). 해외에서는 `VWAP+RSI`, `VOL`, `VOL+RSI`처럼 보조 확인이 붙은 신호를 우선한다.
 - `liquidity_lab`의 매수 수량은 기본적으로 슬롯 기반이다. `use_slot_sizing=true`이면 주문가능 금액에 `slot_entry_pct`를 곱한 예산 안에서 수량을 계산하고, 조회 실패 시에만 `*_test_order_qty` 고정 수량으로 폴백한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.

@@ -773,7 +773,8 @@ def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
 
     message = controller.notifier.messages[-1]
     assert "[KIS][손익요약]" in message
-    assert "실거래" in message
+    assert "실주문접수 기준" in message
+    assert "주의=체결확정은 MTS/잔고 기준 확인" in message
     assert "거래=1건" in message
     assert "해외손익=+$1.50" in message
 
@@ -821,7 +822,7 @@ def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
 
     message = notifier.messages[-1]
     assert "[KIS][손익요약]" in message
-    assert "실거래" in message
+    assert "실주문접수 기준" in message
     assert "환산손익=+3,900원" in message
 
 

@@ -1608,20 +1608,21 @@ class TelegramLiquidityLabController:
         total_pnl_usd = sum(float(item.get("total_pnl_usd") or 0.0) for item in real.values())
         if total_real_trades > 0:
             win_rate = (total_real_wins / total_real_trades) * 100.0
-            lines.append("─── 실거래 ───")
+            lines.append("─── 실주문접수 기준 ───")
             lines.append(f"거래={total_real_trades}건 (승률 {win_rate:.0f}%)")
             if abs(total_pnl_usd) > 1e-9:
                 usd_sign = "+" if total_pnl_usd >= 0 else ""
                 lines.append(f"해외손익={usd_sign}${total_pnl_usd:,.2f}")
             krw_sign = "+" if total_pnl_krw >= 0 else ""
             lines.append(f"환산손익={krw_sign}{int(round(total_pnl_krw)):,}원")
+            lines.append("주의=체결확정은 MTS/잔고 기준 확인")
             for market, stats in sorted(real.items()):
                 trade_count = int(stats.get("trade_count", 0) or 0)
                 win_count = int(stats.get("win_count", 0) or 0)
                 market_win_rate = (win_count / trade_count * 100.0) if trade_count else 0.0
                 lines.append(f"{market}: {trade_count}건 승률{market_win_rate:.0f}%")
         else:
-            lines.append("실거래 내역 없음")
+            lines.append("실주문접수 내역 없음")
 
         if include_virtual:
             virtual = summary.get("virtual", {})

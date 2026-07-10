@@ -45,6 +45,7 @@ HELP_MESSAGE = "\n".join(
         "/lab_status - 현재 상태",
         "/lab_watchlist - 감시 종목 요약",
         "/lab_log - 최근 매매 내역 조회",
+        "/lab_orders - 최근 주문 접수/취소 기록",
         "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
         "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
         "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
@@ -66,6 +67,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_status", "description": "현재 상태 조회"},
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
+    {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
@@ -331,6 +333,9 @@ class TelegramLiquidityLabController:
             return
         if command_name == "log":
             await self._send_recent_trade_log()
+            return
+        if command_name == "orders":
+            await self._send_recent_order_events()
             return
         if command_name == "paper_test":
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -1607,6 +1612,69 @@ class TelegramLiquidityLabController:
             )
         )
 
+    async def _send_recent_order_events(self) -> None:
+        await self.notifier.send(self._build_recent_order_events_message())
+
+    def _build_recent_order_events_message(self, *, limit: int = 12) -> str:
+        rows = self.repository.list_broker_order_events(limit=limit)
+        lines = [
+            "[KIS][주문기록]",
+            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            "기준=주문 접수/취소/가상기록 (체결확정 아님)",
+        ]
+        if not rows:
+            lines.append("주문기록=없음")
+            return "\n".join(lines)
+
+        for row in rows:
+            created_at = parse_datetime(row.get("created_at"))
+            time_text = format_kst_korean(created_at) if created_at else "-"
+            market = str(row.get("market", "overseas"))
+            symbol = str(row.get("symbol", "-")).upper()
+            side = str(row.get("side", "")).upper()
+            status = str(row.get("status", "") or "-").upper()
+            action = self._format_order_event_action(row)
+            qty = int(row.get("requested_qty", 0) or 0)
+            price = float(row.get("requested_price", 0.0) or 0.0)
+            currency = "KRW" if market == "domestic" else "USD"
+            price_text = "-" if price <= 0 else self._format_price(price, currency)
+            reason = format_reason_korean(str(row.get("reason", "") or "-"))
+            order_no = str(row.get("broker_order_no", "") or "").strip()
+            virtual_note = " virtual" if int(row.get("is_virtual", 0) or 0) else ""
+            parts = [
+                f"{time_text} {format_market_korean(market)} {symbol}{virtual_note}",
+                action,
+                price_text,
+                f"x{qty}",
+                f"상태={status}",
+                f"사유={reason}",
+            ]
+            if order_no:
+                parts.append(f"주문번호={order_no}")
+            if side and side not in {"BUY", "SELL"}:
+                parts.append(f"원시구분={side}")
+            lines.append(" ".join(parts))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_order_event_action(row: dict) -> str:
+        status = str(row.get("status", "") or "").upper()
+        side = str(row.get("side", "") or "").upper()
+        is_virtual = bool(int(row.get("is_virtual", 0) or 0))
+        if status == "CANCELED":
+            return "취소"
+        if status == "RECORDED":
+            if is_virtual and side == "BUY":
+                return "가상매수기록"
+            if is_virtual and side == "SELL":
+                return "가상매도기록"
+            return "기록"
+        if side == "BUY":
+            return "매수접수"
+        if side == "SELL":
+            return "매도접수"
+        return status or "-"
+
     def _build_session_pnl_message(
         self,
         *,
@@ -1934,6 +2002,7 @@ class TelegramLiquidityLabController:
             "/lab_status": "status",
             "/lab_watchlist": "watchlist",
             "/lab_log": "log",
+            "/lab_orders": "orders",
             "/lab_portfolio": "portfolio",
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",

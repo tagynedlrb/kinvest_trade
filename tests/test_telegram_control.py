@@ -27,6 +27,7 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_status") == "status"
     assert TelegramLiquidityLabController.parse_command("/lab_watchlist") == "watchlist"
     assert TelegramLiquidityLabController.parse_command("/lab_log") == "log"
+    assert TelegramLiquidityLabController.parse_command("/lab_orders") == "orders"
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
     assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
@@ -841,6 +842,117 @@ def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
     assert "[KIS][손익요약]" in message
     assert "실주문접수 기준" in message
     assert "환산손익=+3,900원" in message
+
+
+def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:00:00+00:00",
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=2,
+        requested_price=210.5,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no="12345",
+        is_virtual=0,
+        payload={"output": {"ODNO": "12345"}},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:01:00+00:00",
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="cancel",
+        requested_qty=2,
+        requested_price=210.5,
+        status="CANCELED",
+        reason="stale_exit_replace",
+        broker_order_no="12346",
+        is_virtual=0,
+        payload={"output": {"ODNO": "12346"}},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:02:00+00:00",
+        market="overseas",
+        symbol="MSFT",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="virtual_limit",
+        requested_qty=1,
+        requested_price=300.0,
+        status="RECORDED",
+        reason="stop_loss",
+        is_virtual=1,
+        payload={},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    message = controller._build_recent_order_events_message(limit=5)
+
+    assert "[KIS][주문기록]" in message
+    assert "기준=주문 접수/취소/가상기록 (체결확정 아님)" in message
+    assert "해외 MSFT virtual 가상매도기록 $300.0000 x1 상태=RECORDED 사유=손절" in message
+    assert "해외 AAPL 취소 $210.5000 x2 상태=CANCELED 사유=stale_exit_replace 주문번호=12346" in message
+    assert "해외 AAPL 매수접수 $210.5000 x2 상태=SUBMITTED 사유=strategy_buy_signal 주문번호=12345" in message
+
+
+def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_orders_command.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T01:00:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        side="SELL",
+        order_kind="limit",
+        requested_qty=3,
+        requested_price=82000.0,
+        status="SUBMITTED",
+        reason="take_profit",
+        broker_order_no="777",
+        is_virtual=0,
+        payload={"output": {"ODNO": "777"}},
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_orders",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][주문기록]" in message
+    assert "국내 005930 매도접수 82,000원 x3 상태=SUBMITTED 사유=익절 주문번호=777" in message
 
 
 def test_pnl_summary_excludes_virtual_for_prod(tmp_path) -> None:

@@ -279,7 +279,7 @@ python3 main.py liquidity-lab
 - 고정 손절/익절에 먼저 걸리지 않았더라도, 보유 종목이 `ATR 손절`, `모멘텀 약화`, `볼륨 페이드` 신호를 보이면 청산 후보로 올린다.
 - 국내장이 열려 있으면 매 사이클마다 보유 포지션 청산 신호를 먼저 확인하고, 없으면 진입 조건을 충족한 종목의 신규 매수를 진행한다.
 - 미국장이 열려 있으면 진입 조건을 충족한 해외 종목에 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_overseas_orders`(기본 8)개까지 가능하다.
-- 국내장이 열려 있으면 진입 조건을 충족한 국내 종목에도 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_domestic_orders`(기본 5)개까지 가능하다.
+- 국내장이 열려 있으면 진입 조건을 충족한 국내 종목에도 동시에 주문한다. 한 사이클에서 최대 `max_concurrent_domestic_orders`(기본 8)개까지 가능하다.
 - 자동 사이클에서는 더 이상 국내 `paper-run` 25초 검증을 끼워 넣지 않는다. 수동 검증이 필요하면 텔레그램 `/lab_paper_test <종목코드>`를 사용한다.
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
@@ -320,7 +320,9 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_portfolio`: 실제 계좌 보유, 통합 가상보유, 정산 대기 매도, 누적 성과 조회
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
 - `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실주문접수 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
-- `/lab_orders`: 최근 주문 접수/취소/거부 기록과 KIS 실시간 미체결 주문 조회
+- `/lab_report compare <YYYY-MM-DD>`: 기준일 전후 전략별 실주문접수 성과 비교
+- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`로 표시하며, 현재 기본 감시 대상은 해외 `VWAP`, `RSI`, `VOL`이다
+- `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
 - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
 - `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)
 - `/lab_cancel_stale_overseas`: 30분 이상 해외 미체결 취소 대상 확인
@@ -361,7 +363,8 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
 - `/lab_portfolio`는 국내/해외 실제 보유 종목과 가상 체결 반영 통합 보유, 정산 대기 매도, 누적 실현손익을 함께 보여준다.
 - `/lab_performance`는 전략 평가용이다. `cycle_log`의 감시 신호 행(`BUY`, `SELL`, `HOLD`)을 제외하고 실주문접수 매도 행(`SELL_REAL`)만 집계한다. 체결 확정 여부는 MTS/잔고 기준으로 확인한다.
-- `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 국내 장기 미체결은 장외 시간에 `취소가능=국내장중`으로 표시되며, 봇이 접수한 장기 미체결 국내 주문은 다음 국내 정규장에 자동 취소를 재시도한다. 해외도 봇이 접수한 장기 미체결 주문만 미국 주문 가능 세션에 자동 취소를 재시도한다.
+- `/lab_guard`는 `strategy_guard_lookback_hours` 기간의 실주문접수 `SELL_REAL`을 기준으로 전략별 평균 순손익을 보여준다. 차단 기준은 `strategy_guard_min_trades`와 `strategy_guard_max_avg_net_pnl_pct`를 따른다.
+- `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 내부 `SUBMITTED` 기록은 체결 확정이 아니므로, `접수 후 체결확정 추적 필요` 섹션에서 `확인필요=MTS/잔고`로 따로 표시한다. live 미체결 조회가 성공하면 `브로커상태=미체결` 또는 `브로커상태=미체결목록없음`도 함께 표시한다. 국내 장기 미체결은 장외 시간에 `취소가능=국내장중`으로 표시되며, 봇이 접수한 장기 미체결 국내 주문은 다음 국내 정규장에 자동 취소를 재시도한다. 해외도 봇이 접수한 장기 미체결 주문만 미국 주문 가능 세션에 자동 취소를 재시도한다.
 
 ## 거래 시간 정책
 이 프로그램은 국내(KRX)와 해외(미국) 시장을 동시에 감시하며, 각 시장의 세션 상태에 따라 거래 가능 여부가 자동으로 결정된다. 판단 로직은 `src/kinvest_trade/market_sessions.py`에 구현되어 있다.

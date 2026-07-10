@@ -2515,6 +2515,7 @@ def _build_run_service() -> LiquidityLabService:
     service._trade_notification_max_batch_size = 8
     service._recent_trade_count = 0
     service._recent_cycle_count = 0
+    service._recent_order_reason_counts = {}
     service._rsi_blocked_count = 0
     service._last_trend_filter_alert_cycle = 0
     return service
@@ -2535,7 +2536,12 @@ def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
     assert detail["cycle_count"] == 50
     assert detail["trade_count"] == 0
     assert detail["ratio"] == 0.0
+    assert detail["top_reasons"] == {
+        "domestic:skip:no_action": 50,
+        "overseas:skip:no_action": 50,
+    }
     assert service._recent_cycle_count == 0
+    assert service._recent_order_reason_counts == {}
 
 
 def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:

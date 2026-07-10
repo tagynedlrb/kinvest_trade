@@ -1,5 +1,32 @@
 # WORKLOG
 
+## [2026-07-10] 지시문 #65 점검 — 빈도 경고 원인 요약 보강
+
+### 실DB 확인
+- `scripts/analyze_trades.py data/trading.db --compare-date 2026-07-10`
+  - 2026-07-10 KST 이후 국내 VWAP: 15건, 평균 Net `+0.980%`
+  - 2026-07-10 KST 이후 해외 RSI: 4건, 평균 Net `-2.025%`
+  - 2026-07-10 KST 이후 해외 VWAP: 4건, 평균 Net `-1.011%`
+- 최근 2일 기준 국내 실주문접수 SELL_REAL은 평균 Net `+0.341%`,
+  해외는 평균 Net `-0.916%`로 국내 비중 확대와 해외 단독 VWAP/RSI 차단 방향이 타당함
+
+### 확인된 적용 사항
+- `/lab_report compare <YYYY-MM-DD>` 기준일 전후 전략 성과 비교 가능
+- `max_concurrent_domestic_orders=8`, `_strategy_changes` 메타데이터 적용됨
+- 50사이클 매매 빈도 모니터링, RSI 차단 카운터, trend_filter_lost 비율 경고 구현됨
+
+### 추가 수정
+- `liquidity_lab.py`
+  - `low_trade_frequency` 이벤트 detail에 최근 50사이클의 상위 주문/스킵 이유 `top_reasons` 기록
+  - 경고 로그에도 동일 요약을 출력하여 매매 빈도 저하 원인을 바로 분석 가능하게 개선
+- `tests/test_liquidity_lab.py`
+  - low frequency 이벤트의 `top_reasons` 기록과 리셋 동작 검증 추가
+
+### 기대 효과
+- 다음 실행에서 매매가 적을 때 단순히 "빈도 낮음"이 아니라
+  `volume_low`, `no_candidate`, `cooldown`, `market_not_orderable` 등 원인을 바로 구분 가능
+- 보수화 유지/완화 판단을 DB 이벤트만으로 더 빠르게 수행
+
 ## [2026-07-10] 매수 주문 audit 메타데이터 보강
 
 ### 배경

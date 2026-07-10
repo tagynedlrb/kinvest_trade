@@ -587,6 +587,7 @@ class LiquidityLabService:
         self._exit_price_shock_guard: dict[str, dict[str, float | str]] = {}
         self._recent_trade_count: int = 0
         self._recent_cycle_count: int = 0
+        self._recent_order_reason_counts: dict[str, int] = {}
         self._rsi_blocked_count: int = 0
         self._last_trend_filter_alert_cycle: int = 0
         self._strategy_guard_cache: dict[str, object] = {}
@@ -7588,21 +7589,47 @@ class LiquidityLabService:
         overseas_orders: list[dict],
     ) -> None:
         self._recent_cycle_count = getattr(self, "_recent_cycle_count", 0) + 1
+        reason_counts = getattr(self, "_recent_order_reason_counts", {})
+        if not isinstance(reason_counts, dict):
+            reason_counts = {}
+        all_orders = [*domestic_orders, *overseas_orders]
+        for market, orders in (
+            ("domestic", domestic_orders),
+            ("overseas", overseas_orders),
+        ):
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                side = str(order.get("side") or "none").strip().lower() or "none"
+                if self._is_effective_trade_order(order):
+                    reason_key = f"{market}:trade:{side}"
+                else:
+                    reason = str(order.get("reason") or "inactive").strip() or "inactive"
+                    reason_key = f"{market}:skip:{reason[:80]}"
+                reason_counts[reason_key] = int(reason_counts.get(reason_key, 0)) + 1
+        self._recent_order_reason_counts = reason_counts
         trade_count = sum(
             1
-            for order in [*domestic_orders, *overseas_orders]
+            for order in all_orders
             if self._is_effective_trade_order(order)
         )
         self._recent_trade_count = getattr(self, "_recent_trade_count", 0) + trade_count
         if self._recent_cycle_count < 50:
             return
         trade_ratio = self._recent_trade_count / max(self._recent_cycle_count, 1)
+        top_reasons = dict(
+            sorted(
+                reason_counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[:8]
+        )
         if trade_ratio < 0.01:
             _logger.warning(
-                "[FREQ] 최근 %d사이클 매매율 %.1f%% (trade_count=%d)",
+                "[FREQ] 최근 %d사이클 매매율 %.1f%% (trade_count=%d, reasons=%s)",
                 self._recent_cycle_count,
                 trade_ratio * 100.0,
                 self._recent_trade_count,
+                top_reasons,
             )
             self._save_event(
                 event_type="low_trade_frequency",
@@ -7610,10 +7637,12 @@ class LiquidityLabService:
                     "cycle_count": self._recent_cycle_count,
                     "trade_count": self._recent_trade_count,
                     "ratio": round(trade_ratio, 4),
+                    "top_reasons": top_reasons,
                 },
             )
         self._recent_trade_count = 0
         self._recent_cycle_count = 0
+        self._recent_order_reason_counts = {}
 
     def _track_rsi_threshold_blocks(self, watch_targets: list[WatchTargetStatus]) -> None:
         rsi_threshold = float(

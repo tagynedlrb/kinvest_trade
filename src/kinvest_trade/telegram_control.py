@@ -598,7 +598,12 @@ class TelegramLiquidityLabController:
             lines.append(f"  • 정산대기={len(pending_sells)}건")
         return lines
 
-    def _select_virtual_trim_candidates(self) -> tuple[list[dict[str, object]], int, int]:
+    def _select_virtual_trim_candidates(
+        self,
+        *,
+        price_lookup: dict[tuple[str, str], float] | None = None,
+        require_live_price: bool = False,
+    ) -> tuple[list[dict[str, object]], int, int]:
         max_overseas_positions = int(
             getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
         )
@@ -617,6 +622,7 @@ class TelegramLiquidityLabController:
             return [], total, max_overseas_positions
 
         now = datetime.now(timezone.utc)
+        price_lookup = price_lookup or {}
         candidates: list[dict[str, object]] = []
         for row in rows:
             symbol = str(row.get("symbol", "")).strip().upper()
@@ -627,11 +633,22 @@ class TelegramLiquidityLabController:
             avg_price = float(row.get("avg_price", 0.0) or 0.0)
             if qty <= 0 or avg_price <= 0:
                 continue
+            live_price = float(price_lookup.get((market, symbol), 0.0) or 0.0)
             state = self.repository.get_lab_symbol_state(market, symbol)
-            current_price = 0.0
+            saved_price = 0.0
+            saved_age_min: int | None = None
             if state is not None:
-                current_price = float(state.get("last_price") or 0.0)
+                saved_price = float(state.get("last_price") or 0.0)
+                updated_at = parse_datetime(state.get("updated_at"))
+                if updated_at is not None:
+                    saved_age_min = int(
+                        max((now - ensure_timezone(updated_at)).total_seconds(), 0.0) // 60
+                    )
+            price_source = "live" if live_price > 0 else "saved" if saved_price > 0 else "missing"
+            current_price = live_price if live_price > 0 else saved_price
             price_missing = current_price <= 0
+            if require_live_price and price_source != "live":
+                continue
             if price_missing:
                 current_price = avg_price
             pnl_pct = (current_price - avg_price) / avg_price
@@ -649,6 +666,8 @@ class TelegramLiquidityLabController:
                     "pnl_pct": pnl_pct,
                     "age_hours": age_hours,
                     "price_missing": price_missing,
+                    "price_source": price_source,
+                    "saved_price_age_min": saved_age_min,
                 }
             )
 
@@ -668,7 +687,15 @@ class TelegramLiquidityLabController:
         current_price = float(item["current_price"])
         pnl_pct = float(item["pnl_pct"])
         currency = str(item["currency"])
-        price_note = " 현재가없음" if bool(item.get("price_missing")) else ""
+        price_note = ""
+        if bool(item.get("price_missing")):
+            price_note = " 현재가없음"
+        elif str(item.get("price_source") or "") == "saved":
+            age_min = item.get("saved_price_age_min")
+            if isinstance(age_min, int):
+                price_note = f" 저장가={self._format_saved_price_age(age_min)}"
+            else:
+                price_note = " 저장가"
         return (
             f"해외 {symbol} 수량={qty} "
             f"매입={self._format_price(avg_price, currency)} "
@@ -676,9 +703,36 @@ class TelegramLiquidityLabController:
             f"손익={format_pct(pnl_pct)}{price_note}"
         )
 
+    @staticmethod
+    def _format_saved_price_age(age_min: int) -> str:
+        if age_min <= 0:
+            return "방금"
+        if age_min < 60:
+            return f"{age_min}분전"
+        hours = age_min // 60
+        if hours < 48:
+            return f"{hours}시간전"
+        return f"{hours // 24}일전"
+
+    async def _load_trim_virtual_price_lookup(self) -> dict[tuple[str, str], float]:
+        try:
+            async with KisRestClient(self.config.credentials) as client:
+                lab = self._build_portfolio_lab_service(client)
+                return await self._load_live_virtual_price_lookup(lab)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("trim_virtual_live_price_lookup_failed error=%s", exc)
+            return {}
+
     async def _send_trim_virtual_prompt(self) -> None:
-        candidates, total, max_positions = self._select_virtual_trim_candidates()
-        if not candidates:
+        live_prices = await self._load_trim_virtual_price_lookup()
+        saved_candidates, total, max_positions = self._select_virtual_trim_candidates(
+            price_lookup=live_prices,
+        )
+        candidates, _, _ = self._select_virtual_trim_candidates(
+            price_lookup=live_prices,
+            require_live_price=True,
+        )
+        if not saved_candidates:
             await self.notifier.send(
                 "\n".join(
                     [
@@ -689,12 +743,32 @@ class TelegramLiquidityLabController:
                 )
             )
             return
+        if not candidates:
+            lines = [
+                "⚠️ [가상보유 초과분 정리 보류]",
+                f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                f"포지션={total}/{max_positions} 초과={len(saved_candidates)}종목",
+                f"가격소스=live {len(live_prices)}건",
+                "사유=live 현재가 확보 실패",
+                "",
+                "저장가 기준 후보:",
+            ]
+            lines.extend(self._format_virtual_trim_candidate_line(item) for item in saved_candidates[:5])
+            lines.extend(
+                [
+                    "",
+                    "조치=/lab_start 후 재조회 또는 잠시 뒤 /lab_trim_virtual 재시도",
+                ]
+            )
+            await self.notifier.send("\n".join(lines))
+            return
 
         lines = [
             "⚠️ [가상보유 초과분 정리]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-            f"포지션={total}/{max_positions} 초과={len(candidates)}종목",
+            f"포지션={total}/{max_positions} 정리가능={len(candidates)}/{len(saved_candidates)}종목",
             "방식=성과 제외 가상매도 기록 후 초과분 삭제",
+            f"가격소스=live {len(live_prices)}건",
             "",
             "정리 후보:",
         ]
@@ -710,14 +784,19 @@ class TelegramLiquidityLabController:
 
     async def _execute_trim_virtual(self) -> None:
         now = datetime.now(timezone.utc)
-        candidates, total, max_positions = self._select_virtual_trim_candidates()
+        live_prices = await self._load_trim_virtual_price_lookup()
+        candidates, total, max_positions = self._select_virtual_trim_candidates(
+            price_lookup=live_prices,
+            require_live_price=True,
+        )
         if not candidates:
             await self.notifier.send(
                 "\n".join(
                     [
                         "[KIS][가상보유 정리]",
                         f"시각={format_kst_korean(now)}",
-                        f"상태=정리불필요 ({total}/{max_positions})",
+                        f"상태=정리보류 ({total}/{max_positions})",
+                        f"사유=live 현재가 확보 실패 또는 정리불필요 (live {len(live_prices)}건)",
                     ]
                 )
             )

@@ -2927,3 +2927,28 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_build_status_message_shows_recent_sell_block_events tests/test_telegram_control.py::test_format_recent_age_text -q`
   → 통과
 - `python3 -m pytest tests -q` → 434개 통과
+
+## [2026-07-11] `/lab_trim_virtual` stale 가격 정리 방지
+
+### 배경
+- 현재 거래 루프가 `stopped`라 가상보유 정리 후보의 `lab_symbol_state.last_price`가
+  약 8시간 전 저장값이었다.
+- 기존 `/lab_trim_virtual_confirm`는 이 저장가만으로도 가상 포지션을 삭제할 수 있어,
+  실제 현재가와 다른 가격으로 수동 정리될 위험이 있었다.
+
+### 수정
+- `telegram_control.py`
+  - `/lab_trim_virtual` 실행 시 live quote lookup을 먼저 수행
+  - 프롬프트에 `가격소스=live N건`과 저장가 나이를 표시
+  - `/lab_trim_virtual_confirm`는 live 현재가가 확보된 후보만 정리
+  - live 현재가가 없으면 `정리보류` 메시지를 보내고 가상 포지션을 보존
+- `tests/test_telegram_control.py`
+  - live 가격 기반 정리 성공 테스트 갱신
+  - live 가격 미확보 시 prompt/confirm 보류 테스트 추가
+
+### 검증
+- 운영 DB 기준 live 미확보 시:
+  `가상보유 초과분 정리 보류`, `저장가=8시간전`, `조치=/lab_start 후 재조회`
+- `python3 -m pytest tests/test_telegram_control.py::test_trim_virtual_prompt_and_confirm_closes_excess_positions tests/test_telegram_control.py::test_execute_trim_virtual_defers_when_live_prices_missing -q`
+  → 통과
+- `python3 -m pytest tests -q` → 435개 통과

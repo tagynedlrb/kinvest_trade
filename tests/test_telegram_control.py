@@ -3546,12 +3546,23 @@ def test_trim_virtual_prompt_and_confirm_closes_excess_positions(tmp_path) -> No
         repository=repository,
         notifier=DummyNotifier(),
     )
+    live_prices = {
+        ("overseas", "AAA"): 94.0,
+        ("overseas", "BBB"): 99.0,
+        ("overseas", "CCC"): 105.0,
+    }
+
+    async def fake_live_prices():
+        return live_prices
+
+    controller._load_trim_virtual_price_lookup = fake_live_prices  # type: ignore[method-assign]
 
     asyncio.run(controller._send_trim_virtual_prompt())
 
     prompt = controller.notifier.messages[-1]
     assert "가상보유 초과분 정리" in prompt
-    assert "포지션=3/1 초과=2종목" in prompt
+    assert "포지션=3/1 정리가능=2/2종목" in prompt
+    assert "가격소스=live 3건" in prompt
     assert "AAA" in prompt
     assert "BBB" in prompt
     assert "/lab_trim_virtual_confirm" in prompt
@@ -3568,6 +3579,65 @@ def test_trim_virtual_prompt_and_confirm_closes_excess_positions(tmp_path) -> No
     assert "가상보유 정리 완료" in controller.notifier.messages[-1]
     backups = sorted(tmp_path.glob("trim_virtual_backup_*_pre_trim_virtual.db"))
     assert backups
+
+
+def test_execute_trim_virtual_defers_when_live_prices_missing(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "trim_virtual_no_live.db")
+    for symbol in ["AAA", "BBB"]:
+        repository.upsert_virtual_position(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            qty=10,
+            avg_price=100.0,
+            currency="USD",
+            opened_at="2026-07-01T00:00:00+00:00",
+            updated_at="2026-07-01T00:00:00+00:00",
+        )
+        repository.upsert_lab_symbol_state(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            action_bias="HOLD",
+            signal_state="HOLD",
+            note="stale",
+            holding_qty=10,
+            last_price=90.0,
+            pnl_pct=-0.1,
+            has_position=1,
+            updated_at="2026-07-01T00:01:00+00:00",
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_concurrent_overseas_orders=1,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    async def no_live_prices():
+        return {}
+
+    controller._load_trim_virtual_price_lookup = no_live_prices  # type: ignore[method-assign]
+
+    asyncio.run(controller._send_trim_virtual_prompt())
+
+    assert "가상보유 초과분 정리 보류" in controller.notifier.messages[-1]
+    assert "사유=live 현재가 확보 실패" in controller.notifier.messages[-1]
+    assert "저장가 기준 후보:" in controller.notifier.messages[-1]
+
+    asyncio.run(controller._execute_trim_virtual())
+
+    assert len(repository.list_virtual_positions()) == 2
+    assert repository.list_virtual_orders(limit=10) == []
+    assert "상태=정리보류" in controller.notifier.messages[-1]
+    assert "live 현재가 확보 실패" in controller.notifier.messages[-1]
 
 
 def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> None:

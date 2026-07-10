@@ -1821,6 +1821,7 @@ class TelegramLiquidityLabController:
         *,
         source: str = "manual",
         candidate_orders: list[dict] | None = None,
+        now: datetime | None = None,
     ) -> None:
         try:
             live_open_orders = (
@@ -1854,9 +1855,36 @@ class TelegramLiquidityLabController:
             )
             return
 
+        current = now or datetime.now(timezone.utc)
+        if not is_krx_regular_session(current) or is_krx_holiday(current.astimezone(KST).date()):
+            await self.notifier.send(
+                "\n".join(
+                    [
+                        "[KIS][국내미체결취소]",
+                        f"시각={format_kst_korean(current)}",
+                        "상태=장외취소보류",
+                        f"대상={len(stale_orders)}건",
+                        "안내=국내 정규장 중에 /lab_cancel_stale_domestic_confirm 재시도",
+                    ]
+                )
+            )
+            self.repository.save_event(
+                event_type="maintenance_skip",
+                market="domestic",
+                symbol="",
+                detail={
+                    "reason": "domestic_cancel_outside_regular_session",
+                    "stale_order_count": len(stale_orders),
+                    "source": source,
+                },
+                cycle_no=getattr(self, "current_cycle_no", 0),
+                session_id=getattr(self, "active_session_id", ""),
+            )
+            return
+
         lines = [
             "[KIS][국내미체결취소]",
-            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+            f"시각={format_kst_korean(current)}",
             f"동작={'자동취소' if source == 'auto' else '확정취소'}",
             f"요청={len(stale_orders)}건",
         ]
@@ -2019,6 +2047,7 @@ class TelegramLiquidityLabController:
         await self._execute_cancel_stale_domestic_orders(
             source="auto",
             candidate_orders=bot_owned_stale_orders,
+            now=current,
         )
         return True
 

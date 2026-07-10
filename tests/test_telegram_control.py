@@ -1317,7 +1317,11 @@ def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> 
     original_client = telegram_control_module.KisRestClient
     telegram_control_module.KisRestClient = FakeKisClient
     try:
-        asyncio.run(controller._execute_cancel_stale_domestic_orders())
+        asyncio.run(
+            controller._execute_cancel_stale_domestic_orders(
+                now=datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc)
+            )
+        )
     finally:
         telegram_control_module.KisRestClient = original_client
 
@@ -1387,7 +1391,11 @@ def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -
     original_client = telegram_control_module.KisRestClient
     telegram_control_module.KisRestClient = FakeKisClient
     try:
-        asyncio.run(controller._execute_cancel_stale_domestic_orders())
+        asyncio.run(
+            controller._execute_cancel_stale_domestic_orders(
+                now=datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc)
+            )
+        )
     finally:
         telegram_control_module.KisRestClient = original_client
 
@@ -1401,6 +1409,64 @@ def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -
     assert rows[0]["broker_order_no"] == "0000013669"
     payload = rows[0]["payload_json"]
     assert "장종료" in payload["error"]
+
+
+def test_execute_cancel_stale_domestic_orders_defers_when_market_closed(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_cancel_defer_closed.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime(2026, 7, 10, 8, 50, tzinfo=timezone.utc),
+        "symbol": "073240",
+        "name": "금호타이어",
+        "sll_buy_dvsn_cd": "02",
+        "ord_gno_brno": "00950",
+        "ord_dvsn_cd": "00",
+        "excg_id_dvsn_cd": "KRX",
+        "open_qty": 126,
+        "order_price": 6990,
+        "order_no": "0000013669",
+    }
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
+
+    class FakeKisClient:
+        called = False
+
+        def __init__(self, credentials) -> None:
+            self.credentials = credentials
+
+        async def __aenter__(self):
+            self.called = True
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    original_client = telegram_control_module.KisRestClient
+    telegram_control_module.KisRestClient = FakeKisClient
+    try:
+        asyncio.run(
+            controller._execute_cancel_stale_domestic_orders(
+                now=datetime(2026, 7, 10, 10, 40, tzinfo=timezone.utc)
+            )
+        )
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert "상태=장외취소보류" in notifier.messages[-1]
+    assert "국내 정규장 중에 /lab_cancel_stale_domestic_confirm 재시도" in notifier.messages[-1]
+    assert repository.list_broker_order_events(limit=1) == []
+    events = repository.list_event_log(event_type="maintenance_skip", limit=1)
+    assert "domestic_cancel_outside_regular_session" in events[0]["detail"]
 
 
 def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_path) -> None:
@@ -1455,8 +1521,8 @@ def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_p
     )
     calls: list[dict] = []
 
-    async def fake_execute(*, source="manual", candidate_orders=None):
-        calls.append({"source": source, "candidate_orders": candidate_orders})
+    async def fake_execute(*, source="manual", candidate_orders=None, now=None):
+        calls.append({"source": source, "candidate_orders": candidate_orders, "now": now})
 
     controller._execute_cancel_stale_domestic_orders = fake_execute  # type: ignore[method-assign]
 
@@ -1469,6 +1535,7 @@ def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_p
     assert second is False
     assert calls[0]["source"] == "auto"
     assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["0000013669"]
+    assert calls[0]["now"] == now
 
 
 def test_auto_cancel_domestic_uses_kst_date_for_holiday_check(tmp_path) -> None:

@@ -2049,3 +2049,26 @@
 ### 검증
 - `python3 -m pytest tests/test_telegram_control.py::test_build_recent_order_events_message_formats_submission_cancel_and_virtual -q` → 1개 통과
 - `python3 -m pytest tests -q` → 372개 통과
+
+## [2026-07-10] 국내 미체결 취소 장외 실행 차단
+
+### 배경
+- 최근 `broker_order_events`에 국내 미체결 취소가 장 종료 후 실행되어
+  `모의투자 장종료` 거부로 기록된 사례가 있었다.
+- 자동 취소는 국내 정규장 중에만 실행되지만, 수동 확정 명령은 장외에도
+  KIS 취소 요청을 보내 불필요한 거부 이벤트를 만들 수 있었다.
+
+### 수정 사항
+- `telegram_control.py`
+  - `_execute_cancel_stale_domestic_orders()`에 현재시각 인자를 추가
+  - 국내 정규장이 아니거나 KRX 휴장일이면 실제 KIS 취소 요청을 보내지 않고
+    `상태=장외취소보류` 안내 후 `maintenance_skip` 이벤트만 저장
+  - 자동 취소 경로는 이미 계산한 현재시각을 실행 함수에 전달
+- `tests/test_telegram_control.py`
+  - 장중 성공/거부 경로는 명시적 장중 시각으로 검증
+  - 장외 실행 시 KIS 클라이언트를 열지 않고 broker event도 남기지 않는지 검증
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_records_cancel_event tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_records_rejected_event tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_defers_when_market_closed -q` → 3개 통과
+- `python3 -m pytest tests/test_telegram_control.py::test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders tests/test_telegram_control.py::test_execute_cancel_stale_domestic_orders_defers_when_market_closed -q` → 2개 통과
+- `python3 -m pytest tests -q` → 373개 통과

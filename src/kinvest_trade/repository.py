@@ -1105,7 +1105,7 @@ class SqliteRepository:
         after_logged_at: str = "",
         limit: int = 12,
     ) -> list[dict]:
-        """Summarize actual realized SELL_REAL rows, excluding watch/signal rows."""
+        """Summarize SELL_REAL order-submission rows, excluding watch/signal rows."""
         params: list[object] = []
         where = [
             "action_bias = 'SELL_REAL'",

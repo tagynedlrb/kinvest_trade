@@ -1873,8 +1873,9 @@ class TelegramLiquidityLabController:
             "[KIS][전략성과]",
             f"시각={format_kst_korean(now)}",
             f"범위=최근 {hours}시간",
-            "기준=실제 체결성 SELL_REAL만 집계",
+            "기준=실주문접수 SELL_REAL만 집계",
             "제외=감시 신호 BUY/SELL/HOLD",
+            "주의=체결확정은 MTS/잔고 기준 확인",
         ]
         if not rows:
             lines.append("성과=없음")

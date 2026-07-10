@@ -2883,6 +2883,59 @@ def test_handle_start_like_command_resume_resets_circuit_breaker() -> None:
     assert controller.last_error is None
 
 
+def test_handle_start_like_command_warns_about_live_open_orders() -> None:
+    controller = _build_async_controller()
+    controller.mode = "paused"
+    controller.active_session_id = "sess-1"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+    )
+    controller._write_runtime_state = lambda: None
+
+    async def fake_domestic_orders(limit: int = 20):
+        return [{"symbol": "073240"}]
+
+    async def fake_overseas_orders(limit: int = 20):
+        return [{"symbol": "ALNY"}, {"symbol": "PCAP"}]
+
+    controller._load_live_open_domestic_orders = fake_domestic_orders  # type: ignore[method-assign]
+    controller._load_live_open_overseas_orders = fake_overseas_orders  # type: ignore[method-assign]
+
+    asyncio.run(controller._handle_start_like_command("running", "resumed"))
+
+    message = controller.notifier.messages[-1]
+    assert "미체결=국내 1 / 해외 2" in message
+    assert "주의=기존 미체결은 매도가능수량/중복주문에 영향을 줄 수 있음" in message
+    assert "확인=/lab_orders" in message
+    assert "국내장기취소=/lab_cancel_stale_domestic" in message
+    assert "해외장기취소=/lab_cancel_stale_overseas" in message
+
+
+def test_handle_start_like_command_reports_open_order_lookup_failure() -> None:
+    controller = _build_async_controller()
+    controller.mode = "paused"
+    controller.active_session_id = "sess-1"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
+    )
+    controller._write_runtime_state = lambda: None
+
+    async def fail_domestic_orders(limit: int = 20):
+        raise RuntimeError("KIS timeout")
+
+    async def fake_overseas_orders(limit: int = 20):
+        return []
+
+    controller._load_live_open_domestic_orders = fail_domestic_orders  # type: ignore[method-assign]
+    controller._load_live_open_overseas_orders = fake_overseas_orders  # type: ignore[method-assign]
+
+    asyncio.run(controller._handle_start_like_command("running", "resumed"))
+
+    message = controller.notifier.messages[-1]
+    assert "미체결조회=실패 (KIS timeout)" in message
+    assert "확인=/lab_orders" in message
+
+
 def test_run_cycle_does_not_stop_on_market_closed() -> None:
     controller = _build_async_controller()
 

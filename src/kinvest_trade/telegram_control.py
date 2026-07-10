@@ -711,9 +711,49 @@ class TelegramLiquidityLabController:
         self.last_error = None
         self._consecutive_errors = 0
         self._write_runtime_state()
-        await self.notifier.send(
-            f"[KIS][TELEGRAM_CONTROL]\nmode={self.mode}\ncommand={verb}\nnext_run=immediate"
-        )
+        lines = [
+            "[KIS][TELEGRAM_CONTROL]",
+            f"mode={self.mode}",
+            f"command={verb}",
+            "next_run=immediate",
+        ]
+        lines.extend(await self._build_start_resume_open_order_notice_lines())
+        await self.notifier.send("\n".join(lines))
+
+    async def _build_start_resume_open_order_notice_lines(self) -> list[str]:
+        """Warn once on start/resume if old live orders may affect fresh orders."""
+        config = getattr(self, "config", None)
+        if config is None or getattr(config, "credentials", None) is None:
+            return []
+        try:
+            domestic_orders, overseas_orders = await asyncio.wait_for(
+                asyncio.gather(
+                    self._load_live_open_domestic_orders(limit=20),
+                    self._load_live_open_overseas_orders(limit=20),
+                ),
+                timeout=6.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return [
+                f"미체결조회=실패 ({str(exc)[:80]})",
+                "확인=/lab_orders",
+            ]
+
+        domestic_count = len(domestic_orders)
+        overseas_count = len(overseas_orders)
+        if not domestic_count and not overseas_count:
+            return []
+
+        lines = [
+            f"미체결=국내 {domestic_count} / 해외 {overseas_count}",
+            "주의=기존 미체결은 매도가능수량/중복주문에 영향을 줄 수 있음",
+            "확인=/lab_orders",
+        ]
+        if domestic_count:
+            lines.append("국내장기취소=/lab_cancel_stale_domestic")
+        if overseas_count:
+            lines.append("해외장기취소=/lab_cancel_stale_overseas")
+        return lines
 
     async def _handle_cb_reset(self) -> None:
         if self.lab_service is None:

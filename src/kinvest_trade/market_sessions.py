@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 
@@ -79,7 +79,7 @@ def is_us_orderable_session_for_env(now_utc: datetime | None, env: str) -> bool:
     return session == "regular"
 
 
-def us_holiday_date_for_kis_session(now_utc: datetime) -> datetime.date:
+def us_holiday_date_for_kis_session(now_utc: datetime) -> date:
     """Return the US holiday date that matches KIS's KST-based US session."""
 
     current = now_utc.astimezone(KST)

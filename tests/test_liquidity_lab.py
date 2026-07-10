@@ -2438,6 +2438,65 @@ def test_build_watch_target_status_preserves_ready_signal_state() -> None:
     assert watch_target.entry_by == ""
 
 
+def test_build_watch_target_status_blocks_overseas_standalone_vwap() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    snapshot = _snapshot(price=20.0, vwap=19.9, rsi14=45.0)
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(signal="BUY", flag="VWAP", entry_by="VWAP", exit_by="")
+
+    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="COIN",
+        exchange_code="NASD",
+        price=20.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.signal_state == "WAIT"
+    assert watch_target.note == "[VWAP] standalone_vwap_blocked"
+    assert watch_target.strategy_flag == "VWAP"
+    assert watch_target.entry_by == "VWAP"
+
+
+def test_build_watch_target_status_allows_overseas_vwap_combo() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    snapshot = _snapshot(price=20.0, vwap=19.9, rsi14=45.0)
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(signal="BUY", flag="VWAP+RSI", entry_by="VWAP", exit_by="")
+
+        def buy_score(self, snapshot):
+            return 10.0
+
+    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="COIN",
+        exchange_code="NASD",
+        price=20.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "BUY"
+    assert watch_target.strategy_flag == "VWAP+RSI"
+    assert watch_target.entry_by == "VWAP"
+
+
 def test_restore_strategy_contexts_recovers_held_position_after_restart() -> None:
     service = _build_run_service()
     service.repository.upsert_lab_symbol_state(

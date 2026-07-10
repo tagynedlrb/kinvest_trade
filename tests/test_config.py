@@ -61,6 +61,7 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.loop_interval_sec > 0
     assert config.paper.max_spread_pct == 0.003
     assert config.paper.trailing_stop_pct == 0.004
+    assert config.liquidity_lab.overseas_block_standalone_vwap is True
     assert (
         config.liquidity_lab.tv_min_price_usd
         == config.liquidity_lab.overseas_min_price_usd

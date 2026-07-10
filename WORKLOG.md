@@ -1862,3 +1862,29 @@
 
 ### 검증
 - `python3 -m pytest tests -q` → 361개 통과
+
+## [2026-07-10] 해외 VWAP 단독 진입 차단
+
+### 성과 근거
+- `cycle_log` 기준 누적 실매도 148건을 재집계:
+  - 해외 전체: 82건, 순손익 약 -2,208,142원
+  - 국내 전체: 66건, 순손익 약 +197,652원
+  - 해외 `VWAP` 단독: 41건, 순손익 약 -3,052,452원
+  - 해외 `VWAP+RSI`: 7건, 순손익 약 +362,494원
+  - 해외 `VOL`: 6건, 순손익 약 +814,640원
+- 손실은 해외 VWAP 단독의 `trend_filter_lost`가 가장 크게 누적됨.
+
+### 수정 사항
+- `config/fixed_config.json`
+  - `liquidity_lab.overseas_block_standalone_vwap=true` 추가
+- `config.py`
+  - `LiquidityLabConfig.overseas_block_standalone_vwap` 로딩 추가
+- `liquidity_lab.py`
+  - 해외 전략 신호가 정확히 `VWAP` 단독이면 신규 매수를 `WAIT` 처리
+  - `VWAP+RSI`, `VWAP+VOL`, `VOL` 등 복합/거래량 신호는 기존처럼 허용
+- `README.md`
+  - 해외 VWAP 단독 차단 정책과 `overseas_scan_top_n=25` 기본값 문서화
+
+### 검증
+- 해외 VWAP 단독 차단/복합 신호 허용 테스트 추가
+- `python3 -m pytest tests -q` → 363개 통과

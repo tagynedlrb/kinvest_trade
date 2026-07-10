@@ -2013,3 +2013,22 @@
 ### 검증
 - `python3 -m pytest tests/test_liquidity_lab.py::test_place_overseas_sell_order_rejected_adds_20min_cooldown tests/test_liquidity_lab.py::test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it tests/test_liquidity_lab.py::test_domestic_sell_rejected_adds_10min_cooldown tests/test_liquidity_lab.py::test_domestic_buy_rejected_marks_skipped_true -q` → 4개 통과
 - `python3 -m pytest tests -q` → 371개 통과
+
+## [2026-07-10] watchlist 신호 캐시 상태 표시
+
+### 배경
+- 해외 보유/가상보유 종목 중 `stale_signal_cache` 기반으로 상태가 유지되는
+  종목이 다수 보였다.
+- 전체 감시 데이터 나이는 status/watchlist 상단에 표시되지만,
+  개별 종목 라인에서는 해당 종목이 최신 신호가 아닌 캐시 기반인지 구분하기 어려웠다.
+
+### 수정 사항
+- `telegram_control.py`
+  - watchlist 개별 라인의 `note`에 `stale_signal_cache`가 포함되면
+    `신호=캐시`를 짧게 추가
+- `tests/test_telegram_control.py`
+  - stale signal cache 라벨 표시 테스트 추가
+
+### 검증
+- `python3 -m pytest tests/test_telegram_control.py::test_format_watch_target_line_is_compact tests/test_telegram_control.py::test_format_watch_target_line_ready_status_is_readable tests/test_telegram_control.py::test_format_watch_target_line_marks_stale_signal_cache -q` → 3개 통과
+- `python3 -m pytest tests -q` → 372개 통과

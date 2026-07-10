@@ -2983,6 +2983,8 @@ class TelegramLiquidityLabController:
             parts.append(f"손익={format_pct(pnl_pct)}")
         elif note != note_raw:
             parts.append(f"사유={note}")
+        if "stale_signal_cache" in note_raw:
+            parts.append("신호=캐시")
         return " ".join(parts)
 
     @staticmethod

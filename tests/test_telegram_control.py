@@ -1931,6 +1931,25 @@ def test_format_watch_target_line_ready_status_is_readable() -> None:
     assert "전략=VOL" in line
 
 
+def test_format_watch_target_line_marks_stale_signal_cache() -> None:
+    line = TelegramLiquidityLabController._format_watch_target_line(
+        {
+            "market": "overseas",
+            "action_bias": "HOLD",
+            "code": "PGC",
+            "signal_state": "HOLD",
+            "strategy_flag": "RSI",
+            "note": "vr=0.0x mom=+0.54%|stale_signal_cache",
+            "price": 45.06,
+            "holding_qty": 439,
+        },
+        pnl_pct=-0.007,
+    )
+
+    assert "해외 PGC 상태=보유중 전략=RSI 가격=$45.0600" in line
+    assert "신호=캐시" in line
+
+
 def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.notifier = DummyNotifier()

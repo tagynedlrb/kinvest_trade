@@ -978,13 +978,14 @@ def _build_sell_service(
     dry_run: bool = False,
     error: Exception | None = None,
     pending_orders: list[dict] | None = None,
+    env: str = "vps",
 ) -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
         "Config",
         (),
         {
-            "credentials": type("Creds", (), {"dry_run": dry_run, "env": "vps"})(),
+            "credentials": type("Creds", (), {"dry_run": dry_run, "env": env})(),
         },
     )()
     service.client = DummySellClient(error=error, pending_orders=pending_orders)
@@ -1057,6 +1058,48 @@ def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     assert "청산=긴급 손절" in message
     assert "수익률=+0.68%" in message
     assert service.client.order_calls[0]["price"] == "281.9000"
+    assert service.client.order_calls[0]["order_division"] == "00"
+    broker_rows = service.repository.list_broker_order_events(limit=1)
+    assert broker_rows[0]["order_kind"] == "aggressive_limit"
+
+
+def test_place_overseas_protective_sell_uses_market_order_in_prod() -> None:
+    service = _build_sell_service(env="prod")
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=282.0,
+        bid=281.9,
+        ask=282.1,
+        spread_pct=0.0007,
+        change_rate_pct=-1.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=290.0,
+        current_price=282.0,
+        pnl_pct=(282.0 - 290.0) / 290.0,
+    )
+
+    result = _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+
+    assert result["submitted"] is True
+    assert result["order_kind"] == "market"
+    assert result["order_division"] == "01"
+    assert result["submit_price"] == "0"
+    assert service.client.order_calls[0]["price"] == "0"
+    assert service.client.order_calls[0]["order_division"] == "01"
+    broker_rows = service.repository.list_broker_order_events(limit=1)
+    assert broker_rows[0]["order_kind"] == "market"
+    assert broker_rows[0]["requested_price"] == 0.0
+    assert broker_rows[0]["payload_json"]["reference_price"] == 281.9
 
 
 def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
@@ -1886,8 +1929,11 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     assert "국내 005930 매도접수 +81,950원 x2" in message
     assert "매수=-" in message
     assert "청산=손절" in message
+    assert "주문=시장가" in message
     assert "수익률=+2.44%" in message
     assert "수익률=+2.44%" in message
+    assert service.client.order_calls[0]["price"] == 0
+    assert service.client.order_calls[0]["order_division"] == "01"
 
 
 def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
@@ -1986,12 +2032,14 @@ def test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderab
             "side": "sell",
             "stock_code": "058730",
             "qty": 184,
-            "price": 4925,
-            "order_division": "00",
+            "price": 0,
+            "order_division": "01",
         }
     ]
     broker_rows = service.repository.list_broker_order_events(limit=2)
     assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[0]["order_kind"] == "market"
+    assert broker_rows[0]["requested_price"] == 0.0
     assert broker_rows[1]["reason"] == "stale_exit_replace"
     assert "참고=미체결 매도 정정 후 재주문" in service.notifier.messages[0]
 

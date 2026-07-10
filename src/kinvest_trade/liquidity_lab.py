@@ -942,6 +942,52 @@ class LiquidityLabService:
             return float(candidate.bid or candidate.last_price)
         return float(candidate.bid or candidate.last_price or candidate.ask)
 
+    def _sell_order_submit_spec(
+        self,
+        *,
+        market: str,
+        exit_reason: str,
+        reference_price: float,
+    ) -> dict[str, object]:
+        """Return KIS submit parameters while keeping analytics on reference price."""
+        protective = exit_reason in self._protective_exit_reasons()
+        market_key = market.strip().lower()
+        if protective and market_key == "domestic":
+            return {
+                "order_division": "01",
+                "submit_price": 0,
+                "order_kind": "market",
+                "reference_price": reference_price,
+            }
+        if protective and market_key == "overseas":
+            env = str(getattr(self.config.credentials, "env", "vps") or "vps")
+            if env == "prod":
+                return {
+                    "order_division": "01",
+                    "submit_price": "0",
+                    "order_kind": "market",
+                    "reference_price": reference_price,
+                }
+            return {
+                "order_division": "00",
+                "submit_price": f"{reference_price:.4f}",
+                "order_kind": "aggressive_limit",
+                "reference_price": reference_price,
+            }
+        if market_key == "domestic":
+            return {
+                "order_division": "00",
+                "submit_price": int(reference_price),
+                "order_kind": "limit",
+                "reference_price": reference_price,
+            }
+        return {
+            "order_division": "00",
+            "submit_price": f"{reference_price:.4f}",
+            "order_kind": "limit",
+            "reference_price": reference_price,
+        }
+
     def _overseas_order_history_exchange_param(self, exchange_code: str) -> str:
         env = str(getattr(self.config.credentials, "env", "vps") or "vps")
         if env != "prod":
@@ -4625,6 +4671,14 @@ class LiquidityLabService:
             }
 
         sell_price = float(candidate.best_bid or candidate.current_price)
+        order_spec = self._sell_order_submit_spec(
+            market="domestic",
+            exit_reason=exit_reason,
+            reference_price=sell_price,
+        )
+        submit_price = int(order_spec["submit_price"])
+        order_division = str(order_spec["order_division"])
+        order_kind = str(order_spec["order_kind"])
         sell_qty = min(held.quantity, max(held.orderable_qty, 0))
         replacement_note = ""
         pending_sell_order = await self._find_open_domestic_order(
@@ -4799,8 +4853,8 @@ class LiquidityLabService:
                 side="sell",
                 stock_code=candidate.stock_code,
                 qty=sell_qty,
-                price=int(sell_price),
-                order_division="00",
+                price=submit_price,
+                order_division=order_division,
             )
         except KisApiError as exc:
             error_text = str(exc)
@@ -4842,15 +4896,19 @@ class LiquidityLabService:
                 symbol=candidate.stock_code,
                 exchange_code=None,
                 side="SELL",
-                order_kind="limit",
+                order_kind=order_kind,
                 requested_qty=sell_qty,
-                requested_price=sell_price,
+                requested_price=float(submit_price),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 exit_by=exit_by,
                 status="REJECTED",
                 reason="order_rejected",
-                payload={"error": error_text},
+                payload={
+                    "error": error_text,
+                    "order_division": order_division,
+                    "reference_price": sell_price,
+                },
             )
             return {
                 "submitted": False,
@@ -4876,6 +4934,8 @@ class LiquidityLabService:
             f"매수전략={entry_label}",
             f"청산전략={exit_label}",
         ]
+        if order_kind != "limit":
+            lines.append(f"주문방식={'시장가' if order_kind == 'market' else order_kind}")
         if replacement_note:
             lines.append(f"참고={replacement_note}")
         if held.avg_price > 0:
@@ -4889,15 +4949,19 @@ class LiquidityLabService:
             symbol=candidate.stock_code,
             exchange_code=None,
             side="SELL",
-            order_kind="limit",
+            order_kind=order_kind,
             requested_qty=sell_qty,
-            requested_price=sell_price,
+            requested_price=float(submit_price),
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             exit_by=exit_by,
             status="SUBMITTED",
             reason=exit_reason,
-            payload=response if isinstance(response, dict) else {"response": response},
+            payload={
+                "response": response,
+                "order_division": order_division,
+                "reference_price": sell_price,
+            },
         )
         queue_parts = [
             format_market_korean("domestic"),
@@ -4909,6 +4973,8 @@ class LiquidityLabService:
             f"매수={entry_label}",
             f"청산={exit_label}",
         ]
+        if order_kind != "limit":
+            queue_parts.append(f"주문={'시장가' if order_kind == 'market' else order_kind}")
         if replacement_note:
             queue_parts.append(f"참고={replacement_note}")
         self._queue_trade_notification(" ".join(queue_parts))
@@ -5029,6 +5095,10 @@ class LiquidityLabService:
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
             "exit_by": exit_by,
+            "order_kind": order_kind,
+            "order_division": order_division,
+            "submit_price": submit_price,
+            "reference_price": sell_price,
             "replacement_note": replacement_note,
             "response": response,
         }
@@ -5907,6 +5977,14 @@ class LiquidityLabService:
                 "session": session,
             }
         sell_price = self._overseas_sell_order_price(candidate, exit_reason=exit_reason)
+        order_spec = self._sell_order_submit_spec(
+            market="overseas",
+            exit_reason=exit_reason,
+            reference_price=sell_price,
+        )
+        submit_price = str(order_spec["submit_price"])
+        order_division = str(order_spec["order_division"])
+        order_kind = str(order_spec["order_kind"])
         pnl_pct = (sell_price - held.avg_price) / held.avg_price if held.avg_price > 0 else None
         if held.avg_price > 0 and self._is_profit_exit_reason(exit_reason):
             auto_trade_cfg = getattr(self.config, "auto_trade", None)
@@ -6135,8 +6213,8 @@ class LiquidityLabService:
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 qty=real_sell_qty,
-                price=f"{sell_price:.4f}",
-                order_division="00",
+                price=submit_price,
+                order_division=order_division,
             )
         except KisApiError as exc:
             error_text = str(exc)
@@ -6168,15 +6246,19 @@ class LiquidityLabService:
                     symbol=candidate.symbol,
                     exchange_code=candidate.exchange_code,
                     side="SELL",
-                    order_kind="limit",
+                    order_kind=order_kind,
                     requested_qty=real_sell_qty,
-                    requested_price=sell_price,
+                    requested_price=float(submit_price),
                     strategy_flag=strategy_flag,
                     entry_by=entry_by,
                     exit_by=exit_by,
                     status="REJECTED",
                     reason="no_orderable_qty",
-                    payload={"error": error_text},
+                    payload={
+                        "error": error_text,
+                        "order_division": order_division,
+                        "reference_price": sell_price,
+                    },
                 )
                 return {
                     "submitted": False,
@@ -6238,15 +6320,19 @@ class LiquidityLabService:
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
                 side="SELL",
-                order_kind="limit",
+                order_kind=order_kind,
                 requested_qty=real_sell_qty,
-                requested_price=sell_price,
+                requested_price=float(submit_price),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 exit_by=exit_by,
                 status="REJECTED",
                 reason=reject_reason,
-                payload={"error": error_text},
+                payload={
+                    "error": error_text,
+                    "order_division": order_division,
+                    "reference_price": sell_price,
+                },
             )
             return {
                 "submitted": False,
@@ -6301,6 +6387,9 @@ class LiquidityLabService:
             f"매수전략={entry_label}",
             f"청산전략={exit_label}",
         ]
+        if order_kind != "limit":
+            order_label = "시장가" if order_kind == "market" else "공격지정가"
+            lines.append(f"주문방식={order_label}")
         if replacement_note:
             lines.append(f"참고={replacement_note}")
         virtual_closed_qty = int(sell_result.get("qty_from_virtual_buy", 0) or 0)
@@ -6319,9 +6408,9 @@ class LiquidityLabService:
             symbol=candidate.symbol,
             exchange_code=candidate.exchange_code,
             side="SELL",
-            order_kind="limit",
+            order_kind=order_kind,
             requested_qty=real_sell_qty,
-            requested_price=sell_price,
+            requested_price=float(submit_price),
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             exit_by=exit_by,
@@ -6331,22 +6420,24 @@ class LiquidityLabService:
                 "response": response,
                 "sell_result": sell_result,
                 "requested_qty": target_sell_qty,
+                "order_division": order_division,
+                "reference_price": sell_price,
             },
         )
-        self._queue_trade_notification(
-            " ".join(
-                [
-                    format_market_korean("overseas"),
-                    candidate.symbol,
-                    "매도접수",
-                    format_usd(sell_price),
-                    f"x{int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}",
-                    f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
-                    f"매수={entry_label}",
-                    f"청산={exit_label}",
-                ]
-            )
-        )
+        queue_parts = [
+            format_market_korean("overseas"),
+            candidate.symbol,
+            "매도접수",
+            format_usd(sell_price),
+            f"x{int(sell_result.get('qty_from_real', real_sell_qty) or real_sell_qty)}",
+            f"수익률={format_pct(pnl_pct) if held.avg_price > 0 else '-'}",
+            f"매수={entry_label}",
+            f"청산={exit_label}",
+        ]
+        if order_kind != "limit":
+            order_label = "시장가" if order_kind == "market" else "공격지정가"
+            queue_parts.append(f"주문={order_label}")
+        self._queue_trade_notification(" ".join(queue_parts))
         await self._flush_trade_notifications(force=self._trade_notification_force_immediate())
         entry_price, entry_time_iso, hold_duration_min = self._get_entry_context(
             "overseas",
@@ -6473,6 +6564,10 @@ class LiquidityLabService:
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
             "exit_by": exit_by,
+            "order_kind": order_kind,
+            "order_division": order_division,
+            "submit_price": submit_price,
+            "reference_price": sell_price,
             "replacement_note": replacement_note,
             "response": response,
         }

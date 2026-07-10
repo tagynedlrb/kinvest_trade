@@ -2585,6 +2585,58 @@ def test_build_watch_target_status_blocks_overseas_standalone_vwap() -> None:
     assert watch_target.entry_by == "VWAP"
 
 
+def test_build_watch_target_status_blocks_cached_overseas_standalone_vwap() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    persisted_snapshot = _snapshot(price=20.0, vwap=19.9, rsi14=45.0)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="cached_signal",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=0,
+        last_price=20.0,
+        pnl_pct=0.0,
+        has_position=0,
+        snapshot_json=asdict(persisted_snapshot),
+        updated_at="2026-07-10T00:00:00+00:00",
+    )
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(signal="BUY", flag="VWAP", entry_by="VWAP", exit_by="")
+
+    original_derive_watch_state = liquidity_lab_module.derive_watch_state
+    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    liquidity_lab_module.derive_watch_state = lambda *args, **kwargs: (
+        "BUY",
+        "cached_buy",
+    )
+    try:
+        watch_target = service._build_watch_target_status(
+            market="overseas",
+            code="COIN",
+            exchange_code="NASD",
+            price=20.0,
+            activity_score=12.0,
+            signal_snapshot=None,
+            held_position=None,
+            holding_qty=0,
+        )
+    finally:
+        liquidity_lab_module.derive_watch_state = original_derive_watch_state
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.signal_state == "WAIT"
+    assert watch_target.note == "[VWAP] standalone_vwap_blocked|stale_signal_cache"
+    assert watch_target.strategy_flag == "VWAP"
+    assert watch_target.entry_by == "VWAP"
+
+
 def test_build_watch_target_status_allows_overseas_vwap_combo() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.overseas_block_standalone_vwap = True
@@ -3269,6 +3321,51 @@ def test_select_overseas_buy_targets_returns_multiple() -> None:
     selected = service._select_overseas_buy_targets(overseas_ranked, watch_targets, max_concurrent=3)
 
     assert [item.symbol for item in selected] == ["NVDA", "AMD", "AAPL"]
+
+
+def test_select_overseas_buy_targets_excludes_standalone_vwap_when_blocked() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    overseas_ranked = [
+        OverseasScanResult("NVDA", "NASD", 150.0, 149.9, 150.1, 0.0013, 2.0, 900_000, 10, 1350.0, 18.0),
+        OverseasScanResult("AMD", "NASD", 155.0, 154.9, 155.1, 0.0012, 1.5, 800_000, 10, 1350.0, 17.0),
+    ]
+    watch_targets = [
+        WatchTargetStatus(
+            "overseas",
+            "NVDA",
+            "NASD",
+            150.0,
+            18.0,
+            12.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[VWAP] strategy_buy_signal",
+            0,
+            strategy_flag="VWAP",
+            entry_by="VWAP",
+        ),
+        WatchTargetStatus(
+            "overseas",
+            "AMD",
+            "NASD",
+            155.0,
+            17.0,
+            11.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[VWAP+RSI] strategy_buy_signal",
+            0,
+            strategy_flag="VWAP+RSI",
+            entry_by="VWAP",
+        ),
+    ]
+
+    selected = service._select_overseas_buy_targets(overseas_ranked, watch_targets, max_concurrent=3)
+
+    assert [item.symbol for item in selected] == ["AMD"]
 
 
 def test_select_overseas_buy_targets_excludes_already_held_symbols() -> None:
@@ -4594,6 +4691,56 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     assert rows[0]["consecutive_losses"] == 0
 
 
+def test_place_overseas_test_order_blocks_standalone_vwap_before_submission() -> None:
+    class FailingOverseasClient:
+        async def get_overseas_possible_order(self, **kwargs):
+            raise AssertionError("possible-order API should not be called")
+
+        async def place_overseas_order_for_current_session(self, **kwargs):
+            raise AssertionError("order API should not be called")
+
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    service.client = FailingOverseasClient()
+    snapshot = _snapshot(price=25.0, vwap=24.9, rsi14=45.0)
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="SOXL",
+        exchange_code="AMEX",
+        price=25.0,
+        activity_score=16.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[VWAP] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(service._place_overseas_test_order(candidate, watch_target=watch_target))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "standalone_vwap_blocked"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["symbol"] == "SOXL"
+    assert rows[0]["action_reason"] == "buy:standalone_vwap_blocked"
+
+
 def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
     class DummyVirtualSlotClient:
         async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
@@ -4626,6 +4773,52 @@ def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> No
     assert result["submitted"] is True
     assert result["qty"] == 4
     assert service.virtual_trades.get_position("overseas", "SOXL") is not None
+
+
+def test_record_virtual_overseas_buy_blocks_standalone_vwap() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    snapshot = _snapshot(price=25.0, vwap=24.9, rsi14=45.0)
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="SOXL",
+        exchange_code="AMEX",
+        price=25.0,
+        activity_score=16.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[VWAP] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(
+        service._record_virtual_overseas_buy(
+            candidate,
+            signal_snapshot=snapshot,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "standalone_vwap_blocked"
+    assert service.virtual_trades.get_position("overseas", "SOXL") is None
 
 
 def test_virtual_overseas_buy_respects_total_virtual_exposure_limit() -> None:

@@ -715,6 +715,24 @@ class LiquidityLabService:
         max_exposure = available_usd * max_exposure_pct
         return max(0.0, max_exposure - self._open_virtual_overseas_notional())
 
+    def _should_block_overseas_standalone_vwap(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+    ) -> bool:
+        return (
+            market == "overseas"
+            and strategy_flag == "VWAP"
+            and bool(
+                getattr(
+                    self.config.liquidity_lab,
+                    "overseas_block_standalone_vwap",
+                    False,
+                )
+            )
+        )
+
     @staticmethod
     def _extract_broker_order_no(response: object) -> str:
         if not isinstance(response, dict):
@@ -3754,6 +3772,29 @@ class LiquidityLabService:
                     inverse_etf_symbols=getattr(self.config.liquidity_lab, "inverse_etf_symbols", []),
                     leveraged_etf_symbols=getattr(self.config.liquidity_lab, "leveraged_etf_symbols", []),
                 )
+                if (
+                    self._should_block_overseas_standalone_vwap(
+                        market=market,
+                        strategy_flag=strategy_result.flag,
+                    )
+                    and (strategy_result.signal == "BUY" or signal_state == "BUY")
+                ):
+                    return WatchTargetStatus(
+                        market=market,
+                        code=code,
+                        exchange_code=exchange_code,
+                        price=price,
+                        activity_score=activity_score,
+                        signal_score=0.0,
+                        action_bias="WAIT",
+                        signal_state="WAIT",
+                        ma_summary=self._ma_relation_summary(fallback_snapshot),
+                        note="[VWAP] standalone_vwap_blocked|stale_signal_cache",
+                        holding_qty=holding_qty,
+                        signal_snapshot=fallback_snapshot,
+                        strategy_flag=strategy_result.flag,
+                        entry_by=strategy_result.entry_by,
+                    )
                 return WatchTargetStatus(
                     market=market,
                     code=code,
@@ -3849,10 +3890,9 @@ class LiquidityLabService:
             commit=False,
         )
         if strategy_result.signal == "BUY":
-            if (
-                market == "overseas"
-                and strategy_result.flag == "VWAP"
-                and bool(getattr(self.config.liquidity_lab, "overseas_block_standalone_vwap", False))
+            if self._should_block_overseas_standalone_vwap(
+                market=market,
+                strategy_flag=strategy_result.flag,
             ):
                 return WatchTargetStatus(
                     market=market,
@@ -4137,6 +4177,10 @@ class LiquidityLabService:
             if watch_target.market == "overseas"
             and watch_target.action_bias == "BUY"
             and watch_target.code.upper() not in held_symbols
+            and not self._should_block_overseas_standalone_vwap(
+                market=watch_target.market,
+                strategy_flag=watch_target.strategy_flag,
+            )
         ]
         if not ready_targets or max_concurrent <= 0:
             return []
@@ -4899,6 +4943,32 @@ class LiquidityLabService:
             buy_reason = watch_target.note or buy_reason
         if not strategy_flag or not entry_by:
             strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, signal_snapshot)
+        if self._should_block_overseas_standalone_vwap(
+            market="overseas",
+            strategy_flag=strategy_flag,
+        ):
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="standalone_vwap_blocked",
+                side="buy",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+            )
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+                "reason": "standalone_vwap_blocked",
+            }
 
         config = self.config.liquidity_lab
         qty = config.overseas_test_order_qty
@@ -5345,6 +5415,31 @@ class LiquidityLabService:
         entry_by = "" if watch_target is None else watch_target.entry_by
         if snapshot is not None and (not strategy_flag or not entry_by):
             strategy_flag, entry_by, _ = self._get_strategy_labels(candidate.symbol, snapshot)
+        if self._should_block_overseas_standalone_vwap(
+            market="overseas",
+            strategy_flag=strategy_flag,
+        ):
+            self._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="standalone_vwap_blocked",
+                side="buy",
+                price=candidate.last_price,
+                signal_snapshot=snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+            )
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": "standalone_vwap_blocked",
+            }
         if config.use_slot_sizing:
             try:
                 available_usd = await self._get_overseas_available_usd(

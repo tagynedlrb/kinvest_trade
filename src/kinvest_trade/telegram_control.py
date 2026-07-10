@@ -20,12 +20,12 @@ from .git_uploader import upload_log
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from .market_calendar import is_krx_holiday, is_nyse_holiday
 from .market_sessions import (
-    NEW_YORK,
     determine_loop_interval_sec,
     get_us_trading_session,
     is_krx_regular_session,
     is_us_orderable_session_for_env,
     minutes_until_next_tradeable_session,
+    us_holiday_date_for_kis_session,
 )
 from .message_format import format_market_korean, format_pct, format_reason_korean, format_side_korean
 from .notifier import TelegramNotifier
@@ -959,7 +959,7 @@ class TelegramLiquidityLabController:
         )
         nyse_holiday = bool(
             getattr(self.config, "skip_holiday_overseas", True)
-            and is_nyse_holiday(now.astimezone(NEW_YORK).date())
+            and is_nyse_holiday(us_holiday_date_for_kis_session(now))
         )
         krx_open = is_krx_regular_session(now) and not krx_holiday
         us_session = get_us_trading_session(now)
@@ -1992,7 +1992,7 @@ class TelegramLiquidityLabController:
         env = str(getattr(self.config.credentials, "env", "vps") or "vps")
         if (
             not is_us_orderable_session_for_env(current, env)
-            or is_nyse_holiday(current.astimezone(NEW_YORK).date())
+            or is_nyse_holiday(us_holiday_date_for_kis_session(current))
         ):
             return False
         last_run = self._last_auto_stale_overseas_cancel_at

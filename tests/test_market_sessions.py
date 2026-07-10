@@ -7,6 +7,7 @@ from kinvest_trade.market_sessions import (
     is_us_orderable_session_for_env,
     is_us_regular_session,
     minutes_until_next_tradeable_session,
+    us_holiday_date_for_kis_session,
 )
 
 
@@ -84,6 +85,28 @@ def test_minutes_until_next_session_waits_for_regular_during_daytime_for_mock() 
     assert 385 <= mins <= 395
 
 
+def test_minutes_until_next_session_skips_krx_holiday() -> None:
+    now = datetime(2026, 12, 30, 23, 45, tzinfo=timezone.utc)
+    mins = minutes_until_next_tradeable_session(now, "vps")
+    assert mins > 60
+
+
+def test_minutes_until_next_session_skips_nyse_holiday_regular_open() -> None:
+    now = datetime(2026, 7, 3, 13, 15, tzinfo=timezone.utc)
+    mins = minutes_until_next_tradeable_session(now, "vps")
+    assert mins > 60
+
+
+def test_us_holiday_date_for_kis_session_uses_ny_date_for_early_regular() -> None:
+    now = datetime(2026, 7, 3, 17, 0, tzinfo=timezone.utc)
+    assert us_holiday_date_for_kis_session(now).isoformat() == "2026-07-03"
+
+
+def test_us_holiday_date_for_kis_session_uses_kst_date_for_daytime() -> None:
+    now = datetime(2026, 7, 3, 1, 30, tzinfo=timezone.utc)
+    assert us_holiday_date_for_kis_session(now).isoformat() == "2026-07-03"
+
+
 def test_determine_loop_interval_returns_20_during_krx() -> None:
     now = datetime(2026, 6, 25, 1, 0, tzinfo=timezone.utc)
     assert determine_loop_interval_sec(now, "prod", 0) == 20
@@ -97,6 +120,11 @@ def test_determine_loop_interval_returns_120_both_closed_far() -> None:
 def test_determine_loop_interval_returns_30_near_open() -> None:
     now = datetime(2026, 6, 25, 23, 45, tzinfo=timezone.utc)
     assert determine_loop_interval_sec(now, "prod", 0) == 30
+
+
+def test_determine_loop_interval_stays_slow_near_nyse_holiday_open() -> None:
+    now = datetime(2026, 7, 3, 13, 15, tzinfo=timezone.utc)
+    assert determine_loop_interval_sec(now, "vps", 0) == 120
 
 
 def test_determine_loop_interval_returns_120_on_many_errors() -> None:

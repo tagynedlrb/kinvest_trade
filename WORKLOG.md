@@ -1909,3 +1909,27 @@
 
 ### 검증
 - `python3 -m pytest tests -q` → 364개 통과
+
+## [2026-07-10] 휴장일 기반 다음 세션 계산 보강
+
+### 배경
+- `minutes_until_next_tradeable_session()`과 `determine_loop_interval_sec()`가
+  평일/시간대만 기준으로 다음 거래 가능 세션을 계산하고 있었다.
+- KRX/NYSE 휴장일의 장 시작 직전에는 실제 거래가 없는데도
+  감시 주기가 30초로 짧아질 수 있는 잔여 리스크가 있었다.
+- 미국장은 KIS가 한국시간 기준으로 데이타임/프리/정규/애프터 세션을
+  제공하므로, 단순 뉴욕 현재 날짜만 보면 주간거래 날짜가 어긋날 수 있었다.
+
+### 수정 사항
+- `market_sessions.py`
+  - `us_holiday_date_for_kis_session()` 추가
+  - KRX/NYSE 휴장일은 다음 거래 가능 세션 후보에서 제외
+  - 휴장일 프리마켓/애프터마켓에서는 감시 주기를 30초로 당기지 않음
+- `telegram_control.py`, `liquidity_lab.py`
+  - 미국 휴장 판단 날짜를 KIS 세션 기준 날짜로 통일
+- `README.md`
+  - 휴장일을 다음 세션 계산에서 건너뛰는 정책 문서화
+
+### 검증
+- KRX 휴장, NYSE 휴장, KIS 세션 기준 날짜 회귀 테스트 추가
+- `python3 -m pytest tests -q` → 369개 통과

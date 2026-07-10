@@ -79,6 +79,31 @@ def is_us_orderable_session_for_env(now_utc: datetime | None, env: str) -> bool:
     return session == "regular"
 
 
+def us_holiday_date_for_kis_session(now_utc: datetime) -> datetime.date:
+    """Return the US holiday date that matches KIS's KST-based US session."""
+
+    current = now_utc.astimezone(KST)
+    if current.time() < time(7, 0):
+        return now_utc.astimezone(NEW_YORK).date()
+    return current.date()
+
+
+def _is_us_orderable_trading_day(now_utc: datetime, env: str) -> bool:
+    if not is_us_orderable_session_for_env(now_utc, env):
+        return False
+    from .market_calendar import is_nyse_holiday
+
+    return not is_nyse_holiday(us_holiday_date_for_kis_session(now_utc))
+
+
+def _is_krx_regular_trading_day(now_utc: datetime) -> bool:
+    if not is_krx_regular_session(now_utc):
+        return False
+    from .market_calendar import is_krx_holiday
+
+    return not is_krx_holiday(now_utc.astimezone(KST).date())
+
+
 def minutes_until_next_tradeable_session(
     now_utc: datetime,
     env: str = "prod",
@@ -88,13 +113,14 @@ def minutes_until_next_tradeable_session(
 
     Returns 0 when trading is already available in either market.
     """
-    if is_krx_regular_session(now_utc):
+    if _is_krx_regular_trading_day(now_utc):
         return 0
-    if is_us_orderable_session_for_env(now_utc, env):
+    if _is_us_orderable_trading_day(now_utc, env):
         return 0
 
     kst_now = now_utc.astimezone(KST)
     today_kst = kst_now.date()
+    from .market_calendar import is_krx_holiday, is_nyse_holiday
 
     krx_candidates: list[datetime] = []
     for delta in range(0, 8):
@@ -109,7 +135,11 @@ def minutes_until_next_tradeable_session(
             tzinfo=KST,
         )
         candidate_utc = candidate_dt.astimezone(timezone.utc)
-        if candidate_utc > now_utc and candidate_date.weekday() < 5:
+        if (
+            candidate_utc > now_utc
+            and candidate_date.weekday() < 5
+            and not is_krx_holiday(candidate_date)
+        ):
             krx_candidates.append(candidate_utc)
             break
 
@@ -133,7 +163,11 @@ def minutes_until_next_tradeable_session(
             tzinfo=KST,
         )
         candidate_utc = candidate_dt.astimezone(timezone.utc)
-        if candidate_utc > now_utc and candidate_date.weekday() < 5:
+        if (
+            candidate_utc > now_utc
+            and candidate_date.weekday() < 5
+            and not is_nyse_holiday(candidate_date)
+        ):
             us_candidates.append(candidate_utc)
             break
 
@@ -157,14 +191,17 @@ def determine_loop_interval_sec(
     if consecutive_errors >= 5:
         return 120
 
-    if is_krx_regular_session(now_utc):
+    if _is_krx_regular_trading_day(now_utc):
         return 20
-    if is_us_orderable_session_for_env(now_utc, env):
+    if _is_us_orderable_trading_day(now_utc, env):
         return 20
 
     session = get_us_trading_session(now_utc)
     if session in {"premarket", "aftermarket"}:
-        return 30
+        from .market_calendar import is_nyse_holiday
+
+        if not is_nyse_holiday(us_holiday_date_for_kis_session(now_utc)):
+            return 30
 
     mins = minutes_until_next_tradeable_session(now_utc, env)
     if mins <= 30:

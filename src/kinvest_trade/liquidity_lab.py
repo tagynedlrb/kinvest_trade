@@ -15,11 +15,11 @@ from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
 from .market_sessions import (
     KST,
-    NEW_YORK,
     get_us_trading_session,
     is_krx_regular_session,
     is_us_orderable_session_for_env,
     is_us_regular_session,
+    us_holiday_date_for_kis_session,
 )
 from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
 from .message_format import (
@@ -1292,7 +1292,7 @@ class LiquidityLabService:
                     _logger.debug("relist_notify_failed", exc_info=True)
 
     async def _apply_holiday_overrides(self, now_utc: datetime) -> tuple[bool, bool]:
-        nyse_date = now_utc.astimezone(NEW_YORK).date()
+        nyse_date = us_holiday_date_for_kis_session(now_utc)
         krx_date = now_utc.astimezone(KST).date()
         nyse_holiday = bool(
             getattr(self.config, "skip_holiday_overseas", True) and is_nyse_holiday(nyse_date)

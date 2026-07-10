@@ -2831,6 +2831,45 @@ def test_run_continues_when_set_commands_raises() -> None:
     assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)
 
 
+def test_run_sigterm_handler_stops_without_system_exit() -> None:
+    controller = _build_async_controller()
+    captured_handlers = {}
+
+    async def fake_scheduler_loop() -> None:
+        await asyncio.sleep(60)
+
+    async def fake_command_loop() -> None:
+        captured_handlers[telegram_control_module.signal.SIGTERM](
+            telegram_control_module.signal.SIGTERM,
+            None,
+        )
+        await asyncio.sleep(60)
+
+    original_acquire = telegram_control_module._acquire_pid_lock
+    original_release = telegram_control_module._release_pid_lock
+    original_signal = telegram_control_module.signal.signal
+    telegram_control_module._acquire_pid_lock = lambda: None
+    telegram_control_module._release_pid_lock = lambda: None
+
+    def fake_signal(sig, handler):
+        previous = captured_handlers.get(sig)
+        captured_handlers[sig] = handler
+        return previous
+
+    telegram_control_module.signal.signal = fake_signal
+    controller._scheduler_loop = fake_scheduler_loop  # type: ignore[method-assign]
+    controller._command_loop = fake_command_loop  # type: ignore[method-assign]
+    try:
+        asyncio.run(controller.run())
+    finally:
+        telegram_control_module._acquire_pid_lock = original_acquire
+        telegram_control_module._release_pid_lock = original_release
+        telegram_control_module.signal.signal = original_signal
+
+    assert controller.mode == "stopped"
+    assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)
+
+
 def test_acquire_pid_lock_replaces_stale_file(tmp_path) -> None:
     pid_file = tmp_path / "telegram_control.pid"
     original_pid_file = telegram_control_module._PID_FILE

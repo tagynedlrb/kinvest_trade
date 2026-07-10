@@ -231,10 +231,12 @@ class TelegramLiquidityLabController:
 
     async def run(self) -> None:
         _acquire_pid_lock()
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         def _on_sigterm(_sig: int, _frame: object) -> None:
-            _release_pid_lock()
-            raise SystemExit(0)
+            _logger.info("SIGTERM received; stopping telegram control gracefully.")
+            loop.call_soon_threadsafe(stop_event.set)
 
         previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, _on_sigterm)
@@ -259,8 +261,17 @@ class TelegramLiquidityLabController:
         )
         scheduler = asyncio.create_task(self._scheduler_loop())
         command_loop = asyncio.create_task(self._command_loop())
+        stop_task = asyncio.create_task(stop_event.wait())
         try:
-            await asyncio.gather(scheduler, command_loop)
+            done, _pending = await asyncio.wait(
+                {scheduler, command_loop, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task in done:
+                self.mode = "stopped"
+                self._write_runtime_state()
+            else:
+                await asyncio.gather(scheduler, command_loop)
         except asyncio.CancelledError:
             self.mode = "stopped"
         except Exception as exc:  # noqa: BLE001
@@ -287,10 +298,13 @@ class TelegramLiquidityLabController:
                     await self.current_task
             scheduler.cancel()
             command_loop.cancel()
+            stop_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await scheduler
             with contextlib.suppress(asyncio.CancelledError):
                 await command_loop
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_task
             signal.signal(signal.SIGTERM, previous_sigterm_handler)
             _release_pid_lock()
 

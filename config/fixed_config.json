@@ -172,7 +172,7 @@
         "use_slot_sizing": true,
         "slot_entry_pct": 0.10,
         "slot_max_pct": 0.20,
-        "max_virtual_exposure_pct": 1.0,
+        "max_virtual_exposure_pct": 0.5,
         "domestic_candidates": [
             "005930",
             "000660",

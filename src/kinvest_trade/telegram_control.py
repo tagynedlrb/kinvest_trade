@@ -1629,6 +1629,11 @@ class TelegramLiquidityLabController:
         next_run_text = "-" if snapshot.mode != "running" else self._short_time(snapshot.next_run_at)
         next_interval_text = "-" if snapshot.mode != "running" else f"{next_interval}초"
         watch_count_text = self._watch_target_count_text(last_report)
+        stopped_market_warning = self._build_stopped_open_market_warning(
+            krx_open=krx_open,
+            us_watchable=us_watchable,
+            last_report=last_report,
+        )
         lines = [
             "[KIS][TELEGRAM_CONTROL_STATUS]",
             f"시각={format_kst_korean(now)}",
@@ -1648,6 +1653,8 @@ class TelegramLiquidityLabController:
             f"{self._estimated_pnl_suffix(now)}",
             f"감시수={watch_count_text}",
         ]
+        if stopped_market_warning:
+            lines.append(stopped_market_warning)
         signal_cache_status = self._build_signal_cache_status_line(last_report)
         if signal_cache_status:
             lines.append(signal_cache_status)
@@ -1676,6 +1683,47 @@ class TelegramLiquidityLabController:
             ]
         )
         return "\n".join(lines)
+
+    def _build_stopped_open_market_warning(
+        self,
+        *,
+        krx_open: bool,
+        us_watchable: bool,
+        last_report: dict,
+    ) -> str:
+        if self.mode == "running" or not (krx_open or us_watchable):
+            return ""
+
+        held_keys: set[tuple[str, str]] = set()
+        for position in last_report.get("domestic_positions") or []:
+            code = str(position.get("stock_code") or position.get("symbol") or "").strip().upper()
+            if code:
+                held_keys.add(("domestic", code))
+        for position in last_report.get("overseas_positions") or []:
+            symbol = str(position.get("symbol") or "").strip().upper()
+            if symbol:
+                held_keys.add(("overseas", symbol))
+
+        repository = getattr(self, "repository", None)
+        if repository is not None and hasattr(repository, "list_virtual_positions"):
+            try:
+                for row in repository.list_virtual_positions():
+                    qty = int(row.get("qty", 0) or 0)
+                    symbol = str(row.get("symbol", "") or "").strip().upper()
+                    market = str(row.get("market", "overseas") or "overseas").strip().lower()
+                    if qty > 0 and symbol:
+                        held_keys.add((market, symbol))
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning("status_stopped_market_warning_failed error=%s", exc)
+
+        if not held_keys:
+            return ""
+        market_text = "KRX/US" if krx_open and us_watchable else "KRX" if krx_open else "US"
+        state_text = "일시정지" if self.mode == "paused" else "중지"
+        return (
+            f"주의={market_text} 장열림·보유 {len(held_keys)}종목, "
+            f"자동감시 {state_text} 조치=/lab_start"
+        )
 
     def _build_virtual_exposure_status_line(self) -> str:
         repository = getattr(self, "repository", None)

@@ -410,6 +410,60 @@ def test_build_status_message_shows_virtual_position_cap(tmp_path) -> None:
     assert "조치=/lab_trim_virtual 또는 /lab_start" in message
 
 
+def test_build_stopped_open_market_warning_counts_real_and_virtual_positions(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_status_stopped_open_warning.db")
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="AAPL",
+        exchange_code="NASD",
+        qty=2,
+        avg_price=200.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.mode = "stopped"
+
+    warning = controller._build_stopped_open_market_warning(
+        krx_open=False,
+        us_watchable=True,
+        last_report={
+            "overseas_positions": [
+                {"symbol": "AAPL"},
+                {"symbol": "MSFT"},
+            ],
+            "domestic_positions": [
+                {"stock_code": "005930"},
+            ],
+        },
+    )
+
+    assert warning == "주의=US 장열림·보유 3종목, 자동감시 중지 조치=/lab_start"
+
+
+def test_build_stopped_open_market_warning_hidden_while_running(tmp_path) -> None:
+    controller = _build_async_controller()
+    controller.mode = "running"
+
+    warning = controller._build_stopped_open_market_warning(
+        krx_open=True,
+        us_watchable=True,
+        last_report={"overseas_positions": [{"symbol": "AAPL"}]},
+    )
+
+    assert warning == ""
+
+
 def test_build_status_message_shows_stale_signal_cache_summary() -> None:
     controller = _build_async_controller()
     controller.last_report_summary = {

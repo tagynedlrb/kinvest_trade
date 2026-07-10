@@ -2952,3 +2952,26 @@
 - `python3 -m pytest tests/test_telegram_control.py::test_trim_virtual_prompt_and_confirm_closes_excess_positions tests/test_telegram_control.py::test_execute_trim_virtual_defers_when_live_prices_missing -q`
   → 통과
 - `python3 -m pytest tests -q` → 435개 통과
+
+## [2026-07-11] 장열림·보유중 자동감시 중지 경고 추가
+
+### 배경
+- 현재 서비스 프로세스는 active지만 거래 루프는 `stopped` 상태이고, 미국 정규장이
+  열려 있으며 실보유/가상보유가 남아 있다.
+- 기존 `/lab_status`는 `거래루프=중지됨`과 가상노출을 별도 줄로 보여줬지만,
+  장이 열린 상태에서 자동 청산 감시가 꺼져 있다는 위험을 한눈에 보기 어려웠다.
+
+### 수정
+- `telegram_control.py`
+  - KRX/US 세션이 열려 있고 보유 또는 가상보유 종목이 있는데 루프가 running이
+    아니면 `주의=US 장열림·보유 N종목, 자동감시 중지 조치=/lab_start` 표시
+  - 실보유와 가상보유를 고유 종목 기준으로 합산
+- `tests/test_telegram_control.py`
+  - stopped 상태 경고 표시 및 running 상태에서는 숨김 테스트 추가
+
+### 검증
+- 운영 DB 기준 상태 메시지:
+  `주의=US 장열림·보유 16종목, 자동감시 중지 조치=/lab_start`
+- `python3 -m pytest tests/test_telegram_control.py::test_build_stopped_open_market_warning_counts_real_and_virtual_positions tests/test_telegram_control.py::test_build_stopped_open_market_warning_hidden_while_running -q`
+  → 통과
+- `python3 -m pytest tests -q` → 437개 통과

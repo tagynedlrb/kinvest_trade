@@ -1,5 +1,33 @@
 # WORKLOG
 
+## [2026-07-11] telegram_control 분리 2차 - `telegram_reports.py` (상태/포트폴리오/성과 리포트 위임)
+
+### 배경
+- 1차(`telegram_orders.py`) 분리 후 `telegram_control.py`에 남은 최대 블록은
+  상태/워치리스트/포트폴리오/성과/가드 메시지 생성 영역(약 1,500줄)이었음
+- 최근 이틀간 반복 수정이 가장 많이 몰렸던 영역이라, 분리해 두면 이후 메시지 수정
+  diff가 리포트 전용 모듈 안에 갇혀 리뷰가 쉬워짐
+
+### 수정
+- `src/kinvest_trade/telegram_reports.py` 신설 (1,599줄)
+  - `ReportHelper` 추가 — `OrderAdminHelper`와 동일한 helper 패턴
+  - 이동 메서드 38개: `/lab_status`·`/lab_watchlist`·`/lab_portfolio`·`/lab_log`·
+    `/lab_performance`·`/lab_report`·`/lab_guard` 메시지 생성, 실시간 가격/주문가능
+    USD/포지션 조회, 가상 노출·정리후보·리스크 라인 생성
+- `src/kinvest_trade/telegram_control.py`
+  - 3,781줄 → 2,467줄. 이동 메서드는 원 시그니처 그대로 얇은 wrapper로 전환
+  - `self.reports` 초기화 + `_get_report_helper()` lazy 접근자 추가
+- monkeypatch 대응
+  - 테스트가 `telegram_control` 모듈 레벨에서 패치하는 7개 이름(기존 5개 +
+    `get_us_trading_session`, `is_us_orderable_session_for_env`)은 이동한 본문에서
+    `from . import telegram_control as _tc` 지연 임포트로 참조
+- 이번 분리로 `telegram_control.py`는 수명주기(run/스케줄러/명령 루프), 명령 핸들러,
+  세션 성과 누적, 공용 포매터만 남음. 파일 구성: control 2,467 / reports 1,599 / orders 978
+
+### 검증
+- `python3 -m pytest -q` → `460 passed`
+- 양방향 임포트 순서 sanity check 통과
+
 ## [2026-07-11] 서비스 재시작 시 running 모드 보존 (SIGTERM 강제 stopped 제거)
 
 ### 배경

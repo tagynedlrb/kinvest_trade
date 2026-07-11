@@ -564,25 +564,12 @@ class TelegramLiquidityLabController:
             except Exception:  # noqa: BLE001
                 pending_sells = []
 
-        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
-        for row in positions:
-            market = str(row.get("market", "overseas"))
-            currency = str(row.get("currency", "USD"))
-            qty = int(row.get("qty", 0) or 0)
-            avg_price = float(row.get("avg_price", 0.0) or 0.0)
-            if qty <= 0 or avg_price <= 0:
-                continue
-            key = (market, currency)
-            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
-            item["count"] = int(item["count"]) + 1
-            item["notional"] = float(item["notional"]) + qty * avg_price
+        by_market_currency = self._group_virtual_positions_by_market_currency(positions)
 
         if not by_market_currency and not pending_sells:
             return ["현재상태=가상보유/정산대기 없음"]
 
-        max_overseas_positions = int(
-            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
-        )
+        max_overseas_positions = self._max_concurrent_overseas_positions()
         lines = ["현재상태:"]
         for (market, currency), item in sorted(by_market_currency.items()):
             count = int(item["count"])
@@ -605,9 +592,7 @@ class TelegramLiquidityLabController:
         price_lookup: dict[tuple[str, str], float] | None = None,
         require_live_price: bool = False,
     ) -> tuple[list[dict[str, object]], int, int]:
-        max_overseas_positions = int(
-            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
-        )
+        max_overseas_positions = self._max_concurrent_overseas_positions()
         if max_overseas_positions <= 0:
             return [], 0, max_overseas_positions
 
@@ -1766,18 +1751,7 @@ class TelegramLiquidityLabController:
             _logger.warning("status_virtual_exposure_failed error=%s", exc)
             return ""
 
-        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
-        for row in rows:
-            market = str(row.get("market", "overseas"))
-            currency = str(row.get("currency", "USD"))
-            qty = int(row.get("qty", 0) or 0)
-            avg_price = float(row.get("avg_price", 0.0) or 0.0)
-            if qty <= 0 or avg_price <= 0:
-                continue
-            key = (market, currency)
-            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
-            item["count"] = int(item["count"]) + 1
-            item["notional"] = float(item["notional"]) + qty * avg_price
+        by_market_currency = self._group_virtual_positions_by_market_currency(rows)
         if not by_market_currency:
             return ""
 
@@ -1790,9 +1764,7 @@ class TelegramLiquidityLabController:
         max_pct = float(
             getattr(self.config.liquidity_lab, "max_virtual_exposure_pct", 1.0) or 1.0
         )
-        max_overseas_positions = int(
-            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
-        )
+        max_overseas_positions = self._max_concurrent_overseas_positions()
         parts: list[str] = []
         status = ""
         for (market, currency), item in sorted(by_market_currency.items()):
@@ -1879,14 +1851,7 @@ class TelegramLiquidityLabController:
             return ""
         current = now or datetime.now(timezone.utc)
         age_min = int(max((current - ensure_timezone(then)).total_seconds(), 0.0) // 60)
-        if age_min <= 0:
-            return "방금"
-        if age_min < 60:
-            return f"{age_min}분전"
-        age_hours = age_min // 60
-        if age_hours < 48:
-            return f"{age_hours}시간전"
-        return f"{age_hours // 24}일전"
+        return TelegramLiquidityLabController._format_saved_price_age(age_min)
 
     def _build_recent_sell_block_status_line(self, *, lookback_hours: int = 12) -> str:
         repository = getattr(self, "repository", None)
@@ -2141,67 +2106,6 @@ class TelegramLiquidityLabController:
         avg_pnl = total_pnl_pct_sum / len(positions)
         lines.append(f"평균손익={format_pct(avg_pnl)}")
         return "\n".join(lines)
-
-    async def _send_positions_message(self) -> None:
-        await self.notifier.send(self._build_positions_message())
-
-    def _build_virtual_portfolio_message(self) -> str:
-        manager = VirtualTradeManager(self.repository)
-        positions = manager.list_positions()
-        pending_sells = self.repository.list_virtual_sell_pending(market="overseas")
-        summary = manager.performance_summary()
-        now = datetime.now(timezone.utc)
-        lines = [
-            "[KIS][VIRTUAL_PORTFOLIO]",
-            f"시각={format_kst_korean(now)}",
-        ]
-
-        lines.append("--- 보유 종목 (virtual) ---")
-        if not positions:
-            lines.append("보유종목=없음")
-        else:
-            for position in positions:
-                market = format_market_korean(position.market)
-                price_text = self._format_price(position.avg_price, position.currency)
-                symbol_label = f"{position.symbol} (virtual)"
-                lines.append(
-                    f"{market} {symbol_label} 수량={position.qty} 평균단가={price_text}"
-                )
-
-        lines.append("--- 정산 대기 매도 (virtual) ---")
-        if not pending_sells:
-            lines.append("정산대기=없음")
-        else:
-            for row in pending_sells:
-                market = format_market_korean(str(row.get("market", "overseas")))
-                symbol = str(row.get("symbol", "-"))
-                qty = int(row.get("qty", 0) or 0)
-                avg_sell_price = float(row.get("avg_sell_price", 0.0) or 0.0)
-                currency = str(row.get("currency", "USD"))
-                lines.append(
-                    f"{market} {symbol} (virtual) 수량=-{qty} 가상매도가={self._format_price(avg_sell_price, currency)}"
-                )
-
-        lines.append("--- 누적 성과 (virtual) ---")
-        if not summary:
-            lines.append("성과=없음")
-        else:
-            for key in sorted(summary):
-                item = summary[key]
-                market = format_market_korean(str(item.get("market", "overseas")))
-                currency = str(item.get("currency", "USD"))
-                trade_count = int(item.get("trade_count", 0) or 0)
-                win_count = int(item.get("win_count", 0) or 0)
-                total_pnl = float(item.get("total_pnl", 0.0) or 0.0)
-                win_rate = (win_count / trade_count) if trade_count > 0 else 0.0
-                pnl_text = self._format_price(total_pnl, currency)
-                lines.append(
-                    f"{market} 체결={trade_count} 승률={format_pct(win_rate)} 실현손익={pnl_text}"
-                )
-        return "\n".join(lines)
-
-    async def _send_virtual_portfolio_message(self) -> None:
-        await self.notifier.send(self._build_virtual_portfolio_message())
 
     def _build_portfolio_message(
         self,
@@ -2523,9 +2427,7 @@ class TelegramLiquidityLabController:
         *,
         last_report: dict,
     ) -> list[str]:
-        max_overseas_positions = int(
-            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
-        )
+        max_overseas_positions = self._max_concurrent_overseas_positions()
         if max_overseas_positions <= 0:
             return []
         overseas_positions = [
@@ -2617,18 +2519,7 @@ class TelegramLiquidityLabController:
         rows = self.repository.list_virtual_positions()
         if not rows:
             return []
-        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
-        for row in rows:
-            market = str(row.get("market", "overseas"))
-            currency = str(row.get("currency", "USD"))
-            qty = int(row.get("qty", 0) or 0)
-            avg_price = float(row.get("avg_price", 0.0) or 0.0)
-            if qty <= 0 or avg_price <= 0:
-                continue
-            key = (market, currency)
-            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
-            item["count"] = int(item["count"]) + 1
-            item["notional"] = float(item["notional"]) + qty * avg_price
+        by_market_currency = self._group_virtual_positions_by_market_currency(rows)
 
         if not by_market_currency:
             return []
@@ -2636,9 +2527,7 @@ class TelegramLiquidityLabController:
         max_pct = float(
             getattr(self.config.liquidity_lab, "max_virtual_exposure_pct", 1.0) or 1.0
         )
-        max_overseas_positions = int(
-            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
-        )
+        max_overseas_positions = self._max_concurrent_overseas_positions()
         lab = self.lab_service
         last_available_usd = available_usd_override
         if last_available_usd is None:
@@ -4530,6 +4419,29 @@ class TelegramLiquidityLabController:
         if currency == "KRW":
             return f"{int(round(value)):,}원"
         return f"${value:,.2f}"
+
+    def _max_concurrent_overseas_positions(self) -> int:
+        return int(
+            getattr(self.config.liquidity_lab, "max_concurrent_overseas_orders", 0) or 0
+        )
+
+    @staticmethod
+    def _group_virtual_positions_by_market_currency(
+        rows: list[dict],
+    ) -> dict[tuple[str, str], dict[str, float | int]]:
+        by_market_currency: dict[tuple[str, str], dict[str, float | int]] = {}
+        for row in rows:
+            market = str(row.get("market", "overseas"))
+            currency = str(row.get("currency", "USD"))
+            qty = int(row.get("qty", 0) or 0)
+            avg_price = float(row.get("avg_price", 0.0) or 0.0)
+            if qty <= 0 or avg_price <= 0:
+                continue
+            key = (market, currency)
+            item = by_market_currency.setdefault(key, {"count": 0, "notional": 0.0})
+            item["count"] = int(item["count"]) + 1
+            item["notional"] = float(item["notional"]) + qty * avg_price
+        return by_market_currency
 
     @staticmethod
     def _short_time(value: str | None) -> str:

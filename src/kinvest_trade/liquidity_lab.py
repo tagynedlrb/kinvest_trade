@@ -26,22 +26,19 @@ from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summ
 from .lab_domestic_orders import DomesticOrderHelper
 from .lab_notify import TradeNotifier
 from .lab_overseas_orders import OverseasOrderHelper
-from .lab_positions import UnifiedPositionTracker, VirtualPosition, VirtualTradeManager
+from .lab_positions import UnifiedPositionTracker, VirtualTradeManager
 from .lab_risk import CircuitBreakerManager
 from .lab_runtime import LabRuntimeManager
 from .lab_watch import WatchStateHelper
 from .message_format import (
-    format_krw,
     format_side_korean,
     format_market_korean,
     format_pct,
     format_reason_korean,
     format_usd,
 )
-from .adaptive_params import apply_override, compute_adaptive_override
 from .momentum_policy import (
     derive_watch_state,
-    detect_market_regime,
     evaluate_entry_setup,
     evaluate_exit_setup,
 )
@@ -3099,62 +3096,6 @@ class LiquidityLabService:
         )
         return reason
 
-    async def _build_domestic_watch_targets(
-        self,
-        domestic_ranked: list[DomesticScanResult],
-        held_positions: list[DomesticHeldPosition],
-        top_n: int | None = None,
-    ) -> list[WatchTargetStatus]:
-        watch_targets: list[WatchTargetStatus] = []
-        held_map = {position.stock_code: position for position in held_positions}
-        watch_limit = (
-            top_n
-            if top_n is not None
-            else self.config.liquidity_lab.unified_watch_top_n
-        )
-        for candidate in domestic_ranked[:watch_limit]:
-            signal_snapshot = await self._load_domestic_signal(candidate)
-            held = held_map.get(candidate.stock_code)
-            watch_targets.append(
-                self._build_watch_target_status(
-                    market="domestic",
-                    code=candidate.stock_code,
-                    exchange_code=None,
-                    price=float(candidate.current_price),
-                    activity_score=candidate.activity_score,
-                    signal_snapshot=signal_snapshot,
-                    held_position=held,
-                    holding_qty=0 if held is None else held.quantity,
-                )
-            )
-            await asyncio.sleep(0.05)
-
-        watched_codes = {watch_target.code for watch_target in watch_targets}
-        for held in held_positions:
-            if held.stock_code in watched_codes:
-                continue
-            candidate = next(
-                (item for item in domestic_ranked if item.stock_code == held.stock_code),
-                None,
-            )
-            if candidate is None:
-                continue
-            signal_snapshot = await self._load_domestic_signal(candidate)
-            watch_targets.append(
-                self._build_watch_target_status(
-                    market="domestic",
-                    code=candidate.stock_code,
-                    exchange_code=None,
-                    price=float(candidate.current_price),
-                    activity_score=candidate.activity_score,
-                    signal_snapshot=signal_snapshot,
-                    held_position=held,
-                    holding_qty=held.quantity,
-                )
-            )
-            await asyncio.sleep(0.05)
-        return watch_targets
-
     async def _build_unified_watch_targets(
         self,
         *,
@@ -3369,9 +3310,6 @@ class LiquidityLabService:
             )
         return watch_targets
 
-    def _remember_persisted_symbol_state(self, state: dict | None) -> None:
-        self._get_watch_state_helper().remember_persisted_symbol_state(state)
-
     def _get_persisted_symbol_state(self, market: str, symbol: str) -> dict | None:
         return self._get_watch_state_helper().get_persisted_symbol_state(market, symbol)
 
@@ -3381,55 +3319,11 @@ class LiquidityLabService:
     ) -> None:
         self._get_watch_state_helper().prime_cycle_exit_reference_prices(overseas_positions)
 
-    @staticmethod
-    def _snapshot_from_payload(
-        payload: dict | None,
-    ) -> MovingAverageSnapshot | None:
-        return self._get_watch_state_helper().snapshot_from_payload(payload)
-
-    @staticmethod
-    def _with_live_price(
-        snapshot: MovingAverageSnapshot,
-        *,
-        price: float,
-        bid: float | None = None,
-        ask: float | None = None,
-    ) -> MovingAverageSnapshot:
-        return WatchStateHelper.with_live_price(snapshot, price=price, bid=bid, ask=ask)
-
-    def _state_snapshot_with_live_price(
-        self,
-        state: dict | None,
-        *,
-        price: float,
-        bid: float | None = None,
-        ask: float | None = None,
-    ) -> MovingAverageSnapshot | None:
-        return self._get_watch_state_helper().state_snapshot_with_live_price(
-            state,
-            price=price,
-            bid=bid,
-            ask=ask,
-        )
-
     async def _get_overseas_signal_for_candidate(
         self,
         candidate: OverseasScanResult,
     ) -> MovingAverageSnapshot | None:
         return await self._get_watch_state_helper().get_overseas_signal_for_candidate(candidate)
-
-    def _persist_watch_target_state(
-        self,
-        watch_target: WatchTargetStatus,
-        *,
-        pnl_pct: float | None = None,
-        exit_by: str = "",
-    ) -> None:
-        self._get_watch_state_helper().persist_watch_target_state(
-            watch_target,
-            pnl_pct=pnl_pct,
-            exit_by=exit_by,
-        )
 
     def _persist_trade_state(
         self,
@@ -3488,25 +3382,6 @@ class LiquidityLabService:
         self._get_watch_state_helper().restore_strategy_contexts(
             domestic_positions=domestic_positions,
             overseas_positions=overseas_positions,
-        )
-
-    def _restore_strategy_position(
-        self,
-        *,
-        market: str,
-        symbol: str,
-        exchange_code: str | None,
-        quantity: int,
-        avg_price: float,
-        current_price: float,
-    ) -> None:
-        self._get_watch_state_helper().restore_strategy_position(
-            market=market,
-            symbol=symbol,
-            exchange_code=exchange_code,
-            quantity=quantity,
-            avg_price=avg_price,
-            current_price=current_price,
         )
 
     def _build_watch_target_status(
@@ -4388,10 +4263,6 @@ class LiquidityLabService:
         )
         return max(0, int(elapsed_sec // loop_interval_sec))
 
-    def _commission_rate(self) -> float:
-        auto_trade = getattr(self.config, "auto_trade", None)
-        return float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
-
     def _domestic_commission_rate(self) -> float:
         auto_trade = getattr(self.config, "auto_trade", None)
         legacy = float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
@@ -4608,12 +4479,6 @@ class LiquidityLabService:
         )
         self._sync_runtime_legacy_state(runtime)
         return deferred
-
-    def _no_orderable_retry_minutes(self, key: str) -> int:
-        runtime = self._get_runtime_manager()
-        minutes = runtime.no_orderable_retry_minutes(key)
-        self._sync_runtime_legacy_state(runtime)
-        return minutes
 
     def _track_no_orderable_stall(
         self,

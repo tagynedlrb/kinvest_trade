@@ -10,9 +10,20 @@
 - `state/runtime_state.json`: 최신 실행 상태
 - `src/kinvest_trade/client.py`: KIS OAuth, 시세, 잔고, 매수가능조회, 주문
 - `src/kinvest_trade/auto_trader.py`: `auto_trade.symbol`에 지정한 고정 1종목 자동매매
-- `src/kinvest_trade/liquidity_lab.py`: 국내/해외 후보군을 스캔해 가장 활발한 종목을 자동 선정하는 테스트 루프
+- `src/kinvest_trade/liquidity_lab.py`: 국내/해외 후보군을 스캔해 가장 활발한 종목을 자동 선정하는 사이클 오케스트레이션 본체
+- `src/kinvest_trade/lab_watch.py`: 국내/해외 매수·청산 감시대상 선정, watch target 상태 계산
+- `src/kinvest_trade/lab_domestic_orders.py`: 국내 실주문(매수/매도) 제출, 미체결 정정, 체결 로그
+- `src/kinvest_trade/lab_overseas_orders.py`: 해외 실주문(매수/매도) 제출, 가상매수 fallback, 미체결 정정, 체결 로그
+- `src/kinvest_trade/lab_positions.py`: 실보유/가상보유 통합 포지션 트래커, 가상거래 관리자
+- `src/kinvest_trade/lab_runtime.py`: 쿨다운/재시도/체결확정 대기 등 사이클 간 런타임 상태
+- `src/kinvest_trade/lab_risk.py`: 연속손절·일일손실 서킷브레이커 상태 관리
+- `src/kinvest_trade/lab_notify.py`: 거래 알림 큐/배치 전송
+  - (위 `lab_*.py`는 원래 `liquidity_lab.py` 한 파일이었으나, 8,700줄을 넘기며 유지보수가
+    어려워져 성격별로 분리했다. 각 파일은 `LiquidityLabService` 인스턴스를 `service`로 받아
+    위임받는 helper 클래스 형태이며, `liquidity_lab.py`에는 얇은 wrapper 메서드만 남아있다.)
 - `src/kinvest_trade/cli.py`: `auto-run`, `liquidity-lab`, `telegram-control`, `doctor`, `auth-check`, `balance-check`, `overseas-price-check`, `overseas-balance-check`, `overseas-orderable-check`, `overseas-order-test`, `indicator-check`, `orderable-check`, `order-test`, `paper-run`, `paper-report`, `telegram-test`
-- `src/kinvest_trade/telegram_control.py`: 텔레그램 봇 명령으로 `liquidity-lab` 루프를 시작/중지/재개/종료
+- `src/kinvest_trade/telegram_control.py`: 텔레그램 봇 명령으로 `liquidity-lab` 루프를 시작/중지/재개/종료, 상태·리포트 메시지 생성
+- `src/kinvest_trade/git_uploader.py`: `/lab_gitlog` 명령으로 당일 거래/이벤트 로그를 GitHub에 CSV 업로드
 - `run_watch.py`: 옵션 없이 콘솔 감시 실행
 - `WORKLOG.md`: 작업 기록
 
@@ -274,7 +285,7 @@ python3 main.py liquidity-lab
 - 비보유 해외 종목이 chart signal 생성에 반복 실패하면 `overseas_signal_failure_threshold`(기본 `3`)회 이후 `overseas_signal_failure_cooldown_minutes`(기본 `180`분) 동안 제외한다.
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
-- 최근 성과 기준으로 해외 `VWAP` 단독 진입과 해외 `RSI` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`). 해외에서는 `VWAP+RSI`, `VOL`, `VOL+RSI`처럼 보조 확인이 붙은 신호를 우선한다.
+- 최근 성과 기준으로 해외 `VWAP` 단독, `RSI` 단독, `VOL` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`, `overseas_block_standalone_vol=true`). 해외에서는 `VWAP+RSI`, `VOL+RSI`처럼 보조 확인이 둘 이상 붙은 신호를 우선한다.
 - 해외 신규 진입은 전략 신호가 있어도 `volume_ratio`가 `overseas_min_strategy_volume_ratio`(기본 `0.8`)보다 낮으면 `overseas_volume_floor`로 대기한다.
 - `liquidity_lab`의 매수 수량은 기본적으로 슬롯 기반이다. `use_slot_sizing=true`이면 주문가능 금액에 `slot_entry_pct`를 곱한 예산 안에서 수량을 계산하고, 조회 실패 시에만 `*_test_order_qty` 고정 수량으로 폴백한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
@@ -327,12 +338,20 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실주문접수 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
 - `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 실주문접수 성과 비교
 - `/lab_report wait [시간]`: 최근 N시간(기본 72시간)의 `WAIT` 병목을 시장·전략·사유별로 요약
-- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`와 고정차단(`해외 VWAP단독`, `해외 RSI단독`)을 함께 표시한다
+- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`와 고정차단(`해외 VWAP단독`, `해외 RSI단독`, `해외 VOL단독`)을 함께 표시한다
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
 - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
 - `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)
 - `/lab_cancel_stale_overseas`: 30분 이상 해외 미체결 취소 대상 확인
 - `/lab_cancel_stale_overseas_confirm`: 확인된 해외 장기 미체결 취소 실행(메뉴에는 숨김)
+- `/lab_trim_virtual`: 해외 가상보유가 `max_concurrent_overseas_orders` 한도를 초과했을 때, 손실이 크고 오래된 초과분 정리 후보를 실시간 시세 기준으로 미리보기
+- `/lab_trim_virtual_confirm`: `/lab_trim_virtual`이 제시한 초과분 정리 실행(메뉴에는 숨김)
+- `/lab_reset`: 가상거래 전체를 백업 후 초기화(현재 가상보유/노출/한도초과 요약을 먼저 보여준 뒤 확인 요청)
+- `/lab_reset_confirm`: `/lab_reset`이 제시한 초기화 실행(메뉴에는 숨김)
+- `/lab_relist`: 해외 감시 풀을 수동 종목 목록으로 교체(TV 스캔 대신 특정 종목만 보고 싶을 때)
+- `/lab_relist_schedule`: 해외 relist 관련 알림 시간 설정
+- `/lab_cb_reset`: 연속손절/일일손실 서킷브레이커 강제 해제
+- `/lab_gitlog`: 당일 거래/이벤트 로그를 CSV로 정리해 GitHub 저장소에 업로드
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
 

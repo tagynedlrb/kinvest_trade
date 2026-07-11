@@ -12,6 +12,7 @@ import kinvest_trade.lab_overseas_orders as lab_overseas_orders_module
 import kinvest_trade.lab_risk as lab_risk_module
 import kinvest_trade.liquidity_lab as liquidity_lab_module
 from kinvest_trade.config import load_app_config
+from kinvest_trade.lab_positions import VirtualPosition
 from kinvest_trade.liquidity_lab import (
     DomesticHeldPosition,
     DomesticScanResult,
@@ -20,7 +21,6 @@ from kinvest_trade.liquidity_lab import (
     OverseasHeldPosition,
     OverseasScanResult,
     UnifiedPositionTracker,
-    VirtualPosition,
     VirtualTradeManager,
     WatchTargetStatus,
 )

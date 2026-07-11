@@ -1,5 +1,76 @@
 # WORKLOG
 
+## [2026-07-11] 전체 코드 점검 - 죽은 코드 제거, 중복 통합, README 정비
+
+### 배경
+- 10차 리팩터링 이후 사용자 요청으로 전체 코드/구성을 다시 점검. 최근 이틀간(7/10~7/11)
+  약 100건의 빠른 반복 작업이 있었던 만큼, "잘못 개선했거나 불필요해진 것"이 남아있는지
+  4개 영역(telegram_control.py, liquidity_lab.py+helper 모듈, 레거시 엔트리포인트,
+  최근 이틀 변경 요약)을 병렬로 감사한 뒤 결과를 종합해 정리함
+- 감사 결과 `auto_trader.py`(대체 모드, 테스트 통과 중), `git_uploader.py`(`/lab_gitlog`로
+  실사용 중)는 정상 기능으로 확인되어 유지. `watcher.py`/`run_watch.py`는 최근 활동은
+  없지만 README에 문서화된 기능이라 이번엔 손대지 않음
+
+### 수정 - 죽은 코드 제거
+- `src/kinvest_trade/liquidity_lab.py`
+  - 미사용 import 5개 제거: `format_krw`, `VirtualPosition`, `apply_override`,
+    `compute_adaptive_override`, `detect_market_regime` (각각 실제 사용처인
+    `lab_domestic_orders.py`/`lab_watch.py`/`lab_positions.py`/`auto_trader.py`에는
+    이미 직접 import되어 있어 영향 없음)
+  - 호출부가 전혀 없는 orphan 메서드 9개 제거: `_remember_persisted_symbol_state`,
+    `_snapshot_from_payload`(참고: `@staticmethod`인데 본문에서 `self`를 참조하는
+    잠재 버그가 있었음 - 죽은 코드라 실행된 적 없이 발견됨), `_with_live_price`,
+    `_state_snapshot_with_live_price`, `_persist_watch_target_state`,
+    `_restore_strategy_position`, `_no_orderable_retry_minutes`,
+    `_build_domestic_watch_targets`(국내 전용 watch target 생성 - `_build_unified_watch_targets`로
+    완전히 대체되어 호출이 끊긴 구버전), `_commission_rate`(`_domestic_commission_rate`/
+    `_overseas_commission_rate` 분리 이후 남은 잔재)
+  - `tests/test_liquidity_lab.py`: `VirtualPosition` import를 `lab_positions`에서 직접 하도록 수정
+- `src/kinvest_trade/telegram_control.py`
+  - 어떤 `/lab_*` 명령에서도 도달 불가능한 `_send_positions_message`,
+    `_build_virtual_portfolio_message`, `_send_virtual_portfolio_message` 제거
+    (구버전 `[KIS][VIRTUAL_PORTFOLIO]` 메시지 포맷 - 현재의 `_build_portfolio_message`로
+    완전히 대체됨)
+  - `tests/test_telegram_control.py`: 위 메서드 전용 테스트 1개 제거
+- `examples/sample_snapshots.json` 제거 (코드/README 어디서도 참조하지 않는 초기 개발기 fixture)
+
+### 수정 - 중복 로직 통합
+- `src/kinvest_trade/telegram_control.py`
+  - `max_concurrent_overseas_orders` 설정값을 읽는 동일한 3줄이 5곳
+    (`/lab_reset`, `/lab_trim_virtual`, `/lab_status`, `/lab_portfolio` 청산후보,
+    `/lab_portfolio` 노출요약)에 각각 반복돼 있어 `_max_concurrent_overseas_positions()`
+    헬퍼로 통합
+  - 가상보유를 `(시장, 통화)` 기준으로 묶어 종목수/노출금액을 계산하는 동일한 루프가
+    3곳(`/lab_reset`, `/lab_status`, `/lab_portfolio` 노출요약)에 반복돼 있어
+    `_group_virtual_positions_by_market_currency()` 헬퍼로 통합
+  - `_format_saved_price_age(분단위)`와 `_format_recent_age_text(datetime)`가 동일한
+    분/시간/일 표시 규칙을 각각 구현하고 있어, 후자가 전자를 호출하도록 통합
+  - 위 통합은 모두 출력 문구를 그대로 유지하는 순수 리팩터링이라 기존 메시지 포맷
+    테스트가 그대로 통과함
+
+### 결과
+- `liquidity_lab.py`: 4,872줄 → 4,737줄
+- `telegram_control.py`: 4,630줄 → 4,542줄
+- README.md: `lab_*.py` 분리 모듈 구조 반영, `/lab_trim_virtual`·`/lab_reset`·`/lab_relist`·
+  `/lab_cb_reset`·`/lab_gitlog` 등 그동안 문서화되지 않았던 명령 6개 추가, 해외
+  `VOL` 단독 진입 차단(`overseas_block_standalone_vol`) 반영
+
+### 다음 단계 (의도적으로 이번엔 보류)
+- `telegram_control.py`(4,542줄)가 이제 `liquidity_lab.py`보다도 커서, `liquidity_lab.py`를
+  10차례에 걸쳐 분리했던 것과 같은 방식으로 `telegram_reports.py`(상태/포트폴리오/성과
+  메시지 생성, 약 2,000줄), `telegram_orders.py`(미체결 취소/주문감사, 약 950줄) 분리가
+  다음 후보. 이번 세션에서는 하지 않음 - 자금이 실제로 운용 중인 상태에서 대형 구조
+  변경을 다른 정리 작업과 한 번에 묶는 것은 리스크가 커서, `liquidity_lab.py`와 동일하게
+  여러 세션에 걸쳐 점진적으로 진행하는 편이 안전하다고 판단
+- `self._exit_cooldown` 등 helper 분리 과정에서 남겨둔 레거시 동기화 상태(`_sync_runtime_legacy_state`)는
+  더 이상 외부에서 직접 읽지 않는다면 수집 가능하나, 이번엔 범위에서 제외
+- `watcher.py`/`run_watch.py`는 최근 실사용 흔적이 없지만 README 문서화 기능이라 유지 여부는
+  사용자 확인 후 결정
+
+### 테스트
+- `python3 -m pytest -q`
+- 결과: `454 passed` (죽은 코드 전용 테스트 1개 제거로 455 → 454, 그 외 회귀 없음)
+
 ## [2026-07-11] 지시문 #68 10차 반영 - 해외 청산대상 선정 위임 (`lab_watch.py`)
 
 ### 배경

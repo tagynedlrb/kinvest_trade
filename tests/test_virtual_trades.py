@@ -1,4 +1,4 @@
-from kinvest_trade.liquidity_lab import VirtualTradeManager
+from kinvest_trade.lab_positions import VirtualTradeManager
 from kinvest_trade.repository import SqliteRepository
 
 

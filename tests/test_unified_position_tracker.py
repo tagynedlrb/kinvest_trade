@@ -3,12 +3,11 @@ from pathlib import Path
 from tempfile import mkdtemp
 from types import SimpleNamespace
 
+from kinvest_trade.lab_positions import UnifiedPositionTracker, VirtualTradeManager
 from kinvest_trade.liquidity_lab import (
     LiquidityLabService,
     OverseasHeldPosition,
     OverseasScanResult,
-    UnifiedPositionTracker,
-    VirtualTradeManager,
 )
 from kinvest_trade.repository import SqliteRepository
 

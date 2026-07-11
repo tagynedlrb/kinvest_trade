@@ -8,6 +8,7 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 
@@ -22,6 +23,11 @@ from .market_sessions import (
     us_holiday_date_for_kis_session,
 )
 from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
+from .lab_notify import TradeNotifier
+from .lab_positions import UnifiedPositionTracker, VirtualPosition, VirtualTradeManager
+from .lab_risk import CircuitBreakerManager
+from .lab_runtime import LabRuntimeManager
+from .lab_watch import WatchStateHelper
 from .message_format import (
     format_krw,
     format_side_korean,
@@ -50,6 +56,16 @@ from .tv_scanner import check_connectivity, scan_top_volume_surge
 
 _logger = logging.getLogger(__name__)
 _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
+
+
+def _fallback_runtime_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        liquidity_lab=SimpleNamespace(loop_interval_sec=25),
+        auto_trade=SimpleNamespace(
+            rsi_entry_threshold=50.0,
+            min_hold_before_trend_exit=12,
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -97,16 +113,6 @@ class ExcludedCandidate:
     code: str
     reasons: list[str]
     snapshot: dict
-
-
-@dataclass(slots=True)
-class VirtualPosition:
-    market: str
-    symbol: str
-    exchange_code: str | None
-    qty: int
-    avg_price: float
-    currency: str
 
 
 @dataclass(slots=True)
@@ -196,337 +202,6 @@ class LiquidityLabReport:
         }
 
 
-class VirtualTradeManager:
-    """
-    Keep a virtual portfolio for orders rejected by the paper environment while the
-    underlying market itself is open.
-    """
-
-    def __init__(self, repository: SqliteRepository) -> None:
-        self.repository = repository
-
-    def get_position(self, market: str, symbol: str) -> VirtualPosition | None:
-        row = self.repository.get_virtual_position(market.strip().lower(), symbol.strip().upper())
-        if row is None:
-            return None
-        return self._to_position(row)
-
-    def list_positions(self, market: str | None = None) -> list[VirtualPosition]:
-        positions = [self._to_position(row) for row in self.repository.list_virtual_positions()]
-        if market is None:
-            return positions
-        market_key = market.strip().lower()
-        return [position for position in positions if position.market == market_key]
-
-    def record_buy(
-        self,
-        *,
-        market: str,
-        symbol: str,
-        exchange_code: str | None,
-        qty: int,
-        fill_price: float,
-        currency: str,
-        session: str,
-        reason: str,
-        created_at: str,
-    ) -> VirtualPosition | None:
-        if qty <= 0 or fill_price <= 0:
-            return None
-
-        market_key = market.strip().lower()
-        symbol_key = symbol.strip().upper()
-        existing = self.get_position(market_key, symbol_key)
-        next_qty = qty if existing is None else existing.qty + qty
-        avg_price = fill_price
-        if existing is not None and next_qty > 0:
-            avg_price = (
-                existing.avg_price * existing.qty + fill_price * qty
-            ) / next_qty
-
-        self.repository.upsert_virtual_position(
-            market=market_key,
-            symbol=symbol_key,
-            exchange_code=exchange_code,
-            qty=next_qty,
-            avg_price=avg_price,
-            currency=currency,
-            opened_at=created_at,
-            updated_at=created_at,
-        )
-        self.repository.save_virtual_order(
-            created_at=created_at,
-            market=market_key,
-            symbol=symbol_key,
-            exchange_code=exchange_code,
-            side="buy",
-            qty=qty,
-            fill_price=fill_price,
-            currency=currency,
-            session=session,
-            reason=reason,
-        )
-        return self.get_position(market_key, symbol_key)
-
-    def record_sell(
-        self,
-        *,
-        market: str,
-        symbol: str,
-        exchange_code: str | None,
-        qty: int,
-        fill_price: float,
-        currency: str,
-        session: str,
-        reason: str,
-        created_at: str,
-        seed_avg_price: float | None = None,
-        seed_qty: int | None = None,
-    ) -> tuple[float, float]:
-        if qty <= 0 or fill_price <= 0:
-            return 0.0, 0.0
-
-        market_key = market.strip().lower()
-        symbol_key = symbol.strip().upper()
-        position = self.get_position(market_key, symbol_key)
-        if position is None and seed_avg_price and seed_avg_price > 0 and seed_qty and seed_qty > 0:
-            position = VirtualPosition(
-                market=market_key,
-                symbol=symbol_key,
-                exchange_code=exchange_code,
-                qty=seed_qty,
-                avg_price=seed_avg_price,
-                currency=currency,
-            )
-        if position is None or position.qty <= 0:
-            return 0.0, 0.0
-
-        sell_qty = min(qty, position.qty)
-        realized_pnl = (fill_price - position.avg_price) * sell_qty
-        realized_pnl_pct = (
-            (fill_price - position.avg_price) / position.avg_price
-            if position.avg_price > 0
-            else 0.0
-        )
-        remaining_qty = position.qty - sell_qty
-
-        if remaining_qty > 0:
-            self.repository.upsert_virtual_position(
-                market=market_key,
-                symbol=symbol_key,
-                exchange_code=exchange_code or position.exchange_code,
-                qty=remaining_qty,
-                avg_price=position.avg_price,
-                currency=position.currency,
-                opened_at=created_at,
-                updated_at=created_at,
-            )
-        else:
-            self.repository.delete_virtual_position(market_key, symbol_key)
-
-        self.repository.save_virtual_order(
-            created_at=created_at,
-            market=market_key,
-            symbol=symbol_key,
-            exchange_code=exchange_code or position.exchange_code,
-            side="sell",
-            qty=sell_qty,
-            fill_price=fill_price,
-            currency=position.currency,
-            session=session,
-            reason=reason,
-            realized_pnl=realized_pnl,
-            realized_pnl_pct=realized_pnl_pct,
-        )
-        return realized_pnl, realized_pnl_pct
-
-    def performance_summary(self) -> dict:
-        return self.repository.get_virtual_performance_summary()
-
-    @staticmethod
-    def _to_position(row: dict) -> VirtualPosition:
-        return VirtualPosition(
-            market=str(row["market"]),
-            symbol=str(row["symbol"]),
-            exchange_code=row.get("exchange_code"),
-            qty=int(row["qty"]),
-            avg_price=float(row["avg_price"]),
-            currency=str(row["currency"]),
-        )
-
-
-@dataclass(slots=True)
-class UnifiedPosition:
-    market: str
-    symbol: str
-    exchange_code: str | None
-    real_qty: int
-    virtual_buy_qty: int
-    virtual_sell_qty: int
-    currency: str
-
-    @property
-    def total_qty(self) -> int:
-        return self.real_qty + self.virtual_buy_qty - self.virtual_sell_qty
-
-
-class UnifiedPositionTracker:
-    """
-    Track real holdings, virtual buys, and pending virtual sells in one place.
-    """
-
-    def __init__(
-        self,
-        repository: SqliteRepository,
-        virtual_trades: VirtualTradeManager,
-    ) -> None:
-        self.repository = repository
-        self.virtual_trades = virtual_trades
-
-    def get_unified(
-        self,
-        market: str,
-        symbol: str,
-        real_qty: int,
-        currency: str,
-        exchange_code: str | None = None,
-    ) -> UnifiedPosition:
-        market_key = market.strip().lower()
-        symbol_key = symbol.strip().upper()
-        virtual_buy = self.virtual_trades.get_position(market_key, symbol_key)
-        virtual_sell = self.repository.get_virtual_sell_pending(market_key, symbol_key)
-        return UnifiedPosition(
-            market=market_key,
-            symbol=symbol_key,
-            exchange_code=exchange_code,
-            real_qty=real_qty,
-            virtual_buy_qty=0 if virtual_buy is None else virtual_buy.qty,
-            virtual_sell_qty=0 if virtual_sell is None else int(virtual_sell["qty"]),
-            currency=currency,
-        )
-
-    def apply_sell(
-        self,
-        *,
-        market: str,
-        symbol: str,
-        exchange_code: str | None,
-        sell_qty: int,
-        price: float,
-        currency: str,
-        session: str,
-        reason: str,
-        real_qty: int,
-        can_execute_real: bool,
-        created_at: str,
-        reference_avg_price: float | None = None,
-    ) -> dict:
-        virtual_buy = self.virtual_trades.get_position(market, symbol)
-        virtual_buy_qty = 0 if virtual_buy is None else virtual_buy.qty
-        virtual_buy_avg = 0.0 if virtual_buy is None else virtual_buy.avg_price
-
-        remaining = sell_qty
-        realized_pnl = 0.0
-        from_virtual_buy = min(remaining, virtual_buy_qty)
-        if from_virtual_buy > 0:
-            sell_pnl, _ = self.virtual_trades.record_sell(
-                market=market,
-                symbol=symbol,
-                exchange_code=exchange_code,
-                qty=from_virtual_buy,
-                fill_price=price,
-                currency=currency,
-                session=session,
-                reason=reason,
-                created_at=created_at,
-            )
-            realized_pnl += sell_pnl
-            remaining -= from_virtual_buy
-
-        if remaining <= 0:
-            return {
-                "realized_pnl": realized_pnl,
-                "fully_virtual": True,
-                "qty_from_real": 0,
-                "qty_from_virtual_buy": from_virtual_buy,
-                "qty_pending_real": 0,
-                "virtual_buy_avg_price": virtual_buy_avg,
-            }
-
-        if can_execute_real:
-            return {
-                "realized_pnl": realized_pnl,
-                "fully_virtual": False,
-                "qty_from_real": remaining,
-                "qty_from_virtual_buy": from_virtual_buy,
-                "qty_pending_real": 0,
-                "virtual_buy_avg_price": virtual_buy_avg,
-            }
-
-        existing = self.repository.get_virtual_sell_pending(market, symbol)
-        existing_qty = 0 if existing is None else int(existing["qty"])
-        existing_avg = 0.0 if existing is None else float(existing["avg_sell_price"])
-        next_qty = existing_qty + remaining
-        next_avg = price
-        if next_qty > 0:
-            next_avg = ((existing_avg * existing_qty) + (price * remaining)) / next_qty
-        self.repository.upsert_virtual_sell_pending(
-            market=market,
-            symbol=symbol,
-            exchange_code=exchange_code,
-            qty=next_qty,
-            avg_sell_price=next_avg,
-            currency=currency,
-            updated_at=created_at,
-        )
-        pending_realized_pnl = 0.0
-        pending_realized_pnl_pct = 0.0
-        if reference_avg_price is not None and reference_avg_price > 0:
-            pending_realized_pnl = (price - reference_avg_price) * remaining
-            pending_realized_pnl_pct = (price - reference_avg_price) / reference_avg_price
-        self.repository.save_virtual_order(
-            created_at=created_at,
-            market=market,
-            symbol=symbol,
-            exchange_code=exchange_code,
-            side="sell",
-            qty=remaining,
-            fill_price=price,
-            currency=currency,
-            session=session,
-            reason=reason,
-            realized_pnl=pending_realized_pnl,
-            realized_pnl_pct=pending_realized_pnl_pct,
-        )
-        return {
-            "realized_pnl": realized_pnl + pending_realized_pnl,
-            "fully_virtual": True,
-            "qty_from_real": remaining,
-            "qty_from_virtual_buy": from_virtual_buy,
-            "qty_pending_real": remaining,
-            "virtual_buy_avg_price": virtual_buy_avg,
-        }
-
-    def get_pending_settlement(self, market: str, symbol: str) -> tuple[int, float] | None:
-        row = self.repository.get_virtual_sell_pending(market, symbol)
-        if row is None:
-            return None
-        qty = int(row["qty"])
-        if qty <= 0:
-            return None
-        return qty, float(row["avg_sell_price"])
-
-    def settle(
-        self,
-        *,
-        market: str,
-        symbol: str,
-        real_qty_after_settlement: int,
-    ) -> None:
-        del real_qty_after_settlement
-        self.repository.delete_virtual_sell_pending(market, symbol)
-
-
 class LiquidityLabService:
     def __init__(
         self,
@@ -541,6 +216,11 @@ class LiquidityLabService:
         self.notifier = notifier
         self.virtual_trades = VirtualTradeManager(repository)
         self.position_tracker = UnifiedPositionTracker(repository, self.virtual_trades)
+        self.cb = CircuitBreakerManager(
+            self.config,
+            event_hook=self._save_event,
+            notify_hook=self._send_circuit_breaker_notification,
+        )
         self._domestic_excluded: list[ExcludedCandidate] = []
         self._overseas_excluded: list[ExcludedCandidate] = []
         self._last_held_symbols: set[str] = set()
@@ -584,6 +264,11 @@ class LiquidityLabService:
         self._pending_trade_notification_started_at: datetime | None = None
         self._trade_notification_window_sec: int = 60
         self._trade_notification_max_batch_size: int = 8
+        self.trade_notifier = TradeNotifier(
+            self.notifier,
+            window_seconds=self._trade_notification_window_sec,
+            max_batch_size=self._trade_notification_max_batch_size,
+        )
         self._session_start_logged: bool = False
         self._no_orderable_retry: dict[str, datetime] = {}
         self._exit_price_shock_guard: dict[str, dict[str, float | str]] = {}
@@ -594,8 +279,215 @@ class LiquidityLabService:
         self._rsi_blocked_count: int = 0
         self._last_low_trade_frequency_alert_cycle: int = 0
         self._last_trend_filter_alert_cycle: int = 0
+        self.runtime = LabRuntimeManager(
+            self.config,
+            self.repository,
+            self.notifier,
+            is_effective_trade_order=self._is_effective_trade_order,
+        )
         self._strategy_guard_cache: dict[str, object] = {}
         self._last_strategy_guard_blocked_keys: set[tuple[str, str]] = set()
+        self.watch_state = WatchStateHelper(self)
+
+    def _get_circuit_breaker(self) -> CircuitBreakerManager:
+        cb = getattr(self, "cb", None)
+        if cb is None:
+            cb = CircuitBreakerManager(
+                self.config,
+                event_hook=self._save_event,
+                notify_hook=self._send_circuit_breaker_notification,
+            )
+            self.cb = cb
+        cb.load_state(
+            consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+            session_realised_krw=float(getattr(self, "_session_realised_krw", 0.0) or 0.0),
+            daily_loss_date=getattr(self, "_daily_loss_date", None),
+            halted_at=getattr(self, "_halted_at", None),
+            daily_halted_at=getattr(self, "_daily_halted_at", None),
+        )
+        return cb
+
+    def _sync_circuit_breaker_legacy_state(self, cb: CircuitBreakerManager | None = None) -> None:
+        cb = cb or getattr(self, "cb", None)
+        if cb is None:
+            return
+        snapshot = cb.snapshot()
+        self._consecutive_losses = int(snapshot["consecutive_losses"])
+        self._session_realised_krw = float(snapshot["session_realised_krw"])
+        self._daily_loss_date = snapshot["daily_loss_date"]
+        self._halted_at = snapshot["halted_at"]
+        self._daily_halted_at = snapshot["daily_halted_at"]
+
+    async def _send_circuit_breaker_notification(self, message: str) -> None:
+        notifier = getattr(self, "notifier", None)
+        if notifier is None or not getattr(notifier, "enabled", True):
+            return
+        await notifier.send(message)
+
+    def _on_realised(
+        self,
+        *,
+        market: str,
+        gross_pnl_krw: float,
+        pnl_pct: float,
+    ) -> None:
+        cb = self._get_circuit_breaker()
+        cb.on_realised(
+            market=market,
+            gross_pnl_krw=gross_pnl_krw,
+            pnl_pct=pnl_pct,
+        )
+        self._sync_circuit_breaker_legacy_state(cb)
+
+    def _get_trade_notifier(self) -> TradeNotifier:
+        notifier = getattr(self, "trade_notifier", None)
+        if notifier is None:
+            notifier = TradeNotifier(
+                getattr(self, "notifier", None),
+                window_seconds=getattr(self, "_trade_notification_window_sec", 60),
+                max_batch_size=getattr(self, "_trade_notification_max_batch_size", 8),
+            )
+            self.trade_notifier = notifier
+        notifier.set_notifier(getattr(self, "notifier", None))
+        notifier.set_window_seconds(getattr(self, "_trade_notification_window_sec", 60))
+        notifier.set_max_batch_size(getattr(self, "_trade_notification_max_batch_size", 8))
+        notifier.load_state(
+            lines=getattr(self, "_pending_trade_notifications", []),
+            window_start=getattr(self, "_pending_trade_notification_started_at", None),
+        )
+        return notifier
+
+    def _sync_trade_notifier_legacy_state(self, notifier: TradeNotifier | None = None) -> None:
+        notifier = notifier or getattr(self, "trade_notifier", None)
+        if notifier is None:
+            return
+        self._pending_trade_notifications = notifier.queued_lines
+        self._pending_trade_notification_started_at = notifier.window_start
+        self._trade_notification_window_sec = notifier.window_seconds
+        self._trade_notification_max_batch_size = notifier.max_batch_size
+
+    def _get_runtime_manager(self) -> LabRuntimeManager:
+        runtime = getattr(self, "runtime", None)
+        if runtime is None:
+            runtime = LabRuntimeManager(
+                getattr(self, "config", _fallback_runtime_config()),
+                getattr(self, "repository", None),
+                getattr(self, "notifier", None),
+                is_effective_trade_order=self._is_effective_trade_order,
+            )
+            self.runtime = runtime
+        runtime.configure(
+            config=getattr(self, "config", _fallback_runtime_config()),
+            repository=getattr(self, "repository", None),
+            notifier=getattr(self, "notifier", None),
+        )
+        runtime.load_state(
+            cycle_no=int(getattr(self, "_cycle_count", 0) or 0),
+            session_id=str(getattr(self, "_session_id", "") or ""),
+            recent_trade_count=int(getattr(self, "_recent_trade_count", 0) or 0),
+            recent_cycle_count=int(getattr(self, "_recent_cycle_count", 0) or 0),
+            recent_order_reason_counts=getattr(self, "_recent_order_reason_counts", {}),
+            rsi_blocked_count=int(getattr(self, "_rsi_blocked_count", 0) or 0),
+            last_low_trade_frequency_alert_cycle=int(
+                getattr(self, "_last_low_trade_frequency_alert_cycle", 0) or 0
+            ),
+            last_trend_filter_alert_cycle=int(
+                getattr(self, "_last_trend_filter_alert_cycle", 0) or 0
+            ),
+            exit_cooldown=getattr(self, "_exit_cooldown", {}),
+            no_orderable_retry=getattr(self, "_no_orderable_retry", {}),
+            no_orderable_counts=getattr(self, "_no_orderable_counts", {}),
+        )
+        return runtime
+
+    def _sync_runtime_legacy_state(self, runtime: LabRuntimeManager | None = None) -> None:
+        runtime = runtime or getattr(self, "runtime", None)
+        if runtime is None:
+            return
+        snapshot = runtime.snapshot()
+        self._recent_trade_count = int(snapshot["recent_trade_count"])
+        self._recent_cycle_count = int(snapshot["recent_cycle_count"])
+        self._recent_order_reason_counts = dict(snapshot["recent_order_reason_counts"])
+        self._rsi_blocked_count = int(snapshot["rsi_blocked_count"])
+        self._last_low_trade_frequency_alert_cycle = int(
+            snapshot["last_low_trade_frequency_alert_cycle"]
+        )
+        self._last_trend_filter_alert_cycle = int(snapshot["last_trend_filter_alert_cycle"])
+        self._exit_cooldown = dict(snapshot["exit_cooldown"])
+        self._no_orderable_retry = dict(snapshot["no_orderable_retry"])
+        self._no_orderable_counts = dict(snapshot["no_orderable_counts"])
+
+    def _get_watch_state_helper(self) -> WatchStateHelper:
+        helper = getattr(self, "watch_state", None)
+        if helper is None:
+            helper = WatchStateHelper(self)
+            self.watch_state = helper
+        return helper
+
+    def _make_watch_target_status(
+        self,
+        *,
+        market: str,
+        code: str,
+        exchange_code: str | None,
+        price: float,
+        activity_score: float,
+        signal_score: float,
+        action_bias: str,
+        signal_state: str,
+        ma_summary: str,
+        note: str,
+        holding_qty: int = 0,
+        signal_snapshot: MovingAverageSnapshot | None = None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+    ) -> WatchTargetStatus:
+        return WatchTargetStatus(
+            market=market,
+            code=code,
+            exchange_code=exchange_code,
+            price=price,
+            activity_score=activity_score,
+            signal_score=signal_score,
+            action_bias=action_bias,
+            signal_state=signal_state,
+            ma_summary=ma_summary,
+            note=note,
+            holding_qty=holding_qty,
+            signal_snapshot=signal_snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+        )
+
+    def _evaluate_entry_setup(
+        self,
+        signal_snapshot: MovingAverageSnapshot,
+        code: str,
+    ):
+        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
+        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
+        return evaluate_entry_setup(
+            self.config.auto_trade,
+            signal_snapshot,
+            symbol=code,
+            inverse_etf_symbols=inverse_symbols,
+            leveraged_etf_symbols=leveraged_symbols,
+        )
+
+    def _derive_watch_state(
+        self,
+        signal_snapshot: MovingAverageSnapshot,
+        code: str,
+    ) -> tuple[str, str]:
+        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
+        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
+        return derive_watch_state(
+            self.config.auto_trade,
+            signal_snapshot,
+            symbol=code,
+            inverse_etf_symbols=inverse_symbols,
+            leveraged_etf_symbols=leveraged_symbols,
+        )
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -978,22 +870,14 @@ class LiquidityLabService:
         )
 
     def _queue_trade_notification(self, line: str) -> None:
-        if not line:
-            return
-        queue = getattr(self, "_pending_trade_notifications", None)
-        if queue is None:
-            queue = []
-            self._pending_trade_notifications = queue
-        if not queue:
-            self._pending_trade_notification_started_at = datetime.now(timezone.utc)
-        queue.append(line)
+        notifier = self._get_trade_notifier()
+        notifier.queue(line)
+        self._sync_trade_notifier_legacy_state(notifier)
 
     def _trade_notification_window_seconds(self) -> int:
-        value = getattr(self, "_trade_notification_window_sec", 60)
-        try:
-            return max(int(value), 0)
-        except (TypeError, ValueError):
-            return 60
+        notifier = self._get_trade_notifier()
+        self._sync_trade_notifier_legacy_state(notifier)
+        return notifier.window_seconds
 
     def _trade_notification_force_immediate(self) -> bool:
         return self._trade_notification_window_seconds() <= 0
@@ -1386,30 +1270,9 @@ class LiquidityLabService:
         return ""
 
     async def _flush_trade_notifications(self, *, force: bool = False) -> None:
-        queue = getattr(self, "_pending_trade_notifications", None)
-        if not queue:
-            return
-        now = datetime.now(timezone.utc)
-        started_at = getattr(self, "_pending_trade_notification_started_at", None) or now
-        batch_size = len(queue)
-        age_sec = max((now - started_at).total_seconds(), 0.0)
-        if (
-            not force
-            and age_sec < float(self._trade_notification_window_seconds())
-            and batch_size < int(getattr(self, "_trade_notification_max_batch_size", 8) or 8)
-        ):
-            return
-        lines = [
-            "[KIS][거래알림]",
-            f"시각={format_kst_korean(now)}",
-            f"건수={batch_size}",
-            *queue,
-        ]
-        try:
-            await self.notifier.send("\n".join(lines))
-        finally:
-            self._pending_trade_notifications = []
-            self._pending_trade_notification_started_at = None
+        notifier = self._get_trade_notifier()
+        await notifier.flush_async(force=force)
+        self._sync_trade_notifier_legacy_state(notifier)
 
     @staticmethod
     def _display_trade_action(action_raw: str, action_text: str, *, skip_count: int = 0) -> str:
@@ -3724,80 +3587,22 @@ class LiquidityLabService:
         return watch_targets
 
     def _remember_persisted_symbol_state(self, state: dict | None) -> None:
-        if not state:
-            return
-        market = str(state.get("market", "") or "").strip()
-        symbol = str(state.get("symbol", "") or "").strip().upper()
-        if not market or not symbol:
-            return
-        cache = getattr(self, "_persisted_symbol_state", None)
-        if cache is None:
-            cache = {}
-            self._persisted_symbol_state = cache
-        cache[(market, symbol)] = state
+        self._get_watch_state_helper().remember_persisted_symbol_state(state)
 
     def _get_persisted_symbol_state(self, market: str, symbol: str) -> dict | None:
-        key = (market, symbol.strip().upper())
-        cache = getattr(self, "_persisted_symbol_state", None)
-        if cache is None:
-            cache = {}
-            self._persisted_symbol_state = cache
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-        repository = getattr(self, "repository", None)
-        if repository is None:
-            return None
-        state = repository.get_lab_symbol_state(market, symbol.strip().upper())
-        if state is not None:
-            self._remember_persisted_symbol_state(state)
-        return state
+        return self._get_watch_state_helper().get_persisted_symbol_state(market, symbol)
 
     def _prime_cycle_exit_reference_prices(
         self,
         overseas_positions: list[OverseasHeldPosition],
     ) -> None:
-        """
-        Capture previous persisted prices before watch-target refreshes.
-
-        Watchlist state is persisted before exit selection in a cycle. Keeping
-        this small snapshot prevents a sudden bad quote from overwriting the
-        previous price and then bypassing the exit price-shock guard.
-        """
-        refs: dict[str, float] = {}
-        repository = getattr(self, "repository", None)
-        if repository is None:
-            self._cycle_exit_reference_prices = refs
-            return
-
-        for position in overseas_positions:
-            symbol = position.symbol.strip().upper()
-            if not symbol:
-                continue
-            state = repository.get_lab_symbol_state("overseas", symbol)
-            if state is None:
-                continue
-            try:
-                last_price = float(state.get("last_price") or 0.0)
-            except (TypeError, ValueError):
-                last_price = 0.0
-            if last_price <= 0:
-                continue
-            refs[f"overseas:{symbol}"] = last_price
-            self._remember_persisted_symbol_state(state)
-
-        self._cycle_exit_reference_prices = refs
+        self._get_watch_state_helper().prime_cycle_exit_reference_prices(overseas_positions)
 
     @staticmethod
     def _snapshot_from_payload(
         payload: dict | None,
     ) -> MovingAverageSnapshot | None:
-        if not payload:
-            return None
-        try:
-            return MovingAverageSnapshot(**payload)
-        except TypeError:
-            return None
+        return self._get_watch_state_helper().snapshot_from_payload(payload)
 
     @staticmethod
     def _with_live_price(
@@ -3807,16 +3612,7 @@ class LiquidityLabService:
         bid: float | None = None,
         ask: float | None = None,
     ) -> MovingAverageSnapshot:
-        spread_pct = snapshot.spread_pct
-        if bid is not None and ask is not None and bid > 0 and ask > 0:
-            mid_price = (bid + ask) / 2
-            if mid_price > 0:
-                spread_pct = (ask - bid) / mid_price
-        return dataclasses.replace(
-            snapshot,
-            price=price,
-            spread_pct=spread_pct,
-        )
+        return WatchStateHelper.with_live_price(snapshot, price=price, bid=bid, ask=ask)
 
     def _state_snapshot_with_live_price(
         self,
@@ -3826,74 +3622,18 @@ class LiquidityLabService:
         bid: float | None = None,
         ask: float | None = None,
     ) -> MovingAverageSnapshot | None:
-        snapshot = self._snapshot_from_payload(
-            state.get("snapshot_json") if state else None
+        return self._get_watch_state_helper().state_snapshot_with_live_price(
+            state,
+            price=price,
+            bid=bid,
+            ask=ask,
         )
-        if snapshot is None:
-            return None
-        return self._with_live_price(snapshot, price=price, bid=bid, ask=ask)
 
     async def _get_overseas_signal_for_candidate(
         self,
         candidate: OverseasScanResult,
     ) -> MovingAverageSnapshot | None:
-        symbol = candidate.symbol.upper()
-        now_utc = datetime.now(timezone.utc)
-        auto_trade_cfg = getattr(self.config, "auto_trade", None)
-        refresh_sec = max(
-            5,
-            int(getattr(auto_trade_cfg, "intraday_chart_refresh_sec", 60) or 60),
-        )
-        cached = self._signal_cache.get(symbol)
-        updated_map = getattr(self, "_signal_cache_updated_at", None)
-        if updated_map is None:
-            updated_map = {}
-            self._signal_cache_updated_at = updated_map
-        cached_at = updated_map.get(symbol)
-        if (
-            cached is not None
-            and cached_at is not None
-            and (now_utc - cached_at).total_seconds() < refresh_sec
-        ):
-            return self._with_live_price(
-                cached,
-                price=candidate.last_price,
-                bid=candidate.bid,
-                ask=candidate.ask,
-            )
-
-        snapshot = await self._load_overseas_signal(candidate)
-        if snapshot is not None:
-            self._signal_cache[symbol] = snapshot
-            updated_map[symbol] = now_utc
-            return snapshot
-
-        if cached is not None:
-            fallback = self._with_live_price(
-                cached,
-                price=candidate.last_price,
-                bid=candidate.bid,
-                ask=candidate.ask,
-            )
-            self._signal_cache[symbol] = fallback
-            updated_map[symbol] = now_utc
-            return fallback
-
-        state = self._get_persisted_symbol_state("overseas", symbol)
-        fallback = self._state_snapshot_with_live_price(
-            state,
-            price=candidate.last_price,
-            bid=candidate.bid,
-            ask=candidate.ask,
-        )
-        if fallback is not None:
-            self._signal_cache[symbol] = fallback
-            updated_map[symbol] = now_utc
-            _logger.info(
-                "overseas_signal_fallback_used symbol=%s source=persisted_state",
-                symbol,
-            )
-        return fallback
+        return await self._get_watch_state_helper().get_overseas_signal_for_candidate(candidate)
 
     def _persist_watch_target_state(
         self,
@@ -3902,67 +3642,10 @@ class LiquidityLabService:
         pnl_pct: float | None = None,
         exit_by: str = "",
     ) -> None:
-        repository = getattr(self, "repository", None)
-        if repository is None:
-            return
-        symbol = watch_target.code.strip().upper()
-        manager = getattr(self, "_strategy_managers", {}).get(symbol)
-        entry_price = None
-        peak_price = None
-        if manager is not None and manager.position is not None:
-            entry_price = float(manager.position.entry_price)
-            peak_price = float(manager.position.peak_price)
-        state = self._get_persisted_symbol_state(watch_target.market, symbol) or {}
-        strategy_flag = watch_target.strategy_flag or str(state.get("strategy_flag", "") or "")
-        entry_by_value = watch_target.entry_by or str(state.get("entry_by", "") or "")
-        signal_state = watch_target.signal_state or str(state.get("signal_state", "") or "")
-        action_bias = watch_target.action_bias or str(state.get("action_bias", "") or "")
-        note = watch_target.note or str(state.get("note", "") or "")
-        snapshot_payload = (
-            asdict(watch_target.signal_snapshot)
-            if watch_target.signal_snapshot is not None
-            else state.get("snapshot_json")
-        )
-        has_position = 1 if watch_target.holding_qty > 0 else 0
-        repository.upsert_lab_symbol_state(
-            market=watch_target.market,
-            symbol=symbol,
-            exchange_code=watch_target.exchange_code,
-            action_bias=action_bias,
-            signal_state=signal_state,
-            note=note,
-            strategy_flag=strategy_flag,
-            entry_by=entry_by_value,
-            exit_by=exit_by,
-            holding_qty=watch_target.holding_qty,
-            last_price=watch_target.price,
+        self._get_watch_state_helper().persist_watch_target_state(
+            watch_target,
             pnl_pct=pnl_pct,
-            entry_price=entry_price,
-            peak_price=peak_price,
-            has_position=has_position,
-            snapshot_json=snapshot_payload,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-        )
-        self._remember_persisted_symbol_state(
-            {
-                "market": watch_target.market,
-                "symbol": symbol,
-                "exchange_code": watch_target.exchange_code,
-                "action_bias": action_bias,
-                "signal_state": signal_state,
-                "note": note,
-                "strategy_flag": strategy_flag,
-                "entry_by": entry_by_value,
-                "exit_by": exit_by,
-                "holding_qty": watch_target.holding_qty,
-                "last_price": watch_target.price,
-                "pnl_pct": pnl_pct,
-                "entry_price": entry_price,
-                "peak_price": peak_price,
-                "has_position": has_position,
-                "snapshot_json": snapshot_payload,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
+            exit_by=exit_by,
         )
 
     def _persist_trade_state(
@@ -3983,40 +3666,21 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
         has_position: bool,
     ) -> None:
-        repository = getattr(self, "repository", None)
-        if repository is None:
-            return
-        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
-        entry_price = None
-        peak_price = None
-        if manager is not None and manager.position is not None:
-            entry_price = float(manager.position.entry_price)
-            peak_price = float(manager.position.peak_price)
-        elif last_price is not None and has_position:
-            entry_price = float(last_price)
-            peak_price = float(last_price)
-        payload = asdict(signal_snapshot) if signal_snapshot is not None else None
-        repository.upsert_lab_symbol_state(
+        self._get_watch_state_helper().persist_trade_state(
             market=market,
-            symbol=symbol.strip().upper(),
+            symbol=symbol,
             exchange_code=exchange_code,
             action_bias=action_bias,
             signal_state=signal_state,
             note=note,
-            strategy_flag=strategy_flag,
-            entry_by=entry_by,
-            exit_by=exit_by,
             holding_qty=holding_qty,
             last_price=last_price,
             pnl_pct=pnl_pct,
-            entry_price=entry_price,
-            peak_price=peak_price,
-            has_position=1 if has_position else 0,
-            snapshot_json=payload,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-        )
-        self._remember_persisted_symbol_state(
-            repository.get_lab_symbol_state(market, symbol.strip().upper())
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            signal_snapshot=signal_snapshot,
+            has_position=has_position,
         )
 
     def _clear_stale_lab_position_states(
@@ -4026,49 +3690,10 @@ class LiquidityLabService:
         overseas_positions: list[OverseasHeldPosition],
         refreshed_markets: set[str],
     ) -> None:
-        repository = getattr(self, "repository", None)
-        if repository is None or not refreshed_markets:
-            return
-        active_keys: set[tuple[str, str]] = set()
-        if "domestic" in refreshed_markets:
-            active_keys.update(
-                ("domestic", position.stock_code.strip())
-                for position in domestic_positions
-                if position.quantity > 0 and position.stock_code.strip()
-            )
-        if "overseas" in refreshed_markets:
-            active_keys.update(
-                ("overseas", position.symbol.strip().upper())
-                for position in overseas_positions
-                if position.quantity > 0 and position.symbol.strip()
-            )
-        cleared = repository.clear_stale_lab_positions(
-            markets=refreshed_markets,
-            active_keys=active_keys,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-        )
-        if not cleared:
-            return
-        persisted = getattr(self, "_persisted_symbol_state", None)
-        if persisted is not None:
-            for row in cleared:
-                persisted.pop(
-                    (
-                        str(row.get("market", "")).strip().lower(),
-                        str(row.get("symbol", "")).strip().upper(),
-                    ),
-                    None,
-                )
-        self._save_event(
-            event_type="lab_position_state_cleanup",
-            detail={
-                "count": len(cleared),
-                "markets": sorted(refreshed_markets),
-                "symbols": [
-                    f"{row.get('market')}:{row.get('symbol')}"
-                    for row in cleared[:30]
-                ],
-            },
+        self._get_watch_state_helper().clear_stale_lab_position_states(
+            domestic_positions=domestic_positions,
+            overseas_positions=overseas_positions,
+            refreshed_markets=refreshed_markets,
         )
 
     def _restore_strategy_contexts(
@@ -4077,25 +3702,10 @@ class LiquidityLabService:
         domestic_positions: list[DomesticHeldPosition],
         overseas_positions: list[OverseasHeldPosition],
     ) -> None:
-        for position in domestic_positions:
-            self._restore_strategy_position(
-                market="domestic",
-                symbol=position.stock_code,
-                exchange_code=None,
-                quantity=position.quantity,
-                avg_price=position.avg_price,
-                current_price=position.current_price,
-            )
-        for position in overseas_positions:
-            symbol = position.symbol.upper()
-            self._restore_strategy_position(
-                market="overseas",
-                symbol=symbol,
-                exchange_code=position.exchange_code,
-                quantity=position.quantity,
-                avg_price=position.avg_price,
-                current_price=position.current_price,
-            )
+        self._get_watch_state_helper().restore_strategy_contexts(
+            domestic_positions=domestic_positions,
+            overseas_positions=overseas_positions,
+        )
 
     def _restore_strategy_position(
         self,
@@ -4107,36 +3717,14 @@ class LiquidityLabService:
         avg_price: float,
         current_price: float,
     ) -> None:
-        if quantity <= 0:
-            return
-        manager = self._get_strategy_manager(symbol)
-        if manager.position is not None:
-            return
-        state = self._get_persisted_symbol_state(market, symbol)
-        if state is None:
-            return
-        strategy_flag = str(state.get("strategy_flag", "") or "")
-        entry_by = str(state.get("entry_by", "") or "")
-        triggered = self._decode_strategy_ids(strategy_flag, entry_by)
-        if not triggered:
-            return
-        entry_price = float(state.get("entry_price") or avg_price or current_price or 0.0)
-        if entry_price <= 0:
-            entry_price = max(float(avg_price or 0.0), float(current_price or 0.0))
-        entry_time = parse_datetime(str(state.get("updated_at", "") or ""))
-        manager.open_position(
-            symbol=symbol.strip().upper(),
-            entry_price=entry_price,
-            triggered_by=triggered,
-            entry_time=entry_time,
+        self._get_watch_state_helper().restore_strategy_position(
+            market=market,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            quantity=quantity,
+            avg_price=avg_price,
+            current_price=current_price,
         )
-        if manager.position is not None:
-            restored_peak = float(state.get("peak_price") or 0.0)
-            manager.position.peak_price = max(
-                restored_peak,
-                manager.position.entry_price,
-                float(current_price or 0.0),
-            )
 
     def _build_watch_target_status(
         self,
@@ -4150,360 +3738,15 @@ class LiquidityLabService:
         held_position: OverseasHeldPosition | DomesticHeldPosition | None = None,
         holding_qty: int = 0,
     ) -> WatchTargetStatus:
-        if signal_snapshot is None:
-            persisted = self._get_persisted_symbol_state(market, code)
-            fallback_snapshot = self._state_snapshot_with_live_price(
-                persisted,
-                price=price,
-            )
-            if fallback_snapshot is not None:
-                if held_position is not None:
-                    existing_flag = str(persisted.get("strategy_flag", "") or "")
-                    existing_entry_by = str(persisted.get("entry_by", "") or "")
-                    exit_setup = self._build_exit_setup(
-                        fallback_snapshot,
-                        held_position.pnl_pct,
-                        holding_qty,
-                        symbol=code,
-                        take_profit_override=(
-                            getattr(self.config.liquidity_lab, "overseas_take_profit_pct", None)
-                            if market == "overseas"
-                            else None
-                        ),
-                    )
-                    if exit_setup.action in {"sell", "sell_partial"}:
-                        return WatchTargetStatus(
-                            market=market,
-                            code=code,
-                            exchange_code=exchange_code,
-                            price=price,
-                            activity_score=activity_score,
-                            signal_score=0.0,
-                            action_bias="SELL",
-                            signal_state="SELL_READY",
-                            ma_summary=self._ma_relation_summary(fallback_snapshot),
-                            note=exit_setup.reason,
-                            holding_qty=holding_qty,
-                            signal_snapshot=fallback_snapshot,
-                            strategy_flag=existing_flag,
-                            entry_by=existing_entry_by,
-                        )
-                    return WatchTargetStatus(
-                        market=market,
-                        code=code,
-                        exchange_code=exchange_code,
-                        price=price,
-                        activity_score=activity_score,
-                        signal_score=0.0,
-                        action_bias="HOLD",
-                        signal_state="HOLD",
-                        ma_summary=self._ma_relation_summary(fallback_snapshot),
-                        note=f"{exit_setup.note}|stale_signal_cache",
-                        holding_qty=holding_qty,
-                        signal_snapshot=fallback_snapshot,
-                        strategy_flag=existing_flag,
-                        entry_by=existing_entry_by,
-                    )
-                strategy_result = self._get_strategy_manager(code).evaluate(
-                    code,
-                    fallback_snapshot,
-                    commit=False,
-                )
-                signal_state, note = derive_watch_state(
-                    self.config.auto_trade,
-                    fallback_snapshot,
-                    symbol=code,
-                    inverse_etf_symbols=getattr(self.config.liquidity_lab, "inverse_etf_symbols", []),
-                    leveraged_etf_symbols=getattr(self.config.liquidity_lab, "leveraged_etf_symbols", []),
-                )
-                block_reason = self._entry_strategy_block_reason(
-                    market=market,
-                    strategy_flag=strategy_result.flag,
-                )
-                if block_reason and (strategy_result.signal == "BUY" or signal_state == "BUY"):
-                    return WatchTargetStatus(
-                        market=market,
-                        code=code,
-                        exchange_code=exchange_code,
-                        price=price,
-                        activity_score=activity_score,
-                        signal_score=0.0,
-                        action_bias="WAIT",
-                        signal_state="WAIT",
-                        ma_summary=self._ma_relation_summary(fallback_snapshot),
-                        note=f"[{strategy_result.flag or '-'}] {block_reason}|stale_signal_cache",
-                        holding_qty=holding_qty,
-                        signal_snapshot=fallback_snapshot,
-                        strategy_flag=strategy_result.flag,
-                        entry_by=strategy_result.entry_by,
-                    )
-                if strategy_result.signal == "BUY" or signal_state == "BUY":
-                    return WatchTargetStatus(
-                        market=market,
-                        code=code,
-                        exchange_code=exchange_code,
-                        price=price,
-                        activity_score=activity_score,
-                        signal_score=0.0,
-                        action_bias="WAIT",
-                        signal_state="WAIT",
-                        ma_summary=self._ma_relation_summary(fallback_snapshot),
-                        note=(
-                            f"[{strategy_result.flag or 'CACHE'}] "
-                            "stale_signal_cache_buy_blocked"
-                        ),
-                        holding_qty=holding_qty,
-                        signal_snapshot=fallback_snapshot,
-                        strategy_flag=strategy_result.flag
-                        or str(persisted.get("strategy_flag", "") or ""),
-                        entry_by=strategy_result.entry_by
-                        or str(persisted.get("entry_by", "") or ""),
-                    )
-                return WatchTargetStatus(
-                    market=market,
-                    code=code,
-                    exchange_code=exchange_code,
-                    price=price,
-                    activity_score=activity_score,
-                    signal_score=0.0,
-                    action_bias=signal_state,
-                    signal_state=signal_state,
-                    ma_summary=self._ma_relation_summary(fallback_snapshot),
-                    note=f"{note}|stale_signal_cache",
-                    holding_qty=holding_qty,
-                    signal_snapshot=fallback_snapshot,
-                    strategy_flag=strategy_result.flag or str(persisted.get("strategy_flag", "") or ""),
-                    entry_by=strategy_result.entry_by or str(persisted.get("entry_by", "") or ""),
-                )
-            return WatchTargetStatus(
-                market=market,
-                code=code,
-                exchange_code=exchange_code,
-                price=price,
-                activity_score=activity_score,
-                signal_score=0.0,
-                action_bias="WAIT",
-                signal_state="WARMUP",
-                ma_summary="-",
-                note="signal_unavailable",
-                holding_qty=holding_qty,
-                signal_snapshot=signal_snapshot,
-                strategy_flag="" if persisted is None else str(persisted.get("strategy_flag", "") or ""),
-                entry_by="" if persisted is None else str(persisted.get("entry_by", "") or ""),
-            )
-
-        existing_flag, existing_entry_by, _ = self._get_strategy_labels(code, signal_snapshot)
-        if held_position is not None:
-            exit_setup = self._build_exit_setup(
-                signal_snapshot,
-                held_position.pnl_pct,
-                holding_qty,
-                symbol=code,
-                take_profit_override=(
-                    getattr(self.config.liquidity_lab, "overseas_take_profit_pct", None)
-                    if market == "overseas"
-                    else None
-                ),
-            )
-            if exit_setup.action in {"sell", "sell_partial"}:
-                return WatchTargetStatus(
-                    market=market,
-                    code=code,
-                    exchange_code=exchange_code,
-                    price=price,
-                    activity_score=activity_score,
-                    signal_score=0.0,
-                    action_bias="SELL",
-                    signal_state="SELL_READY",
-                    ma_summary=self._ma_relation_summary(signal_snapshot),
-                    note=exit_setup.reason,
-                    holding_qty=holding_qty,
-                    signal_snapshot=signal_snapshot,
-                    strategy_flag=existing_flag,
-                    entry_by=existing_entry_by,
-                )
-            return WatchTargetStatus(
-                market=market,
-                code=code,
-                exchange_code=exchange_code,
-                price=price,
-                activity_score=activity_score,
-                signal_score=0.0,
-                action_bias="HOLD",
-                signal_state="HOLD",
-                ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=exit_setup.note,
-                holding_qty=holding_qty,
-                signal_snapshot=signal_snapshot,
-                strategy_flag=existing_flag,
-                entry_by=existing_entry_by,
-            )
-
-        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
-        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
-        entry_setup = evaluate_entry_setup(
-            self.config.auto_trade,
-            signal_snapshot,
-            symbol=code,
-            inverse_etf_symbols=inverse_symbols,
-            leveraged_etf_symbols=leveraged_symbols,
-        )
-        strategy_result = self._get_strategy_manager(code).evaluate(
-            code,
-            signal_snapshot,
-            commit=False,
-        )
-        if strategy_result.signal == "BUY":
-            block_reason = self._entry_strategy_block_reason(
-                market=market,
-                strategy_flag=strategy_result.flag,
-            )
-            if block_reason:
-                return WatchTargetStatus(
-                    market=market,
-                    code=code,
-                    exchange_code=exchange_code,
-                    price=price,
-                    activity_score=activity_score,
-                    signal_score=entry_setup.score,
-                    action_bias="WAIT",
-                    signal_state="WAIT",
-                    ma_summary=self._ma_relation_summary(signal_snapshot),
-                    note=f"[{strategy_result.flag or '-'}] {block_reason}",
-                    holding_qty=holding_qty,
-                    signal_snapshot=signal_snapshot,
-                    strategy_flag=strategy_result.flag,
-                    entry_by=strategy_result.entry_by,
-                )
-            liquidity_block_reason = self._entry_liquidity_block_reason(
-                market=market,
-                signal_snapshot=signal_snapshot,
-            )
-            if liquidity_block_reason:
-                return WatchTargetStatus(
-                    market=market,
-                    code=code,
-                    exchange_code=exchange_code,
-                    price=price,
-                    activity_score=activity_score,
-                    signal_score=entry_setup.score,
-                    action_bias="WAIT",
-                    signal_state="WAIT",
-                    ma_summary=self._ma_relation_summary(signal_snapshot),
-                    note=f"[{strategy_result.flag or '-'}] {liquidity_block_reason}",
-                    holding_qty=holding_qty,
-                    signal_snapshot=signal_snapshot,
-                    strategy_flag=strategy_result.flag,
-                    entry_by=strategy_result.entry_by,
-                )
-            if (
-                market == "overseas"
-                and strategy_result.flag in {"VWAP", "RSI"}
-                and not entry_setup.ready
-            ):
-                return WatchTargetStatus(
-                    market=market,
-                    code=code,
-                    exchange_code=exchange_code,
-                    price=price,
-                    activity_score=activity_score,
-                    signal_score=entry_setup.score,
-                    action_bias="WAIT",
-                    signal_state="WAIT",
-                    ma_summary=self._ma_relation_summary(signal_snapshot),
-                    note=f"[{strategy_result.flag}] confirm_wait:{entry_setup.reason}",
-                    holding_qty=holding_qty,
-                    signal_snapshot=signal_snapshot,
-                    strategy_flag=strategy_result.flag,
-                    entry_by=strategy_result.entry_by,
-                )
-            exit_cooldown = getattr(self, "_exit_cooldown", None)
-            if exit_cooldown is None:
-                exit_cooldown = {}
-                self._exit_cooldown = exit_cooldown
-            cooldown_key = f"{market}:{code.upper()}"
-            cooldown_until = exit_cooldown.get(cooldown_key)
-            now_utc = datetime.now(timezone.utc)
-            if cooldown_until is not None:
-                cooldown_until = ensure_timezone(cooldown_until)
-                exit_cooldown[cooldown_key] = cooldown_until
-                if now_utc < cooldown_until:
-                    remaining_min = max(
-                        1,
-                        int((cooldown_until - now_utc).total_seconds() / 60),
-                    )
-                    self._save_event(
-                        event_type="cooldown_blocked",
-                        market=market,
-                        symbol=code,
-                        detail={
-                            "reason": "reentry_cooldown",
-                            "remaining_min": remaining_min,
-                        },
-                    )
-                    return WatchTargetStatus(
-                        market=market,
-                        code=code,
-                        exchange_code=exchange_code,
-                        price=price,
-                        activity_score=activity_score,
-                        signal_score=0.0,
-                        action_bias="WAIT",
-                        signal_state="WAIT",
-                        ma_summary=self._ma_relation_summary(signal_snapshot),
-                        note=f"재진입대기 {remaining_min}분",
-                        holding_qty=holding_qty,
-                        signal_snapshot=signal_snapshot,
-                        strategy_flag="",
-                        entry_by="",
-                    )
-                del exit_cooldown[cooldown_key]
-            combined_score = (
-                self._get_strategy_manager(code).buy_score(signal_snapshot)
-                + entry_setup.score
-            )
-            return WatchTargetStatus(
-                market=market,
-                code=code,
-                exchange_code=exchange_code,
-                price=price,
-                activity_score=activity_score,
-                signal_score=round(combined_score, 2),
-                action_bias="BUY",
-                signal_state="BUY",
-                ma_summary=self._ma_relation_summary(signal_snapshot),
-                note=(
-                    f"[{strategy_result.flag}] {entry_setup.reason}"
-                    if entry_setup.ready
-                    else f"[{strategy_result.flag}] strategy_buy_signal"
-                ),
-                holding_qty=holding_qty,
-                signal_snapshot=signal_snapshot,
-                strategy_flag=strategy_result.flag,
-                entry_by=strategy_result.entry_by,
-            )
-        signal_state, note = derive_watch_state(
-            self.config.auto_trade,
-            signal_snapshot,
-            symbol=code,
-            inverse_etf_symbols=inverse_symbols,
-            leveraged_etf_symbols=leveraged_symbols,
-        )
-        return WatchTargetStatus(
+        return self._get_watch_state_helper().build_watch_target_status(
             market=market,
             code=code,
             exchange_code=exchange_code,
             price=price,
             activity_score=activity_score,
-            signal_score=entry_setup.score,
-            action_bias=signal_state,
-            signal_state=signal_state,
-            ma_summary=self._ma_relation_summary(signal_snapshot),
-            note=note,
-            holding_qty=holding_qty,
             signal_snapshot=signal_snapshot,
-            strategy_flag=strategy_result.flag,
-            entry_by=strategy_result.entry_by,
+            held_position=held_position,
+            holding_qty=holding_qty,
         )
 
     def _save_cycle_log_from_watch_target(
@@ -4512,51 +3755,9 @@ class LiquidityLabService:
         *,
         pnl_pct: float | None = None,
     ) -> None:
-        signal_snapshot = watch_target.signal_snapshot
-        exit_by = ""
-        if signal_snapshot is not None:
-            _, _, exit_by = self._get_strategy_labels(
-                watch_target.code,
-                signal_snapshot,
-            )
-        self.repository.save_cycle_log(
-            logged_at=datetime.now(timezone.utc).isoformat(),
-            market=watch_target.market,
-            symbol=watch_target.code,
-            exchange_code=watch_target.exchange_code,
-            action_bias=watch_target.action_bias,
-            action_reason=watch_target.note or watch_target.action_bias,
-            price=watch_target.price,
-            pnl_pct=pnl_pct,
-            holding_qty=watch_target.holding_qty,
-            rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
-            volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
-            intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
-            intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
-            minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
-            minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
-            activity_score=watch_target.activity_score,
-            cycle_no=getattr(self, "_cycle_count", 0),
-            session_id=getattr(self, "_session_id", ""),
-            strategy_flag=watch_target.strategy_flag,
-            entry_by=watch_target.entry_by,
-            exit_by=exit_by,
-            is_session_trade=0,
-            vwap=signal_snapshot.vwap if signal_snapshot else None,
-            macd_line=signal_snapshot.macd_line if signal_snapshot else None,
-            macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
-            macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
-            breakout_distance_pct=(
-                signal_snapshot.breakout_distance_pct if signal_snapshot else None
-            ),
-            atr=signal_snapshot.atr if signal_snapshot else None,
-            spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
-            consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
-        )
-        self._persist_watch_target_state(
+        self._get_watch_state_helper().save_cycle_log_from_watch_target(
             watch_target,
             pnl_pct=pnl_pct,
-            exit_by=exit_by,
         )
 
     def _select_domestic_buy_targets(
@@ -4565,32 +3766,11 @@ class LiquidityLabService:
         watch_targets: list[WatchTargetStatus],
         max_concurrent: int = 2,
     ) -> list[DomesticScanResult]:
-        candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
-        ready_targets = [
-            watch_target
-            for watch_target in watch_targets
-            if watch_target.market == "domestic" and watch_target.action_bias == "BUY"
-        ]
-        if not ready_targets or max_concurrent <= 0:
-            return []
-        ready_targets.sort(
-            key=lambda item: (item.signal_score, item.activity_score),
-            reverse=True,
+        return self._get_watch_state_helper().select_domestic_buy_targets(
+            domestic_ranked,
+            watch_targets,
+            max_concurrent=max_concurrent,
         )
-        selected: list[DomesticScanResult] = []
-        seen: set[str] = set()
-        for watch_target in ready_targets:
-            if len(selected) >= max_concurrent:
-                break
-            code = watch_target.code
-            if code in seen:
-                continue
-            candidate = candidate_map.get(code)
-            if candidate is None:
-                continue
-            selected.append(candidate)
-            seen.add(code)
-        return selected
 
     def _select_domestic_exit_target(
         self,
@@ -4598,44 +3778,11 @@ class LiquidityLabService:
         watch_targets: list[WatchTargetStatus],
         held_positions: list[DomesticHeldPosition],
     ) -> tuple[DomesticScanResult, DomesticHeldPosition, str, MovingAverageSnapshot | None] | None:
-        candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
-        held_map = {position.stock_code: position for position in held_positions}
-        ready_targets = [
-            watch_target
-            for watch_target in watch_targets
-            if watch_target.market == "domestic"
-            and watch_target.action_bias == "SELL"
-            and watch_target.code in held_map
-            and held_map[watch_target.code].quantity > 0
-            and self._cooldown_remaining_minutes("domestic", watch_target.code) <= 0
-        ]
-        for held in held_positions:
-            if held.orderable_qty <= 0:
-                self._track_no_orderable_stall(
-                    market="domestic",
-                    symbol=held.stock_code,
-                    holding_qty=held.quantity,
-                )
-                self._defer_no_orderable_position(
-                    market="domestic",
-                    symbol=held.stock_code,
-                    holding_qty=held.quantity,
-                    orderable_qty=held.orderable_qty,
-                )
-            else:
-                self._clear_no_orderable_retry("domestic", held.stock_code)
-                self._reset_no_orderable_stall("domestic", held.stock_code)
-        if not ready_targets:
-            return None
-        best_target = min(
-            ready_targets,
-            key=lambda item: held_map.get(item.code).pnl_pct if item.code in held_map else 0.0,
+        return self._get_watch_state_helper().select_domestic_exit_target(
+            domestic_ranked,
+            watch_targets,
+            held_positions,
         )
-        candidate = candidate_map.get(best_target.code)
-        held = held_map.get(best_target.code)
-        if candidate is None or held is None:
-            return None
-        return candidate, held, best_target.note, None
 
     def _select_overseas_buy_targets(
         self,
@@ -4644,62 +3791,12 @@ class LiquidityLabService:
         max_concurrent: int = 3,
         held_positions: list[OverseasHeldPosition] | None = None,
     ) -> list[OverseasScanResult]:
-        candidate_map = {candidate.symbol.upper(): candidate for candidate in overseas_ranked}
-        held_symbols: set[str] = set()
-        if held_positions:
-            held_symbols = {
-                held.symbol.upper()
-                for held in held_positions
-                if getattr(held, "quantity", 0) > 0
-            }
-        virtual_manager = getattr(self, "virtual_trades", None)
-        if virtual_manager is not None:
-            for position in virtual_manager.list_positions("overseas"):
-                if position.qty > 0:
-                    held_symbols.add(position.symbol.upper())
-        self._track_rsi_threshold_blocks(watch_targets)
-        ready_targets = [
-            watch_target
-            for watch_target in watch_targets
-            if watch_target.market == "overseas"
-            and watch_target.action_bias == "BUY"
-            and watch_target.code.upper() not in held_symbols
-            and not self._entry_strategy_block_reason(
-                market=watch_target.market,
-                strategy_flag=watch_target.strategy_flag,
-            )
-        ]
-        if not ready_targets or max_concurrent <= 0:
-            return []
-        inverse_set = {
-            symbol.upper()
-            for symbol in getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
-        }
-
-        def sort_key(item: WatchTargetStatus) -> tuple[int, float, float]:
-            snapshot = item.signal_snapshot
-            prefer_inverse = bool(
-                snapshot is not None
-                and detect_market_regime(snapshot) == "bear"
-                and item.code.upper() in inverse_set
-            )
-            return (0 if prefer_inverse else 1, -item.signal_score, -item.activity_score)
-
-        ready_targets.sort(key=sort_key)
-        selected: list[OverseasScanResult] = []
-        seen: set[str] = set()
-        for watch_target in ready_targets:
-            symbol = watch_target.code.upper()
-            if symbol in seen:
-                continue
-            candidate = candidate_map.get(symbol)
-            if candidate is None:
-                continue
-            selected.append(candidate)
-            seen.add(symbol)
-            if len(selected) >= max_concurrent:
-                break
-        return selected
+        return self._get_watch_state_helper().select_overseas_buy_targets(
+            overseas_ranked,
+            watch_targets,
+            max_concurrent=max_concurrent,
+            held_positions=held_positions,
+        )
 
     @staticmethod
     def _remaining_overseas_entry_slots(
@@ -4707,12 +3804,10 @@ class LiquidityLabService:
         *,
         max_positions: int,
     ) -> int:
-        open_symbols = {
-            position.symbol.strip().upper()
-            for position in positions
-            if position.symbol.strip() and position.quantity > 0
-        }
-        return max(0, int(max_positions) - len(open_symbols))
+        return WatchStateHelper.remaining_overseas_entry_slots(
+            positions,
+            max_positions=max_positions,
+        )
 
     @staticmethod
     def _select_primary_target(
@@ -4723,17 +3818,13 @@ class LiquidityLabService:
         domestic_ranked: list[DomesticScanResult],
         overseas_ranked: list[OverseasScanResult],
     ) -> tuple[str, str | None, str]:
-        if krx_open and domestic_ranked:
-            return "domestic", domestic_ranked[0].stock_code, "highest_current_activity_in_open_market"
-        if us_orderable_in_profile and overseas_ranked:
-            return "overseas", overseas_ranked[0].symbol, "highest_current_activity_in_open_market"
-        if krx_open:
-            return "domestic", None, "krx_open_but_no_candidate"
-        if us_orderable_in_profile:
-            return "overseas", None, "us_open_but_no_candidate"
-        if us_open:
-            return "none", None, "us_open_but_mock_session_not_supported"
-        return "none", None, "no_supported_market_open"
+        return WatchStateHelper.select_primary_target(
+            krx_open=krx_open,
+            us_open=us_open,
+            us_orderable_in_profile=us_orderable_in_profile,
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=overseas_ranked,
+        )
 
     async def _place_domestic_test_order(
         self,
@@ -5313,11 +4404,11 @@ class LiquidityLabService:
         self._reset_strategy_position(candidate.stock_code)
         self._register_exit_cooldown("domestic", candidate.stock_code, exit_reason)
         if held.avg_price > 0:
-            self._session_realised_krw = getattr(self, "_session_realised_krw", 0.0) + float(gross_pnl)
-            if gross_pnl < 0:
-                self._consecutive_losses = getattr(self, "_consecutive_losses", 0) + 1
-            else:
-                self._consecutive_losses = 0
+            self._on_realised(
+                market="domestic",
+                gross_pnl_krw=float(gross_pnl),
+                pnl_pct=float(pnl_pct),
+            )
             if self._is_trading_halted():
                 _logger.warning(
                     "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
@@ -6897,11 +5988,11 @@ class LiquidityLabService:
             fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
             gross_pnl_usd = (sell_price - held.avg_price) * real_qty_sold
             gross_pnl_krw = gross_pnl_usd * fx_rate
-            self._session_realised_krw = getattr(self, "_session_realised_krw", 0.0) + float(gross_pnl_krw)
-            if gross_pnl_krw < 0:
-                self._consecutive_losses = getattr(self, "_consecutive_losses", 0) + 1
-            else:
-                self._consecutive_losses = 0
+            self._on_realised(
+                market="overseas",
+                gross_pnl_krw=float(gross_pnl_krw),
+                pnl_pct=float(pnl_pct),
+            )
             if self._is_trading_halted():
                 _logger.warning(
                     "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
@@ -7941,10 +7032,9 @@ class LiquidityLabService:
         }
 
     def _cb_active_flag(self) -> int:
-        return int(
-            getattr(self, "_halted_at", None) is not None
-            or getattr(self, "_daily_halted_at", None) is not None
-        )
+        cb = self._get_circuit_breaker()
+        self._sync_circuit_breaker_legacy_state(cb)
+        return int(cb.is_active)
 
     def _pool_size_for_market(self, market: str) -> int:
         market_key = market.strip().lower()
@@ -7975,206 +7065,22 @@ class LiquidityLabService:
         domestic_orders: list[dict],
         overseas_orders: list[dict],
     ) -> None:
-        self._recent_cycle_count = getattr(self, "_recent_cycle_count", 0) + 1
-        reason_counts = getattr(self, "_recent_order_reason_counts", {})
-        if not isinstance(reason_counts, dict):
-            reason_counts = {}
-        all_orders = [*domestic_orders, *overseas_orders]
-        for market, orders in (
-            ("domestic", domestic_orders),
-            ("overseas", overseas_orders),
-        ):
-            for order in orders:
-                if not isinstance(order, dict):
-                    continue
-                side = str(order.get("side") or "none").strip().lower() or "none"
-                if self._is_effective_trade_order(order):
-                    reason_key = f"{market}:trade:{side}"
-                else:
-                    reason = str(order.get("reason") or "inactive").strip() or "inactive"
-                    reason_key = f"{market}:skip:{reason[:80]}"
-                reason_counts[reason_key] = int(reason_counts.get(reason_key, 0)) + 1
-        self._recent_order_reason_counts = reason_counts
-        trade_count = sum(
-            1
-            for order in all_orders
-            if self._is_effective_trade_order(order)
+        runtime = self._get_runtime_manager()
+        runtime.record_cycle_trade_frequency(
+            domestic_orders=domestic_orders,
+            overseas_orders=overseas_orders,
         )
-        self._recent_trade_count = getattr(self, "_recent_trade_count", 0) + trade_count
-        if self._recent_cycle_count < 50:
-            return
-        trade_ratio = self._recent_trade_count / max(self._recent_cycle_count, 1)
-        top_reasons = dict(
-            sorted(
-                reason_counts.items(),
-                key=lambda item: (-int(item[1]), str(item[0])),
-            )[:8]
-        )
-        if trade_ratio < 0.01:
-            _logger.warning(
-                "[FREQ] 최근 %d사이클 매매율 %.1f%% (trade_count=%d, reasons=%s)",
-                self._recent_cycle_count,
-                trade_ratio * 100.0,
-                self._recent_trade_count,
-                top_reasons,
-            )
-            self._save_event(
-                event_type="low_trade_frequency",
-                detail={
-                    "cycle_count": self._recent_cycle_count,
-                    "trade_count": self._recent_trade_count,
-                    "ratio": round(trade_ratio, 4),
-                    "top_reasons": top_reasons,
-                },
-            )
-            self._maybe_notify_low_trade_frequency(
-                cycle_count=self._recent_cycle_count,
-                trade_count=self._recent_trade_count,
-                trade_ratio=trade_ratio,
-                top_reasons=top_reasons,
-            )
-        self._recent_trade_count = 0
-        self._recent_cycle_count = 0
-        self._recent_order_reason_counts = {}
-
-    def _maybe_notify_low_trade_frequency(
-        self,
-        *,
-        cycle_count: int,
-        trade_count: int,
-        trade_ratio: float,
-        top_reasons: dict[str, int],
-    ) -> None:
-        notifier = getattr(self, "notifier", None)
-        if notifier is None:
-            return
-        cycle_no = int(getattr(self, "_cycle_count", 0) or 0)
-        last_alert_cycle = int(getattr(self, "_last_low_trade_frequency_alert_cycle", 0) or 0)
-        if cycle_no > 0 and last_alert_cycle > 0 and cycle_no - last_alert_cycle < 200:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-
-        self._last_low_trade_frequency_alert_cycle = (
-            cycle_no if cycle_no > 0 else last_alert_cycle + 200
-        )
-        top_reason_text = ", ".join(
-            f"{reason} {count}회" for reason, count in list(top_reasons.items())[:3]
-        )
-        loop.create_task(
-            notifier.send(
-                "\n".join(
-                    [
-                        "⚠️ 매매 빈도 낮음",
-                        f"범위=최근 {cycle_count}사이클",
-                        f"매매={trade_count}건 비율={trade_ratio * 100:.1f}%",
-                        f"주요원인={top_reason_text or '-'}",
-                        "확인=/lab_status /lab_report compare 2026-07-10",
-                    ]
-                )
-            )
-        )
+        self._sync_runtime_legacy_state(runtime)
 
     def _track_rsi_threshold_blocks(self, watch_targets: list[WatchTargetStatus]) -> None:
-        rsi_threshold = float(
-            getattr(getattr(self.config, "auto_trade", object()), "rsi_entry_threshold", 50.0)
-            or 50.0
-        )
-        for watch_target in watch_targets:
-            if watch_target.market != "overseas":
-                continue
-            if watch_target.holding_qty > 0 or watch_target.action_bias == "BUY":
-                continue
-            snapshot = watch_target.signal_snapshot
-            rsi14 = snapshot.rsi14 if snapshot is not None else None
-            if rsi14 is None or rsi14 <= rsi_threshold:
-                continue
-            strategy_flag = str(watch_target.strategy_flag or watch_target.note or "")
-            if "RSI" not in strategy_flag:
-                continue
-            self._rsi_blocked_count = getattr(self, "_rsi_blocked_count", 0) + 1
-            if self._rsi_blocked_count % 20 == 0:
-                _logger.info(
-                    "[RSI] 차단 누적 %d건 (최근 rsi=%.1f, threshold=%.1f)",
-                    self._rsi_blocked_count,
-                    rsi14,
-                    rsi_threshold,
-                )
-                self._save_event(
-                    event_type="rsi_threshold_blocked",
-                    detail={
-                        "blocked_count": self._rsi_blocked_count,
-                        "symbol": watch_target.code,
-                        "rsi14": round(float(rsi14), 2),
-                        "threshold": round(float(rsi_threshold), 2),
-                        "strategy_flag": watch_target.strategy_flag,
-                        "action_bias": watch_target.action_bias,
-                    },
-                )
+        runtime = self._get_runtime_manager()
+        runtime.track_rsi_threshold_blocks(watch_targets)
+        self._sync_runtime_legacy_state(runtime)
 
     def _check_trend_filter_lost_ratio(self) -> None:
-        cycle_no = getattr(self, "_cycle_count", 0)
-        if cycle_no <= 0 or cycle_no % 200 != 0:
-            return
-        repository = getattr(self, "repository", None)
-        if repository is None or not hasattr(repository, "get_sell_reason_counts"):
-            return
-        after_logged_at = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        rows = repository.get_sell_reason_counts(after_logged_at=after_logged_at)
-        total = sum(int(row.get("cnt") or 0) for row in rows)
-        trend_filter_lost = sum(
-            int(row.get("cnt") or 0)
-            for row in rows
-            if "trend_filter" in str(row.get("action_reason") or "")
-        )
-        if total <= 5:
-            return
-        ratio = trend_filter_lost / total
-        if ratio <= 0.50:
-            return
-        if getattr(self, "_last_trend_filter_alert_cycle", 0) == cycle_no:
-            return
-        self._last_trend_filter_alert_cycle = cycle_no
-        _logger.warning(
-            "[TREND] trend_filter_lost 비율 %.0f%% (%d/%d)",
-            ratio * 100.0,
-            trend_filter_lost,
-            total,
-        )
-        self._save_event(
-            event_type="trend_filter_lost_ratio_high",
-            detail={
-                "trend_filter_lost": trend_filter_lost,
-                "total_sell_real": total,
-                "ratio": round(ratio, 4),
-                "min_hold_before_trend_exit": getattr(
-                    getattr(self.config, "auto_trade", object()),
-                    "min_hold_before_trend_exit",
-                    12,
-                ),
-            },
-        )
-        notifier = getattr(self, "notifier", None)
-        if notifier is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(
-            notifier.send(
-                "\n".join(
-                    [
-                        "⚠️ trend_filter_lost 비율 경고",
-                        f"비율={ratio * 100:.0f}% ({trend_filter_lost}/{total}건)",
-                        "범위=최근 24시간 SELL_REAL",
-                        "확인=min_hold_before_trend_exit/추세청산 조건",
-                    ]
-                )
-            )
-        )
+        runtime = self._get_runtime_manager()
+        runtime.check_trend_filter_lost_ratio()
+        self._sync_runtime_legacy_state(runtime)
 
     def _save_event(
         self,
@@ -8185,31 +7091,25 @@ class LiquidityLabService:
         detail: dict | str = "",
         cycle_no: int | None = None,
     ) -> None:
-        repository = getattr(self, "repository", None)
-        if repository is None or not hasattr(repository, "save_event"):
-            return
-        repository.save_event(
+        runtime = self._get_runtime_manager()
+        runtime.save_event(
             event_type=event_type,
             market=market,
             symbol=symbol,
             detail=detail,
-            cycle_no=getattr(self, "_cycle_count", 0) if cycle_no is None else cycle_no,
-            session_id=getattr(self, "_session_id", ""),
+            cycle_no=cycle_no,
         )
+        self._sync_runtime_legacy_state(runtime)
 
     def _cooldown_remaining_minutes(
         self,
         market: str,
         symbol: str,
     ) -> float:
-        exit_cooldown = getattr(self, "_exit_cooldown", None) or {}
-        cooldown_until = exit_cooldown.get(f"{market}:{symbol.strip().upper()}")
-        if cooldown_until is None:
-            return 0.0
-        remaining = (
-            ensure_timezone(cooldown_until) - datetime.now(timezone.utc)
-        ).total_seconds() / 60
-        return max(0.0, round(remaining, 2))
+        runtime = self._get_runtime_manager()
+        remaining = runtime.cooldown_remaining_minutes(market, symbol)
+        self._sync_runtime_legacy_state(runtime)
+        return remaining
 
     def _get_entry_context(
         self,
@@ -8265,39 +7165,21 @@ class LiquidityLabService:
         holding_qty: int,
         orderable_qty: int,
     ) -> bool:
-        retry_map = getattr(self, "_no_orderable_retry", None)
-        if retry_map is None:
-            retry_map = {}
-            self._no_orderable_retry = retry_map
-        key = f"{market}:{symbol.strip().upper()}"
-        now = datetime.now(timezone.utc)
-        retry_until = retry_map.get(key)
-        if retry_until is not None and now <= ensure_timezone(retry_until):
-            return True
-        retry_minutes = self._no_orderable_retry_minutes(key)
-        retry_map[key] = now + timedelta(minutes=retry_minutes)
-        self._save_event(
-            event_type="trade_skip",
+        runtime = self._get_runtime_manager()
+        deferred = runtime.defer_no_orderable_position(
             market=market,
             symbol=symbol,
-            detail={
-                "reason": "no_orderable_qty",
-                "holding_qty": holding_qty,
-                "orderable_qty": orderable_qty,
-                "note": "T+2 pending or API delay",
-                "retry_after_min": retry_minutes,
-            },
+            holding_qty=holding_qty,
+            orderable_qty=orderable_qty,
         )
-        return True
+        self._sync_runtime_legacy_state(runtime)
+        return deferred
 
     def _no_orderable_retry_minutes(self, key: str) -> int:
-        counts = getattr(self, "_no_orderable_counts", None) or {}
-        count = int(counts.get(key, 0) or 0)
-        if count >= 120:
-            return 60
-        if count >= 30:
-            return 20
-        return 5
+        runtime = self._get_runtime_manager()
+        minutes = runtime.no_orderable_retry_minutes(key)
+        self._sync_runtime_legacy_state(runtime)
+        return minutes
 
     def _track_no_orderable_stall(
         self,
@@ -8306,54 +7188,30 @@ class LiquidityLabService:
         symbol: str,
         holding_qty: int,
     ) -> int:
-        counts = getattr(self, "_no_orderable_counts", None)
-        if counts is None:
-            counts = {}
-            self._no_orderable_counts = counts
-        key = f"{market}:{symbol.strip().upper()}"
-        count = int(counts.get(key, 0) or 0) + 1
-        counts[key] = count
-        if count == 30:
-            notifier = getattr(self, "notifier", None)
-            if notifier is not None and getattr(notifier, "enabled", True):
-                loop_interval_sec = max(
-                    1,
-                    int(getattr(self.config.liquidity_lab, "loop_interval_sec", 25) or 25),
-                )
-                duration_min = max(1, int((count * loop_interval_sec) // 60))
-                asyncio.create_task(
-                    notifier.send(
-                        "\n".join(
-                            [
-                                "⚠️ orderable_qty=0 장기지속",
-                                f"종목={symbol.strip().upper()}",
-                                f"지속={duration_min}분",
-                                f"보유={holding_qty}주",
-                                "참고=자본 동결 가능성, KIS 잔고/미체결 확인 필요",
-                            ]
-                        )
-                    )
-                )
+        runtime = self._get_runtime_manager()
+        count = runtime.track_no_orderable_stall(
+            market=market,
+            symbol=symbol,
+            holding_qty=holding_qty,
+        )
+        self._sync_runtime_legacy_state(runtime)
         return count
 
     def _reset_no_orderable_stall(self, market: str, symbol: str) -> None:
-        counts = getattr(self, "_no_orderable_counts", None)
-        if not counts:
-            return
-        counts.pop(f"{market}:{symbol.strip().upper()}", None)
+        runtime = self._get_runtime_manager()
+        runtime.reset_no_orderable_stall(market, symbol)
+        self._sync_runtime_legacy_state(runtime)
 
     def _is_no_orderable_retry_active(self, market: str, symbol: str) -> bool:
-        retry_map = getattr(self, "_no_orderable_retry", None) or {}
-        retry_until = retry_map.get(f"{market}:{symbol.strip().upper()}")
-        if retry_until is None:
-            return False
-        return datetime.now(timezone.utc) <= ensure_timezone(retry_until)
+        runtime = self._get_runtime_manager()
+        active = runtime.is_no_orderable_retry_active(market, symbol)
+        self._sync_runtime_legacy_state(runtime)
+        return active
 
     def _clear_no_orderable_retry(self, market: str, symbol: str) -> None:
-        retry_map = getattr(self, "_no_orderable_retry", None)
-        if not retry_map:
-            return
-        retry_map.pop(f"{market}:{symbol.strip().upper()}", None)
+        runtime = self._get_runtime_manager()
+        runtime.clear_no_orderable_retry(market, symbol)
+        self._sync_runtime_legacy_state(runtime)
 
     def _record_trade_skip(
         self,
@@ -8446,15 +7304,9 @@ class LiquidityLabService:
         symbol: str,
         exit_reason: str,
     ) -> None:
-        if exit_reason in ("stop_loss", "atr_hard_stop"):
-            cooldown_minutes = 25
-        elif exit_reason in ("momentum_loss_cut", "trend_filter_lost"):
-            cooldown_minutes = 12
-        elif exit_reason == "marginal_profit_exit":
-            cooldown_minutes = 15
-        else:
-            cooldown_minutes = 8
-        self._set_exit_cooldown_minutes(market, symbol, cooldown_minutes)
+        runtime = self._get_runtime_manager()
+        runtime.register_exit_cooldown(market, symbol, exit_reason)
+        self._sync_runtime_legacy_state(runtime)
 
     def _set_exit_cooldown_minutes(
         self,
@@ -8462,144 +7314,15 @@ class LiquidityLabService:
         symbol: str,
         cooldown_minutes: int,
     ) -> None:
-        exit_cooldown = getattr(self, "_exit_cooldown", None)
-        if exit_cooldown is None:
-            exit_cooldown = {}
-            self._exit_cooldown = exit_cooldown
-        exit_cooldown[f"{market}:{symbol.strip().upper()}"] = (
-            datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
-        )
+        runtime = self._get_runtime_manager()
+        runtime.set_exit_cooldown_minutes(market, symbol, cooldown_minutes)
+        self._sync_runtime_legacy_state(runtime)
 
     def _is_trading_halted(self) -> bool:
-        kst_today = datetime.now(timezone.utc).astimezone(KST).date()
-        if getattr(self, "_daily_loss_date", None) != kst_today:
-            self._daily_loss_date = kst_today
-            self._session_realised_krw = 0.0
-            self._daily_halted_at = None
-            _logger.info("[CB] KST 날짜 전환 → daily_loss 초기화 (date=%s)", kst_today)
-
-        risk = getattr(self.config, "risk", None)
-        if risk is None:
-            return False
-
-        consecutive_losses = int(getattr(self, "_consecutive_losses", 0) or 0)
-        max_consecutive = int(getattr(risk, "max_consecutive_losses", 0) or 0)
-        if max_consecutive > 0 and consecutive_losses >= max_consecutive:
-            cooldown_minutes = int(
-                getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0
-            )
-            consecutive_blocked = True
-            if cooldown_minutes > 0:
-                halted_at = getattr(self, "_halted_at", None)
-                if halted_at is None:
-                    self._halted_at = datetime.now(timezone.utc)
-                    self._save_event(
-                        event_type="cb_fired",
-                        detail={
-                            "consecutive_losses": consecutive_losses,
-                            "type": "consecutive",
-                        },
-                    )
-                else:
-                    elapsed_minutes = (
-                        datetime.now(timezone.utc) - ensure_timezone(halted_at)
-                    ).total_seconds() / 60
-                    if elapsed_minutes >= cooldown_minutes:
-                        _logger.info(
-                            "[CB] 서킷브레이커 자동 해제 (%.0f분 경과)",
-                            elapsed_minutes,
-                        )
-                        self._consecutive_losses = 0
-                        self._halted_at = None
-                        self._save_event(
-                            event_type="cb_released",
-                            detail={
-                                "elapsed_min": round(elapsed_minutes, 1),
-                                "trigger": "auto_cooldown",
-                                "type": "consecutive",
-                            },
-                        )
-                        notifier = getattr(self, "notifier", None)
-                        if notifier is not None and getattr(notifier, "enabled", True):
-                            try:
-                                loop = asyncio.get_running_loop()
-                            except RuntimeError:
-                                loop = None
-                            if loop is not None:
-                                loop.create_task(
-                                    notifier.send(
-                                        f"✅ 서킷브레이커 자동 해제\n"
-                                        f"쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
-                                    )
-                                )
-                        consecutive_blocked = False
-                    else:
-                        return True
-            elif cooldown_minutes <= 0:
-                return True
-            if consecutive_blocked:
-                return True
-
-        daily_limit = float(getattr(risk, "daily_loss_limit_pct", 0.0) or 0.0)
-        session_realised_krw = float(getattr(self, "_session_realised_krw", 0.0) or 0.0)
-        if daily_limit > 0 and session_realised_krw < 0:
-            try:
-                # operating_capital_krw: 실제 운용 자본 (risk config)
-                # fallback: 500만원 (보수적 기본값)
-                est_capital = float(
-                    getattr(self.config.risk, "operating_capital_krw", 0) or 5_000_000
-                )
-                if est_capital > 0 and abs(session_realised_krw) / est_capital > daily_limit:
-                    cooldown_min = int(
-                        getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0
-                    )
-                    if cooldown_min > 0:
-                        daily_halted_at = getattr(self, "_daily_halted_at", None)
-                        if daily_halted_at is None:
-                            self._daily_halted_at = datetime.now(timezone.utc)
-                            self._save_event(
-                                event_type="cb_fired",
-                                detail={
-                                    "daily_loss_limit_pct": daily_limit,
-                                    "session_realised_krw": round(session_realised_krw, 2),
-                                    "type": "daily_limit",
-                                },
-                            )
-                        else:
-                            elapsed = (
-                                datetime.now(timezone.utc) - ensure_timezone(daily_halted_at)
-                            ).total_seconds() / 60
-                            if elapsed >= cooldown_min:
-                                _logger.info("[CB] daily_limit 자동 해제 (%.0f분 경과)", elapsed)
-                                self._session_realised_krw = 0.0
-                                self._daily_halted_at = None
-                                self._save_event(
-                                    event_type="cb_released",
-                                    detail={
-                                        "elapsed_min": round(elapsed, 1),
-                                        "trigger": "auto_cooldown",
-                                        "type": "daily_limit",
-                                    },
-                                )
-                                notifier = getattr(self, "notifier", None)
-                                if notifier is not None and getattr(notifier, "enabled", True):
-                                    try:
-                                        loop = asyncio.get_running_loop()
-                                    except RuntimeError:
-                                        loop = None
-                                    if loop is not None:
-                                        loop.create_task(
-                                            notifier.send(
-                                                f"✅ 일일손실한도 CB 자동 해제\n"
-                                                f"쿨다운 {cooldown_min}분 완료 → 매수 재개"
-                                            )
-                                        )
-                                return False
-                    return True
-            except Exception:
-                pass
-
-        return False
+        cb = self._get_circuit_breaker()
+        halted = cb.is_halted()
+        self._sync_circuit_breaker_legacy_state(cb)
+        return halted
 
     def _ma_relation_summary(self, snapshot: MovingAverageSnapshot) -> str:
         auto = self.config.auto_trade

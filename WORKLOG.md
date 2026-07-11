@@ -1,5 +1,244 @@
 # WORKLOG
 
+## [2026-07-11] 지시문 #68 5차 반영 - `lab_watch.py` 확장 (watch target 판정/선택 위임)
+
+### 배경
+- 4차 분리 후에도 `liquidity_lab.py` 안에는 아래 watch-target 핵심 로직이 그대로 남아 있었음
+  - `_build_watch_target_status()`
+  - `_select_domestic_buy_targets()`
+  - `_select_domestic_exit_target()`
+  - `_select_overseas_buy_targets()`
+  - `_remaining_overseas_entry_slots()`
+  - `_select_primary_target()`
+- 특히 `_build_watch_target_status()`는 테스트가 `liquidity_lab` 모듈의
+  `evaluate_entry_setup`, `derive_watch_state`를 monkeypatch 하는 구조와 얽혀 있어,
+  단순 함수 이동보다 "service wrapper + helper 위임"이 더 안전했음
+
+### 수정
+- `src/kinvest_trade/lab_watch.py`
+  - `WatchStateHelper`에 다음 책임 추가
+    - watch target 상태 판정
+    - 국내/해외 buy target 선택
+    - 국내 exit target 선택
+    - 해외 진입 슬롯 계산
+    - primary target 선택
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_make_watch_target_status()` 추가
+  - `_evaluate_entry_setup()`, `_derive_watch_state()` wrapper 추가
+  - 위 메서드들을 helper 위임 wrapper로 전환
+  - 결과적으로 `liquidity_lab` 모듈 monkeypatch 테스트 호환성 유지
+
+### 결과
+- `liquidity_lab.py`
+  - 7,828줄 → 7,438줄
+- `lab_watch.py`
+  - 494줄 → 1,010줄
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - 전체 `455 passed`
+
+### 다음 단계
+- 남은 대형 복잡도 후보
+  - 국내 주문 lifecycle helper
+  - 해외 주문 lifecycle / pending order reconciliation helper
+  - action summary / report formatting helper
+- 다음 분리부터는 `watch`보다는 주문 orchestration 쪽이 더 큰 수익 구간
+
+## [2026-07-11] 지시문 #68 4차 반영 - `lab_watch.py` 분리
+
+### 배경
+- `liquidity_lab.py` 3차 분리 후에도 persisted state / signal fallback / strategy restore 관련 보조 로직이
+  한곳에 길게 남아 있었음
+- 이 영역은 주문 실행 핵심과는 다르지만, watch target 재구성, 재시작 복구, stale 상태 정리 등에
+  공통으로 쓰여 파일 상단부 복잡도를 키우고 있었음
+- 다만 `_build_watch_target_status()` 본문은 `liquidity_lab` 모듈 함수 monkeypatch 테스트와
+  결합되어 있어 그대로 두고, 주변 보조 계층만 먼저 분리하는 편이 안전했음
+
+### 수정
+- `src/kinvest_trade/lab_watch.py`
+  - `WatchStateHelper` 신설
+  - 다음 책임 이동
+    - persisted symbol state cache
+    - cycle exit reference price priming
+    - snapshot payload 복원 / live price 보정
+    - 해외 signal cache fallback
+    - watch/trade state persistence
+    - stale lab position state cleanup
+    - strategy context restore
+    - watch target cycle log 저장 보조
+- `src/kinvest_trade/liquidity_lab.py`
+  - `self.watch_state` 초기화
+  - 위 메서드들을 helper 위임 wrapper로 전환
+  - `_build_watch_target_status()`는 현행 유지
+    - 기존 테스트의 `evaluate_entry_setup`, `derive_watch_state` monkeypatch 호환성 보존 목적
+
+### 결과
+- `liquidity_lab.py`
+  - 8,136줄 → 7,828줄
+- 새 파일
+  - `lab_watch.py` 494줄
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - 전체 `455 passed`
+
+### 다음 단계
+- 남은 큰 분리 후보
+  - `_build_watch_target_status()` 자체와 watch target selection 보조 계층
+  - 국내/해외 주문 lifecycle helper
+  - report/action summary formatting helper
+- 이후 단계는 helper 위임보다 service collaboration object가 더 늘어나는 형태가 자연스러움
+
+## [2026-07-11] 지시문 #68 3차 반영 - `lab_runtime.py` 분리
+
+### 배경
+- `liquidity_lab.py` 2차 분리 후에도 운영 상태 관리 로직이 한 파일 안에 길게 남아 있었음
+- 특히 아래 책임이 한곳에 섞여 있었음
+  - 저매매 빈도 감시
+  - RSI 차단 누적 기록
+  - `trend_filter_lost` 비율 경고
+  - exit cooldown / no_orderable retry 상태
+  - event log 저장 보조
+- 이 영역은 주문 실행 핵심보다는 런타임 관측/제어 성격이 강해 helper 객체로 묶기 적합했음
+
+### 수정
+- `src/kinvest_trade/lab_runtime.py`
+  - `LabRuntimeManager` 신설
+  - 다음 책임 이동
+    - `low_trade_frequency` 누적/알림
+    - RSI 차단 카운트 및 이벤트 저장
+    - `trend_filter_lost_ratio_high` 감시
+    - `exit_cooldown` 관리
+    - `no_orderable_retry`, `no_orderable_counts` 관리
+    - 공통 event 저장 보조
+- `src/kinvest_trade/liquidity_lab.py`
+  - `self.runtime` 초기화
+  - `_record_cycle_trade_frequency()`
+  - `_track_rsi_threshold_blocks()`
+  - `_check_trend_filter_lost_ratio()`
+  - `_save_event()`
+  - `_cooldown_remaining_minutes()`
+  - `_defer_no_orderable_position()`
+  - `_no_orderable_retry_minutes()`
+  - `_track_no_orderable_stall()`
+  - `_reset_no_orderable_stall()`
+  - `_is_no_orderable_retry_active()`
+  - `_clear_no_orderable_retry()`
+  - `_register_exit_cooldown()`
+  - `_set_exit_cooldown_minutes()`
+  를 helper 위임으로 전환
+  - `__new__()` 기반 테스트 인스턴스 호환을 위해 fallback runtime config 추가
+
+### 결과
+- `liquidity_lab.py`
+  - 8,309줄 → 8,136줄
+- 새 파일
+  - `lab_runtime.py` 436줄
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - 전체 `455 passed`
+
+### 다음 단계
+- 남은 고비용 영역
+  - watch target / persisted snapshot / restore 전략 상태
+  - 국내/해외 주문 lifecycle helper
+  - report/action summary formatting helper
+- 이제부터는 단순 이동보다 서비스 협력 객체를 늘리는 방식이 더 적합함
+
+## [2026-07-11] 지시문 #68 2차 반영 - `lab_positions.py` 분리
+
+### 배경
+- `liquidity_lab.py` 1차 분리 후에도 파일 길이가 8,649줄로 여전히 매우 큼
+- 파일 상단의 `VirtualTradeManager`, `UnifiedPositionTracker`는
+  저장소 계층 의존성만 있는 독립 보조 컴포넌트인데도 본 서비스 파일 내부에 남아 있었음
+- 이 영역은 별도 테스트가 이미 충분해, 추가 분리 대비 회귀 위험이 낮은 편이었음
+
+### 수정
+- `src/kinvest_trade/lab_positions.py`
+  - `VirtualPosition`
+  - `VirtualTradeManager`
+  - `UnifiedPosition`
+  - `UnifiedPositionTracker`
+  분리
+- `src/kinvest_trade/liquidity_lab.py`
+  - 위 클래스들을 새 모듈 import로 전환
+  - 기존 모듈 경로(`kinvest_trade.liquidity_lab`)에서의 사용 호환은 유지
+- `tests/`
+  - `test_virtual_trades.py`, `test_unified_position_tracker.py`를 새 모듈 직접 import로 조정
+
+### 결과
+- `liquidity_lab.py`
+  - 8,649줄 → 8,309줄
+- 새 파일
+  - `lab_positions.py` 347줄
+
+### 테스트
+- `python3 -m pytest tests/test_virtual_trades.py tests/test_unified_position_tracker.py -q`
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - 전체 `455 passed`
+
+### 다음 단계
+- 남은 대형 영역 후보
+  - watch target / persisted snapshot / signal fallback 계층
+  - 해외 주문 lifecycle / pending order reconciliation 계층
+  - report formatting / summary building 계층
+- 다음 분리는 서비스 메서드 간 결합도가 더 높아지므로,
+  1차/2차처럼 단순 클래스 이동보다 "helper object + service 위임" 방식이 안전함
+
+## [2026-07-11] 지시문 #68 1차 반영 - `lab_risk.py` / `lab_notify.py` 분리
+
+### 배경
+- `src/kinvest_trade/liquidity_lab.py`가 8,700줄을 넘기며 연속손절 CB, 일일손실 CB,
+  거래 알림 배치 로직까지 한 파일에 몰려 있었음
+- 최근 지시문 연속 반영 과정에서 서로 다른 수정이 큰 파일 안에서 겹치며 추적 비용이 커졌고,
+  독립 테스트 가능한 최소 단위부터 떼어내는 것이 우선 과제가 됨
+
+### 수정
+- `src/kinvest_trade/lab_risk.py`
+  - `CircuitBreakerManager` 신설
+  - 연속손절/일일손실 CB 상태, 자동 해제, 이벤트 기록, 자동 해제 알림 책임 분리
+  - 향후 해외 재진입 쿨다운용 `overseas_allowed()` 상태도 함께 보관
+- `src/kinvest_trade/lab_notify.py`
+  - `TradeNotifier` 신설
+  - 거래 알림 큐, 배치 윈도우, 최대 묶음 건수, flush 포맷 책임 분리
+- `src/kinvest_trade/liquidity_lab.py`
+  - `self.cb`, `self.trade_notifier` 초기화
+  - `_is_trading_halted()`, `_queue_trade_notification()`, `_flush_trade_notifications()`를
+    새 모듈 위임으로 전환
+  - 기존 테스트와 호출부 호환을 위해 레거시 속성
+    (`_consecutive_losses`, `_session_realised_krw`, `_pending_trade_notifications` 등)은
+    당분간 동기화 레이어로 유지
+  - 국내/해외 실현손익 반영 지점을 `_on_realised()` 헬퍼로 통일
+
+### 테스트
+- 신규
+  - `tests/test_lab_risk.py`
+  - `tests/test_lab_notify.py`
+- 검증
+  - `python3 -m pytest tests/test_lab_risk.py tests/test_lab_notify.py -q`
+  - `python3 -m pytest tests/test_liquidity_lab.py -q`
+  - `python3 -m pytest tests -q`
+- 결과
+  - 전체 `455 passed`
+
+### 다음 단계
+- `liquidity_lab.py` 내 remaining candidate
+  - 포지션/청산 판단 보조 로직
+  - watch target / signal cache 계층
+  - 해외/국내 주문 orchestration 보조 함수
+- 현재는 동작 보존이 우선이라 레거시 속성 동기화를 남겨두었고,
+  다음 분리 단계에서 점진적으로 직접 상태 접근을 제거하는 것이 안전함
+
 ## [2026-07-10] 해외 반복 신호 실패 종목 쿨다운
 
 ### 배경

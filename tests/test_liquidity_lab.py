@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import kinvest_trade.lab_risk as lab_risk_module
 import kinvest_trade.liquidity_lab as liquidity_lab_module
 from kinvest_trade.config import load_app_config
 from kinvest_trade.liquidity_lab import (
@@ -2799,6 +2800,7 @@ def test_is_trading_halted_resets_daily_loss_on_new_kst_day() -> None:
     service._daily_halted_at = datetime.now(timezone.utc)
 
     original_datetime = liquidity_lab_module.datetime
+    original_risk_datetime = lab_risk_module.datetime
 
     class _FakeDateTime(datetime):
         @classmethod
@@ -2807,10 +2809,12 @@ def test_is_trading_halted_resets_daily_loss_on_new_kst_day() -> None:
             return base if tz is None else base.astimezone(tz)
 
     liquidity_lab_module.datetime = _FakeDateTime
+    lab_risk_module.datetime = _FakeDateTime
     try:
         assert service._is_trading_halted() is False
     finally:
         liquidity_lab_module.datetime = original_datetime
+        lab_risk_module.datetime = original_risk_datetime
 
     assert service._daily_loss_date == date(2026, 7, 10)
     assert service._session_realised_krw == 0.0

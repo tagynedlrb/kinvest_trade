@@ -1,5 +1,37 @@
 # WORKLOG
 
+## [2026-07-11] 지시문 #68 7차 반영 - `lab_overseas_orders.py` 1차 분리 (가상 주문/포지션 라우팅)
+
+### 배경
+- 6차 분리 이후 `liquidity_lab.py`의 남은 대형 주문 구간은 거의 해외 주문 흐름에 집중되어 있었음
+- 그중에서도 아래 3개는 "실주문 제출"보다 "해외 포지션 라우팅/가상체결" 성격이 강해
+  먼저 분리하면 실제 해외 주문 메서드와 책임 경계를 더 또렷하게 만들 수 있었음
+  - `_manage_overseas_position()`
+  - `_record_virtual_overseas_buy()`
+  - `_record_virtual_overseas_sell()`
+
+### 수정
+- `src/kinvest_trade/lab_overseas_orders.py`
+  - `OverseasOrderHelper` 추가
+  - 해외 포지션 보유/가상 주문 라우팅 로직 분리
+- `src/kinvest_trade/liquidity_lab.py`
+  - `OverseasOrderHelper` import 및 `self.overseas_orders` 초기화
+  - `_get_overseas_order_helper()` 추가
+  - 위 3개 메서드를 얇은 wrapper로 전환
+
+### 결과
+- `liquidity_lab.py`
+  - 6,777줄 → 6,346줄
+- 해외 실주문 제출 메서드와 가상체결/보유량 라우팅 메서드가 분리되기 시작해,
+  다음 단계에서 `_place_overseas_test_order()` / `_place_overseas_sell_order()`를 더 안전하게 이관할 기반 확보
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - `136 passed`
+  - `455 passed`
+
 ## [2026-07-11] 지시문 #68 6차 반영 - `lab_domestic_orders.py` 분리
 
 ### 배경

@@ -1,6 +1,50 @@
 # WORKLOG
 
-## [2026-07-11] 지시문 #68 8차 반영 - `lab_overseas_orders.py` 2차 확장 (해외 매수 제출 위임)
+## [2026-07-11] Claude Code 인수 점검 + 지시문 #68 9차 반영 - 해외 매도 제출 위임
+
+### 배경
+- codex 세션에서 이어받아 상태를 먼저 점검함. 다음 두 가지 운영 공백을 확인:
+  - 8차 분리(`lab_overseas_orders.py` 확장)까지의 로컬 커밋 4개(`4dc877b`~`2814fac`)가
+    원격(`origin/master`)에 아직 push되지 않은 상태였음
+  - `kinvest-telegram-control.service`가 00:02 KST 직전 `/lab_stop` 계열 조작 이후
+    재기동되지 않아 `inactive(dead)` 상태로 약 4~5시간 방치됨 (토요일 새벽이라 국내/미국
+    정규장은 모두 휴장이라 실거래 공백 자체의 실질 영향은 없었음)
+- 8차 반영 시점에 남겨둔 "다음 단계" 메모대로, `liquidity_lab.py`에 남아있던 마지막 대형
+  해외 주문 메서드 `_place_overseas_sell_order()`(약 740줄)를 `OverseasOrderHelper`로
+  이관해 해외 매수/매도 제출 경로를 모두 helper 쪽으로 통일함
+
+### 수정
+- `src/kinvest_trade/lab_overseas_orders.py`
+  - `OverseasOrderHelper.place_sell_order()` 추가
+  - 해외 실매도 제출, 미체결 매수/매도 정리, net PnL 컷오프, circuit breaker 알림,
+    체결 로그 저장까지 이관
+  - `asyncio`, `logging`, `is_us_orderable_session_for_env` import 추가
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_place_overseas_sell_order()`를 얇은 helper wrapper로 전환
+- `tests/test_liquidity_lab.py`
+  - `_force_overseas_orderable_session()`이 `liquidity_lab_module`뿐 아니라
+    `lab_overseas_orders_module`의 `is_us_orderable_session_for_env`도 함께 패치하도록 수정
+    (이관 후 실제 호출 지점이 새 모듈로 옮겨가 기존 monkeypatch가 무력화되던 문제 수정)
+
+### 결과
+- `liquidity_lab.py`: 5,835줄 → 5,107줄
+- `lab_overseas_orders.py`: 1,018줄 → 1,765줄
+- 해외 주문 영역의 실매수/실매도 제출 로직이 모두 `OverseasOrderHelper`로 모여,
+  `liquidity_lab.py`에는 라우팅/오케스트레이션 성격 코드만 남음
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - 이관 직후 1차 실행: 해외 매도 관련 10개 실패 (모두 `is_us_orderable_session_for_env`
+    monkeypatch가 옛 모듈 경로만 패치해 발생)
+  - 테스트 fixture 수정 후 재실행: `455 passed`
+
+### 다음 단계
+- `liquidity_lab.py`에 남은 remaining 대형 블록은 watch target 선정/오케스트레이션
+  성격이 강해, 이후 단계에서는 순수 로직 분리보다 orchestration 흐름 정리가 우선일 것
+- 이번 세션에서 확인한 운영 루틴(작업 후 WORKLOG 기록 → git push → 서비스 재기동 →
+  텔레그램 알림)을 이어서 수행함
 
 ### 배경
 - 7차 분리 이후에도 해외 실주문 진입 메서드 `_place_overseas_test_order()`는 여전히

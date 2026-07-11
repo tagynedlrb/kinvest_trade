@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import kinvest_trade.lab_overseas_orders as lab_overseas_orders_module
 import kinvest_trade.lab_risk as lab_risk_module
 import kinvest_trade.liquidity_lab as liquidity_lab_module
 from kinvest_trade.config import load_app_config
@@ -1064,11 +1065,14 @@ def _build_sell_service(
 @contextmanager
 def _force_overseas_orderable_session():
     original = liquidity_lab_module.is_us_orderable_session_for_env
+    original_helper = lab_overseas_orders_module.is_us_orderable_session_for_env
     liquidity_lab_module.is_us_orderable_session_for_env = lambda *_args: True
+    lab_overseas_orders_module.is_us_orderable_session_for_env = lambda *_args: True
     try:
         yield
     finally:
         liquidity_lab_module.is_us_orderable_session_for_env = original
+        lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper
 
 
 def _run_orderable_overseas_sell(

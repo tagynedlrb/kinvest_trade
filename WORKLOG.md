@@ -1,5 +1,46 @@
 # WORKLOG
 
+## [2026-07-11] 지시문 #68 10차 반영 - 해외 청산대상 선정 위임 (`lab_watch.py`)
+
+### 배경
+- 9차 반영 이후 `liquidity_lab.py`에 남은 가장 큰 블록은 `_select_overseas_exit_targets()`
+  (약 250줄)였음
+- `lab_watch.py`(`WatchStateHelper`)에는 이미 `select_domestic_exit_target()`,
+  `select_overseas_buy_targets()`, `select_domestic_buy_targets()`가 있어
+  "해외 청산대상 선정"만 짝이 맞지 않는 상태였음 — watch-target 선정 계열 4종 중 유일하게
+  `liquidity_lab.py`에 남아있던 로직이라 이관 대상이 명확했음
+- 이 메서드는 실주문 제출이 아니라 순수 선정/우선순위 로직(실보유+가상보유 병합, 손절/익절
+  우선순위, no-orderable 재시도 상태 갱신)이라 8~9차의 주문 helper들과는 다른 성격이지만,
+  기존 `select_overseas_buy_targets()`와 동일하게 `service = self.service` 위임 패턴으로
+  옮기기에 적합했음
+
+### 수정
+- `src/kinvest_trade/lab_watch.py`
+  - `WatchStateHelper.select_overseas_exit_targets()` 추가
+  - 실보유/가상보유 병합 스캔, no-orderable 재시도 상태 갱신, 손절/익절 우선순위 정렬 이관
+  - `OverseasHeldPosition` 생성자 호출이 필요해 순환 임포트를 피하기 위해 메서드 내부에서
+    `from .liquidity_lab import OverseasHeldPosition`로 지연 임포트
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_select_overseas_exit_targets()`를 얇은 helper wrapper로 전환
+  - 짝인 `_select_overseas_exit_target()`(단수, max_exits=1 래퍼)은 그대로 유지
+
+### 결과
+- `liquidity_lab.py`: 5,107줄 → 4,872줄
+- `lab_watch.py`: 1,010줄 → 1,261줄
+- watch-target 선정(국내/해외 매수, 국내/해외 청산) 4종 로직이 모두 `lab_watch.py`로 통일됨
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - 이번 이관은 module-level monkeypatch 의존이 없어 1차 실행부터 `455 passed`
+
+### 다음 단계
+- `liquidity_lab.py`에 남은 최대 블록은 `_run_cycle()`(약 360줄, 사이클 오케스트레이션
+  본체)과 `scan_overseas()`(약 130줄). `_run_cycle()`은 여러 helper 호출을 순서대로
+  엮는 최상위 진입점 성격이 강해, 다음 단계에서는 "그대로 이관"보다 하위 단계(스캔 결과
+  캐싱, 세션 판정)를 먼저 별도 helper로 뽑아내는 편이 안전할 것
+
 ## [2026-07-11] Claude Code 인수 점검 + 지시문 #68 9차 반영 - 해외 매도 제출 위임
 
 ### 배경

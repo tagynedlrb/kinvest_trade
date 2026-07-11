@@ -975,6 +975,257 @@ class WatchStateHelper:
                 break
         return selected
 
+    async def select_overseas_exit_targets(
+        self,
+        overseas_ranked: list["OverseasScanResult"],
+        held_positions: list["OverseasHeldPosition"],
+        *,
+        max_exits: int = 10,
+    ) -> list[tuple["OverseasScanResult", "OverseasHeldPosition", str, MovingAverageSnapshot | None]]:
+        if not held_positions:
+            return []
+
+        from .liquidity_lab import OverseasHeldPosition
+
+        service = self.service
+        config = service.config.liquidity_lab
+        tracker = service._get_position_tracker()
+        quote_map = {item.symbol.upper(): item for item in overseas_ranked}
+        real_by_symbol: dict[str, "OverseasHeldPosition"] = {
+            held.symbol.upper(): held
+            for held in held_positions
+            if not held.is_virtual
+        }
+
+        results: list[
+            tuple[
+                tuple[int, float],
+                "OverseasScanResult",
+                "OverseasHeldPosition",
+                str,
+                MovingAverageSnapshot | None,
+            ]
+        ] = []
+
+        symbols_to_check = set(real_by_symbol.keys())
+        virtual_manager = getattr(service, "virtual_trades", None)
+        if virtual_manager is not None:
+            for position in virtual_manager.list_positions("overseas"):
+                symbols_to_check.add(position.symbol.upper())
+
+        for symbol in symbols_to_check:
+            quote = quote_map.get(symbol)
+            real = real_by_symbol.get(symbol)
+            if quote is None:
+                fallback = real or next(
+                    (position for position in held_positions if position.symbol.upper() == symbol),
+                    None,
+                )
+                if fallback is None:
+                    continue
+                quote = service._scan_result_from_overseas_position(fallback)
+
+            pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
+            already_pending_qty = 0 if pending is None else pending[0]
+            remaining_real_orderable = max(0, (real.orderable_qty if real else 0) - already_pending_qty)
+            if (
+                remaining_real_orderable <= 0
+                and real is not None
+                and service._is_no_orderable_retry_active("overseas", symbol)
+            ):
+                service._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=real.quantity,
+                )
+                continue
+
+            avg_price = 0.0
+            pnl_pct = 0.0
+            virtual_buy = None if virtual_manager is None else virtual_manager.get_position("overseas", symbol)
+            if real is not None and real.avg_price > 0:
+                avg_price = real.avg_price
+                pnl_pct = real.pnl_pct
+            else:
+                if virtual_buy is not None and virtual_buy.avg_price > 0:
+                    avg_price = virtual_buy.avg_price
+                    pnl_pct = (quote.last_price - avg_price) / avg_price
+
+            is_virtual_only = real is None and virtual_buy is not None
+            effective_orderable = remaining_real_orderable
+            if (
+                effective_orderable <= 0
+                and real is not None
+                and real.quantity > already_pending_qty
+            ):
+                if service._cooldown_remaining_minutes("overseas", symbol) > 0:
+                    service._track_no_orderable_stall(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=real.quantity,
+                    )
+                    continue
+                # KIS orderable_qty reflects unsettled state inconsistently, so
+                # fall back to held quantity and let the actual sell API decide.
+                effective_orderable = max(0, real.quantity - already_pending_qty)
+                if effective_orderable > 0:
+                    _logger.warning(
+                        "[EXIT] orderable_qty=0이지만 holding_qty=%d → 실주문 시도",
+                        real.quantity,
+                    )
+            if avg_price <= 0:
+                continue
+            if not is_virtual_only and effective_orderable <= 0:
+                service._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=0 if real is None else real.quantity,
+                )
+                service._defer_no_orderable_position(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=0 if real is None else real.quantity,
+                    orderable_qty=effective_orderable,
+                )
+                continue
+            effective_orderable = (
+                (virtual_buy.qty if virtual_buy is not None else 0)
+                if is_virtual_only
+                else effective_orderable
+            )
+            service._clear_no_orderable_retry("overseas", symbol)
+            service._reset_no_orderable_stall("overseas", symbol)
+
+            exit_reason: str | None = None
+            priority: tuple[int, float] | None = None
+            signal_snapshot = getattr(service, "_signal_cache", {}).get(symbol)
+            strategy_flag, entry_by, exit_by = service._get_strategy_labels(symbol, signal_snapshot)
+            if service._overseas_exit_price_guard_reason(
+                symbol=symbol,
+                quote=quote,
+                avg_price=avg_price,
+                holding_qty=(
+                    virtual_buy.qty
+                    if is_virtual_only and virtual_buy
+                    else real.quantity
+                    if real
+                    else 0
+                ),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+            ):
+                continue
+            if pnl_pct <= -config.overseas_stop_loss_pct:
+                exit_reason = "stop_loss"
+                priority = (0, pnl_pct)
+            elif pnl_pct >= config.overseas_take_profit_pct:
+                exit_reason = "take_profit"
+                priority = (1, -pnl_pct)
+
+            if exit_reason is None or priority is None:
+                continue
+
+            held_for_return = OverseasHeldPosition(
+                symbol=symbol,
+                exchange_code=real.exchange_code if real else quote.exchange_code,
+                quantity=real.quantity if real else 0,
+                orderable_qty=effective_orderable,
+                avg_price=avg_price,
+                current_price=quote.last_price,
+                pnl_pct=pnl_pct,
+                is_virtual=(real is None),
+            )
+            results.append((priority, quote, held_for_return, exit_reason, None))
+
+        already_exiting = {item[2].symbol.upper() for item in results}
+        for symbol, held in real_by_symbol.items():
+            if symbol in already_exiting:
+                continue
+            quote = quote_map.get(symbol)
+            if quote is None:
+                continue
+            pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
+            already_pending_qty = 0 if pending is None else pending[0]
+            remaining_real_orderable = max(0, held.orderable_qty - already_pending_qty)
+            if (
+                remaining_real_orderable <= 0
+                and service._is_no_orderable_retry_active("overseas", symbol)
+            ):
+                service._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                )
+                continue
+            effective_orderable = remaining_real_orderable
+            if effective_orderable <= 0 and held.quantity > already_pending_qty:
+                if service._cooldown_remaining_minutes("overseas", symbol) > 0:
+                    service._track_no_orderable_stall(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=held.quantity,
+                    )
+                    continue
+                effective_orderable = max(0, held.quantity - already_pending_qty)
+                if effective_orderable > 0:
+                    _logger.warning(
+                        "[EXIT] orderable_qty=0이지만 holding_qty=%d → 실주문 시도",
+                        held.quantity,
+                    )
+            if effective_orderable <= 0:
+                service._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                )
+                service._defer_no_orderable_position(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                    orderable_qty=effective_orderable,
+                )
+                continue
+            service._clear_no_orderable_retry("overseas", symbol)
+            service._reset_no_orderable_stall("overseas", symbol)
+            signal_snapshot = getattr(service, "_signal_cache", {}).get(held.symbol.upper())
+            if signal_snapshot is None:
+                continue
+            strategy_flag, entry_by, exit_by = service._get_strategy_labels(symbol, signal_snapshot)
+            if service._overseas_exit_price_guard_reason(
+                symbol=symbol,
+                quote=quote,
+                avg_price=held.avg_price,
+                holding_qty=held.quantity,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+            ):
+                continue
+            should_exit, exit_reason = service._should_exit_overseas_position(signal_snapshot, held)
+            if not should_exit:
+                continue
+            held_copy = OverseasHeldPosition(
+                symbol=held.symbol,
+                exchange_code=held.exchange_code,
+                quantity=held.quantity,
+                orderable_qty=effective_orderable,
+                avg_price=held.avg_price,
+                current_price=held.current_price,
+                pnl_pct=held.pnl_pct,
+                is_virtual=False,
+            )
+            results.append(((2, held.pnl_pct), quote, held_copy, exit_reason, signal_snapshot))
+
+        if not results:
+            return []
+
+        results.sort(key=lambda item: item[0])
+        return [
+            (quote, held, exit_reason, signal_snapshot)
+            for _, quote, held, exit_reason, signal_snapshot in results[:max_exits]
+        ]
+
     @staticmethod
     def remaining_overseas_entry_slots(
         positions: list["OverseasHeldPosition"],

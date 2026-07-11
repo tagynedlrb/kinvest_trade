@@ -1,5 +1,32 @@
 # WORKLOG
 
+## [2026-07-11] 지시문 #68 8차 반영 - `lab_overseas_orders.py` 2차 확장 (해외 매수 제출 위임)
+
+### 배경
+- 7차 분리 이후에도 해외 실주문 진입 메서드 `_place_overseas_test_order()`는 여전히
+  `liquidity_lab.py` 안에 남아 있었음
+- 이 메서드는 가상매수 fallback, 해외 미체결 정리, 체결 로그 저장까지 함께 품고 있어
+  이미 분리된 `OverseasOrderHelper` 쪽으로 이동시키면 해외 주문 계층의 책임이 더 자연스럽게 정리됨
+
+### 수정
+- `src/kinvest_trade/lab_overseas_orders.py`
+  - `OverseasOrderHelper.place_test_order()` 추가
+  - 해외 실매수 제출, 미체결 매수/매도 정리, 가상매수 fallback 로직 이관
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_place_overseas_test_order()`를 얇은 helper wrapper로 전환
+
+### 결과
+- `liquidity_lab.py`
+  - 6,346줄 → 5,835줄
+- 해외 주문 영역에서 남은 대형 잔존물은 실매도 제출 `_place_overseas_sell_order()` 중심으로 압축됨
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - `136 passed`
+  - `455 passed`
+
 ## [2026-07-11] 지시문 #68 7차 반영 - `lab_overseas_orders.py` 1차 분리 (가상 주문/포지션 라우팅)
 
 ### 배경

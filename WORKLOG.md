@@ -1,5 +1,33 @@
 # WORKLOG
 
+## [2026-07-11] telegram_control 분리 1차 - `telegram_orders.py` (주문 취소/감사 위임)
+
+### 배경
+- 전체 점검에서 `telegram_control.py`(4,542줄)가 `liquidity_lab.py`보다 커져 다음 분리
+  대상으로 지목됨. 사용자 피드백 7번(후속 개선 계속)에 따라 첫 증분을 진행
+- 분리 단위는 점검 때 식별해 둔 자연 경계 중 자립성이 가장 높은 "미체결 취소 + 실시간
+  미체결 조회 + 주문 감사 포맷" 영역(약 920줄)
+
+### 수정
+- `src/kinvest_trade/telegram_orders.py` 신설 (978줄)
+  - `OrderAdminHelper` 추가 — `lab_overseas_orders.py`와 동일한 helper 패턴
+    (controller 역참조, 본문 `self.` → `controller.` 치환)
+  - 이동 메서드 23개: 국내/해외 미체결 취소 프롬프트·실행·자동취소, bot 제출 주문
+    필터, `/lab_orders` 메시지 생성, 실시간 미체결 조회/파싱/포맷, 주문 감사 라인 포맷
+- `src/kinvest_trade/telegram_control.py`
+  - 4,542줄 → 3,779줄. 이동 메서드는 원 시그니처 그대로 얇은 wrapper로 전환
+  - `self.order_admin` 초기화 + `_get_order_admin_helper()` lazy 접근자 추가
+    (`__new__` 기반 테스트 인스턴스 보호, `liquidity_lab.py` 관용구 복사)
+- 순환 임포트/monkeypatch 대응
+  - 테스트가 `telegram_control` 모듈 레벨에서 패치하는 5개 이름(`KisRestClient`,
+    `LiquidityLabService`, `is_krx_holiday`, `is_krx_regular_session`, `is_nyse_holiday`)은
+    이동한 본문에서 메서드 내부 `from . import telegram_control as _tc` 지연 임포트로 참조
+    (모듈 상단 임포트는 순환이라 불가, 기존에 확인된 monkeypatch 함정 회피)
+
+### 검증
+- `python3 -m pytest -q` → `460 passed`
+- 양방향 임포트 순서 sanity check 통과
+
 ## [2026-07-11] 사용자 피드백 7건 반영 - 손절 확인 로직, 통합 포지션 한도, 전략 근거 검증
 
 ### 배경

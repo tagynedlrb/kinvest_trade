@@ -1,5 +1,35 @@
 # WORKLOG
 
+## [2026-07-11] 지시문 #68 6차 반영 - `lab_domestic_orders.py` 분리
+
+### 배경
+- 5차 분리 이후에도 `liquidity_lab.py` 안에는 국내 주문 실행 핵심 로직이 크게 남아 있었음
+  - `_place_domestic_test_order()`
+  - `_place_domestic_sell_order()`
+- 해당 메서드들은 주문 제출, 미체결 정정, 알림, 체결 로그, 상태 영속화가 한 덩어리로 묶여 있어
+  이후 해외 주문 흐름까지 분리하기 전에 먼저 시장 단위로 경계를 세우는 편이 안전했음
+
+### 수정
+- `src/kinvest_trade/lab_domestic_orders.py`
+  - `DomesticOrderHelper` 추가
+  - 국내 테스트 매수/실매도 주문 플로우를 helper로 이동
+- `src/kinvest_trade/liquidity_lab.py`
+  - `DomesticOrderHelper` import 및 `self.domestic_orders` 초기화
+  - `_get_domestic_order_helper()` 추가
+  - `_place_domestic_test_order()`, `_place_domestic_sell_order()`를 얇은 wrapper로 전환
+
+### 결과
+- `liquidity_lab.py`
+  - 7,438줄 → 6,777줄
+- 국내 주문 플로우가 독립 모듈로 분리되어, 다음 단계인 해외 주문 흐름 분리의 기준선 확보
+
+### 테스트
+- `python3 -m pytest tests/test_liquidity_lab.py -q`
+- `python3 -m pytest tests -q`
+- 결과
+  - `136 passed`
+  - `455 passed`
+
 ## [2026-07-11] 지시문 #68 5차 반영 - `lab_watch.py` 확장 (watch target 판정/선택 위임)
 
 ### 배경

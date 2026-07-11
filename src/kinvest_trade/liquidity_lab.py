@@ -271,6 +271,7 @@ class LiquidityLabService:
         self._session_start_logged: bool = False
         self._no_orderable_retry: dict[str, datetime] = {}
         self._exit_price_shock_guard: dict[str, dict[str, float | str]] = {}
+        self._stop_loss_confirm_guard: dict[str, dict[str, float | str]] = {}
         self._cycle_exit_reference_prices: dict[str, float] = {}
         self._recent_trade_count: int = 0
         self._recent_cycle_count: int = 0
@@ -1988,10 +1989,29 @@ class LiquidityLabService:
             )
         else:
             config_ll = self.config.liquidity_lab
+            open_domestic_symbols = {
+                position.stock_code.strip()
+                for position in domestic_positions
+                if position.stock_code.strip() and position.quantity > 0
+            }
+            open_overseas_symbols = {
+                position.symbol.strip().upper()
+                for position in monitored_overseas_positions
+                if position.symbol.strip() and position.quantity > 0
+            }
+            _max_total = int(getattr(config_ll, "max_concurrent_total_positions", 0) or 0)
+            remaining_total_slots = WatchStateHelper.remaining_total_position_slots(
+                open_domestic_count=len(open_domestic_symbols),
+                open_overseas_count=len(open_overseas_symbols),
+                max_total_positions=_max_total,
+            )
+            domestic_budget = int(getattr(config_ll, "max_concurrent_domestic_orders", 2))
+            if remaining_total_slots is not None:
+                domestic_budget = min(domestic_budget, remaining_total_slots)
             domestic_buy_targets = self._select_domestic_buy_targets(
                 domestic_ranked,
                 domestic_watch_targets,
-                max_concurrent=getattr(config_ll, "max_concurrent_domestic_orders", 2),
+                max_concurrent=domestic_budget,
             )
             domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
             _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
@@ -1999,17 +2019,29 @@ class LiquidityLabService:
                 monitored_overseas_positions,
                 max_positions=_max_os,
             )
+            total_cap_binds_overseas = False
+            if remaining_total_slots is not None:
+                overseas_total_budget = max(
+                    0, remaining_total_slots - len(domestic_buy_targets)
+                )
+                if overseas_total_budget < remaining_overseas_slots:
+                    remaining_overseas_slots = overseas_total_budget
+                    total_cap_binds_overseas = True
             if remaining_overseas_slots <= 0:
-                open_overseas_symbols = {
-                    position.symbol.strip().upper()
-                    for position in monitored_overseas_positions
-                    if position.symbol.strip() and position.quantity > 0
-                }
-                overseas_entry_block_reason = "overseas_position_cap_reached"
+                overseas_entry_block_reason = (
+                    "total_position_cap_reached"
+                    if total_cap_binds_overseas
+                    else "overseas_position_cap_reached"
+                )
                 overseas_entry_block_detail = {
                     "open_positions": len(open_overseas_symbols),
                     "max_positions": int(_max_os),
                 }
+                if total_cap_binds_overseas:
+                    overseas_entry_block_detail["open_total_positions"] = (
+                        len(open_domestic_symbols) + len(open_overseas_symbols)
+                    )
+                    overseas_entry_block_detail["max_total_positions"] = _max_total
                 overseas_buy_targets = []
                 overseas_buy_target = None
             else:
@@ -3087,6 +3119,109 @@ class LiquidityLabService:
             reason=reason,
             side="sell",
             price=last_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            stock_name=symbol,
+            activity_score=quote.activity_score,
+            holding_qty=holding_qty,
+        )
+        return reason
+
+    def _clear_overseas_stop_loss_confirm(self, symbol: str) -> None:
+        guard = getattr(self, "_stop_loss_confirm_guard", None)
+        if guard:
+            guard.pop(f"overseas:{symbol.strip().upper()}", None)
+
+    def _overseas_stop_loss_confirm_reason(
+        self,
+        *,
+        symbol: str,
+        quote: OverseasScanResult,
+        pnl_pct: float,
+        signal_snapshot: MovingAverageSnapshot | None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        exit_by: str = "",
+        holding_qty: int = 0,
+    ) -> str | None:
+        """
+        Guard the fixed stop-loss from transient one-print dips.
+
+        A stop triggered by a genuine breakdown (heavy sell volume on a down
+        bar), a loss already past the hard floor, or a dip that persists into
+        the next cycle exits immediately. Only a first-seen marginal dip with
+        no volume confirmation waits one cycle so a single anomalous print
+        does not sell a recoverable position.
+        """
+        config = self.config.liquidity_lab
+        if not getattr(config, "overseas_stop_loss_confirm_enabled", True):
+            return None
+        stop_pct = float(config.overseas_stop_loss_pct)
+        hard_multiplier = float(
+            getattr(config, "overseas_stop_loss_hard_multiplier", 2.0) or 2.0
+        )
+        if pnl_pct <= -(stop_pct * hard_multiplier):
+            self._clear_overseas_stop_loss_confirm(symbol)
+            return None
+        volume_confirm_ratio = float(
+            getattr(config, "overseas_stop_loss_volume_confirm_ratio", 1.5) or 1.5
+        )
+        if (
+            signal_snapshot is not None
+            and float(getattr(signal_snapshot, "volume_ratio", 0.0) or 0.0)
+            >= volume_confirm_ratio
+            and float(getattr(signal_snapshot, "intraday_bar_return", 0.0) or 0.0) < 0
+        ):
+            self._clear_overseas_stop_loss_confirm(symbol)
+            return None
+
+        guard = getattr(self, "_stop_loss_confirm_guard", None)
+        if guard is None:
+            guard = {}
+            self._stop_loss_confirm_guard = guard
+        key = f"overseas:{symbol.strip().upper()}"
+        now = datetime.now(timezone.utc)
+        previous = guard.get(key)
+        if previous is not None:
+            max_age_sec = int(
+                getattr(config, "overseas_stop_loss_confirm_max_age_sec", 600) or 600
+            )
+            seen_at = parse_datetime(str(previous.get("seen_at") or ""))
+            age_sec = (
+                (now - ensure_timezone(seen_at)).total_seconds()
+                if seen_at is not None
+                else max_age_sec + 1
+            )
+            if age_sec <= max_age_sec:
+                guard.pop(key, None)
+                self._save_event(
+                    event_type="trade_guard",
+                    market="overseas",
+                    symbol=symbol,
+                    detail={
+                        "reason": "stop_loss_confirmed",
+                        "pnl_pct": pnl_pct,
+                        "last_price": float(quote.last_price or 0.0),
+                        "waited_sec": round(age_sec, 1),
+                    },
+                )
+                return None
+
+        guard[key] = {
+            "price": float(quote.last_price or 0.0),
+            "pnl_pct": pnl_pct,
+            "seen_at": now.isoformat(),
+        }
+        reason = f"stop_loss_confirm_wait:{pnl_pct:+.1%}"
+        self._record_trade_skip(
+            market="overseas",
+            symbol=symbol,
+            exchange_code=quote.exchange_code,
+            reason=reason,
+            side="sell",
+            price=float(quote.last_price or 0.0),
+            signal_snapshot=signal_snapshot,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             exit_by=exit_by,

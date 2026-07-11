@@ -1117,11 +1117,30 @@ class WatchStateHelper:
             ):
                 continue
             if pnl_pct <= -config.overseas_stop_loss_pct:
+                if service._overseas_stop_loss_confirm_reason(
+                    symbol=symbol,
+                    quote=quote,
+                    pnl_pct=pnl_pct,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    holding_qty=(
+                        virtual_buy.qty
+                        if is_virtual_only and virtual_buy
+                        else real.quantity
+                        if real
+                        else 0
+                    ),
+                ):
+                    continue
                 exit_reason = "stop_loss"
                 priority = (0, pnl_pct)
-            elif pnl_pct >= config.overseas_take_profit_pct:
-                exit_reason = "take_profit"
-                priority = (1, -pnl_pct)
+            else:
+                service._clear_overseas_stop_loss_confirm(symbol)
+                if pnl_pct >= config.overseas_take_profit_pct:
+                    exit_reason = "take_profit"
+                    priority = (1, -pnl_pct)
 
             if exit_reason is None or priority is None:
                 continue
@@ -1238,6 +1257,20 @@ class WatchStateHelper:
             if position.symbol.strip() and position.quantity > 0
         }
         return max(0, int(max_positions) - len(open_symbols))
+
+    @staticmethod
+    def remaining_total_position_slots(
+        *,
+        open_domestic_count: int,
+        open_overseas_count: int,
+        max_total_positions: int,
+    ) -> int | None:
+        if max_total_positions <= 0:
+            return None
+        return max(
+            0,
+            int(max_total_positions) - int(open_domestic_count) - int(open_overseas_count),
+        )
 
     @staticmethod
     def select_primary_target(

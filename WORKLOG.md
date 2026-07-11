@@ -1,5 +1,75 @@
 # WORKLOG
 
+## [2026-07-11] 사용자 피드백 7건 반영 - 손절 확인 로직, 통합 포지션 한도, 전략 근거 검증
+
+### 배경
+- 텔레그램 변경점 요약에 대한 사용자 피드백 7건을 받아, 외부 레퍼런스 리서치(웹 검색
+  기반 다중 소스 교차검증)와 코드 조사(병렬 3건)를 먼저 수행한 뒤 필요한 것만 수정함
+
+### 항목별 결론
+1. **단독신호 차단 → 중복신호 요구가 올바른가?** (리서치 결과: 유지)
+   - 주류 트레이딩 교육/전략 소스들이 일관되게 "단독 지표보다 다중 지표 확인"을 권장
+     (VWAP+RSI/VWAP+거래량 조합 권장, VWAP 이탈은 거래량 동반 확인 요구, MACD는 ADX
+     동의 필요 등 — 검증 표결 3-0 다수). 짧은 타임프레임(1분봉)일수록 허위신호가 많아
+     확인 요구가 더 중요하다는 소스도 확인.
+   - 트레이드오프(신호 수 감소 vs 허위신호 감소)는 인지된 상태로, 손실이 확인된 해외
+     한정 차단이므로 현행 유지. 전략별 성과 추적(entry_by 라벨)은 계속 기록되므로
+     "전략 묶음 관리" 취지도 유지됨. 코드 변경 없음.
+2. **후보는 이미 고유동성인데 왜 별도 거래량 보류가 있나?** (조사 결과: 중복 아님, 유지)
+   - 후보 필터는 "종목 전반의 절대 유동성"(가격 하한, 일 거래대금, 스프레드) 검사.
+   - `overseas_min_strategy_volume_ratio`(0.8)는 "지금 이 순간 그 종목 자신의 평소
+     분봉 거래량 대비 비율" 검사 — 평소엔 유동성이 충분한 종목도 특정 분봉에서 거래가
+     말라붙는 순간(개장 직후/점심 소강 등)이 있고, 그 순간의 진입만 보류하는 것.
+   - 서로 다른 축이므로 중복이 아님. 코드 변경 없음. 텔레그램 브리핑으로 설명.
+3. **일시적 급락(단일 체결 wick)에 손절하지 않기** (리서치+구현)
+   - 기존 해외 고정 손절은 순수 가격(pnl_pct)만 보고 마지막 체결가 1건으로도 발동
+     가능했음. 거래량은 어떤 손절 트리거에도 사용되지 않았음(조사로 확인).
+   - 리서치 컨센서스: 거래량 동반 확인(가격 신호는 거래량이 같은 방향일 때 신뢰),
+     멀티바/시간 확인, ATR 기반 동적 스탑, 단 깊은 손실은 즉시 손절(하드 플로어).
+   - 구현: `_overseas_stop_loss_confirm_reason()` 신설 (`liquidity_lab.py`)
+     - 손절 기준을 갓 넘긴 첫 관측 + 거래량 미확인 → 한 사이클 대기(`stop_loss_confirm_wait`)
+     - 다음 사이클에도 손절권 → 지속성 확인으로 간주하고 손절 진행
+     - 분봉 거래량 1.5배 이상 급증 + 음봉(`overseas_stop_loss_volume_confirm_ratio`) → 즉시 손절
+     - 손실이 기준의 2.0배 초과(`overseas_stop_loss_hard_multiplier`) → 즉시 손절 (하드 플로어)
+     - 손절권 위로 회복 시 대기 기록 초기화, 대기 기록 10분 초과 시 재관측으로 취급
+   - ATR/모멘텀 계열 청산(`atr_hard_stop`, `momentum_loss_cut` 등)은 이미 2-of-3
+     다중조건 확인이 있어 손대지 않음.
+4. **국내/해외 한도 분리 이유?** (조사 결과: 기술적 사유 없음 → 합산 한도 신설)
+   - KIS 클라이언트는 국내/해외가 단일 세션·단일 토큰·공용 백오프를 쓰므로 트래픽
+     제약으로 분리할 이유 없음. WORKLOG 이력상 분리 한도는 순수 성과 기반 임의
+     튜닝이었음(해외 20→8 손실 때문, 국내 5→8 성과 좋아서).
+   - `max_concurrent_total_positions`(기본 10) 신설: 국내+해외 합산 보유 종목 수 상한.
+     기본값 10은 `slot_entry_pct=0.10` 기준 자본 100% 배치에 해당하는 구조적 근거값
+     (성과 튜닝 아님). 시장별 한도(8/8)는 유지하되, 사용자 지침대로 당분간 성과 기반
+     한도 조정은 하지 않음을 README에 명시.
+5. **20% 급등락 가드** (3번과 계층 분리로 정리)
+   - 기존 20% 쇼크 가드는 데이터 오류(이상 호가) 차단용으로 유지. 새 손절 확인(3번)이
+     현실적인 1~2% 급락 구간의 회복 가능성 판단을 담당. 두 계층의 역할 구분을 README에 명시.
+6. **개선 업데이트 후 lab start 기본 수행** — 운영 루틴에 반영(이번 배포부터 적용).
+7. **후속 개선 계속** — 다음 단계로 `telegram_control.py` 분리 작업 진행 예정.
+
+### 수정
+- `src/kinvest_trade/config.py`, `config/fixed_config.json`
+  - `max_concurrent_total_positions=10`, `overseas_stop_loss_confirm_enabled=true`,
+    `overseas_stop_loss_hard_multiplier=2.0`, `overseas_stop_loss_volume_confirm_ratio=1.5`,
+    `overseas_stop_loss_confirm_max_age_sec=600` 추가
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_overseas_stop_loss_confirm_reason()`, `_clear_overseas_stop_loss_confirm()` 추가
+  - `_run_cycle()` 매수 예산 계산에 합산 한도 반영, 합산 한도로 막히면
+    `total_position_cap_reached` 사유 기록
+- `src/kinvest_trade/lab_watch.py`
+  - 고정 손절 분기에서 확인 가드 호출, 손절권 회복 시 가드 해제
+  - `remaining_total_position_slots()` static helper 추가
+- `tests`
+  - 손절 확인 4종(한 사이클 대기 후 확인, 거래량 확인 즉시, 깊은 손실 즉시, 회복 시
+    가드 해제), 합산 한도 2종(슬롯 계산, `_run_cycle` skip 사유), config 로드 검증 추가
+  - 기존 우선순위 테스트는 `overseas_stop_loss_confirm_enabled=False`로 목적 유지
+
+### 검증
+- `python3 -m pytest -q` → `460 passed`
+- 기존 `test_overseas_exit_price_shock_requires_confirmation`(-35% 딥로스)은 하드
+  플로어 경로로 수정 없이 통과 — 깊은 손실의 즉시 손절 동작 보존 확인
+
 ## [2026-07-11] 전체 코드 점검 - 죽은 코드 제거, 중복 통합, README 정비
 
 ### 배경

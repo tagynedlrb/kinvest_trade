@@ -212,6 +212,7 @@ def test_select_overseas_exit_target_prioritizes_stop_loss() -> None:
                 {
                     "overseas_take_profit_pct": 0.012,
                     "overseas_stop_loss_pct": 0.008,
+                    "overseas_stop_loss_confirm_enabled": False,
                 },
             )()
         },
@@ -404,6 +405,137 @@ def test_overseas_exit_price_shock_requires_confirmation(tmp_path) -> None:
     assert len(second) == 1
     assert second[0][0].symbol == "PLBL"
     assert second[0][2] == "stop_loss"
+
+
+def _build_stop_loss_confirm_service(tmp_path, db_name: str) -> LiquidityLabService:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.025,
+                    "overseas_stop_loss_pct": 0.010,
+                    "overseas_exit_price_shock_pct": 0.20,
+                    "overseas_exit_price_shock_confirm_pct": 0.02,
+                    "overseas_exit_mid_mismatch_pct": 0.03,
+                },
+            )()
+        },
+    )()
+    service.repository = SqliteRepository(tmp_path / db_name)
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    service._exit_price_shock_guard = {}
+    service._stop_loss_confirm_guard = {}
+    service._cycle_exit_reference_prices = {}
+    service._cycle_count = 1
+    service._session_id = "test"
+    service._exit_cooldown = {}
+    service._dynamic_overseas_pool = []
+    return service
+
+
+def _stop_loss_confirm_fixtures(last_price: float, pnl_pct: float):
+    ranked = [
+        OverseasScanResult(
+            symbol="DIPX",
+            exchange_code="NASD",
+            last_price=last_price,
+            bid=last_price - 0.01,
+            ask=last_price + 0.01,
+            spread_pct=0.002,
+            change_rate_pct=-1.2,
+            volume=800_000,
+            orderable_qty=100,
+            fx_rate_krw=1350.0,
+            activity_score=5.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="DIPX",
+            exchange_code="NASD",
+            quantity=100,
+            orderable_qty=100,
+            avg_price=10.0,
+            current_price=last_price,
+            pnl_pct=pnl_pct,
+        )
+    ]
+    return ranked, held_positions
+
+
+def test_overseas_stop_loss_marginal_dip_requires_confirmation(tmp_path) -> None:
+    service = _build_stop_loss_confirm_service(tmp_path, "stop_confirm.db")
+    ranked, held_positions = _stop_loss_confirm_fixtures(9.88, -0.012)
+
+    first = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert first == []
+    with service.repository._connect() as conn:
+        skip_row = conn.execute(
+            "SELECT action_bias, action_reason FROM cycle_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert skip_row["action_bias"] == "SKIP"
+    assert "sell:stop_loss_confirm_wait" in skip_row["action_reason"]
+
+    second = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert len(second) == 1
+    assert second[0][0].symbol == "DIPX"
+    assert second[0][2] == "stop_loss"
+
+
+def test_overseas_stop_loss_volume_confirmed_exits_immediately(tmp_path) -> None:
+    service = _build_stop_loss_confirm_service(tmp_path, "stop_confirm_vol.db")
+    ranked, held_positions = _stop_loss_confirm_fixtures(9.88, -0.012)
+    service._signal_cache["DIPX"] = _snapshot(
+        volume_ratio=2.4,
+        intraday_bar_return=-0.006,
+    )
+
+    first = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert len(first) == 1
+    assert first[0][0].symbol == "DIPX"
+    assert first[0][2] == "stop_loss"
+
+
+def test_overseas_stop_loss_deep_loss_skips_confirmation(tmp_path) -> None:
+    service = _build_stop_loss_confirm_service(tmp_path, "stop_confirm_deep.db")
+    ranked, held_positions = _stop_loss_confirm_fixtures(9.70, -0.030)
+
+    first = asyncio.run(service._select_overseas_exit_targets(ranked, held_positions, max_exits=5))
+
+    assert len(first) == 1
+    assert first[0][0].symbol == "DIPX"
+    assert first[0][2] == "stop_loss"
+
+
+def test_overseas_stop_loss_recovery_clears_confirm_guard(tmp_path) -> None:
+    service = _build_stop_loss_confirm_service(tmp_path, "stop_confirm_recover.db")
+    dip_ranked, dip_positions = _stop_loss_confirm_fixtures(9.88, -0.012)
+
+    first = asyncio.run(service._select_overseas_exit_targets(dip_ranked, dip_positions, max_exits=5))
+    assert first == []
+    assert "overseas:DIPX" in service._stop_loss_confirm_guard
+
+    recovered_ranked, recovered_positions = _stop_loss_confirm_fixtures(9.98, -0.002)
+    recovered = asyncio.run(
+        service._select_overseas_exit_targets(recovered_ranked, recovered_positions, max_exits=5)
+    )
+    assert recovered == []
+    assert "overseas:DIPX" not in service._stop_loss_confirm_guard
+
+    dip_again = asyncio.run(
+        service._select_overseas_exit_targets(dip_ranked, dip_positions, max_exits=5)
+    )
+    assert dip_again == []
 
 
 def test_select_overseas_exit_targets_returns_multiple_candidates() -> None:
@@ -4103,6 +4235,122 @@ def test_run_reports_overseas_position_cap_reached_when_slots_full() -> None:
     assert report.overseas_order["reason"] == "overseas_position_cap_reached"
     assert report.overseas_order["open_positions"] == 1
     assert report.overseas_order["max_positions"] == 1
+
+
+def test_remaining_total_position_slots_counts_both_markets() -> None:
+    from kinvest_trade.lab_watch import WatchStateHelper
+
+    assert (
+        WatchStateHelper.remaining_total_position_slots(
+            open_domestic_count=4,
+            open_overseas_count=5,
+            max_total_positions=10,
+        )
+        == 1
+    )
+    assert (
+        WatchStateHelper.remaining_total_position_slots(
+            open_domestic_count=6,
+            open_overseas_count=5,
+            max_total_positions=10,
+        )
+        == 0
+    )
+    assert (
+        WatchStateHelper.remaining_total_position_slots(
+            open_domestic_count=6,
+            open_overseas_count=5,
+            max_total_positions=0,
+        )
+        is None
+    )
+
+
+def test_run_reports_total_position_cap_reached_when_combined_slots_full() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.max_concurrent_overseas_orders = 8
+    service.config.liquidity_lab.max_concurrent_total_positions = 1
+    candidate = OverseasScanResult(
+        "AMD",
+        "NASD",
+        155.0,
+        154.9,
+        155.1,
+        0.0012,
+        1.5,
+        800_000,
+        10,
+        1350.0,
+        17.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="HELD",
+        exchange_code="NASD",
+        quantity=10,
+        orderable_qty=10,
+        avg_price=100.0,
+        current_price=101.0,
+        pnl_pct=0.01,
+    )
+
+    async def fake_scan_overseas():
+        return [candidate], {"HELD"}
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return [held]
+
+    async def fake_select_overseas_exit_targets(*args, **kwargs):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return [
+            WatchTargetStatus(
+                "overseas",
+                "AMD",
+                "NASD",
+                155.0,
+                17.0,
+                12.0,
+                "BUY",
+                "BUY",
+                "20d>60d 9>21",
+                "[VOL] strategy_buy_signal",
+                0,
+                strategy_flag="VOL",
+                entry_by="VOL",
+            )
+        ]
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._load_virtual_overseas_positions = lambda overseas_ranked: []  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = (
+            original_is_us_orderable_session_for_env
+        )
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.overseas_order["skipped"] is True
+    assert report.overseas_order["reason"] == "total_position_cap_reached"
+    assert report.overseas_order["open_total_positions"] == 1
+    assert report.overseas_order["max_total_positions"] == 1
 
 
 def test_unified_watch_excludes_closed_market() -> None:

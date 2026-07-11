@@ -260,6 +260,7 @@ class LiquidityLabConfig:
     overseas_test_order_qty: int
     max_concurrent_overseas_orders: int
     max_concurrent_domestic_orders: int
+    max_concurrent_total_positions: int
     domestic_min_price_krw: int
     domestic_min_intraday_turnover_krw: int
     domestic_min_volume_sum: int
@@ -269,6 +270,10 @@ class LiquidityLabConfig:
     overseas_max_spread_pct: float
     overseas_take_profit_pct: float
     overseas_stop_loss_pct: float
+    overseas_stop_loss_confirm_enabled: bool
+    overseas_stop_loss_hard_multiplier: float
+    overseas_stop_loss_volume_confirm_ratio: float
+    overseas_stop_loss_confirm_max_age_sec: int
     overseas_max_position_qty: int
     overseas_min_strategy_volume_ratio: float
     overseas_block_standalone_vwap: bool
@@ -839,6 +844,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             max_concurrent_domestic_orders=int(
                 liquidity_lab_raw.get("max_concurrent_domestic_orders", 5)
             ),
+            max_concurrent_total_positions=int(
+                liquidity_lab_raw.get("max_concurrent_total_positions", 10)
+            ),
             domestic_min_price_krw=int(liquidity_lab_raw.get("domestic_min_price_krw", 3000)),
             domestic_min_intraday_turnover_krw=int(
                 liquidity_lab_raw.get("domestic_min_intraday_turnover_krw", 50_000_000_000)
@@ -850,6 +858,18 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             overseas_max_spread_pct=float(liquidity_lab_raw.get("overseas_max_spread_pct", 0.003)),
             overseas_take_profit_pct=float(liquidity_lab_raw.get("overseas_take_profit_pct", 0.012)),
             overseas_stop_loss_pct=float(liquidity_lab_raw.get("overseas_stop_loss_pct", 0.008)),
+            overseas_stop_loss_confirm_enabled=bool(
+                liquidity_lab_raw.get("overseas_stop_loss_confirm_enabled", True)
+            ),
+            overseas_stop_loss_hard_multiplier=float(
+                liquidity_lab_raw.get("overseas_stop_loss_hard_multiplier", 2.0)
+            ),
+            overseas_stop_loss_volume_confirm_ratio=float(
+                liquidity_lab_raw.get("overseas_stop_loss_volume_confirm_ratio", 1.5)
+            ),
+            overseas_stop_loss_confirm_max_age_sec=int(
+                liquidity_lab_raw.get("overseas_stop_loss_confirm_max_age_sec", 600)
+            ),
             overseas_max_position_qty=int(liquidity_lab_raw.get("overseas_max_position_qty", 1)),
             overseas_min_strategy_volume_ratio=float(
                 liquidity_lab_raw.get("overseas_min_strategy_volume_ratio", 0.8)

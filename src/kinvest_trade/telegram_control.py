@@ -287,12 +287,14 @@ class TelegramLiquidityLabController:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if stop_task in done:
-                self.mode = "stopped"
+                # SIGTERM(서비스 재시작/배포)은 사용자 정지 명령이 아니므로
+                # mode를 강제로 stopped로 바꾸지 않고 그대로 저장한다.
+                # running 상태에서 재시작하면 기동 후 루프가 자동 재개된다.
                 self._write_runtime_state()
             else:
                 await asyncio.gather(scheduler, command_loop)
         except asyncio.CancelledError:
-            self.mode = "stopped"
+            self._write_runtime_state()
         except Exception as exc:  # noqa: BLE001
             tb_str = traceback.format_exc()
             _logger.critical(

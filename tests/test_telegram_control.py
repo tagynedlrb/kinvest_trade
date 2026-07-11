@@ -3991,7 +3991,9 @@ def test_run_sigterm_handler_stops_without_system_exit() -> None:
         telegram_control_module._release_pid_lock = original_release
         telegram_control_module.signal.signal = original_signal
 
-    assert controller.mode == "stopped"
+    # SIGTERM(서비스 재시작)은 사용자 정지 명령이 아니므로 running 모드를 보존해
+    # 재기동 후 루프가 자동 재개된다.
+    assert controller.mode == "running"
     assert any(message.startswith("[KIS][TELEGRAM_CONTROL_START]") for message in controller.notifier.messages)
 
 

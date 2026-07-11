@@ -1,5 +1,25 @@
 # WORKLOG
 
+## [2026-07-11] 서비스 재시작 시 running 모드 보존 (SIGTERM 강제 stopped 제거)
+
+### 배경
+- 배포 루틴에서 `systemctl --user restart` 직후 거래 루프가 항상 `stopped`로 돌아가는
+  원인을 확인: `run()`의 SIGTERM 처리 경로가 `mode`를 무조건 `"stopped"`로 덮어쓰고
+  저장하고 있었음. 그동안 "루프가 자꾸 중지 상태로 발견되던" 현상의 주요 원인
+- 사용자 지침 6번("개선 업데이트 후 기본적으로 lab start 수행")을 구조적으로 구현:
+  서비스 재시작은 사용자의 정지 명령이 아니므로 이전 모드를 그대로 보존해야 함
+
+### 수정
+- `telegram_control.py` `run()`
+  - SIGTERM 수신 시 `mode`를 강제 변경하지 않고 현재 모드 그대로 저장
+  - running 상태에서 재시작하면 기동 후 루프 자동 재개, 사용자가 `/lab_stop`으로
+    정지시킨 상태라면 재시작 후에도 stopped 유지 (의도된 정지는 존중)
+- `tests/test_telegram_control.py`
+  - SIGTERM 테스트의 단언을 새 의미(running 보존)로 갱신
+
+### 검증
+- `python3 -m pytest -q` → `460 passed`
+
 ## [2026-07-11] telegram_control 분리 1차 - `telegram_orders.py` (주문 취소/감사 위임)
 
 ### 배경

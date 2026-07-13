@@ -89,14 +89,6 @@ MENU_CATEGORIES: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
-        "orders",
-        "🧾 주문 정리",
-        [
-            ("/lab_cancel_stale_domestic", "30분 이상 국내 미체결 취소 확인"),
-            ("/lab_cancel_stale_overseas", "30분 이상 해외 미체결 취소 확인"),
-        ],
-    ),
-    (
         "data",
         "🗄 데이터/성과 초기화",
         [
@@ -151,8 +143,6 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_report", "description": "기준일 전후 전략 성과 비교"},
     {"command": "lab_guard", "description": "전략 차단 상태"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
-    {"command": "lab_cancel_stale_domestic", "description": "장기 국내 미체결 취소 확인"},
-    {"command": "lab_cancel_stale_overseas", "description": "장기 해외 미체결 취소 확인"},
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_trim_virtual", "description": "가상보유 초과분 정리"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
@@ -588,18 +578,6 @@ class TelegramLiquidityLabController:
             return
         if command_name == "orders":
             await self._send_recent_order_events()
-            return
-        if command_name == "cancel_stale_domestic":
-            await self._send_cancel_stale_domestic_prompt()
-            return
-        if command_name == "cancel_stale_domestic_confirm":
-            await self._execute_cancel_stale_domestic_orders()
-            return
-        if command_name == "cancel_stale_overseas":
-            await self._send_cancel_stale_overseas_prompt()
-            return
-        if command_name == "cancel_stale_overseas_confirm":
-            await self._execute_cancel_stale_overseas_orders(source="manual")
             return
         if command_name == "paper_test":
             stock_code = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -1404,11 +1382,8 @@ class TelegramLiquidityLabController:
             f"미체결=국내 {domestic_count} / 해외 {overseas_count}",
             "주의=기존 미체결은 매도가능수량/중복주문에 영향을 줄 수 있음",
             "확인=/lab_orders",
+            "30분 이상 미체결은 자동으로 취소됩니다",
         ]
-        if domestic_count:
-            lines.append("국내장기취소=/lab_cancel_stale_domestic")
-        if overseas_count:
-            lines.append("해외장기취소=/lab_cancel_stale_overseas")
         return lines
 
     async def _handle_cb_reset(self) -> None:
@@ -2050,9 +2025,6 @@ class TelegramLiquidityLabController:
             )
         )
 
-    async def _send_cancel_stale_domestic_prompt(self) -> None:
-        await self._get_order_admin_helper().send_cancel_stale_domestic_prompt()
-
     async def _execute_cancel_stale_domestic_orders(
         self,
         *,
@@ -2065,9 +2037,6 @@ class TelegramLiquidityLabController:
             candidate_orders=candidate_orders,
             now=now,
         )
-
-    async def _send_cancel_stale_overseas_prompt(self) -> None:
-        await self._get_order_admin_helper().send_cancel_stale_overseas_prompt()
 
     async def _maybe_auto_cancel_stale_domestic_orders(
         self,
@@ -2141,9 +2110,6 @@ class TelegramLiquidityLabController:
 
     async def _load_live_open_overseas_orders(self, *, limit: int = 12) -> list[dict]:
         return await self._get_order_admin_helper().load_live_open_overseas_orders(limit=limit)
-
-    def _parse_live_open_overseas_order_rows(self, rows: list[dict], *, limit: int = 12) -> list[dict]:
-        return self._get_order_admin_helper().parse_live_open_overseas_order_rows(rows, limit=limit)
 
     def _format_live_open_overseas_order_line(self, row: dict) -> str:
         return self._get_order_admin_helper().format_live_open_overseas_order_line(row)
@@ -2535,10 +2501,6 @@ class TelegramLiquidityLabController:
             "/lab_report": "report",
             "/lab_guard": "guard",
             "/lab_orders": "orders",
-            "/lab_cancel_stale_domestic": "cancel_stale_domestic",
-            "/lab_cancel_stale_domestic_confirm": "cancel_stale_domestic_confirm",
-            "/lab_cancel_stale_overseas": "cancel_stale_overseas",
-            "/lab_cancel_stale_overseas_confirm": "cancel_stale_overseas_confirm",
             "/lab_portfolio": "portfolio",
             "/lab_trim_virtual": "trim_virtual",
             "/lab_trim_virtual_confirm": "trim_virtual_confirm",

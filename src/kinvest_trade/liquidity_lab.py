@@ -1037,16 +1037,13 @@ class LiquidityLabService:
         now_kst = datetime.now(timezone.utc).astimezone(KST)
         start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
         end_date = now_kst.strftime("%Y%m%d")
-        env = str(getattr(self.config.credentials, "env", "vps") or "vps")
-        side_filter = "00"
-        fill_filter = "00" if env != "prod" else "02"
         try:
             history = await self.client.get_overseas_order_history(
-                symbol="" if env != "prod" else symbol.upper(),
+                symbol=symbol.upper(),
                 start_date=start_date,
                 end_date=end_date,
-                side_filter=side_filter,
-                fill_filter=fill_filter,
+                side_filter="00",
+                fill_filter="02",
                 exchange_code=self._overseas_order_history_exchange_param(exchange_code),
                 sort_sqn="DS",
             )

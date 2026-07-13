@@ -36,16 +36,8 @@ def test_parse_command() -> None:
     )
     assert TelegramLiquidityLabController.parse_command("/lab_guard") == "guard"
     assert TelegramLiquidityLabController.parse_command("/lab_orders") == "orders"
-    assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic") == "cancel_stale_domestic"
-    assert (
-        TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic_confirm")
-        == "cancel_stale_domestic_confirm"
-    )
-    assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_overseas") == "cancel_stale_overseas"
-    assert (
-        TelegramLiquidityLabController.parse_command("/lab_cancel_stale_overseas_confirm")
-        == "cancel_stale_overseas_confirm"
-    )
+    assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_domestic") is None
+    assert TelegramLiquidityLabController.parse_command("/lab_cancel_stale_overseas") is None
     assert TelegramLiquidityLabController.parse_command("/lab_portfolio") == "portfolio"
     assert TelegramLiquidityLabController.parse_command("/lab_trim_virtual") == "trim_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_trim_virtual_confirm") == "trim_virtual_confirm"
@@ -707,8 +699,6 @@ def test_build_status_message_shows_live_open_order_counts() -> None:
 
     assert "미체결=국내 1 / 해외 2" in message
     assert "미체결확인=/lab_orders" in message
-    assert "국내장기취소=/lab_cancel_stale_domestic" in message
-    assert "해외장기취소=/lab_cancel_stale_overseas" in message
 
 
 def test_build_status_message_marks_mock_us_extended_session_not_orderable(monkeypatch) -> None:
@@ -763,7 +753,7 @@ def test_send_status_message_includes_live_open_order_counts() -> None:
     asyncio.run(controller._send_status_message())
 
     assert "미체결=국내 1 / 해외 0" in controller.notifier.messages[-1]
-    assert "국내장기취소=/lab_cancel_stale_domestic" in controller.notifier.messages[-1]
+    assert "미체결확인=/lab_orders" in controller.notifier.messages[-1]
 
 
 def test_build_watchlist_message_explains_missing_report() -> None:
@@ -2040,45 +2030,6 @@ def test_parse_live_open_domestic_order_rows_filters_closed_and_computes_open_qt
     assert parsed[0]["order_price"] == 6990.0
 
 
-def test_parse_live_open_overseas_order_rows_filters_zero_open_qty(tmp_path) -> None:
-    repository = SqliteRepository(tmp_path / "telegram_orders_parse_live.db")
-    controller = TelegramLiquidityLabController(
-        config=SimpleNamespace(
-            credentials=SimpleNamespace(profile_name="paper", env="vps"),
-            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
-            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
-            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
-        ),
-        repository=repository,
-        notifier=DummyNotifier(),
-    )
-
-    parsed = controller._parse_live_open_overseas_order_rows(
-        [
-            {
-                "pdno": "AAPL",
-                "nccs_qty": "0",
-                "odno": "zero",
-                "ft_ord_unpr3": "210.5",
-            },
-            {
-                "pdno": "MSFT",
-                "nccs_qty": "1,200",
-                "odno": "open",
-                "ft_ord_unpr3": "300.25",
-                "dmst_ord_dt": "20260710",
-                "thco_ord_tmd": "010203",
-            },
-        ]
-    )
-
-    assert len(parsed) == 1
-    assert parsed[0]["symbol"] == "MSFT"
-    assert parsed[0]["open_qty"] == 1200
-    assert parsed[0]["order_no"] == "open"
-    assert parsed[0]["order_price"] == 300.25
-
-
 def test_format_open_order_age_parts_marks_stale_order() -> None:
     now = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
     created_at = now - timedelta(minutes=95)
@@ -2118,72 +2069,6 @@ def test_format_live_open_domestic_order_line_marks_cancel_session_when_closed(t
 
     assert "주의=장기미체결" in line
     assert "취소가능=국내장중" in line
-
-
-def test_send_cancel_stale_domestic_prompt_lists_stale_orders(tmp_path) -> None:
-    repository = SqliteRepository(tmp_path / "telegram_cancel_prompt.db")
-    notifier = DummyNotifier()
-    controller = TelegramLiquidityLabController(
-        config=SimpleNamespace(
-            credentials=SimpleNamespace(profile_name="paper", env="vps"),
-            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
-            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
-            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
-        ),
-        repository=repository,
-        notifier=notifier,
-    )
-    row = {
-        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
-        "symbol": "073240",
-        "name": "금호타이어",
-        "sll_buy_dvsn_cd": "02",
-        "open_qty": 126,
-        "order_price": 6990,
-        "order_no": "0000013669",
-    }
-    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
-
-    asyncio.run(controller._send_cancel_stale_domestic_prompt())
-
-    message = notifier.messages[-1]
-    assert "[KIS][국내미체결취소]" in message
-    assert "대상=1건" in message
-    assert "073240(금호타이어) 매수미체결" in message
-    assert "실행=/lab_cancel_stale_domestic_confirm" in message
-
-
-def test_send_cancel_stale_overseas_prompt_lists_stale_orders(tmp_path) -> None:
-    repository = SqliteRepository(tmp_path / "telegram_cancel_overseas_prompt.db")
-    notifier = DummyNotifier()
-    controller = TelegramLiquidityLabController(
-        config=SimpleNamespace(
-            credentials=SimpleNamespace(profile_name="paper", env="vps"),
-            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
-            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
-            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
-        ),
-        repository=repository,
-        notifier=notifier,
-    )
-    row = {
-        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
-        "symbol": "AAPL",
-        "exchange_code": "NASD",
-        "sll_buy_dvsn_cd": "02",
-        "open_qty": 2,
-        "order_price": 210.5,
-        "order_no": "ov-001",
-    }
-    controller._load_live_open_overseas_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
-
-    asyncio.run(controller._send_cancel_stale_overseas_prompt())
-
-    message = notifier.messages[-1]
-    assert "[KIS][해외미체결취소]" in message
-    assert "대상=1건" in message
-    assert "해외 AAPL 매수미체결" in message
-    assert "실행=/lab_cancel_stale_overseas_confirm" in message
 
 
 def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> None:
@@ -2587,6 +2472,82 @@ def test_auto_cancel_overseas_uses_new_york_date_for_holiday_check(tmp_path) -> 
 
     assert result is False
     assert seen_dates == [date(2026, 7, 10)]
+
+
+def test_load_live_open_overseas_orders_queries_per_symbol_for_mock_env_too(tmp_path) -> None:
+    # Regression test for the CRAN incident: the vps/mock branch used to fetch
+    # ALL symbols in one unfiltered query (symbol="", fill_filter="00"), which
+    # the KIS mock caps at ~15 unpaginated rows -- once enough history piled
+    # up, a symbol's own open order fell off the page. Now both envs reuse the
+    # per-symbol loop (already fixed to always filter by symbol + fill_filter=02).
+    repository = SqliteRepository(tmp_path / "telegram_load_live_overseas.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    repository.save_broker_order_event(
+        created_at=datetime.now(timezone.utc).isoformat(),
+        market="overseas",
+        symbol="CRAN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=10,
+        requested_price=10.2,
+        status="SUBMITTED",
+        reason="pullback_entry",
+        broker_order_no="41501",
+        is_virtual=0,
+        payload={},
+    )
+
+    calls: list[dict] = []
+
+    class FakeKisClient:
+        def __init__(self, credentials) -> None:
+            self.credentials = credentials
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get_overseas_order_history(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "orders": [
+                    {
+                        "pdno": "CRAN",
+                        "sll_buy_dvsn_cd": "02",
+                        "nccs_qty": "4",
+                        "odno": "41501",
+                        "ft_ord_unpr3": "10.20000000",
+                        "dmst_ord_dt": "20260713",
+                        "thco_ord_tmd": "153721",
+                    }
+                ]
+            }
+
+    original_client = telegram_control_module.KisRestClient
+    telegram_control_module.KisRestClient = FakeKisClient
+    try:
+        results = asyncio.run(controller._load_live_open_overseas_orders())
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert len(calls) == 1
+    assert calls[0]["symbol"] == "CRAN"
+    assert calls[0]["fill_filter"] == "02"
+    assert len(results) == 1
+    assert results[0]["order_no"] == "41501"
+    assert results[0]["open_qty"] == 4
 
 
 def test_execute_cancel_stale_overseas_orders_records_cancel_event(tmp_path) -> None:
@@ -3390,8 +3351,7 @@ def test_handle_start_like_command_warns_about_live_open_orders() -> None:
     assert "미체결=국내 1 / 해외 2" in message
     assert "주의=기존 미체결은 매도가능수량/중복주문에 영향을 줄 수 있음" in message
     assert "확인=/lab_orders" in message
-    assert "국내장기취소=/lab_cancel_stale_domestic" in message
-    assert "해외장기취소=/lab_cancel_stale_overseas" in message
+    assert "30분 이상 미체결은 자동으로 취소됩니다" in message
 
 
 def test_handle_start_like_command_warns_about_virtual_position_cap(tmp_path) -> None:

@@ -24,46 +24,6 @@ class OrderAdminHelper:
     def __init__(self, controller: "TelegramLiquidityLabController") -> None:
         self.controller = controller
 
-    async def send_cancel_stale_domestic_prompt(self) -> None:
-        controller = self.controller
-        try:
-            live_open_orders = await controller._load_live_open_domestic_orders()
-        except Exception as exc:  # noqa: BLE001
-            await controller.notifier.send(
-                "\n".join(
-                    [
-                        "[KIS][국내미체결취소]",
-                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-                        "상태=조회실패",
-                        f"사유={str(exc)[:120]}",
-                    ]
-                )
-            )
-            return
-
-        stale_orders = controller._filter_stale_live_open_orders(live_open_orders)
-        lines = [
-            "[KIS][국내미체결취소]",
-            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-            "동작=확인",
-        ]
-        if not stale_orders:
-            lines.append("대상=없음 (30분 이상 국내 미체결 없음)")
-            await controller.notifier.send("\n".join(lines))
-            return
-        lines.append(f"대상={len(stale_orders)}건")
-        for row in stale_orders[:8]:
-            lines.append(controller._format_live_open_domestic_order_line(row))
-        if len(stale_orders) > 8:
-            lines.append(f"외 {len(stale_orders) - 8}건")
-        lines.extend(
-            [
-                "주의=확정 명령을 보내면 위 국내 미체결 주문을 KIS에 취소 요청합니다.",
-                "실행=/lab_cancel_stale_domestic_confirm",
-            ]
-        )
-        await controller.notifier.send("\n".join(lines))
-
     async def execute_cancel_stale_domestic_orders(
         self,
         *,
@@ -228,46 +188,6 @@ class OrderAdminHelper:
                 name = str(row.get("name") or row.get("prdt_name") or "").strip()
                 symbol_text = f"{symbol}({name})" if name else symbol
                 lines.append(f"{symbol_text} 취소요청 x{open_qty} 원주문={order_no} 취소주문={cancel_order_no}")
-        await controller.notifier.send("\n".join(lines))
-
-    async def send_cancel_stale_overseas_prompt(self) -> None:
-        controller = self.controller
-        try:
-            live_open_orders = await controller._load_live_open_overseas_orders()
-        except Exception as exc:  # noqa: BLE001
-            await controller.notifier.send(
-                "\n".join(
-                    [
-                        "[KIS][해외미체결취소]",
-                        f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-                        "상태=조회실패",
-                        f"사유={str(exc)[:120]}",
-                    ]
-                )
-            )
-            return
-
-        stale_orders = controller._filter_stale_live_open_orders(live_open_orders)
-        lines = [
-            "[KIS][해외미체결취소]",
-            f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-            "동작=확인",
-        ]
-        if not stale_orders:
-            lines.append("대상=없음 (30분 이상 해외 미체결 없음)")
-            await controller.notifier.send("\n".join(lines))
-            return
-        lines.append(f"대상={len(stale_orders)}건")
-        for row in stale_orders[:8]:
-            lines.append(controller._format_live_open_overseas_order_line(row))
-        if len(stale_orders) > 8:
-            lines.append(f"외 {len(stale_orders) - 8}건")
-        lines.extend(
-            [
-                "주의=확정 명령을 보내면 위 해외 미체결 주문을 KIS에 취소 요청합니다.",
-                "실행=/lab_cancel_stale_overseas_confirm",
-            ]
-        )
         await controller.notifier.send("\n".join(lines))
 
     async def maybe_auto_cancel_stale_domestic_orders(
@@ -750,23 +670,7 @@ class OrderAdminHelper:
         controller = self.controller
         from . import telegram_control as _tc
 
-        now_kst = datetime.now(timezone.utc).astimezone(KST)
-        start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
-        end_date = now_kst.strftime("%Y%m%d")
-        env = str(getattr(controller.config.credentials, "env", "vps") or "vps")
         async with _tc.KisRestClient(controller.config.credentials) as client:
-            if env != "prod":
-                history = await client.get_overseas_order_history(
-                    symbol="",
-                    start_date=start_date,
-                    end_date=end_date,
-                    side_filter="00",
-                    fill_filter="00",
-                    exchange_code="",
-                    sort_sqn="DS",
-                )
-                return controller._parse_live_open_overseas_order_rows(history.get("orders", []), limit=limit)
-
             service = _tc.LiquidityLabService(controller.config, client, controller.repository, controller.notifier)
             results: list[dict] = []
             seen: set[tuple[str, str]] = set()
@@ -794,28 +698,6 @@ class OrderAdminHelper:
                 key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
                 reverse=True,
             )[:limit]
-
-    def parse_live_open_overseas_order_rows(self, rows: list[dict], *, limit: int = 12) -> list[dict]:
-        controller = self.controller
-        from . import telegram_control as _tc
-
-        parsed: list[dict] = []
-        for row in rows:
-            open_qty = parse_kis_number(row.get("nccs_qty"))
-            if open_qty <= 0:
-                continue
-            item = dict(row)
-            item["open_qty"] = open_qty
-            item["symbol"] = str(row.get("pdno") or row.get("ovrs_pdno") or "").strip().upper()
-            item["order_no"] = str(row.get("odno") or "").strip()
-            item["order_price"] = controller._parse_float(row.get("ft_ord_unpr3"))
-            item["created_at"] = _tc.LiquidityLabService._parse_overseas_order_history_timestamp(row)
-            parsed.append(item)
-        parsed.sort(
-            key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
-        )
-        return parsed[:limit]
 
     def format_live_open_overseas_order_line(self, row: dict) -> str:
         controller = self.controller

@@ -1696,6 +1696,41 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     assert "수익률=-" in service.notifier.messages[0]
 
 
+def test_list_open_overseas_orders_always_filters_by_symbol_and_unfilled_only() -> None:
+    # Regression test: for env != "prod" (mock/paper), this used to query with
+    # symbol="" and fill_filter="00" (all statuses across all symbols). The KIS
+    # mock order-history endpoint returns only ~15 rows with no pagination, so
+    # once enough unrelated history accumulated for the day, a symbol's own
+    # still-open order scrolled off the page and _find_open_overseas_order
+    # wrongly returned None -> the duplicate-order-dedup check silently broke,
+    # letting the same symbol be bought over and over (CRAN incident,
+    # 2026-07-13: 60+ duplicate BUY orders for one symbol in 30 minutes).
+    calls: list[dict] = []
+
+    class CapturingClient:
+        async def get_overseas_order_history(self, **kwargs):
+            calls.append(kwargs)
+            return {"orders": []}
+
+    for env in ("vps", "prod"):
+        calls.clear()
+        service = LiquidityLabService.__new__(LiquidityLabService)
+        service.config = type(
+            "Config",
+            (),
+            {"credentials": type("Creds", (), {"env": env})()},
+        )()
+        service.client = CapturingClient()
+
+        asyncio.run(
+            service._list_open_overseas_orders(symbol="cran", exchange_code="NASD")
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["symbol"] == "CRAN"
+        assert calls[0]["fill_filter"] == "02"
+
+
 def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() -> None:
     service = _build_sell_service(
         pending_orders=[

@@ -220,10 +220,7 @@ class ReportHelper:
             lines.append(f"미체결=국내 {domestic_count} / 해외 {overseas_count}")
             if domestic_count or overseas_count:
                 lines.append("미체결확인=/lab_orders")
-            if domestic_count:
-                lines.append("국내장기취소=/lab_cancel_stale_domestic")
-            if overseas_count:
-                lines.append("해외장기취소=/lab_cancel_stale_overseas")
+                lines.append("30분 이상 미체결은 자동으로 취소됩니다")
         lines.extend(
             [
                 f"오류연속={controller._consecutive_errors}",

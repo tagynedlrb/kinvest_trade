@@ -1634,6 +1634,17 @@ class TelegramLiquidityLabController:
             last_report=last_report,
         )
 
+    def _detect_holding_mismatch_lines(
+        self,
+        real_positions: list[dict],
+        *,
+        virtual_manager: VirtualTradeManager | None = None,
+    ) -> list[str]:
+        return self._get_report_helper().detect_holding_mismatch_lines(
+            real_positions,
+            virtual_manager=virtual_manager,
+        )
+
     def _build_virtual_position_risk_lines(
         self,
         effective_positions: list[dict[str, object]],

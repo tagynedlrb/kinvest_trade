@@ -267,6 +267,142 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     ) in message
     assert "─── 정산 대기 매도 ───" in message
     assert "해외 TSLA(v) 수량=-1 가상매도가=$250.0000" in message
+
+
+def test_build_portfolio_message_flags_holding_mismatch(tmp_path) -> None:
+    # Regression test for a real incident: the trading loop's own cache
+    # (lab_symbol_state) tracked a real 522-share MSEX position, but the
+    # portfolio view (built from a possibly-stale/partial live refresh)
+    # displayed no overseas holdings at all, with no indication anything was
+    # wrong. This asserts that mismatch is now surfaced explicitly.
+    repository = SqliteRepository(tmp_path / "telegram_mismatch.db")
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        action_bias="SELL",
+        signal_state="SELL",
+        note="take_profit",
+        holding_qty=522,
+        last_price=55.47,
+        pnl_pct=0.025,
+        has_position=1,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "watch_targets": [],
+    }
+    controller.lab_service = SimpleNamespace(_last_overseas_available_usd=0.0)
+
+    message = controller._build_portfolio_message()
+
+    assert "─── 보유상태 불일치 ───" in message
+    assert "해외 MSEX 내부기록=522주 조회결과=없음" in message
+
+
+def test_build_portfolio_message_omits_mismatch_when_position_shown(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_no_mismatch.db")
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MSEX",
+        exchange_code="NASD",
+        action_bias="SELL",
+        signal_state="SELL",
+        note="take_profit",
+        holding_qty=522,
+        last_price=55.47,
+        pnl_pct=0.025,
+        has_position=1,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [
+            {
+                "market": "overseas",
+                "symbol": "MSEX",
+                "quantity": 522,
+                "avg_price": 54.104,
+                "current_price": 55.47,
+                "pnl_pct": 0.0252,
+                "currency": "USD",
+            }
+        ],
+        "watch_targets": [],
+    }
+    controller.lab_service = SimpleNamespace(_last_overseas_available_usd=0.0)
+
+    message = controller._build_portfolio_message()
+
+    assert "보유상태 불일치" not in message
+
+
+def test_build_portfolio_message_ignores_virtual_only_symbol_as_mismatch(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_virtual_ok.db")
+    virtual_manager = VirtualTradeManager(repository)
+    virtual_manager.record_buy(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="daytime",
+        reason="session_not_orderable_in_profile",
+        created_at="2026-06-30 19:55:00 KST",
+    )
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="virtual",
+        holding_qty=1,
+        last_price=20.0,
+        pnl_pct=0.0,
+        has_position=1,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.last_report_summary = {
+        "domestic_positions": [],
+        "overseas_positions": [],
+        "watch_targets": [],
+    }
+    controller.lab_service = SimpleNamespace(_last_overseas_available_usd=0.0)
+
+    message = controller._build_portfolio_message()
+
+    assert "보유상태 불일치" not in message
     assert "─── 누적 성과 (virtual) ───" in message
 
 

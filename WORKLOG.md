@@ -1,5 +1,51 @@
 # WORKLOG
 
+## [2026-07-13] MSEX 매도거부 조사 - `/lab_portfolio` 보유상태 불일치 감지 추가
+
+### 배경
+- 사용자 보고: 매도거부가 발생하면서 "현재 계정에서 거래 불가능"으로 표시되는데, 같은 시점
+  `/lab_portfolio`에는 해당 종목을 보유하지 않은 것으로 나온다는 불일치 제보
+- 실제 KIS 잔고를 직접 조회(`overseas-balance-check`)해서 확인한 결과:
+  - MSEX 522주 실보유 확인, `ord_psbl_qty=522`(전량 주문가능), +2.52% 수익 상태
+  - `lab_symbol_state`도 동일한 522주/평단가/현재가를 정확히 추적 중이었음
+  - 즉 "거래 불가능" 자체는 데이터 오류가 아니라 KIS 모의투자 API가 프리마켓/데이타임 등
+    정규장 외 시간에는 미국주식 주문 제출 자체를 막는 정책 때문이었음
+    (`is_us_orderable_session_for_env(env="vps")`는 `session=="regular"`일 때만 허용,
+    확인 시점은 `premarket`이라 정규장 시작(약 1시간 20분 후)까지 대기가 정상 동작)
+  - `is_us_regular_session()`은 이름과 달리 "시장이 완전히 닫힌 게 아니면 True"를 반환하는
+    함수라 `us_open` 판정과 `is_us_orderable_session_for_env`의 엄격한 `regular` 판정이
+    서로 다른 기준을 쓰는 것처럼 보였을 뿐, 실제로는 의도된 이중 기준(감시는 넓게, 모의투자
+    주문 제출은 정규장에만 좁게)이었음 — 여기서는 버그를 찾지 못함
+- 다만 `/lab_portfolio`의 "실보유 없음" 표시는 별개의 진짜 문제로 확인됨:
+  - `/lab_portfolio`는 메인 루프와 별개의 임시 `KisRestClient`로 실시간 잔고를 재조회하는데
+    (`_load_live_portfolio_positions`), 이 재조회가 부분적으로 실패하거나 예외가 나면
+    `_logger.warning`으로만 남고 화면에는 아무 표시 없이 조용히 빈 목록으로 대체됨
+  - 이 상태에서 `real_positions_override`가 빈 리스트(`[]`, `None`이 아님)로 전달되면
+    `build_portfolio_message`가 그걸 "진짜로 보유 없음"으로 그대로 표시 — 매매 루프 자신의
+    캐시(`lab_symbol_state`)는 정확히 522주를 추적 중인데도 화면은 다르게 보이는 정확히
+    이번 불일치 상황이 재현됨
+
+### 수정
+- `src/kinvest_trade/telegram_reports.py`
+  - `ReportHelper.detect_holding_mismatch_lines()` 추가: 화면에 표시되는 실보유 목록과
+    `lab_symbol_state.has_position=1`(가상보유 종목은 제외) 캐시를 대조해서, 루프는
+    보유중으로 기록했는데 화면에는 없는 종목을 찾아냄
+  - `build_portfolio_message()`에 `─── 보유상태 불일치 ───` 섹션 추가
+    (`내부기록=N주 조회결과=없음 조치=재조회 또는 /lab_orders 확인`)
+- `src/kinvest_trade/telegram_control.py`
+  - `_detect_holding_mismatch_lines()` 얇은 wrapper 추가
+- `README.md`
+  - `/lab_portfolio` 불일치 감지 동작 설명 추가
+
+### 검증
+- 실제 운영 DB로 직접 재현: `real_positions=[]`(재조회 실패 시나리오)를 넣으면 MSEX가
+  정확히 `해외 MSEX 내부기록=522주 조회결과=없음`으로 검출됨을 확인
+- `python3 -m pytest -q` → `475 passed` (신규 3개: 불일치 검출/정상표시/가상보유 제외)
+
+### 다음 단계
+- 이번엔 감지(경고 표시)까지만 구현. 재발 시 자동으로 라이브 재조회를 한 번 더 시도하는
+  자동 복구까지 붙이는 건 다음 단계로 미룸
+
 ## [2026-07-13] 주문거부 서킷브레이커 추가 + 국내 매수 100% 거부 사고 대응
 
 ### 배경

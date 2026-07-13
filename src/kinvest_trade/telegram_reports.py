@@ -650,6 +650,62 @@ class ReportHelper:
         lines.append(f"평균손익={format_pct(avg_pnl)}")
         return "\n".join(lines)
 
+    def detect_holding_mismatch_lines(
+        self,
+        real_positions: list[dict],
+        *,
+        virtual_manager: VirtualTradeManager | None = None,
+    ) -> list[str]:
+        """
+        Flag symbols the trading loop still tracks as a real, held position
+        (lab_symbol_state.has_position=1, not a virtual entry) but that don't
+        appear in the currently displayed real-position list. This catches
+        cases where a live balance refresh silently fails or returns a stale/
+        partial result and the portfolio view falls back to cached data that
+        no longer matches what the strategy is actually acting on.
+        """
+        controller = self.controller
+        repository = getattr(controller, "repository", None)
+        if repository is None:
+            return []
+        displayed = {
+            (
+                str(
+                    pos.get("market", "domestic" if pos.get("stock_code") else "overseas")
+                ).strip().lower(),
+                str(pos.get("symbol") or pos.get("stock_code") or "").strip().upper(),
+            )
+            for pos in real_positions
+        }
+        virtual_keys: set[tuple[str, str]] = set()
+        if virtual_manager is not None:
+            for position in virtual_manager.list_positions():
+                if position.qty > 0:
+                    virtual_keys.add(
+                        (str(position.market).strip().lower(), str(position.symbol).strip().upper())
+                    )
+        mismatches: list[str] = []
+        try:
+            rows = repository.list_lab_symbol_states(only_positions=True)
+        except Exception:  # noqa: BLE001
+            return []
+        for row in rows:
+            market = str(row.get("market", "overseas")).strip().lower()
+            symbol = str(row.get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            key = (market, symbol)
+            if key in virtual_keys or key in displayed:
+                continue
+            holding_qty = int(row.get("holding_qty", 0) or 0)
+            if holding_qty <= 0:
+                continue
+            mismatches.append(
+                f"{format_market_korean(market)} {symbol} 내부기록={holding_qty}주 "
+                f"조회결과=없음 조치=재조회 또는 /lab_orders 확인"
+            )
+        return mismatches
+
     def build_portfolio_message(
         self,
         real_positions_override: list[dict] | None = None,
@@ -769,6 +825,14 @@ class ReportHelper:
                 lines.extend(risk_lines)
 
         manager = VirtualTradeManager(controller.repository)
+        mismatch_lines = self.detect_holding_mismatch_lines(
+            real_positions,
+            virtual_manager=manager,
+        )
+        if mismatch_lines:
+            lines.append("─── 보유상태 불일치 ───")
+            lines.extend(mismatch_lines)
+
         effective_positions = controller._build_effective_positions(
             last_report,
             real_positions_override=real_positions,

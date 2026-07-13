@@ -4237,6 +4237,130 @@ def test_run_reports_overseas_position_cap_reached_when_slots_full() -> None:
     assert report.overseas_order["max_positions"] == 1
 
 
+def test_register_order_rejection_saves_event_via_real_save_event_hook() -> None:
+    # Regression test: CircuitBreakerManager._emit_event() used to call the
+    # event_hook positionally, but the real production hook (_save_event) only
+    # accepts keyword arguments, so cb_fired/cb_released events silently never
+    # reached the event_log table. Verify the real (non-lambda) hook now works.
+    service = _build_run_service()
+    service.config.risk.order_reject_threshold = 1
+
+    async def trip_breaker():
+        service._register_order_rejection(market="domestic", side="buy", error="boom")
+        await asyncio.sleep(0)
+
+    asyncio.run(trip_breaker())
+
+    events = service.repository.list_event_log(event_type="order_reject_cb_fired")
+    assert len(events) == 1
+    assert events[0]["event_type"] == "order_reject_cb_fired"
+
+
+def test_register_order_rejection_trips_breaker_and_notifies() -> None:
+    service = _build_run_service()
+    service.config.risk.order_reject_threshold = 2
+    service.config.risk.order_reject_window_minutes = 15
+    service.config.risk.order_reject_cooldown_minutes = 30
+
+    async def run_case():
+        for _ in range(2):
+            service._register_order_rejection(
+                market="domestic", side="buy", error="IGW00007 전문바디 구성 오류"
+            )
+        await asyncio.sleep(0)
+
+    asyncio.run(run_case())
+
+    assert service._is_order_reject_halted(market="domestic", side="buy") is True
+    assert service._is_order_reject_halted(market="domestic", side="sell") is False
+    assert service._is_order_reject_halted(market="overseas", side="buy") is False
+    assert any(
+        "주문거부 서킷브레이커 발동" in message and "IGW00007" in message
+        for message in service.notifier.messages
+    )
+
+
+def test_run_reports_overseas_order_reject_halted_when_breaker_tripped() -> None:
+    service = _build_run_service()
+    service.config.risk.order_reject_threshold = 1
+
+    async def trip_breaker():
+        service._register_order_rejection(market="overseas", side="buy", error="boom")
+        await asyncio.sleep(0)
+
+    asyncio.run(trip_breaker())
+    candidate = OverseasScanResult(
+        "AMD",
+        "NASD",
+        155.0,
+        154.9,
+        155.1,
+        0.0012,
+        1.5,
+        800_000,
+        10,
+        1350.0,
+        17.0,
+    )
+
+    async def fake_scan_overseas():
+        return [candidate], set()
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return []
+
+    async def fake_select_overseas_exit_targets(*args, **kwargs):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return [
+            WatchTargetStatus(
+                "overseas",
+                "AMD",
+                "NASD",
+                155.0,
+                17.0,
+                12.0,
+                "BUY",
+                "BUY",
+                "20d>60d 9>21",
+                "[VOL] strategy_buy_signal",
+                0,
+                strategy_flag="VOL",
+                entry_by="VOL",
+            )
+        ]
+
+    service.scan_domestic = lambda: []  # type: ignore[method-assign]
+    service._load_domestic_positions = lambda domestic_ranked: []  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._load_virtual_overseas_positions = lambda overseas_ranked: []  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
+    liquidity_lab_module.get_us_trading_session = lambda now: "regular"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = (
+            original_is_us_orderable_session_for_env
+        )
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.overseas_order["skipped"] is True
+    assert report.overseas_order["reason"] == "overseas_order_reject_halted"
+
+
 def test_remaining_total_position_slots_counts_both_markets() -> None:
     from kinvest_trade.lab_watch import WatchStateHelper
 

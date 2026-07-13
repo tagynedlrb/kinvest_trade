@@ -13,6 +13,9 @@ def _build_config():
             max_consecutive_losses=3,
             circuit_breaker_cooldown_minutes=30,
             operating_capital_krw=50_000_000,
+            order_reject_threshold=3,
+            order_reject_window_minutes=15,
+            order_reject_cooldown_minutes=30,
         )
     )
 
@@ -127,3 +130,91 @@ def test_circuit_breaker_resets_daily_state_on_new_kst_day() -> None:
     assert manager.session_realised_krw_overseas == 0.0
     assert manager.daily_halted_at is None
     assert manager.overseas_cb_active is False
+
+
+def test_order_reject_breaker_trips_after_threshold_within_window() -> None:
+    events: list[tuple[str, dict]] = []
+    manager = CircuitBreakerManager(
+        _build_config(),
+        event_hook=lambda event_type, detail: events.append((event_type, detail)),
+    )
+
+    assert manager.record_order_rejection(market="domestic", side="buy", error="e1") is False
+    assert manager.record_order_rejection(market="domestic", side="buy", error="e2") is False
+    tripped = manager.record_order_rejection(market="domestic", side="buy", error="e3")
+
+    assert tripped is True
+    assert manager.is_order_reject_halted(market="domestic", side="buy") is True
+    assert events[-1][0] == "order_reject_cb_fired"
+    assert events[-1][1]["market"] == "domestic"
+    assert events[-1][1]["side"] == "buy"
+    assert events[-1][1]["count"] == 3
+
+
+def test_order_reject_breaker_is_per_market_and_side() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    for _ in range(3):
+        manager.record_order_rejection(market="domestic", side="buy", error="e")
+
+    assert manager.is_order_reject_halted(market="domestic", side="buy") is True
+    assert manager.is_order_reject_halted(market="domestic", side="sell") is False
+    assert manager.is_order_reject_halted(market="overseas", side="buy") is False
+
+
+def test_order_reject_breaker_ignores_old_rejections_outside_window() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    now = datetime.now(timezone.utc)
+    old_key = manager._reject_key("domestic", "buy")
+    manager._order_reject_history[old_key] = [
+        now - timedelta(minutes=20),
+        now - timedelta(minutes=18),
+    ]
+
+    tripped = manager.record_order_rejection(market="domestic", side="buy", error="e")
+
+    assert tripped is False
+    assert manager.is_order_reject_halted(market="domestic", side="buy") is False
+
+
+def test_order_reject_breaker_auto_releases_after_cooldown() -> None:
+    async def run_case() -> None:
+        messages: list[str] = []
+        manager = CircuitBreakerManager(
+            _build_config(), notify_hook=lambda message: messages.append(message)
+        )
+        for _ in range(3):
+            manager.record_order_rejection(market="overseas", side="buy", error="e")
+        key = manager._reject_key("overseas", "buy")
+        manager._order_reject_halted_at[key] = datetime.now(timezone.utc) - timedelta(minutes=31)
+
+        assert manager.is_order_reject_halted(market="overseas", side="buy") is False
+        assert manager.order_reject_status() == {}
+        assert messages == [
+            "✅ 주문거부 서킷브레이커 자동 해제\n"
+            "대상=overseas/buy 쿨다운 30분 완료 → 신규 주문 재개"
+        ]
+
+    asyncio.run(run_case())
+
+
+def test_order_reject_breaker_disabled_when_threshold_zero() -> None:
+    config = _build_config()
+    config.risk.order_reject_threshold = 0
+    manager = CircuitBreakerManager(config)
+
+    for _ in range(10):
+        tripped = manager.record_order_rejection(market="domestic", side="buy", error="e")
+        assert tripped is False
+    assert manager.is_order_reject_halted(market="domestic", side="buy") is False
+
+
+def test_reset_order_rejections_clears_all_state() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    for _ in range(3):
+        manager.record_order_rejection(market="domestic", side="buy", error="e")
+    assert manager.is_order_reject_halted(market="domestic", side="buy") is True
+
+    manager.reset_order_rejections()
+
+    assert manager.is_order_reject_halted(market="domestic", side="buy") is False
+    assert manager.order_reject_status() == {}

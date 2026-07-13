@@ -2008,6 +2008,9 @@ class LiquidityLabService:
             domestic_budget = int(getattr(config_ll, "max_concurrent_domestic_orders", 2))
             if remaining_total_slots is not None:
                 domestic_budget = min(domestic_budget, remaining_total_slots)
+            domestic_reject_halted = self._is_order_reject_halted(market="domestic", side="buy")
+            if domestic_reject_halted:
+                domestic_budget = 0
             domestic_buy_targets = self._select_domestic_buy_targets(
                 domestic_ranked,
                 domestic_watch_targets,
@@ -2019,6 +2022,9 @@ class LiquidityLabService:
                 monitored_overseas_positions,
                 max_positions=_max_os,
             )
+            overseas_reject_halted = self._is_order_reject_halted(market="overseas", side="buy")
+            if overseas_reject_halted:
+                remaining_overseas_slots = 0
             total_cap_binds_overseas = False
             if remaining_total_slots is not None:
                 overseas_total_budget = max(
@@ -2029,7 +2035,9 @@ class LiquidityLabService:
                     total_cap_binds_overseas = True
             if remaining_overseas_slots <= 0:
                 overseas_entry_block_reason = (
-                    "total_position_cap_reached"
+                    "overseas_order_reject_halted"
+                    if overseas_reject_halted
+                    else "total_position_cap_reached"
                     if total_cap_binds_overseas
                     else "overseas_position_cap_reached"
                 )
@@ -2052,7 +2060,10 @@ class LiquidityLabService:
                     held_positions=monitored_overseas_positions,
                 )
                 overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
-        domestic_order: dict = {"skipped": True, "reason": "no_action"}
+        domestic_order: dict = {
+            "skipped": True,
+            "reason": "domestic_order_reject_halted" if domestic_reject_halted else "no_action",
+        }
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
         domestic_orders: list[dict] = []
         overseas_orders: list[dict] = []
@@ -4475,6 +4486,39 @@ class LiquidityLabService:
         cb = self._get_circuit_breaker()
         self._sync_circuit_breaker_legacy_state(cb)
         return int(cb.is_active)
+
+    def _register_order_rejection(self, *, market: str, side: str, error: str = "") -> None:
+        cb = self._get_circuit_breaker()
+        tripped = cb.record_order_rejection(market=market, side=side, error=error)
+        if not tripped:
+            return
+        risk = getattr(self.config, "risk", None)
+        threshold = int(getattr(risk, "order_reject_threshold", 5) or 5)
+        window_minutes = int(getattr(risk, "order_reject_window_minutes", 15) or 15)
+        cooldown_minutes = int(getattr(risk, "order_reject_cooldown_minutes", 30) or 30)
+        _logger.warning(
+            "[CB] 주문거부 서킷브레이커 발동 대상=%s/%s 최근%d분 %d회 이상 error=%s",
+            market,
+            side,
+            window_minutes,
+            threshold,
+            error,
+        )
+        notifier = getattr(self, "notifier", None)
+        if notifier is not None and getattr(notifier, "enabled", True):
+            asyncio.create_task(
+                notifier.send(
+                    "⛔ 주문거부 서킷브레이커 발동\n"
+                    f"대상={format_market_korean(market)}/{side}\n"
+                    f"최근 {window_minutes}분 내 {threshold}회 이상 주문거부\n"
+                    f"오류={str(error)[:150]}\n"
+                    f"조치={cooldown_minutes}분간 해당 시장/방향 신규 주문 중단"
+                )
+            )
+
+    def _is_order_reject_halted(self, *, market: str, side: str) -> bool:
+        cb = self._get_circuit_breaker()
+        return cb.is_order_reject_halted(market=market, side=side)
 
     def _pool_size_for_market(self, market: str) -> int:
         market_key = market.strip().lower()

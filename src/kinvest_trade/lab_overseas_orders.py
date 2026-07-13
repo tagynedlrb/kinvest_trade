@@ -376,6 +376,7 @@ class OverseasOrderHelper:
                     signal_snapshot=signal_snapshot,
                     rejected_error=error_text,
                 )
+            service._register_order_rejection(market="overseas", side="buy", error=error_text)
             service._record_trade_skip(
                 market="overseas",
                 symbol=candidate.symbol,
@@ -1009,6 +1010,9 @@ class OverseasOrderHelper:
             )
             if reject_reason == "order_rejected":
                 service._set_exit_cooldown_minutes("overseas", candidate.symbol, 20)
+                service._register_order_rejection(
+                    market="overseas", side="sell", error=error_text
+                )
                 _logger.warning(
                     "[SELL] order_rejected %s -> 20분 쿨다운 등록 (error=%s)",
                     candidate.symbol,

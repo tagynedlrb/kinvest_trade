@@ -143,7 +143,10 @@
         "daily_loss_limit_pct": 0.02,
         "max_consecutive_losses": 3,
         "circuit_breaker_cooldown_minutes": 30,
-        "operating_capital_krw": 50000000
+        "operating_capital_krw": 50000000,
+        "order_reject_threshold": 5,
+        "order_reject_window_minutes": 15,
+        "order_reject_cooldown_minutes": 30
     },
     "storage": {
         "db_path": "data/trading.db",
@@ -234,6 +237,14 @@
         "leveraged_etf_symbols": ["TQQQ", "SOXL"]
     },
     "_strategy_changes": [
+        {
+            "date": "2026-07-13",
+            "desc": "주문거부 서킷브레이커 추가(threshold5/window15m/cooldown30m)"
+        },
+        {
+            "date": "2026-07-12",
+            "desc": "해외SL확인가드(hard2x/vol1.5x)/총보유한도10"
+        },
         {
             "date": "2026-07-10",
             "desc": "VWAP단독차단/RSI임계30/SL1%/min_hold12"

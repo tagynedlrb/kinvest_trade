@@ -16,7 +16,7 @@
 - `src/kinvest_trade/lab_overseas_orders.py`: 해외 실주문(매수/매도) 제출, 가상매수 fallback, 미체결 정정, 체결 로그
 - `src/kinvest_trade/lab_positions.py`: 실보유/가상보유 통합 포지션 트래커, 가상거래 관리자
 - `src/kinvest_trade/lab_runtime.py`: 쿨다운/재시도/체결확정 대기 등 사이클 간 런타임 상태
-- `src/kinvest_trade/lab_risk.py`: 연속손절·일일손실 서킷브레이커 상태 관리
+- `src/kinvest_trade/lab_risk.py`: 연속손절·일일손실 서킷브레이커, 주문거부 서킷브레이커 상태 관리
 - `src/kinvest_trade/lab_notify.py`: 거래 알림 큐/배치 전송
   - (위 `lab_*.py`는 원래 `liquidity_lab.py` 한 파일이었으나, 8,700줄을 넘기며 유지보수가
     어려워져 성격별로 분리했다. 각 파일은 `LiquidityLabService` 인스턴스를 `service`로 받아
@@ -301,6 +301,7 @@ python3 main.py liquidity-lab
 - 기본 매수와 일반 익절/시간청산은 지정가로 제출한다. 다만 `손절`, `ATR 하드스탑`, `모멘텀 손절`, `추세 이탈 손절`, `손실 상태 시간청산` 같은 보호성 청산은 체결력을 우선한다.
 - 보호성 청산 주문은 국내는 시장가(`ORD_DVSN=01`, 제출가 0), 해외 실계좌는 시장가, 해외 모의투자는 KIS 안정성을 위해 기준 호가의 공격지정가(`ORD_DVSN=00`)로 제출한다.
 - 손익 계산과 텔레그램 표시는 실제 제출가 0이 아니라 청산 판단 당시의 기준 호가(`reference_price`)를 사용한다. 내부 broker audit에는 `order_kind`, `order_division`, `requested_price`, `reference_price`를 함께 기록한다.
+- **주문거부 서킷브레이커**: 매도 주문거부는 시장별로 개별 종목 쿨다운(국내 10분/해외 20분)을 걸지만, 매수 주문거부에는 원래 아무 백오프가 없어 같은 오류가 나는 동안 사이클마다 계속 재시도했다. 이제 시장×방향(`domestic:buy`, `overseas:sell` 등) 기준으로 최근 `order_reject_window_minutes`(기본 15분) 안에 `order_reject_threshold`(기본 5)회 이상 주문거부가 쌓이면 그 시장/방향의 신규 주문을 `order_reject_cooldown_minutes`(기본 30분) 동안 중단하고, KIS가 반환한 실제 오류 메시지를 담아 텔레그램으로 즉시 알린다. `/lab_guard`에 `주문거부차단=` 줄로 현재 차단 대상과 누적 건수를 보여주고, `/lab_cb_reset`으로 즉시 해제할 수 있다. `order_reject_threshold=0`이면 기능을 끈다.
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
 - 국내: `005930`, `000660`, `035420`, `419050`, `023410`, `010170`, `034940`
@@ -354,7 +355,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_reset_confirm`: `/lab_reset`이 제시한 초기화 실행(메뉴에는 숨김)
 - `/lab_relist`: 해외 감시 풀을 수동 종목 목록으로 교체(TV 스캔 대신 특정 종목만 보고 싶을 때)
 - `/lab_relist_schedule`: 해외 relist 관련 알림 시간 설정
-- `/lab_cb_reset`: 연속손절/일일손실 서킷브레이커 강제 해제
+- `/lab_cb_reset`: 연속손절/일일손실 서킷브레이커 및 주문거부 서킷브레이커 강제 해제
 - `/lab_gitlog`: 당일 거래/이벤트 로그를 CSV로 정리해 GitHub 저장소에 업로드
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회

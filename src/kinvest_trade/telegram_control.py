@@ -1139,9 +1139,13 @@ class TelegramLiquidityLabController:
         previous = int(getattr(self.lab_service, "_consecutive_losses", 0) or 0)
         setattr(self.lab_service, "_consecutive_losses", 0)
         setattr(self.lab_service, "_halted_at", None)
+        reject_cb = getattr(self.lab_service, "cb", None)
+        if reject_cb is not None:
+            reject_cb.reset_order_rejections()
         await self.notifier.send(
             f"✅ 서킷브레이커 수동 해제\n"
             f"연속손절 카운터: {previous} → 0\n"
+            f"주문거부 서킷브레이커도 함께 초기화\n"
             f"다음 사이클부터 매수 재개"
         )
 

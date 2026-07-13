@@ -1475,6 +1475,12 @@ class ReportHelper:
             hard_blocks.append("해외 VOL단독")
         if hard_blocks:
             lines.insert(6, f"고정차단={','.join(hard_blocks)}")
+        reject_cb = getattr(controller.lab_service, "cb", None)
+        reject_status = reject_cb.order_reject_status() if reject_cb is not None else {}
+        active_rejects = {key: v for key, v in reject_status.items() if v.get("halted")}
+        if active_rejects:
+            parts = [f"{key}({v['count']}회)" for key, v in sorted(active_rejects.items())]
+            lines.append(f"주문거부차단={','.join(parts)} 확인=/lab_cb_reset")
         if not enabled:
             return "\n".join(lines)
         if not hasattr(controller.repository, "get_recent_strategy_guard_performance"):

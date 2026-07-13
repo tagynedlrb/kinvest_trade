@@ -95,6 +95,7 @@ class DomesticOrderHelper:
             )
         except KisApiError as exc:
             error_text = str(exc)
+            service._register_order_rejection(market="domestic", side="buy", error=error_text)
             service._record_trade_skip(
                 market="domestic",
                 symbol=candidate.stock_code,
@@ -487,6 +488,7 @@ class DomesticOrderHelper:
         except KisApiError as exc:
             error_text = str(exc)
             service._set_exit_cooldown_minutes("domestic", candidate.stock_code, 10)
+            service._register_order_rejection(market="domestic", side="sell", error=error_text)
             _logger.warning(
                 "[SELL] domestic order_rejected %s -> 10분 쿨다운 등록 (error=%s)",
                 candidate.stock_code,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
 from .config import AppConfig
@@ -39,6 +39,8 @@ class CircuitBreakerManager:
         self._daily_halted_at: datetime | None = None
         self._last_cb_released_at: datetime | None = None
         self._overseas_cb_active: bool = False
+        self._order_reject_history: dict[str, list[datetime]] = {}
+        self._order_reject_halted_at: dict[str, datetime] = {}
 
     def load_state(
         self,
@@ -137,6 +139,82 @@ class CircuitBreakerManager:
         self._halted_at = None
         self._daily_halted_at = None
         self._overseas_cb_active = False
+
+    @staticmethod
+    def _reject_key(market: str, side: str) -> str:
+        return f"{str(market).strip().lower()}:{str(side).strip().lower()}"
+
+    def record_order_rejection(self, *, market: str, side: str, error: str = "") -> bool:
+        """Record a rejected order attempt; returns True if this call trips the breaker."""
+        risk = getattr(self._config, "risk", None)
+        threshold = int(getattr(risk, "order_reject_threshold", 0) or 0) if risk else 0
+        if threshold <= 0:
+            return False
+        key = self._reject_key(market, side)
+        if key in self._order_reject_halted_at:
+            return False
+        window_minutes = int(getattr(risk, "order_reject_window_minutes", 15) or 15)
+        now = datetime.now(timezone.utc)
+        history = self._order_reject_history.setdefault(key, [])
+        history.append(now)
+        cutoff = now - timedelta(minutes=window_minutes)
+        history[:] = [ts for ts in history if ensure_timezone(ts) >= cutoff]
+        if len(history) < threshold:
+            return False
+        self._order_reject_halted_at[key] = now
+        self._emit_event(
+            "order_reject_cb_fired",
+            {
+                "market": market,
+                "side": side,
+                "count": len(history),
+                "window_min": window_minutes,
+                "error": str(error)[:200],
+            },
+        )
+        return True
+
+    def is_order_reject_halted(self, *, market: str, side: str) -> bool:
+        key = self._reject_key(market, side)
+        halted_at = self._order_reject_halted_at.get(key)
+        if halted_at is None:
+            return False
+        risk = getattr(self._config, "risk", None)
+        cooldown_minutes = int(
+            getattr(risk, "order_reject_cooldown_minutes", 30) or 30
+        ) if risk else 30
+        elapsed_minutes = (
+            datetime.now(timezone.utc) - ensure_timezone(halted_at)
+        ).total_seconds() / 60
+        if elapsed_minutes < cooldown_minutes:
+            return True
+        self._order_reject_halted_at.pop(key, None)
+        self._order_reject_history.pop(key, None)
+        _logger.info(
+            "[CB] 주문거부 서킷브레이커 자동 해제 대상=%s (%.0f분 경과)",
+            key,
+            elapsed_minutes,
+        )
+        self._emit_event(
+            "order_reject_cb_released",
+            {"market": market, "side": side, "elapsed_min": round(elapsed_minutes, 1)},
+        )
+        self._schedule_notification(
+            f"✅ 주문거부 서킷브레이커 자동 해제\n"
+            f"대상={market}/{side} 쿨다운 {cooldown_minutes}분 완료 → 신규 주문 재개"
+        )
+        return False
+
+    def order_reject_status(self) -> dict[str, dict[str, object]]:
+        return {
+            key: {"count": len(history), "halted": key in self._order_reject_halted_at}
+            for key, history in self._order_reject_history.items()
+            if history
+        }
+
+    def reset_order_rejections(self) -> None:
+        self._order_reject_history = {}
+        self._order_reject_halted_at = {}
 
     def _maybe_reset_daily(self) -> None:
         today = datetime.now(timezone.utc).astimezone(KST).date()
@@ -248,7 +326,7 @@ class CircuitBreakerManager:
         if self._event_hook is None:
             return
         try:
-            self._event_hook(event_type, detail)
+            self._event_hook(event_type=event_type, detail=detail)
         except Exception:  # noqa: BLE001
             _logger.exception("circuit_breaker_event_hook_failed type=%s", event_type)
 

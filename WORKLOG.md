@@ -1,5 +1,64 @@
 # WORKLOG
 
+## [2026-07-13] 주문거부 서킷브레이커 추가 + 국내 매수 100% 거부 사고 대응
+
+### 배경
+- 사용자 요청("gitlog 보고 개선 진행, 특히 주문 거부 건에 대한 처리")에 따라 실제 운영 DB의
+  `broker_order_events`를 조사한 결과, 오늘(7/13) 국내 정규장 개장(00:14 UTC)부터 장마감
+  (06:32 UTC)까지 **국내 매수 주문 91건이 전량 거부**됐음을 확인
+  - 전량 동일 오류: `VTTC0012U http_error=500 IGW00007 MCA 전문바디 구성 중 오류가 발생하였습니다`
+  - 10개 이상 다른 종목(360750, 005930, 379800, 069500 등)에 걸쳐 발생 → 특정 종목/가격/
+    수량 문제가 아니라 국내 매수 요청 자체가 KIS 게이트웨이에서 구조적으로 거부되는 상황
+  - 같은 시간대 국내 매도는 1건 정상 접수됨 → 계좌/토큰 문제가 아니라 매수 경로 한정 이슈로 추정
+  - `place_cash_order()`(client.py) 자체는 최근 변경 이력이 없어 코드 회귀는 아님. KIS
+    모의투자 측 사유일 가능성이 높으나 외부 문서 확인이 불가해 근본원인은 미확정
+- 더 근본적인 문제: 매도 주문거부는 종목별 쿨다운(국내 10분/해외 20분)이 있었지만, **매수
+  주문거부에는 백오프가 전혀 없어** 같은 오류가 나는 6시간 넘게 사이클마다 계속 재시도함.
+  근본원인을 못 고치더라도, 이렇게 반복되는 실패를 조용히 방치하지 않는 장치가 필요했음
+
+### 수정
+- `src/kinvest_trade/lab_risk.py` (`CircuitBreakerManager`)
+  - `record_order_rejection()`, `is_order_reject_halted()`, `order_reject_status()`,
+    `reset_order_rejections()` 추가
+  - 시장×방향(`domestic:buy` 등) 기준으로 최근 N분 내 거부 횟수를 추적, 임계치 초과 시
+    해당 시장/방향만 쿨다운 동안 차단. 연속손절 CB와 별개 상태로 관리
+- `src/kinvest_trade/config.py`, `config/fixed_config.json`
+  - `risk.order_reject_threshold=5`, `order_reject_window_minutes=15`,
+    `order_reject_cooldown_minutes=30` 추가
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_register_order_rejection()`, `_is_order_reject_halted()` 추가 (실제 KIS 오류
+    메시지를 담아 발동 시 텔레그램 알림)
+  - `_run_cycle()`의 국내 매수 예산/해외 진입 슬롯 계산에 차단 상태 반영,
+    `domestic_order_reject_halted`/`overseas_order_reject_halted` skip 사유 기록
+- `src/kinvest_trade/lab_domestic_orders.py`, `lab_overseas_orders.py`
+  - 매수/매도 주문거부(`KisApiError`) 4개 지점 모두에서 `_register_order_rejection()` 호출
+    (기존 매도 쿨다운은 유지, 시스템 전반 거부 폭주 감지는 신규 추가)
+- `src/kinvest_trade/telegram_control.py`
+  - `/lab_cb_reset`이 주문거부 서킷브레이커도 함께 초기화하도록 확장
+- `src/kinvest_trade/telegram_reports.py`
+  - `/lab_guard`에 `주문거부차단=시장:방향(N회) 확인=/lab_cb_reset` 줄 추가
+
+### 부수 발견 - 기존 버그 수정
+- 새 기능 테스트 도중 `CircuitBreakerManager._emit_event()`가 `event_hook`을 위치 인자로
+  호출(`self._event_hook(event_type, detail)`)하는데, 실제 프로덕션에 연결된
+  `event_hook=self._save_event`는 keyword-only 시그니처라 **매번 `TypeError`가 발생해
+  `try/except`로 조용히 삼켜지고 있었음**. 즉 기존 연속손절/일일손실 서킷브레이커가 발동/해제될
+  때마다 `event_log`에 `cb_fired`/`cb_released` 이벤트가 저장된 적이 한 번도 없었음(로그에만
+  남고 DB에는 기록되지 않음)
+- `_emit_event()`가 keyword 인자로 호출하도록 수정(`event_hook(event_type=..., detail=...)`).
+  기존 테스트 더블(위치 인자 이름 그대로인 람다)과도 호환되어 회귀 없음
+- 회귀 테스트 추가: 실제 `_save_event`를 event_hook으로 연결한 상태로 CB를 발동시켜
+  `event_log`에 실제로 저장되는지 확인(`test_register_order_rejection_saves_event_via_real_save_event_hook`)
+
+### 미해결
+- 오늘 91건 거부의 KIS 측 근본원인(IGW00007)은 이번 조치로 해소되지 않는다. 이 서킷브레이커는
+  "같은 오류로 무한 재시도하며 조용히 소진되는 것"을 막고 사용자에게 즉시 알리는 안전장치이며,
+  내일 국내장 재개 시 같은 오류가 재발하면 5회 이내에 자동 차단 후 텔레그램으로 알린다.
+  KIS 모의투자 계좌 상태/공지사항 확인이 별도로 필요할 수 있음
+
+### 테스트
+- `python3 -m pytest -q` → `472 passed` (신규 12개: lab_risk 6, liquidity_lab 4, telegram_control 2)
+
 ## [2026-07-11] telegram_control 분리 2차 - `telegram_reports.py` (상태/포트폴리오/성과 리포트 위임)
 
 ### 배경

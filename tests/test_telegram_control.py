@@ -3045,6 +3045,56 @@ def test_handle_cb_reset_resets_circuit_breaker_state() -> None:
     assert "서킷브레이커 수동 해제" in controller.notifier.messages[-1]
 
 
+def test_build_guard_message_shows_active_order_reject_breaker() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.config = SimpleNamespace(
+        liquidity_lab=SimpleNamespace(strategy_guard_enabled=False),
+        auto_trade=SimpleNamespace(),
+    )
+    controller.lab_service = SimpleNamespace(
+        cb=SimpleNamespace(
+            order_reject_status=lambda: {
+                "domestic:buy": {"count": 5, "halted": True},
+                "overseas:sell": {"count": 2, "halted": False},
+            }
+        )
+    )
+
+    message = controller._build_guard_message()
+
+    assert "주문거부차단=domestic:buy(5회) 확인=/lab_cb_reset" in message
+    assert "overseas:sell" not in message
+
+
+def test_build_guard_message_omits_line_when_no_breaker_active() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.config = SimpleNamespace(
+        liquidity_lab=SimpleNamespace(strategy_guard_enabled=False),
+        auto_trade=SimpleNamespace(),
+    )
+    controller.lab_service = SimpleNamespace(cb=SimpleNamespace(order_reject_status=lambda: {}))
+
+    message = controller._build_guard_message()
+
+    assert "주문거부차단" not in message
+
+
+def test_handle_cb_reset_also_clears_order_reject_breaker() -> None:
+    controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller.notifier = DummyNotifier()
+    reset_calls: list[bool] = []
+    controller.lab_service = SimpleNamespace(
+        _consecutive_losses=1,
+        _halted_at=None,
+        cb=SimpleNamespace(reset_order_rejections=lambda: reset_calls.append(True)),
+    )
+
+    asyncio.run(controller._handle_cb_reset())
+
+    assert reset_calls == [True]
+    assert "주문거부 서킷브레이커도 함께 초기화" in controller.notifier.messages[-1]
+
+
 def test_handle_start_like_command_resume_resets_circuit_breaker() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
     controller.mode = "paused"

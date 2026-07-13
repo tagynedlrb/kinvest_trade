@@ -1,5 +1,55 @@
 # WORKLOG
 
+## [2026-07-13] `/lab_gitlog` 5종 로그로 확장 - 요청/응답/텔레그램/API 호출 전체 기록
+
+### 배경
+- 사용자 요청: "gitlog에 시스템에서 발생하는 것과 요청 및 그 결과를 모두 포함해서 분석할 수
+  있도록 개선" — 요청사항, 텔레그램 알림, 성공/실패/응답, 매매 과정의 요청/응답/후처리까지
+  전부 업로드해서 나중에 분석 가능하게 해달라는 요청
+- 기존 `/lab_gitlog`는 `cycle_log`(BUY_REAL/SELL_REAL/SKIP만 필터링)와 `event_log` 2종만
+  업로드했음. 실제 KIS 주문 요청/응답이 담긴 `broker_order_events`는 전혀 업로드되지 않았고,
+  텔레그램 송수신 이력이나 KIS API 호출 자체를 기록하는 테이블도 없었음
+- **중요 확인**: 이 저장소(`tagynedlrb/kinvest_trade`)는 **public**. 새 로그를 설계할 때
+  계좌번호(CANO)/APPKEY/APPSECRET/HTS ID가 절대 포함되지 않도록 필드를 신중히 골랐음
+  (`broker_order_events`의 KIS 응답 원본을 직접 확인해 계좌 정보가 없음을 검증했고,
+  API 호출 로그는 요청 바디를 통째로 저장하지 않고 TR_ID/경로/응답코드/메시지 요약만 저장)
+
+### 수정
+- `src/kinvest_trade/repository.py`
+  - `telegram_message_log`(방향/명령/텍스트/성공여부/오류), `api_call_log`(method/tr_id/
+    path/성공여부/http상태/msg_cd/msg1/소요시간) 테이블 신설 + save/list 메서드 추가
+- `src/kinvest_trade/notifier.py`
+  - `TelegramNotifier`에 선택적 `repository` 파라미터 추가. `send()` 성공/실패 시
+    `telegram_message_log`에 자동 기록(레포지토리 없으면 조용히 스킵, 기존 호출부 호환)
+- `src/kinvest_trade/telegram_control.py`
+  - `_handle_update()`가 인증된 채팅에서 온 모든 명령 텍스트를 `_log_inbound_command()`로 기록
+  - `_run_cycle()`의 `KisRestClient`에 `on_api_call=self._log_api_call` 연결
+  - `/lab_cb_reset`이 아닌 `/lab_gitlog` 응답 메시지가 `trades`/`events`만 표시하던 것을
+    `orders`/`telegram`/`api_calls` 3종도 함께 표시하도록 확장
+- `src/kinvest_trade/client.py`
+  - `KisRestClient.__init__`에 `on_api_call` 콜백 추가. `_request()`가 매 시도(재시도 포함)마다
+    method/tr_id/path/성공여부/http상태/msg_cd/msg1/소요시간을 콜백으로 전달
+    (요청 바디·헤더는 전달하지 않음 — CANO/APPKEY/APPSECRET이 여기 있기 때문)
+- `src/kinvest_trade/git_uploader.py`
+  - `_extract_trade_log`: action_bias 필터 제거 → `cycle_log` 전량 업로드로 확장
+  - `_extract_broker_order_log`, `_extract_telegram_log`, `_extract_api_call_log` 신규 추가
+  - `upload_log()`를 5종 로그 스펙 테이블(`_LOG_SPECS`) 기반으로 재작성해 파일 종류 추가가
+    한 곳만 고치면 되도록 정리
+
+### 검증
+- `python3 -m pytest -q` → `491 passed` (신규 15개: repository 2, notifier 3, client 2,
+  telegram_control 5, git_uploader 3)
+- `client.py` 신규 테스트에서 로그에 계좌번호/appkey/appsecret 문자열이 전혀 포함되지 않는지
+  직접 검증(`test_request_reports_api_calls_via_on_api_call_hook`)
+
+### 다음 단계 (의도적으로 이번엔 보류)
+- `api_call_log`는 사이클마다 여러 건씩 쌓여 로컬 DB(`data/trading.db`, git에는 안 올라감) 크기가
+  빠르게 늘어날 수 있음. 지금은 보류하되, 필요해지면 오래된 행을 주기적으로 정리하는 retention
+  정책을 추가하는 게 좋음
+- 텔레그램 SENT 로그의 `text` 필드도 원문 그대로 저장 중. 지금 만드는 알림 문구는 계좌 식별
+  정보를 담지 않지만, 앞으로 새 알림 문구를 추가할 때는 이 필드가 그대로 public 저장소에
+  올라간다는 점을 항상 염두에 둘 것
+
 ## [2026-07-13] 실보유 매도 세션차단 시 가상매도 전환 (기존 설계 의도 복원)
 
 ### 배경

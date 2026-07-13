@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
 import httpx
 
 from .config import NotificationConfig
 
+if TYPE_CHECKING:
+    from .repository import SqliteRepository
+
 
 class TelegramNotifier:
-    def __init__(self, config: NotificationConfig) -> None:
+    def __init__(
+        self,
+        config: NotificationConfig,
+        *,
+        repository: "SqliteRepository | None" = None,
+    ) -> None:
         self.config = config
+        self.repository = repository
 
     @property
     def enabled(self) -> bool:
@@ -16,6 +28,20 @@ class TelegramNotifier:
             and bool(self.config.telegram_bot_token)
             and bool(self.config.telegram_chat_id)
         )
+
+    def _log_outbound(self, text: str, *, success: bool, error: str = "") -> None:
+        if self.repository is None:
+            return
+        try:
+            self.repository.save_telegram_message(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                direction="sent",
+                text=text,
+                success=success,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     async def send(self, message: str) -> bool:
         if not self.enabled:
@@ -27,9 +53,14 @@ class TelegramNotifier:
             "text": message,
         }
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            self._log_outbound(message, success=False, error=str(exc)[:200])
+            raise
+        self._log_outbound(message, success=True)
         return True
 
     async def set_commands(self, commands: list[dict[str, str]]) -> bool:

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import kinvest_trade.notifier as notifier_module
 from kinvest_trade.notifier import TelegramNotifier
+from kinvest_trade.repository import SqliteRepository
 
 
 class FakeResponse:
@@ -100,6 +101,98 @@ def test_set_commands_returns_true_on_ok_response() -> None:
         result = asyncio.run(
             notifier.set_commands([{"command": "lab_help", "description": "명령 목록 보기"}])
         )
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert result is True
+
+
+def test_send_logs_outbound_message_to_repository_on_success(tmp_path) -> None:
+    calls: list[tuple[str, dict]] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeAsyncClient(  # type: ignore[assignment]
+        payload={"ok": True},
+        calls=calls,
+    )
+    repository = SqliteRepository(tmp_path / "notifier.db")
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        ),
+        repository=repository,
+    )
+    try:
+        asyncio.run(notifier.send("[KIS][TEST] hello"))
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    messages = repository.list_telegram_messages()
+    assert len(messages) == 1
+    assert messages[0]["direction"] == "sent"
+    assert messages[0]["text"] == "[KIS][TEST] hello"
+    assert messages[0]["success"] == 1
+
+
+def test_send_logs_outbound_failure_and_reraises(tmp_path) -> None:
+    class FailingAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            raise RuntimeError("network down")
+
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FailingAsyncClient()  # type: ignore[assignment]
+    repository = SqliteRepository(tmp_path / "notifier_fail.db")
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        ),
+        repository=repository,
+    )
+    try:
+        try:
+            asyncio.run(notifier.send("[KIS][TEST] boom"))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("expected RuntimeError to propagate")
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    messages = repository.list_telegram_messages()
+    assert len(messages) == 1
+    assert messages[0]["direction"] == "sent"
+    assert messages[0]["success"] == 0
+    assert "network down" in messages[0]["error"]
+
+
+def test_send_without_repository_does_not_error() -> None:
+    calls: list[tuple[str, dict]] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeAsyncClient(  # type: ignore[assignment]
+        payload={"ok": True},
+        calls=calls,
+    )
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    try:
+        result = asyncio.run(notifier.send("no repository configured"))
     finally:
         notifier_module.httpx.AsyncClient = original_async_client
 

@@ -316,6 +316,31 @@ class SqliteRepository:
                     ON broker_order_events(created_at);
                 CREATE INDEX IF NOT EXISTS idx_broker_order_events_symbol
                     ON broker_order_events(symbol);
+                CREATE TABLE IF NOT EXISTS telegram_message_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    command TEXT NOT NULL DEFAULT '',
+                    text TEXT NOT NULL DEFAULT '',
+                    success INTEGER NOT NULL DEFAULT 1,
+                    error TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_telegram_message_log_created_at
+                    ON telegram_message_log(created_at);
+                CREATE TABLE IF NOT EXISTS api_call_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    tr_id TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL DEFAULT '',
+                    success INTEGER NOT NULL DEFAULT 1,
+                    http_status INTEGER,
+                    msg_cd TEXT NOT NULL DEFAULT '',
+                    msg1 TEXT NOT NULL DEFAULT '',
+                    elapsed_ms INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at
+                    ON api_call_log(created_at);
                 """
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
@@ -783,6 +808,80 @@ class SqliteRepository:
                     json.dumps(payload or {}, ensure_ascii=False, default=str),
                 ),
             )
+
+    def save_telegram_message(
+        self,
+        *,
+        created_at: str,
+        direction: str,
+        command: str = "",
+        text: str = "",
+        success: bool = True,
+        error: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO telegram_message_log (
+                    created_at, direction, command, text, success, error
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (created_at, direction, command, text, 1 if success else 0, error),
+            )
+
+    def list_telegram_messages(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM telegram_message_log ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_api_call(
+        self,
+        *,
+        created_at: str,
+        method: str,
+        tr_id: str = "",
+        path: str = "",
+        success: bool = True,
+        http_status: int | None = None,
+        msg_cd: str = "",
+        msg1: str = "",
+        elapsed_ms: int | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO api_call_log (
+                    created_at, method, tr_id, path, success, http_status,
+                    msg_cd, msg1, elapsed_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    method,
+                    tr_id,
+                    path,
+                    1 if success else 0,
+                    http_status,
+                    msg_cd,
+                    msg1,
+                    elapsed_ms,
+                ),
+            )
+
+    def list_api_calls(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM api_call_log ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_broker_order_events(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:

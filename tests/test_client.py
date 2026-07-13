@@ -101,6 +101,78 @@ def test_request_reissues_token_after_expired_token_response(tmp_path: Path) -> 
     assert credentials.token_cache_path.exists() is False
 
 
+def test_request_reports_api_calls_via_on_api_call_hook(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    fake_http = FakeAsyncClient(
+        [
+            FakeResponse(500, {"msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}),
+            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {"value": "ok"}}),
+        ]
+    )
+    client._client = fake_http
+    client.ensure_token = lambda: asyncio.sleep(0, result="tok")  # type: ignore[method-assign]
+
+    payload = asyncio.run(client._request("GET", "/test", "TRTEST", params={"a": "1"}))
+
+    assert payload["output"]["value"] == "ok"
+    assert len(calls) == 2
+    assert calls[0]["success"] is False
+    assert calls[0]["http_status"] == 500
+    assert calls[0]["msg_cd"] == "EGW00201"
+    assert calls[0]["tr_id"] == "TRTEST"
+    assert calls[0]["path"] == "/test"
+    assert calls[0]["method"] == "GET"
+    assert isinstance(calls[0]["elapsed_ms"], int)
+    assert calls[1]["success"] is True
+    assert calls[1]["http_status"] == 200
+    # None of the logged fields ever carry account number or credentials.
+    for call in calls:
+        serialized = str(call)
+        assert credentials.account_no not in serialized
+        assert credentials.appkey not in serialized
+        assert credentials.appsecret not in serialized
+
+
+def test_request_without_on_api_call_hook_does_not_error(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    fake_http = FakeAsyncClient(
+        [FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {"value": "ok"}})]
+    )
+    client._client = fake_http
+    client.ensure_token = lambda: asyncio.sleep(0, result="tok")  # type: ignore[method-assign]
+
+    payload = asyncio.run(client._request("GET", "/test", "TRTEST", params={"a": "1"}))
+
+    assert payload["output"]["value"] == "ok"
+
+
 def test_get_overseas_daily_prices_uses_official_endpoint_fields(tmp_path: Path) -> None:
     credentials = KisCredentials(
         env="vps",

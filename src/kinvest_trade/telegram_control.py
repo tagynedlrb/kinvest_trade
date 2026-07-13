@@ -352,6 +352,39 @@ class TelegramLiquidityLabController:
                     self._write_runtime_state()
             await asyncio.sleep(1.0)
 
+    def _log_api_call(self, info: dict) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return
+        try:
+            repository.save_api_call(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                method=str(info.get("method", "")),
+                tr_id=str(info.get("tr_id", "")),
+                path=str(info.get("path", "")),
+                success=bool(info.get("success", False)),
+                http_status=info.get("http_status"),
+                msg_cd=str(info.get("msg_cd", "")),
+                msg1=str(info.get("msg1", ""))[:200],
+                elapsed_ms=info.get("elapsed_ms"),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _log_inbound_command(self, text: str) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return
+        try:
+            repository.save_telegram_message(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                direction="received",
+                command=text.split()[0] if text.split() else text,
+                text=text,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _command_loop(self) -> None:
         while True:
             updates = await self.notifier.get_updates(offset=self.update_offset)
@@ -372,6 +405,7 @@ class TelegramLiquidityLabController:
             return
         if not self.notifier.is_authorized_chat(chat_id):
             return
+        self._log_inbound_command(text)
 
         parsed_command = self.parse_command(text)
         if parsed_command is None:
@@ -1005,7 +1039,7 @@ class TelegramLiquidityLabController:
         if success:
             uploaded = result if isinstance(result, dict) else {}
             lines = ["✅ 업로드 완료"]
-            for key in ("trades", "events"):
+            for key in ("trades", "events", "orders", "telegram", "api_calls"):
                 info = uploaded.get(key)
                 if not isinstance(info, dict):
                     continue
@@ -1199,7 +1233,9 @@ class TelegramLiquidityLabController:
         Execute a single liquidity-lab cycle without auto-stopping on market close.
         """
         try:
-            async with KisRestClient(self.config.credentials) as client:
+            async with KisRestClient(
+                self.config.credentials, on_api_call=self._log_api_call
+            ) as client:
                 service = self.lab_service
                 if service is None:
                     service = LiquidityLabService(self.config, client, self.repository, self.notifier)

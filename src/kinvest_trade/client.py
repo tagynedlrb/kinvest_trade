@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -72,13 +72,49 @@ class KisRestClient:
     OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
     OVERSEAS_DAYTIME_ORDER_PATH = "/uapi/overseas-stock/v1/trading/daytime-order"
 
-    def __init__(self, credentials: KisCredentials) -> None:
+    def __init__(
+        self,
+        credentials: KisCredentials,
+        *,
+        on_api_call: "Callable[[dict[str, Any]], None] | None" = None,
+    ) -> None:
         self.credentials = credentials
         self._token: str | None = None
         self._expires_at: float = 0.0
+        self._on_api_call = on_api_call
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=10.0, write=10.0, pool=10.0)
         )
+
+    def _log_api_call(
+        self,
+        *,
+        method: str,
+        path: str,
+        tr_id: str,
+        started_at: float,
+        success: bool,
+        http_status: int | None = None,
+        msg_cd: str = "",
+        msg1: str = "",
+    ) -> None:
+        if self._on_api_call is None:
+            return
+        try:
+            self._on_api_call(
+                {
+                    "method": method,
+                    "path": path,
+                    "tr_id": tr_id,
+                    "success": success,
+                    "http_status": http_status,
+                    "msg_cd": msg_cd,
+                    "msg1": msg1,
+                    "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                }
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     async def __aenter__(self) -> "KisRestClient":
         return self
@@ -199,6 +235,7 @@ class KisRestClient:
         # KIS는 초당 호출 제한 응답(EGW00201)을 줄 수 있다.
         # 토큰 만료(EGW00123)도 간헐적으로 발생할 수 있어 자동 갱신 후 재시도한다.
         for attempt in range(3):
+            started_at = time.monotonic()
             token = await self.ensure_token()
             headers = {
                 "Content-Type": "application/json",
@@ -219,6 +256,14 @@ class KisRestClient:
                     json=body if method == "POST" else None,
                 )
             except httpx.HTTPError as exc:
+                self._log_api_call(
+                    method=method,
+                    path=path,
+                    tr_id=tr_id,
+                    started_at=started_at,
+                    success=False,
+                    msg1=f"transport_error: {exc}"[:200],
+                )
                 if attempt < 2:
                     await asyncio.sleep(1.0)
                     continue
@@ -226,11 +271,30 @@ class KisRestClient:
             try:
                 payload = response.json()
             except json.JSONDecodeError:
+                self._log_api_call(
+                    method=method,
+                    path=path,
+                    tr_id=tr_id,
+                    started_at=started_at,
+                    success=False,
+                    http_status=response.status_code,
+                    msg1="non_json_response",
+                )
                 response.raise_for_status()
                 raise
 
             token_expired = payload.get("msg_cd") == "EGW00123"
             if response.status_code >= 400:
+                self._log_api_call(
+                    method=method,
+                    path=path,
+                    tr_id=tr_id,
+                    started_at=started_at,
+                    success=False,
+                    http_status=response.status_code,
+                    msg_cd=str(payload.get("msg_cd") or ""),
+                    msg1=str(payload.get("msg1") or ""),
+                )
                 if token_expired and attempt < 2:
                     self._invalidate_token()
                     await asyncio.sleep(0.2)
@@ -244,8 +308,28 @@ class KisRestClient:
                 )
 
             if str(payload.get("rt_cd", "")) == "0":
+                self._log_api_call(
+                    method=method,
+                    path=path,
+                    tr_id=tr_id,
+                    started_at=started_at,
+                    success=True,
+                    http_status=response.status_code,
+                    msg_cd=str(payload.get("msg_cd") or ""),
+                    msg1=str(payload.get("msg1") or ""),
+                )
                 return payload
 
+            self._log_api_call(
+                method=method,
+                path=path,
+                tr_id=tr_id,
+                started_at=started_at,
+                success=False,
+                http_status=response.status_code,
+                msg_cd=str(payload.get("msg_cd") or ""),
+                msg1=str(payload.get("msg1") or ""),
+            )
             if token_expired and attempt < 2:
                 self._invalidate_token()
                 await asyncio.sleep(0.2)

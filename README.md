@@ -23,7 +23,7 @@
     위임받는 helper 클래스 형태이며, `liquidity_lab.py`에는 얇은 wrapper 메서드만 남아있다.)
 - `src/kinvest_trade/cli.py`: `auto-run`, `liquidity-lab`, `telegram-control`, `doctor`, `auth-check`, `balance-check`, `overseas-price-check`, `overseas-balance-check`, `overseas-orderable-check`, `overseas-order-test`, `indicator-check`, `orderable-check`, `order-test`, `paper-run`, `paper-report`, `telegram-test`
 - `src/kinvest_trade/telegram_control.py`: 텔레그램 봇 명령으로 `liquidity-lab` 루프를 시작/중지/재개/종료, 상태·리포트 메시지 생성
-- `src/kinvest_trade/git_uploader.py`: `/lab_gitlog` 명령으로 당일 거래/이벤트 로그를 GitHub에 CSV 업로드
+- `src/kinvest_trade/git_uploader.py`: `/lab_gitlog` 명령으로 당일 거래/이벤트/주문/텔레그램/API 호출 로그를 GitHub에 CSV 업로드
 - `run_watch.py`: 옵션 없이 콘솔 감시 실행
 - `WORKLOG.md`: 작업 기록
 
@@ -356,9 +356,29 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_relist`: 해외 감시 풀을 수동 종목 목록으로 교체(TV 스캔 대신 특정 종목만 보고 싶을 때)
 - `/lab_relist_schedule`: 해외 relist 관련 알림 시간 설정
 - `/lab_cb_reset`: 연속손절/일일손실 서킷브레이커 및 주문거부 서킷브레이커 강제 해제
-- `/lab_gitlog`: 당일 거래/이벤트 로그를 CSV로 정리해 GitHub 저장소에 업로드
+- `/lab_gitlog`: 당일 거래/이벤트/주문/텔레그램/API 호출 로그를 CSV 5종으로 정리해 GitHub 저장소에 업로드
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
 - `/lab_help`: 명령 목록 조회
+
+### `/lab_gitlog`가 업로드하는 5종 로그
+`/lab_gitlog`는 그날(KST 기준) 발생한 아래 5개 CSV를 `logs/<종류>/YYYYMMDD_*.csv`로 업로드한다.
+매매 요청부터 응답, 텔레그램 알림까지 하나의 사건을 여러 로그에서 서로 대조해 분석할 수 있도록
+전량을 그대로 내보낸다.
+
+| 파일 | 내용 |
+|------|------|
+| `trades` | `cycle_log` 전체 (BUY/SELL/HOLD/WAIT/SKIP 등 그날의 모든 판단, 실거래/가상거래 구분 없이 전량) |
+| `events` | `event_log` 전체 (서킷브레이커 발동/해제, 신호실패, 풀 갱신 등 시스템 이벤트) |
+| `orders` | `broker_order_events` 전체 (실제 KIS에 제출된 모든 주문 요청과 응답 — 체결/거부/취소/가상기록 사유 포함) |
+| `telegram` | 그날 수신한 `/lab_*` 명령과 발송한 모든 텔레그램 알림(성공/실패 여부 포함) |
+| `api_calls` | 그날의 모든 KIS API 호출 요약(TR_ID, 경로, 성공여부, 응답코드/메시지, 소요시간) |
+
+**보안 주의**: 이 저장소(`tagynedlrb/kinvest_trade`)는 public이다. 위 5종 로그는 계좌번호(CANO),
+APPKEY/APPSECRET, HTS ID를 **절대 포함하지 않도록** 설계했다 — `api_call_log`는 요청 바디 대신
+TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events.payload_json`은 KIS 응답의
+주문번호(ODNO)·메시지만 담아(계좌 정보는 KIS 응답 자체에도 없음) 애초에 계좌 식별 정보가 로그에
+쌓이지 않는다. 새로운 로그 필드를 추가할 때는 항상 이 원칙(요청 바디·자격증명 원문을 저장하지
+않음)을 지켜야 한다.
 
 ### `/lab_portfolio` 보유상태 불일치 감지
 `/lab_portfolio`는 실시간 KIS 잔고를 별도 임시 클라이언트로 재조회해서 보여주는데, 이 재조회가

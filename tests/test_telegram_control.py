@@ -1416,6 +1416,92 @@ def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
     assert "해외손익=+$1.50" in message
 
 
+def test_handle_update_logs_inbound_command_to_repository(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_inbound_log.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {"message": {"chat": {"id": 123456}, "text": "/lab_status"}}
+        )
+    )
+
+    messages = repository.list_telegram_messages()
+    received = [m for m in messages if m["direction"] == "received"]
+    assert len(received) == 1
+    assert received[0]["text"] == "/lab_status"
+    assert received[0]["command"] == "/lab_status"
+
+
+def test_handle_update_does_not_log_unauthorized_chat(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_unauth_log.db")
+
+    class UnauthorizedNotifier(DummyNotifier):
+        def is_authorized_chat(self, chat_id) -> bool:
+            return False
+
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=UnauthorizedNotifier(),
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {"message": {"chat": {"id": 999}, "text": "/lab_status"}}
+        )
+    )
+
+    assert repository.list_telegram_messages() == []
+
+
+def test_log_api_call_saves_to_repository(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_api_call_log.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    controller._log_api_call(
+        {
+            "method": "POST",
+            "path": "/uapi/domestic-stock/v1/trading/order-cash",
+            "tr_id": "VTTC0012U",
+            "success": False,
+            "http_status": 500,
+            "msg_cd": "IGW00007",
+            "msg1": "MCA 전문바디 구성 중 오류가 발생하였습니다.",
+            "elapsed_ms": 87,
+        }
+    )
+
+    rows = repository.list_api_calls()
+    assert len(rows) == 1
+    assert rows[0]["tr_id"] == "VTTC0012U"
+    assert rows[0]["success"] == 0
+    assert rows[0]["elapsed_ms"] == 87
+
+
 def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_log_command.db")
     repository.save_cycle_log(
@@ -3096,8 +3182,9 @@ class DummyRepository:
 
 
 class DummyAsyncClient:
-    def __init__(self, credentials) -> None:
+    def __init__(self, credentials, *, on_api_call=None) -> None:
         self.credentials = credentials
+        self.on_api_call = on_api_call
         self._client = object()
 
     async def __aenter__(self):
@@ -4052,6 +4139,34 @@ def test_handle_gitlog_reports_success() -> None:
     assert "✅ 업로드 완료" in controller.notifier.messages[-1]
     assert "trades=test.csv (12건)" in controller.notifier.messages[-1]
     assert "events=test.csv (5건)" in controller.notifier.messages[-1]
+
+
+def test_handle_gitlog_reports_all_five_log_categories() -> None:
+    controller = _build_async_controller()
+
+    async def fake_upload_log(**kwargs):
+        return True, {
+            key: {
+                "url": f"https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/{key}/test.csv",
+                "path": f"logs/{key}/test.csv",
+                "rows": 3,
+            }
+            for key in ("trades", "events", "orders", "telegram", "api_calls")
+        }
+
+    original_client = telegram_control_module.KisRestClient
+    original_upload = telegram_control_module.upload_log
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.upload_log = fake_upload_log
+    try:
+        asyncio.run(controller._handle_gitlog("2026-07-03"))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.upload_log = original_upload
+
+    message = controller.notifier.messages[-1]
+    for key in ("trades", "events", "orders", "telegram", "api_calls"):
+        assert f"{key}=test.csv (3건)" in message
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

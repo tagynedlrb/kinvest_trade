@@ -335,6 +335,55 @@ def test_broker_order_events_table_and_save(tmp_path) -> None:
     assert rows[0]["payload_json"]["output"]["ODNO"] == "12345678"
 
 
+def test_telegram_message_log_can_be_saved_and_listed(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_telegram_message(
+        created_at="2026-07-13T00:00:00+00:00",
+        direction="received",
+        command="/lab_status",
+        text="/lab_status",
+    )
+    repository.save_telegram_message(
+        created_at="2026-07-13T00:00:05+00:00",
+        direction="sent",
+        text="[KIS][STATUS] ...",
+        success=False,
+        error="timeout",
+    )
+
+    rows = repository.list_telegram_messages(limit=5)
+
+    assert len(rows) == 2
+    assert rows[0]["direction"] == "sent"
+    assert rows[0]["success"] == 0
+    assert rows[0]["error"] == "timeout"
+    assert rows[1]["direction"] == "received"
+    assert rows[1]["command"] == "/lab_status"
+
+
+def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_api_call(
+        created_at="2026-07-13T00:00:00+00:00",
+        method="POST",
+        tr_id="VTTC0012U",
+        path="/uapi/domestic-stock/v1/trading/order-cash",
+        success=False,
+        http_status=500,
+        msg_cd="IGW00007",
+        msg1="MCA 전문바디 구성 중 오류가 발생하였습니다.",
+        elapsed_ms=123,
+    )
+
+    rows = repository.list_api_calls(limit=5)
+
+    assert len(rows) == 1
+    assert rows[0]["tr_id"] == "VTTC0012U"
+    assert rows[0]["success"] == 0
+    assert rows[0]["msg_cd"] == "IGW00007"
+    assert rows[0]["elapsed_ms"] == 123
+
+
 def test_submitted_order_audit_rows_excludes_canceled_and_keeps_cancel_rejected(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_broker_order_event(

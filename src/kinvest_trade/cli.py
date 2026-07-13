@@ -594,7 +594,7 @@ async def run_liquidity_lab(config: AppConfig) -> None:
 
 async def run_telegram_control(config: AppConfig) -> None:
     repository = SqliteRepository(config.storage.db_path)
-    notifier = TelegramNotifier(config.notifications)
+    notifier = TelegramNotifier(config.notifications, repository=repository)
     controller = TelegramLiquidityLabController(config, repository, notifier)
     await controller.run()
 
@@ -612,7 +612,7 @@ async def run_auto_trade(config: AppConfig) -> None:
         )
 
     repository = SqliteRepository(config.storage.db_path)
-    notifier = TelegramNotifier(config.notifications)
+    notifier = TelegramNotifier(config.notifications, repository=repository)
     async with KisRestClient(config.credentials) as client:
         service = FixedSymbolAutoTrader(config, client, repository, notifier)
         summary = await service.run()

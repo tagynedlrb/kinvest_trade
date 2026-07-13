@@ -1,5 +1,37 @@
 # WORKLOG
 
+## [2026-07-14] `time_exit_profit`이 수수료를 무시하고 매도를 시도하던 근본 원인 수정
+
+### 배경
+바로 앞 항목(알림 쿨다운)으로 반복 알림 자체는 막았지만, 사용자가 "주문을 하고 막는 식이 아니라
+조건에 부합하지 않는 상황이라면 주문을 그냥 하지 말아야지. 적절한 로직으로 다시 개선할 것"이라고
+지적 — 알림 억제는 증상 완화일 뿐이고, 매도 시도 자체가 매 사이클 만들어졌다가 주문 단계에서
+막히는 구조 자체를 고치라는 요청.
+
+### 원인
+`momentum_policy.evaluate_exit_setup`의 `time_exit_profit` 분기가 `pnl_pct >= 0`(가격 기준 총손익)
+만으로 매도를 결정하고 있었다. 같은 함수의 `marginal_profit_exit`은 이미
+`commission_floor = commission_rate*2 + 0.003`(기본 약 0.8%) 이상일 때만 매도하도록 만들어져
+있었고, `partial_profit_lock`/`breakout_exhaustion_exit`/`take_profit`도 각각 `take_profit_pct`
+(1.5%)/`full_take_profit_pct`(2.5%)/`overseas_take_profit_pct`(2.5%) 이상을 요구해 이미 수수료를
+넉넉히 넘는 구조였다. `time_exit_profit`만 이 마진 조건이 빠져 있어서, 매입가와 거의 같은 가격에
+멈춰있는 포지션도 매 사이클 "매도 시도 → `lab_domestic/overseas_orders.py`의 순손익(수수료 반영)
+계산에서 0 이하라 `net_profit_below_cost`로 스킵"이라는 무의미한 왕복을 반복했다.
+
+### 수정
+- `src/kinvest_trade/momentum_policy.py`: `time_exit_profit` 분기 조건을 `pnl_pct >= 0`에서
+  `pnl_pct >= commission_floor`로 변경. 수수료를 못 넘기는 시간만료 청산은 애초에 매도 후보로
+  만들지 않고 계속 HOLD 상태로 남긴다.
+
+### 검증
+- `tests/test_momentum_policy.py`: 기존 `test_time_exit_profit_still_works`를 floor를 넘는
+  pnl_pct(0.01)로 조정, 신규 `test_time_exit_profit_does_not_fire_below_commission_floor`로
+  floor 미달(0.0005) 시 매도 시도 자체가 생기지 않고 hold로 남는지 확인.
+- `python3 -m pytest -q` → `514 passed`
+- 참고: 다른 익절 사유(`marginal_profit_exit`/`partial_profit_lock`/`breakout_exhaustion_exit`/
+  `take_profit`)는 이미 자체 마진 조건이 있어 이번 수정 대상이 아니었음. 앞 항목의 알림 쿨다운은
+  이 수정 후에도 다른 스킵 사유(세션 불가, 충돌 주문 등)에 대한 방어선으로 계속 유지.
+
 ## [2026-07-14] `net_profit_below_cost` 반복 주문거부 알림 폭탄 수정
 
 ### 배경

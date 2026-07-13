@@ -271,7 +271,7 @@ def evaluate_exit_setup(
         return ExitSetup("sell", "marginal_profit_exit", "SELL_READY", note)
 
     if hold_cycles >= config.max_hold_cycles:
-        if pnl_pct >= 0 and snapshot.intraday_momentum <= 0:
+        if pnl_pct >= commission_floor and snapshot.intraday_momentum <= 0:
             return ExitSetup("sell", "time_exit_profit", "SELL_READY", note)
         if pnl_pct < 0:
             trend_lost = not trend_filter_ok(snapshot)

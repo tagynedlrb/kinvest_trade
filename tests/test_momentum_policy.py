@@ -177,7 +177,7 @@ def test_time_exit_profit_still_works() -> None:
     result = evaluate_exit_setup(
         _build_config(),
         _snapshot(intraday_momentum=-0.0001),
-        0.002,
+        0.01,
         drawdown_from_peak=0.0,
         hold_cycles=10,
         position_qty=1,
@@ -186,6 +186,28 @@ def test_time_exit_profit_still_works() -> None:
 
     assert result.action == "sell"
     assert result.reason == "time_exit_profit"
+
+
+def test_time_exit_profit_does_not_fire_below_commission_floor() -> None:
+    # Regression test: a position flat at ~0% gross pnl past max_hold_cycles used
+    # to be flagged "sell, time_exit_profit" here and then get rejected downstream
+    # (net_profit_below_cost) on every single cycle once fees were netted out —
+    # an order-then-block pattern. The exit decision itself must now require
+    # enough gross pnl to clear the round-trip commission floor before treating
+    # the position as sellable, so it never gets proposed as a sell in the first
+    # place when it wouldn't clear costs.
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(intraday_momentum=-0.0001),
+        0.0005,
+        drawdown_from_peak=0.0,
+        hold_cycles=10,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason != "time_exit_profit"
 
 
 def test_momentum_loss_cut_requires_two_of_three_conditions() -> None:

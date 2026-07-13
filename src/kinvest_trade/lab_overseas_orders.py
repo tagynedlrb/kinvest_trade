@@ -655,6 +655,21 @@ class OverseasOrderHelper:
                 sell_qty_override=target_sell_qty,
             )
         if not is_us_orderable_session_for_env(now, service.config.credentials.env):
+            if is_us_orderable_session_for_env(now, "prod"):
+                # A real account could trade right now; the mock/paper profile
+                # just can't submit orders outside its regular-session window.
+                # Record the exit as a virtual sell so the strategy isn't stuck
+                # waiting on a stale position, then settle it against the real
+                # position once the mock session opens (see
+                # _reconcile_pending_virtual_sells).
+                return await service._record_virtual_overseas_sell(
+                    candidate,
+                    held,
+                    exit_reason,
+                    signal_snapshot=signal_snapshot,
+                    rejected_error="session_not_orderable_in_profile",
+                    sell_qty_override=target_sell_qty,
+                )
             service._record_trade_skip(
                 market="overseas",
                 symbol=candidate.symbol,
@@ -1008,6 +1023,22 @@ class OverseasOrderHelper:
                 )
                 else "order_rejected"
             )
+            if reject_reason == "session_not_orderable_in_profile" and is_us_orderable_session_for_env(
+                datetime.now(timezone.utc), "prod"
+            ):
+                # KIS rejected the live submission specifically because the
+                # mock/paper profile can't order outside its regular-session
+                # window, even though a real account could trade right now.
+                # Record it as a virtual sell instead of leaving the strategy
+                # stuck retrying the same rejected order every cycle.
+                return await service._record_virtual_overseas_sell(
+                    candidate,
+                    held,
+                    exit_reason,
+                    signal_snapshot=signal_snapshot,
+                    rejected_error=error_text,
+                    sell_qty_override=target_sell_qty,
+                )
             if reject_reason == "order_rejected":
                 service._set_exit_cooldown_minutes("overseas", candidate.symbol, 20)
                 service._register_order_rejection(

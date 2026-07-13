@@ -1,5 +1,56 @@
 # WORKLOG
 
+## [2026-07-13] 실보유 매도 세션차단 시 가상매도 전환 (기존 설계 의도 복원)
+
+### 배경
+- 사용자 피드백: "모의투자라 거래가 안 되는 상황이면, 가상거래 시스템의 원래 설계 의도대로
+  실계좌였다면 거래 가능한 시점에는 가상매도로 기록하고 이후 정산해야 한다. 지금처럼
+  계속 주문거부만 반복하는 건 정상이 아니다"
+- 코드 확인 결과 정확히 그 설계가 이미 존재했음:
+  - `record_virtual_sell()`: 실보유든 가상보유든 세션 제한으로 실주문이 막히면 가상매도로
+    기록(`rejected_error` 파라미터로 "session_not_orderable_in_profile" 사유를 명시적으로
+    받는 구조가 이미 있었음)
+  - `_reconcile_pending_virtual_sells()`: 모의계좌가 실제 주문 가능해지면 대기 중인 가상매도를
+    찾아 실제로 체결하고 정산
+  - 즉 매수 쪽(`record_virtual_buy`)은 이미 이 전환을 하고 있었는데, **매도 쪽만 빠져 있었음**
+- MSEX(실보유 522주)가 정확히 이 틈에 걸려 있었음: `_place_overseas_sell_order()`가
+  세션 제한(`session_not_orderable_in_profile`)을 만나면 두 지점 모두 `record_virtual_sell()`을
+  호출하지 않고 단순 skip만 반복 → 실계좌라면 거래 가능한 시간(daytime/premarket/aftermarket)에도
+  포지션이 계속 묶여 있었음
+
+### 수정
+- `src/kinvest_trade/lab_overseas_orders.py` (`OverseasOrderHelper.place_sell_order`)
+  - **사전 체크 경로**: `is_us_orderable_session_for_env(now, env)`가 False여도, 실계좌 기준
+    `is_us_orderable_session_for_env(now, "prod")`가 True면 그냥 skip하지 않고
+    `record_virtual_sell(..., rejected_error="session_not_orderable_in_profile", ...)` 호출
+  - **실주문 시도 후 반응 경로**: 실제 KIS 제출이 세션 제한으로 거부됐을 때
+    (`reject_reason == "session_not_orderable_in_profile"`)도 동일하게 실계좌 기준 주문가능
+    여부를 확인해 가상매도로 전환
+  - 두 경로 모두 실계좌 기준으로도 완전히 거래 불가(주말/공휴일/완전 장마감)면 기존처럼
+    그냥 skip 유지 — 가상매도로 전환할 이유가 없는 경우까지 억지로 전환하지 않음
+
+### 검증
+- 관련 기존 테스트 3개가 "가상매도로 전환하지 않는다"는 옛 기대값을 그대로 검증하고
+  있었음(테스트 이름부터 `_does_not_convert_real_to_virtual_trade`) — 사용자 지침에 따라
+  새 기대 동작(가상매도 전환)으로 재작성. 두 테스트가 module-binding 문제로 실제로는
+  `liquidity_lab_module`만 패치하고 `lab_overseas_orders_module`은 그대로 둬서 실제 코드 경로에
+  영향을 못 주고 있던 것도 함께 고침(이 세션에서 반복 발견된 패턴)
+- 반응 경로(실주문 시도 후 KIS가 세션 사유로 거부하는 경우) 전용 테스트 신규 추가
+- 완전 장마감(실계좌도 거래불가) 시나리오에서는 여전히 skip만 하는 것을 확인하는 테스트 추가
+- `python3 -m pytest -q` → `476 passed`
+
+### 다른 종목 감시/거래 현황 조사 (사용자 질문 2)
+- 오늘(7/13) `broker_order_events` 전체: 국내매수거부 91건(오전에 조치), 해외가상매수 2건
+  (INVA, QFIN), 국내매도체결 1건 — 이게 오늘 전부였음
+- 국내: 06:32 UTC(15:32 KST) 장마감 이후로는 추가 거래 자체가 불가능한 시간대였고, 그 전
+  시간은 전량 국내매수거부 사고로 막혀 있었어서 다른 체결이 거의 없었던 것으로 확인
+- 해외: 확인 시점 아직 프리마켓이라 모의계좌 실주문 자체가 원천적으로 막혀 있는 시간대.
+  INVA/QFIN은 오늘 가상매수로 신규 진입했고 정상적으로 추적되고 있음
+- 참고 관찰(추가 조치는 보류): INVA/QFIN의 `lab_symbol_state`가 현재 `stale_signal_cache`로
+  표시됨(차트 신호를 가져오지 못해 이전 캐시로 대체 중) — 보유 종목은 순위와 무관하게 항상
+  신호 조회 대상에 포함되도록 이미 구현돼 있어 로직상 문제는 아니지만, 데이터 공급단에서
+  일시적으로 못 가져오는 것으로 보임. 다음 사이클에도 계속되면 별도로 조사 필요
+
 ## [2026-07-13] MSEX 매도거부 조사 - `/lab_portfolio` 보유상태 불일치 감지 추가
 
 ### 배경

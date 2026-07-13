@@ -13,7 +13,7 @@
 - `src/kinvest_trade/liquidity_lab.py`: 국내/해외 후보군을 스캔해 가장 활발한 종목을 자동 선정하는 사이클 오케스트레이션 본체
 - `src/kinvest_trade/lab_watch.py`: 국내/해외 매수·청산 감시대상 선정, watch target 상태 계산
 - `src/kinvest_trade/lab_domestic_orders.py`: 국내 실주문(매수/매도) 제출, 미체결 정정, 체결 로그
-- `src/kinvest_trade/lab_overseas_orders.py`: 해외 실주문(매수/매도) 제출, 가상매수 fallback, 미체결 정정, 체결 로그
+- `src/kinvest_trade/lab_overseas_orders.py`: 해외 실주문(매수/매도) 제출, 가상매수/가상매도 fallback, 미체결 정정, 체결 로그
 - `src/kinvest_trade/lab_positions.py`: 실보유/가상보유 통합 포지션 트래커, 가상거래 관리자
 - `src/kinvest_trade/lab_runtime.py`: 쿨다운/재시도/체결확정 대기 등 사이클 간 런타임 상태
 - `src/kinvest_trade/lab_risk.py`: 연속손절·일일손실 서킷브레이커, 주문거부 서킷브레이커 상태 관리
@@ -450,6 +450,10 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 
 ### 가상(virtual) 거래
 모의투자 환경에서 미국 시장이 열려 있지만 주문이 거부되는 세션(데이타임/프리마켓/애프터마켓)에는 실제 브로커 잔고와 분리된 `virtual_positions`, `virtual_orders` 테이블에 가상 체결을 기록한다. 실제 보유분을 거래불가 세션에 먼저 가상 매도한 경우에는 `virtual_sell_pending`에 정산 대기 수량이 음수 성격으로 따로 쌓인다. 이 포트폴리오는 실제 `liquidity_lab`의 진입/청산 신호를 그대로 따르지만, `get_overseas_balance` 등 실제 잔고와는 섞이지 않는다. 거래 가능 시간이 되면 정산 대기 매도는 실제 매도로 맞춰지고 `[KIS][VIRTUAL_SETTLED]` 알림이 전송된다. 텔레그램 알림은 종목명 뒤에 `(virtual)`이 붙고, 누적 성과와 정산 대기 상태는 `/lab_portfolio` 명령으로 확인할 수 있다.
+- 이 가상매도 전환은 매수/매도 양쪽 모두에서 동작한다: 매수는 세션 제한으로 거부되면
+  즉시 가상매수로, 실보유 종목의 매도도 세션 제한(`session_not_orderable_in_profile`)에
+  걸리면 실전투자 기준으로 지금 거래 가능한 시간대인지 확인해 가상매도로 전환한다. 실전투자
+  기준으로도 완전히 장이 닫혀 있을 때만(주말/공휴일 등) 그냥 대기한다.
 
 ### 시장이 모두 닫혀 있을 때
 국내장과 미국장(애프터마켓 포함)이 모두 닫혀 있는 시간대(KST 07:00~09:00, 15:30~17:00 부근)에는 프로그램이 API 호출 없이 대기 상태로 유지된다. 다음 거래 가능 세션이 임박하면(30분 이내) 감시 주기가 짧아지고, 그렇지 않으면 길어진다(`determine_loop_interval_sec` 참고). 이때 KRX/NYSE 휴장일은 다음 거래 가능 세션 계산에서 건너뛰며, 미국장은 KIS의 한국시간 기반 주간/프리/정규/애프터 세션 날짜에 맞춰 휴장일을 판단한다.

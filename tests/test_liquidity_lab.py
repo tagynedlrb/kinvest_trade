@@ -1522,7 +1522,26 @@ def test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it() ->
     assert "already waiting order exists" in broker_rows[0]["payload_json"]["error"]
 
 
-def test_overseas_sell_session_blocked_does_not_convert_real_to_virtual_trade() -> None:
+@contextmanager
+def _patch_overseas_orderable_by_env(orderable_envs: set[str]):
+    original = liquidity_lab_module.is_us_orderable_session_for_env
+    original_helper = lab_overseas_orders_module.is_us_orderable_session_for_env
+    patched = lambda _now, env: env in orderable_envs  # noqa: E731
+    liquidity_lab_module.is_us_orderable_session_for_env = patched
+    lab_overseas_orders_module.is_us_orderable_session_for_env = patched
+    try:
+        yield
+    finally:
+        liquidity_lab_module.is_us_orderable_session_for_env = original
+        lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper
+
+
+def test_overseas_sell_session_blocked_converts_real_position_to_virtual_when_prod_orderable() -> None:
+    # A real (non-virtual) held position can't be sold on the mock/paper
+    # profile outside its regular-session window, but a real account could
+    # trade right now (prod is orderable) -- this must be recorded as a
+    # virtual sell (pending settlement) instead of skipped and retried
+    # forever every cycle.
     service = _build_sell_service(
         error=KisApiError("KIS mock does not support US daytime trading for this session")
     )
@@ -1549,48 +1568,99 @@ def test_overseas_sell_session_blocked_does_not_convert_real_to_virtual_trade() 
         pnl_pct=0.0181,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+    with _patch_overseas_orderable_by_env({"prod"}):
+        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+
+    assert result["submitted"] is True
+    assert result["virtual"] is True
+    assert result["reason"] == "session_not_orderable_in_profile"
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert service.client.order_calls == []
+    assert any("가상매도" in message for message in service.notifier.messages)
+
+
+def test_overseas_sell_reactive_session_block_converts_to_virtual_sell() -> None:
+    # Our own pre-check thought the mock profile was orderable (regular
+    # session), but KIS itself still rejects the live submission with its
+    # daytime-trading-not-supported message. Since a real account would be
+    # orderable right now too, this must still fall back to a virtual sell
+    # rather than a plain skip -- exercises the reactive except-block path,
+    # not the earlier pre-submission check.
+    service = _build_sell_service(
+        error=KisApiError("KIS mock does not support US daytime trading for this session")
+    )
+    candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=196.96,
+        bid=196.95,
+        ask=196.97,
+        spread_pct=0.0001,
+        change_rate_pct=0.9,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=12.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=193.46,
+        current_price=196.96,
+        pnl_pct=0.0181,
+    )
+
+    result = _run_orderable_overseas_sell(service, candidate, held, "take_profit")
+
+    assert result["submitted"] is True
+    assert result["virtual"] is True
+    assert result["reason"] == "session_not_orderable_in_profile"
+    assert service.client.order_calls == []
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+
+
+def test_overseas_sell_session_blocked_still_skips_when_market_fully_closed() -> None:
+    # If even a real account couldn't trade right now (market genuinely
+    # closed, not just outside the mock profile's narrower window), there is
+    # nothing to convert to a virtual sell -- keep skipping as before.
+    service = _build_sell_service(
+        error=KisApiError("KIS mock does not support US daytime trading for this session")
+    )
+    candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=196.96,
+        bid=196.95,
+        ask=196.97,
+        spread_pct=0.0001,
+        change_rate_pct=0.9,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=12.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=193.46,
+        current_price=196.96,
+        pnl_pct=0.0181,
+    )
+
+    with _patch_overseas_orderable_by_env(set()):
+        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
 
     assert result["submitted"] is False
     assert result["skipped"] is True
     assert result["reason"] == "session_not_orderable_in_profile"
     pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
     assert pending is None
-    assert service.virtual_trades.performance_summary() == {}
-    assert service.client.order_calls == []
-
-
-def test_overseas_sell_session_blocked_sends_no_virtual_trade_notification() -> None:
-    service = _build_sell_service(
-        error=KisApiError("KIS mock does not support US daytime trading for this session")
-    )
-    candidate = OverseasScanResult(
-        symbol="NVDA",
-        exchange_code="NASD",
-        last_price=196.96,
-        bid=196.95,
-        ask=196.97,
-        spread_pct=0.0001,
-        change_rate_pct=0.9,
-        volume=2_000_000,
-        orderable_qty=0,
-        fx_rate_krw=0.0,
-        activity_score=12.0,
-    )
-    held = OverseasHeldPosition(
-        symbol="NVDA",
-        exchange_code="NASD",
-        quantity=1,
-        orderable_qty=1,
-        avg_price=193.46,
-        current_price=196.96,
-        pnl_pct=0.0181,
-    )
-
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
-
-    assert result["submitted"] is False
-    assert result["reason"] == "session_not_orderable_in_profile"
     assert service.notifier.messages == []
 
 
@@ -6227,10 +6297,14 @@ def test_session_blocked_real_sell_does_not_record_virtual_sell() -> None:
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
     original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_helper_is_us_orderable_session_for_env = (
+        lab_overseas_orders_module.is_us_orderable_session_for_env
+    )
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
     liquidity_lab_module.is_us_regular_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    lab_overseas_orders_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
     try:
         first = asyncio.run(service.run())
@@ -6239,8 +6313,14 @@ def test_session_blocked_real_sell_does_not_record_virtual_sell() -> None:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
         liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
+        lab_overseas_orders_module.is_us_orderable_session_for_env = (
+            original_helper_is_us_orderable_session_for_env
+        )
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
+    # Market is fully closed for both the mock profile AND a real account
+    # (is_us_orderable_session_for_env returns False for every env), so there
+    # is nothing to convert to a virtual sell -- this must still just skip.
     assert first.overseas_order["skipped"] is True
     assert first.overseas_order["reason"] == "session_not_orderable_in_profile"
     assert second.overseas_order["skipped"] is True

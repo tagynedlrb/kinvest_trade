@@ -18,6 +18,20 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+def _normalize_order_no(order_no: object) -> str:
+    """Strip leading zeros so order numbers compare equal regardless of source.
+
+    KIS's order-placement response pads order numbers to 10 digits
+    (e.g. "0000041501"), but the order-history endpoint returns the same
+    order number unpadded (e.g. "41501"). Comparing them as raw strings
+    always mismatches, which silently broke the bot-owned-order filter used
+    by the stale-order auto-canceller.
+    """
+    text = str(order_no or "").strip()
+    stripped = text.lstrip("0")
+    return stripped or ("0" if text else "")
+
+
 class OrderAdminHelper:
     """Stale-order cancellation, live open-order loading, and order-audit formatting for telegram control."""
 
@@ -239,17 +253,18 @@ class OrderAdminHelper:
         if not rows:
             return []
         submitted_order_numbers = {
-            str(event.get("broker_order_no", "") or "").strip()
+            _normalize_order_no(event.get("broker_order_no"))
             for event in controller.repository.list_broker_order_events(limit=500)
             if str(event.get("market", "") or "").lower() == "domestic"
             and str(event.get("status", "") or "").upper() == "SUBMITTED"
             and str(event.get("order_kind", "") or "").lower() != "cancel"
         }
+        submitted_order_numbers.discard("")
         if not submitted_order_numbers:
             return []
         result: list[dict] = []
         for row in rows:
-            order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+            order_no = _normalize_order_no(row.get("order_no") or row.get("odno"))
             if order_no and order_no in submitted_order_numbers:
                 result.append(row)
         return result
@@ -307,7 +322,7 @@ class OrderAdminHelper:
             return []
         submitted_events: dict[str, dict] = {}
         for event in controller.repository.list_broker_order_events(limit=500):
-            order_no = str(event.get("broker_order_no", "") or "").strip()
+            order_no = _normalize_order_no(event.get("broker_order_no"))
             if (
                 order_no
                 and str(event.get("market", "") or "").lower() == "overseas"
@@ -319,7 +334,7 @@ class OrderAdminHelper:
             return []
         result: list[dict] = []
         for row in rows:
-            order_no = str(row.get("order_no") or row.get("odno") or "").strip()
+            order_no = _normalize_order_no(row.get("order_no") or row.get("odno"))
             event = submitted_events.get(order_no)
             if event is None:
                 continue

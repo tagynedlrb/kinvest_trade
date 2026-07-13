@@ -2349,6 +2349,50 @@ def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_p
     assert calls[0]["now"] == now
 
 
+def test_filter_bot_submitted_domestic_orders_matches_despite_zero_padding_difference(
+    tmp_path,
+) -> None:
+    # Regression test: broker_order_events stores the 10-digit zero-padded
+    # order number returned by the order-placement response (e.g.
+    # "0000013669"), but KIS's order-history endpoint returns the same order
+    # number unpadded (e.g. "13669"). Comparing them as raw strings always
+    # mismatched, silently making the bot-owned-order filter (used by the
+    # stale-order auto-canceller) find nothing, ever.
+    repository = SqliteRepository(tmp_path / "telegram_order_no_padding_domestic.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-10T00:59:55+00:00",
+        market="domestic",
+        symbol="073240",
+        exchange_code="KRX",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=126,
+        requested_price=6990,
+        status="SUBMITTED",
+        reason="domestic_buy",
+        broker_order_no="0000013669",
+        is_virtual=0,
+        payload={},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    result = controller._filter_bot_submitted_domestic_orders(
+        [{"symbol": "073240", "order_no": "13669"}]
+    )
+
+    assert len(result) == 1
+    assert result[0]["order_no"] == "13669"
+
+
 def test_auto_cancel_domestic_uses_kst_date_for_holiday_check(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_auto_cancel_holiday_date.db")
     controller = TelegramLiquidityLabController(
@@ -2442,6 +2486,48 @@ def test_maybe_auto_cancel_stale_overseas_orders_only_bot_submitted_orders(tmp_p
     assert calls[0]["source"] == "auto"
     assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["ov-001"]
     assert calls[0]["candidate_orders"][0]["exchange_code"] == "NASD"
+
+
+def test_filter_bot_submitted_overseas_orders_matches_despite_zero_padding_difference(
+    tmp_path,
+) -> None:
+    # Regression test for the same padding mismatch as the domestic case,
+    # discovered while investigating why the overseas auto-canceller never
+    # touched the CRAN duplicate-order backlog (2026-07-13 incident): stored
+    # broker_order_no="0000041501" vs live order-history odno="41501".
+    repository = SqliteRepository(tmp_path / "telegram_order_no_padding_overseas.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-13T15:37:21+00:00",
+        market="overseas",
+        symbol="CRAN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=10.2,
+        status="SUBMITTED",
+        reason="pullback_entry",
+        broker_order_no="0000041501",
+        is_virtual=0,
+        payload={},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    result = controller._filter_bot_submitted_overseas_orders(
+        [{"symbol": "CRAN", "exchange_code": "NASD", "order_no": "41501"}]
+    )
+
+    assert len(result) == 1
+    assert result[0]["order_no"] == "41501"
 
 
 def test_auto_cancel_overseas_uses_new_york_date_for_holiday_check(tmp_path) -> None:

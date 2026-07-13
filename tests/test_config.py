@@ -115,8 +115,9 @@ def test_fixed_config_risk_section_contains_only_live_keys() -> None:
         "order_reject_window_minutes",
         "order_reject_cooldown_minutes",
         "stale_exit_replace_minutes",
+        "repeated_skip_notify_cooldown_minutes",
     }
-    assert payload["_strategy_changes"][0]["date"] == "2026-07-13"
+    assert payload["_strategy_changes"][0]["date"] == "2026-07-14"
 
 
 def test_load_app_config_uses_live_profile_variables(monkeypatch) -> None:

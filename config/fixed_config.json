@@ -147,7 +147,8 @@
         "order_reject_threshold": 5,
         "order_reject_window_minutes": 15,
         "order_reject_cooldown_minutes": 30,
-        "stale_exit_replace_minutes": 15
+        "stale_exit_replace_minutes": 15,
+        "repeated_skip_notify_cooldown_minutes": 30
     },
     "storage": {
         "db_path": "data/trading.db",
@@ -238,6 +239,10 @@
         "leveraged_etf_symbols": ["TQQQ", "SOXL"]
     },
     "_strategy_changes": [
+        {
+            "date": "2026-07-14",
+            "desc": "반복 주문거부(net_profit_below_cost 등) 알림 중복 억제(cooldown30m)"
+        },
         {
             "date": "2026-07-13",
             "desc": "주문거부 서킷브레이커 추가(threshold5/window15m/cooldown30m)"

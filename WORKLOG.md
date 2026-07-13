@@ -1,5 +1,35 @@
 # WORKLOG
 
+## [2026-07-14] `net_profit_below_cost` 반복 주문거부 알림 폭탄 수정
+
+### 배경
+CRAN 사건으로 의도치 않게 생긴 5,251주 포지션(매입가 $10.20 = 현재가)에 대해 텔레그램으로
+`[KIS][거래알림] ... 동작=주문거부 ... 사유=시간 만료 청산(수익) 주문거부=1건 (net_profit_below_cost)`
+메시지가 1분 간격으로 계속 반복 발송된다는 신고.
+
+### 원인
+`시간 만료 청산(수익)`(비보호성 time exit) 조건은 이 포지션에서 매 사이클 계속 성립하지만,
+수수료를 반영한 순손익 추정(`_estimate_overseas_net_pnl`)이 0 이하라 실제 매도 주문은 매번
+`net_profit_below_cost`로 스킵된다(`lab_overseas_orders.py`). 이 자체는 수수료보다 작은 이익에
+파는 것을 막는 의도된 보호 로직이라 문제가 아니다. 문제는 `liquidity_lab.py`의 `_send_summary`가
+이 "무주문 스킵" 상태를 매 사이클(스킵 카운트만 있으면 `action_raw="WAIT"`이어도 조건 없이)
+텔레그램으로 그대로 내보내고 있었던 것 — `_display_trade_action`이 `WAIT + skip_count>0`을
+`동작=주문거부`로 표시하다 보니 실제 브로커 거부가 아닌 내부 스킵인데도 매번 같은 알림이
+무한 반복됐다.
+
+### 수정
+- `config/fixed_config.json`/`config.py`: `risk.repeated_skip_notify_cooldown_minutes`(기본 30분)
+  추가.
+- `liquidity_lab.py`: `_send_summary`에서 `action_raw=="WAIT"`이고 `skip_count>0`인 경우에만
+  `_should_send_repeated_skip_notice(market, symbol, skip_top_reasons)`로 동일 (시장, 종목,
+  스킵 이유) 조합의 알림을 쿨다운 동안 한 번만 보내도록 억제. 실제 주문이 제출된
+  매수/매도/`SELL_REJECTED`(실제 브로커 거부) 알림에는 영향 없음 — 이 가드는 "봇이 아예 주문을
+  내지 않은" WAIT 경로에만 적용된다.
+
+### 검증
+- `python3 -m pytest -q` → `513 passed` (신규 2건: 동일 스킵이 반복 억제되는지, 쿨다운이 지나면
+  다시 보내는지)
+
 ## [2026-07-13] 자동 미체결취소가 실제로는 한 번도 매칭되지 않던 두 번째 버그 수정 (주문번호 자릿수 불일치)
 
 ### 배경

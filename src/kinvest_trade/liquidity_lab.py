@@ -227,6 +227,7 @@ class LiquidityLabService:
         self._signal_cache_updated_at: dict[str, datetime] = {}
         self._overseas_signal_failures: dict[str, int] = {}
         self._overseas_signal_suppressed_until: dict[str, datetime] = {}
+        self._repeated_skip_notify_last: dict[tuple[str, str, str], datetime] = {}
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
         self._wait_cycles: dict[str, int] = {}
@@ -4106,7 +4107,34 @@ class LiquidityLabService:
             lines.append(f"참고={action['replacement_note']}")
         if action["action_raw"] == "SELL_REJECTED":
             lines.append("참고=주문이 거부되어 실제로 체결되지 않았습니다")
+        if action["action_raw"] == "WAIT" and skip_count > 0 and not self._should_send_repeated_skip_notice(
+            market=display_market_key,
+            symbol=str(action.get("symbol_raw") or display_target),
+            signature=skip_top_reasons or str(action.get("reason_raw") or ""),
+        ):
+            return
         await self.notifier.send("\n".join(lines))
+
+    def _should_send_repeated_skip_notice(self, *, market: str, symbol: str, signature: str) -> bool:
+        # A held position can be perpetually ineligible to exit (e.g. net profit
+        # after fees stays <= 0 while price is flat), which would otherwise emit
+        # an identical "주문거부" notice every scan cycle forever. Collapse repeats
+        # of the same (market, symbol, reason) into one notice per cooldown window.
+        last_notified = getattr(self, "_repeated_skip_notify_last", None)
+        if last_notified is None:
+            last_notified = {}
+            self._repeated_skip_notify_last = last_notified
+        now = datetime.now(timezone.utc)
+        key = (market, symbol, signature)
+        cooldown_minutes = max(
+            1,
+            int(getattr(self.config.risk, "repeated_skip_notify_cooldown_minutes", 30) or 30),
+        )
+        last = last_notified.get(key)
+        if last is not None and now - ensure_timezone(last) < timedelta(minutes=cooldown_minutes):
+            return False
+        last_notified[key] = now
+        return True
 
     def _iter_leaf_orders(self, order_result: dict | None):
         if not order_result:

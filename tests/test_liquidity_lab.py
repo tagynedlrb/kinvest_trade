@@ -5416,6 +5416,67 @@ def test_send_summary_skips_when_overseas_sell_already_notified() -> None:
     assert service.notifier.messages == []
 
 
+def _net_profit_below_cost_report() -> LiquidityLabReport:
+    return LiquidityLabReport(
+        scanned_at="2026-07-14 03:02:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target="CRAN",
+        primary_selection_reason="time_exit_profit",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        domestic_order=None,
+        overseas_order={
+            "skipped": True,
+            "side": "sell",
+            "market": "overseas",
+            "reason": "net_profit_below_cost",
+            "exit_reason": "time_exit_profit",
+            "candidate": {"symbol": "CRAN", "last_price": 10.20},
+            "held_position": {"symbol": "CRAN", "quantity": 5251},
+        },
+    )
+
+
+def test_send_summary_collapses_repeated_net_profit_below_cost_notice() -> None:
+    # Regression test: a position stuck at ~0% net P&L after fees can hit
+    # net_profit_below_cost on every single scan cycle forever, which used to
+    # emit an identical "동작=주문거부" notice every cycle. Only the first one
+    # in the cooldown window should be sent.
+    service = _build_run_service()
+
+    asyncio.run(service._send_summary(_net_profit_below_cost_report()))
+    asyncio.run(service._send_summary(_net_profit_below_cost_report()))
+    asyncio.run(service._send_summary(_net_profit_below_cost_report()))
+
+    assert len(service.notifier.messages) == 1
+    assert "net_profit_below_cost" in service.notifier.messages[0]
+
+
+def test_send_summary_resends_net_profit_below_cost_after_cooldown_expires() -> None:
+    service = _build_run_service()
+
+    asyncio.run(service._send_summary(_net_profit_below_cost_report()))
+    assert len(service.notifier.messages) == 1
+
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=31)
+    for key in list(service._repeated_skip_notify_last):
+        service._repeated_skip_notify_last[key] = stale_cutoff
+
+    asyncio.run(service._send_summary(_net_profit_below_cost_report()))
+
+    assert len(service.notifier.messages) == 2
+
+
 def test_send_summary_still_sends_when_overseas_buy_not_pre_notified() -> None:
     service = _build_run_service()
     report = LiquidityLabReport(

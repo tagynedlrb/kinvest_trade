@@ -201,6 +201,7 @@ class RiskConfig:
     order_reject_window_minutes: int = 15
     order_reject_cooldown_minutes: int = 30
     stale_exit_replace_minutes: int = 15
+    repeated_skip_notify_cooldown_minutes: int = 30
 
 
 @dataclass(slots=True)
@@ -767,6 +768,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             order_reject_window_minutes=int(risk_raw.get("order_reject_window_minutes", 15)),
             order_reject_cooldown_minutes=int(risk_raw.get("order_reject_cooldown_minutes", 30)),
             stale_exit_replace_minutes=int(risk_raw.get("stale_exit_replace_minutes", 15)),
+            repeated_skip_notify_cooldown_minutes=int(
+                risk_raw.get("repeated_skip_notify_cooldown_minutes", 30)
+            ),
         ),
         storage=storage,
         notifications=NotificationConfig(

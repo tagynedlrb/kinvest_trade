@@ -302,6 +302,7 @@ python3 main.py liquidity-lab
 - 보호성 청산 주문은 국내는 시장가(`ORD_DVSN=01`, 제출가 0), 해외 실계좌는 시장가, 해외 모의투자는 KIS 안정성을 위해 기준 호가의 공격지정가(`ORD_DVSN=00`)로 제출한다.
 - 손익 계산과 텔레그램 표시는 실제 제출가 0이 아니라 청산 판단 당시의 기준 호가(`reference_price`)를 사용한다. 내부 broker audit에는 `order_kind`, `order_division`, `requested_price`, `reference_price`를 함께 기록한다.
 - **주문거부 서킷브레이커**: 매도 주문거부는 시장별로 개별 종목 쿨다운(국내 10분/해외 20분)을 걸지만, 매수 주문거부에는 원래 아무 백오프가 없어 같은 오류가 나는 동안 사이클마다 계속 재시도했다. 이제 시장×방향(`domestic:buy`, `overseas:sell` 등) 기준으로 최근 `order_reject_window_minutes`(기본 15분) 안에 `order_reject_threshold`(기본 5)회 이상 주문거부가 쌓이면 그 시장/방향의 신규 주문을 `order_reject_cooldown_minutes`(기본 30분) 동안 중단하고, KIS가 반환한 실제 오류 메시지를 담아 텔레그램으로 즉시 알린다. `/lab_guard`에 `주문거부차단=` 줄로 현재 차단 대상과 누적 건수를 보여주고, `/lab_cb_reset`으로 즉시 해제할 수 있다. `order_reject_threshold=0`이면 기능을 끈다.
+- **미체결 청산주문 정체 방지**: 손절/ATR하드스탑 등 보호성 청산은 45초 이상 미체결이면 즉시 취소 후 재주문한다. 반면 `take_profit` 같은 비보호성 청산은 이 조건이 없어, 목표가에 닿지 않으면 해당 주문이 무기한 미체결로 남아 다음 매도 시도를 계속 막았다(예: 2026-07-13 MSEX 익절 주문이 1시간 가까이 정체). 이제 비보호성 청산도 `stale_exit_replace_minutes`(기본 15분)를 넘기면 동일하게 취소 후 현재 호가로 재주문한다. 취소 자체가 실패하면(`pending_exit_cancel_failed`) 위 주문거부 서킷브레이커에도 함께 등록되어, 반복 실패 시 해당 시장/방향이 자동 차단되고 텔레그램 알림이 온다(과거에는 이 경로가 서킷브레이커에 전혀 연결되어 있지 않아 조용히 무한 재시도했다).
 
 현재 기본 후보군과 개잡주 필터 기준은 `config/fixed_config.json`의 `liquidity_lab` 섹션에서 조정할 수 있다.
 - 국내: `005930`, `000660`, `035420`, `419050`, `023410`, `010170`, `034940`
@@ -329,36 +330,74 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 
 서비스로 올려두면 `liquidity-lab` 테스트가 끝난 뒤에도 컨트롤러는 계속 살아 있고, 텔레그램 명령만 보내면 다시 수행할 수 있다. 서비스가 시작되면 텔레그램 `setMyCommands`도 함께 등록되어, 채팅창에서 `/`를 입력했을 때 자동완성 목록과 메뉴 버튼 명령 목록이 보이도록 설정된다.
 
-지원 명령:
+명령이 20개를 넘어가면서 `/lab_help`가 한 줄씩 다 늘어놓으면 알아보기 어려웠다. 이제 `/lab_help`는
+아래와 같은 카테고리로 묶어서 보여주고, `/lab_menu`를 보내면 카테고리 버튼(인라인 키보드)이 오는
+채팅창 UI로도 탐색할 수 있다 — 버튼을 누르면 그 카테고리의 명령 목록으로 메시지가 바뀌고,
+`◀ 메뉴`를 누르면 카테고리 목록으로 돌아간다. 실제 명령 실행은 여전히 텍스트로 입력해야 한다
+(버튼은 탐색/조회용이며, 인자가 필요한 명령을 그대로 실행시키지는 않는다).
+
+**🎛 운영 제어**
 - `/lab_start`: 즉시 루프 시작
 - `/lab_pause`: 현재 사이클은 마무리하고 일시정지
 - `/lab_resume`: 일시정지 상태에서 재개
 - `/lab_stop`: 현재 사이클 취소 요청 후 정지. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_terminate`: 현재 lab 실행을 강제 종료하고 대기 상태로 복귀. 그 시점까지의 누적 거래/손익 요약을 텔레그램으로 전송하고 DB에 기록
 - `/lab_service_restart`: `kinvest-telegram-control.service` 자체를 재시작
+
+**📊 상태 조회**
 - `/lab_status`: 현재 상태, 가상 노출, 최근 반복 매도장애 요약 조회
 - `/lab_watchlist`: 현재 감시중인 종목 목록과 `20d/60d`, `5/20` 이평 관계, `vr/mom` 기반 짧은 상태 요약 조회
 - `/lab_portfolio`: 실제 계좌 보유, 통합 가상보유, 정산 대기 매도, 누적 성과 조회
+- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`와 고정차단(`해외 VWAP단독`, `해외 RSI단독`, `해외 VOL단독`)을 함께 표시한다
+
+**📜 로그 및 성과**
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
 - `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실주문접수 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
 - `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 실주문접수 성과 비교
 - `/lab_report wait [시간]`: 최근 N시간(기본 72시간)의 `WAIT` 병목을 시장·전략·사유별로 요약
-- `/lab_guard`: 최근 성과 기준 전략 가드 상태 조회. `차단/감시/참고`와 고정차단(`해외 VWAP단독`, `해외 RSI단독`, `해외 VOL단독`)을 함께 표시한다
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
+- `/lab_gitlog`: 당일 거래/이벤트/주문/텔레그램/API 호출 로그를 CSV 5종으로 정리해 GitHub 저장소에 업로드
+
+**🧾 주문 정리**
 - `/lab_cancel_stale_domestic`: 30분 이상 국내 미체결 취소 대상 확인
 - `/lab_cancel_stale_domestic_confirm`: 확인된 국내 장기 미체결 취소 실행(메뉴에는 숨김)
 - `/lab_cancel_stale_overseas`: 30분 이상 해외 미체결 취소 대상 확인
 - `/lab_cancel_stale_overseas_confirm`: 확인된 해외 장기 미체결 취소 실행(메뉴에는 숨김)
+
+**🗄 데이터/성과 초기화**
 - `/lab_trim_virtual`: 해외 가상보유가 `max_concurrent_overseas_orders` 한도를 초과했을 때, 손실이 크고 오래된 초과분 정리 후보를 실시간 시세 기준으로 미리보기
 - `/lab_trim_virtual_confirm`: `/lab_trim_virtual`이 제시한 초과분 정리 실행(메뉴에는 숨김)
-- `/lab_reset`: 가상거래 전체를 백업 후 초기화(현재 가상보유/노출/한도초과 요약을 먼저 보여준 뒤 확인 요청)
+- `/lab_reset`: **가상거래만** 백업 후 초기화(현재 가상보유/노출/한도초과 요약을 먼저 보여준 뒤 확인 요청). `cycle_log`/실거래 이력은 보존된다
 - `/lab_reset_confirm`: `/lab_reset`이 제시한 초기화 실행(메뉴에는 숨김)
+- `/lab_reset_all`: **전체** 거래이력·성과 초기화(테스트 환경을 처음부터 다시 구성할 때 사용). 아래 별도 설명 참조
+- `/lab_reset_all_confirm`: `/lab_reset_all`이 제시한 초기화 실행(메뉴에는 숨김)
+- `/lab_cb_reset`: 연속손절/일일손실 서킷브레이커 및 주문거부 서킷브레이커 강제 해제
+
+**👀 감시종목 설정**
 - `/lab_relist`: 해외 감시 풀을 수동 종목 목록으로 교체(TV 스캔 대신 특정 종목만 보고 싶을 때)
 - `/lab_relist_schedule`: 해외 relist 관련 알림 시간 설정
-- `/lab_cb_reset`: 연속손절/일일손실 서킷브레이커 및 주문거부 서킷브레이커 강제 해제
-- `/lab_gitlog`: 당일 거래/이벤트/주문/텔레그램/API 호출 로그를 CSV 5종으로 정리해 GitHub 저장소에 업로드
+
+**🧪 테스트**
 - `/lab_paper_test <종목코드>`: 지정 국내 종목으로 수동 paper test 실행
-- `/lab_help`: 명령 목록 조회
+
+**기타**
+- `/lab_menu`: 카테고리 버튼(인라인 키보드)으로 명령 목록 탐색
+- `/lab_help`: 카테고리별 명령 목록 텍스트로 조회
+
+### `/lab_reset_all` — 전체 초기화 후 실계좌 보유만으로 재구성
+`/lab_reset`은 가상거래 3테이블만 지우고 `cycle_log`(매매판단/성과 기록)는 그대로 둔다. 반면
+전략 재검증이나 테스트 환경을 완전히 새로 시작하고 싶을 때는 `cycle_log`, `event_log`,
+`broker_order_events`, 가상거래 3테이블, `lab_symbol_state`(감시종목 캐시)를 **모두** 지우고
+연속손절 카운터·세션 손익·서킷브레이커도 함께 초기화하는 `/lab_reset_all`을 쓴다.
+
+- 실행 전 현재 각 테이블의 건수를 보여주고 `/lab_reset_all_confirm` 입력을 요구한다(오입력 방지).
+- 실행 시 DB 파일을 먼저 백업한다(`*_backup_..._pre_reset_all.db`).
+- **별도의 "실계좌 잔고 불러오기" 단계가 없다** — `lab_symbol_state`를 비우기만 하면, 다음
+  사이클이 실행될 때 매매 루프가 항상 그렇듯 KIS 잔고를 실시간으로 다시 조회해서 캐시를 새로
+  채운다. 즉 초기화 직후에는 실제 계좌에 있는 종목만 "보유중"으로 인식되고, 지워진 가상보유는
+  더 이상 존재하지 않으므로 과거 성과/이력이 전혀 섞이지 않은 상태로 시작한다.
+- `telegram_message_log`/`api_call_log`(운영 감사 로그)는 지우지 않는다 — 이 두 로그는 전략
+  성과가 아니라 시스템 동작 이력이라 초기화 대상에서 제외했다.
 
 ### `/lab_gitlog`가 업로드하는 5종 로그
 `/lab_gitlog`는 그날(KST 기준) 발생한 아래 5개 CSV를 `logs/<종류>/YYYYMMDD_*.csv`로 업로드한다.

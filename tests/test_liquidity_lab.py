@@ -1749,6 +1749,165 @@ def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() ->
     assert broker_rows[1]["payload_json"]["open_qty"] == 61
 
 
+def test_place_overseas_sell_order_waits_on_fresh_non_protective_pending_exit() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            {
+                "pdno": "MSEX",
+                "sll_buy_dvsn_cd": "01",
+                "nccs_qty": "522",
+                "odno": "40077",
+                "ft_ord_unpr3": "55.59500000",
+                "dmst_ord_dt": datetime.now(timezone.utc)
+                .astimezone(liquidity_lab_module.KST)
+                .strftime("%Y%m%d"),
+                "thco_ord_tmd": datetime.now(timezone.utc)
+                .astimezone(liquidity_lab_module.KST)
+                .strftime("%H%M%S"),
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="MSEX",
+        exchange_code="NASD",
+        last_price=55.2,
+        bid=55.1,
+        ask=55.3,
+        spread_pct=0.0004,
+        change_rate_pct=0.5,
+        volume=500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=5.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="MSEX",
+        exchange_code="NASD",
+        quantity=522,
+        orderable_qty=522,
+        avg_price=53.0,
+        current_price=55.2,
+        pnl_pct=(55.2 - 53.0) / 53.0,
+    )
+
+    result = _run_orderable_overseas_sell(service, candidate, held, "take_profit")
+
+    assert result["submitted"] is False
+    assert result["reason"] == "pending_exit_order"
+    assert service.client.cancel_calls == []
+
+
+def test_place_overseas_sell_order_cancels_stale_non_protective_pending_exit_after_timeout() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            {
+                "pdno": "MSEX",
+                "sll_buy_dvsn_cd": "01",
+                "nccs_qty": "522",
+                "odno": "40077",
+                "ft_ord_unpr3": "55.59500000",
+                "dmst_ord_dt": "20260710",
+                "thco_ord_tmd": "000000",
+            }
+        ]
+    )
+    candidate = OverseasScanResult(
+        symbol="MSEX",
+        exchange_code="NASD",
+        last_price=55.2,
+        bid=55.1,
+        ask=55.3,
+        spread_pct=0.0004,
+        change_rate_pct=0.5,
+        volume=500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=5.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="MSEX",
+        exchange_code="NASD",
+        quantity=522,
+        orderable_qty=522,
+        avg_price=53.0,
+        current_price=55.2,
+        pnl_pct=(55.2 - 53.0) / 53.0,
+    )
+
+    # take_profit is not in _protective_exit_reasons(), but the order dated
+    # 2026-07-10 is far older than the default 15-minute stale_exit_replace_minutes
+    # timeout, so it should now be canceled and replaced instead of skipped forever.
+    result = _run_orderable_overseas_sell(service, candidate, held, "take_profit")
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    assert service.client.cancel_calls[0]["original_order_no"] == "40077"
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["reason"] == "stale_exit_replace"
+
+
+def test_place_overseas_sell_order_registers_order_rejection_on_pending_exit_cancel_failure() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            {
+                "pdno": "ALNY",
+                "sll_buy_dvsn_cd": "01",
+                "nccs_qty": "61",
+                "odno": "52821",
+                "ft_ord_unpr3": "337.57000000",
+                "dmst_ord_dt": "20260710",
+                "thco_ord_tmd": "000000",
+            }
+        ]
+    )
+    service.config.risk = type(
+        "RiskCfg",
+        (),
+        {
+            "order_reject_threshold": 1,
+            "order_reject_window_minutes": 15,
+            "order_reject_cooldown_minutes": 30,
+        },
+    )()
+
+    async def _cancel_fails(**_kwargs):
+        raise KisApiError("cancel_rejected_by_broker")
+
+    service.client.revise_or_cancel_overseas_order = _cancel_fails
+    candidate = OverseasScanResult(
+        symbol="ALNY",
+        exchange_code="NASD",
+        last_price=317.0,
+        bid=316.9,
+        ask=317.1,
+        spread_pct=0.0006,
+        change_rate_pct=-2.0,
+        volume=1_500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=9.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="ALNY",
+        exchange_code="NASD",
+        quantity=61,
+        orderable_qty=61,
+        avg_price=338.41,
+        current_price=317.0,
+        pnl_pct=(317.0 - 338.41) / 338.41,
+    )
+
+    result = _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
+
+    assert result["submitted"] is False
+    assert result["reason"] == "pending_exit_cancel_failed"
+    assert service._is_order_reject_halted(market="overseas", side="sell") is True
+    assert any(
+        "주문거부 서킷브레이커 발동" in message for message in service.notifier.messages
+    )
+
+
 def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None:
     service = _build_run_service()
     service.client = DummySellClient(
@@ -2372,6 +2531,176 @@ def test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderab
     assert broker_rows[1]["payload_json"]["reference_price"] == 4925.0
     assert broker_rows[1]["payload_json"]["open_qty"] == 184
     assert "참고=미체결 매도 정정 후 재주문" in service.notifier.messages[0]
+
+
+def test_place_domestic_non_protective_sell_waits_on_fresh_pending_exit() -> None:
+    now_kst = datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST)
+    pending_orders = [
+        {
+            "pdno": "058730",
+            "sll_buy_dvsn_cd": "01",
+            "sll_buy_dvsn_cd_name": "매도",
+            "rmn_qty": "184",
+            "ord_qty": "184",
+            "tot_ccld_qty": "0",
+            "cncl_cfrm_qty": "0",
+            "rjct_qty": "0",
+            "odno": "0000015789",
+            "ord_gno_brno": "00950",
+            "ord_dvsn_cd": "00",
+            "excg_id_dvsn_cd": "KRX",
+            "ord_unpr": "5710",
+            "ord_dt": now_kst.strftime("%Y%m%d"),
+            "ord_tmd": now_kst.strftime("%H%M%S"),
+        }
+    ]
+    service = _build_domestic_sell_service(pending_orders=pending_orders)
+    candidate = DomesticScanResult(
+        stock_code="058730",
+        current_price=4925,
+        best_ask=4930,
+        best_bid=4925,
+        spread_pct=0.001,
+        minute_change_pct=-0.015,
+        intraday_turnover_krw=5_000_000_000,
+        volume_sum=500_000,
+        activity_score=18.0,
+        stock_name="다스코",
+    )
+    held = DomesticHeldPosition(
+        stock_code="058730",
+        quantity=184,
+        orderable_qty=184,
+        avg_price=4700.0,
+        current_price=4925.0,
+        pnl_pct=(4925.0 - 4700.0) / 4700.0,
+    )
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "take_profit"))
+
+    assert result["submitted"] is False
+    assert result["reason"] == "pending_exit_order"
+    assert service.client.cancel_calls == []
+
+
+def test_place_domestic_non_protective_sell_cancels_pending_exit_after_stale_timeout() -> None:
+    pending_orders = [
+        {
+            "pdno": "058730",
+            "sll_buy_dvsn_cd": "01",
+            "sll_buy_dvsn_cd_name": "매도",
+            "rmn_qty": "184",
+            "ord_qty": "184",
+            "tot_ccld_qty": "0",
+            "cncl_cfrm_qty": "0",
+            "rjct_qty": "0",
+            "odno": "0000015789",
+            "ord_gno_brno": "00950",
+            "ord_dvsn_cd": "00",
+            "excg_id_dvsn_cd": "KRX",
+            "ord_unpr": "5710",
+            "ord_dt": "20000101",
+            "ord_tmd": "100816",
+        }
+    ]
+    service = _build_domestic_sell_service(pending_orders=pending_orders)
+    candidate = DomesticScanResult(
+        stock_code="058730",
+        current_price=4925,
+        best_ask=4930,
+        best_bid=4925,
+        spread_pct=0.001,
+        minute_change_pct=-0.015,
+        intraday_turnover_krw=5_000_000_000,
+        volume_sum=500_000,
+        activity_score=18.0,
+        stock_name="다스코",
+    )
+    held = DomesticHeldPosition(
+        stock_code="058730",
+        quantity=184,
+        orderable_qty=184,
+        avg_price=4700.0,
+        current_price=4925.0,
+        pnl_pct=(4925.0 - 4700.0) / 4700.0,
+    )
+
+    # take_profit is not protective, but the pending order dated 2000-01-01 is
+    # far past the default 15-minute stale_exit_replace_minutes timeout, so it
+    # should now be canceled and replaced instead of blocking the exit forever.
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "take_profit"))
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["reason"] == "stale_exit_replace"
+
+
+def test_place_domestic_sell_order_registers_order_rejection_on_pending_exit_cancel_failure() -> None:
+    pending_orders = [
+        {
+            "pdno": "058730",
+            "sll_buy_dvsn_cd": "01",
+            "sll_buy_dvsn_cd_name": "매도",
+            "rmn_qty": "184",
+            "ord_qty": "184",
+            "tot_ccld_qty": "0",
+            "cncl_cfrm_qty": "0",
+            "rjct_qty": "0",
+            "odno": "0000015789",
+            "ord_gno_brno": "00950",
+            "ord_dvsn_cd": "00",
+            "excg_id_dvsn_cd": "KRX",
+            "ord_unpr": "5710",
+            "ord_dt": "20000101",
+            "ord_tmd": "100816",
+        }
+    ]
+    service = _build_domestic_sell_service(pending_orders=pending_orders)
+    service.config.risk = type(
+        "RiskCfg",
+        (),
+        {
+            "order_reject_threshold": 1,
+            "order_reject_window_minutes": 15,
+            "order_reject_cooldown_minutes": 30,
+        },
+    )()
+
+    async def _cancel_fails(**_kwargs):
+        raise KisApiError("cancel_rejected_by_broker")
+
+    service.client.revise_or_cancel_domestic_order = _cancel_fails
+    candidate = DomesticScanResult(
+        stock_code="058730",
+        current_price=4925,
+        best_ask=4930,
+        best_bid=4925,
+        spread_pct=0.001,
+        minute_change_pct=-0.015,
+        intraday_turnover_krw=5_000_000_000,
+        volume_sum=500_000,
+        activity_score=18.0,
+        stock_name="다스코",
+    )
+    held = DomesticHeldPosition(
+        stock_code="058730",
+        quantity=184,
+        orderable_qty=0,
+        avg_price=5310.0,
+        current_price=4925.0,
+        pnl_pct=(4925.0 - 5310.0) / 5310.0,
+    )
+
+    result = asyncio.run(service._place_domestic_sell_order(candidate, held, "atr_hard_stop"))
+
+    assert result["submitted"] is False
+    assert result["reason"] == "pending_exit_cancel_failed"
+    assert service._is_order_reject_halted(market="domestic", side="sell") is True
+    assert any(
+        "주문거부 서킷브레이커 발동" in message for message in service.notifier.messages
+    )
 
 
 def test_place_domestic_sell_order_defers_unprofitable_time_exit_profit() -> None:

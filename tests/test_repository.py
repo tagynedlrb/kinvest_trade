@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from kinvest_trade.repository import SqliteRepository
 
 
@@ -622,6 +624,95 @@ def test_reset_virtual_trades_clears_virtual_tables(tmp_path) -> None:
     assert deleted["virtual_orders"] == 1
     assert deleted["virtual_sell_pending"] == 1
     assert repository.list_virtual_positions() == []
+
+
+def test_reset_all_history_clears_performance_and_virtual_tables(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+    )
+    repository.save_event(
+        event_type="trade_skip",
+        market="overseas",
+        symbol="SOXL",
+        detail={"reason": "pending_exit_order"},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=20.0,
+        strategy_flag="",
+        entry_by="",
+        exit_by="",
+        status="SUBMITTED",
+        reason="take_profit",
+        payload={},
+    )
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_price=20.0,
+        currency="USD",
+        opened_at="2026-07-01T00:00:00+00:00",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="",
+        holding_qty=1,
+        last_price=20.0,
+        pnl_pct=0.0,
+        has_position=1,
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+
+    for table in (
+        "cycle_log",
+        "event_log",
+        "broker_order_events",
+        "virtual_positions",
+        "lab_symbol_state",
+    ):
+        assert repository.count_rows(table) == 1
+
+    deleted = repository.reset_all_history()
+
+    assert deleted["cycle_log"] == 1
+    assert deleted["event_log"] == 1
+    assert deleted["broker_order_events"] == 1
+    assert deleted["virtual_positions"] == 1
+    assert deleted["lab_symbol_state"] == 1
+    for table in (
+        "cycle_log",
+        "event_log",
+        "broker_order_events",
+        "virtual_positions",
+        "lab_symbol_state",
+    ):
+        assert repository.count_rows(table) == 0
+
+
+def test_count_rows_rejects_unknown_table(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+
+    with pytest.raises(ValueError):
+        repository.count_rows("sqlite_master")
     assert repository.list_virtual_orders(limit=10) == []
     assert repository.list_virtual_sell_pending() == []
 

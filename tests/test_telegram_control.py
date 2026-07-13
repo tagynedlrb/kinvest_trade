@@ -51,6 +51,9 @@ def test_parse_command() -> None:
     assert TelegramLiquidityLabController.parse_command("/lab_trim_virtual_confirm") == "trim_virtual_confirm"
     assert TelegramLiquidityLabController.parse_command("/lab_reset") == "reset_virtual"
     assert TelegramLiquidityLabController.parse_command("/lab_reset_confirm") == "reset_virtual_confirm"
+    assert TelegramLiquidityLabController.parse_command("/lab_reset_all") == "reset_all"
+    assert TelegramLiquidityLabController.parse_command("/lab_reset_all_confirm") == "reset_all_confirm"
+    assert TelegramLiquidityLabController.parse_command("/lab_menu") == "menu"
     assert TelegramLiquidityLabController.parse_command("/lab_relist NVDA TSLA") == ("relist", "NVDA TSLA")
     assert TelegramLiquidityLabController.parse_command("/lab_relist_schedule") == "relist_schedule"
     assert TelegramLiquidityLabController.parse_command("/lab_cb_reset") == "cb_reset"
@@ -3135,12 +3138,32 @@ def test_liquidity_lab_send_summary_sends_when_action_raw_is_buy() -> None:
 class DummyNotifier:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.sent_markups: list[dict | None] = []
         self.command_calls: list[list[dict[str, str]]] = []
+        self.edit_calls: list[dict] = []
+        self.answered_callback_ids: list[str] = []
         self.raise_on_set_commands = False
         self.enabled = True
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, reply_markup: dict | None = None) -> None:
         self.messages.append(message)
+        self.sent_markups.append(reply_markup)
+
+    async def edit_message(
+        self,
+        *,
+        message_id: int,
+        text: str,
+        reply_markup: dict | None = None,
+    ) -> bool:
+        self.edit_calls.append(
+            {"message_id": message_id, "text": text, "reply_markup": reply_markup}
+        )
+        return True
+
+    async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> bool:
+        self.answered_callback_ids.append(callback_query_id)
+        return True
 
     async def set_commands(self, commands: list[dict[str, str]]) -> bool:
         self.command_calls.append(commands)
@@ -4065,6 +4088,206 @@ def test_execute_reset_virtual_backs_up_and_clears_virtual_data(tmp_path) -> Non
     assert "가상거래 초기화 완료" in controller.notifier.messages[-1]
     backups = sorted(tmp_path.glob("reset_virtual_backup_*_pre_reset.db"))
     assert backups
+
+
+def test_send_reset_all_prompt_shows_row_counts(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "reset_all_prompt.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=Path("state/runtime_state.json")),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    asyncio.run(controller._send_reset_all_prompt())
+
+    message = controller.notifier.messages[-1]
+    assert "전체 거래이력·성과 초기화" in message
+    assert "cycle_log)=1건" in message
+    assert "/lab_reset_all_confirm" in message
+
+
+def test_execute_reset_all_backs_up_and_clears_history_and_counters(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "reset_all.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+    )
+    repository.save_event(event_type="trade_skip", market="overseas", symbol="SOXL", detail={})
+    repository.save_broker_order_event(
+        created_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=20.0,
+        status="SUBMITTED",
+        reason="take_profit",
+        payload={},
+    )
+    manager = VirtualTradeManager(repository)
+    manager.record_buy(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="regular",
+        reason="test_buy",
+        created_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    class DummyCircuitBreaker:
+        def __init__(self) -> None:
+            self.reset_order_rejections_called = False
+            self.reset_called = False
+
+        def reset_order_rejections(self) -> None:
+            self.reset_order_rejections_called = True
+
+        def reset(self) -> None:
+            self.reset_called = True
+
+    dummy_cb = DummyCircuitBreaker()
+    controller.lab_service = SimpleNamespace(
+        _consecutive_losses=3,
+        _session_realised_krw=-50000.0,
+        _session_realised_krw_overseas=-50000.0,
+        _daily_loss_date="2026-07-13",
+        _halted_at=datetime.now(timezone.utc),
+        _daily_halted_at=datetime.now(timezone.utc),
+        cb=dummy_cb,
+        _exit_cooldown={"overseas:SOXL": datetime.now(timezone.utc)},
+        _wait_cycles={"overseas:SOXL": 3},
+        _strategy_managers={"SOXL": object()},
+        _no_orderable_retry={"overseas:SOXL": 1},
+        _no_orderable_counts={"overseas:SOXL": 2},
+        _signal_cache={"SOXL": object()},
+        _session_owned_symbols={"SOXL"},
+    )
+
+    asyncio.run(controller._execute_reset_all())
+
+    assert repository.count_rows("cycle_log") == 0
+    assert repository.count_rows("event_log") == 0
+    assert repository.count_rows("broker_order_events") == 0
+    assert repository.count_rows("virtual_positions") == 0
+    assert repository.count_rows("lab_symbol_state") == 0
+    assert controller.lab_service._consecutive_losses == 0
+    assert controller.lab_service._session_realised_krw == 0.0
+    assert controller.lab_service._session_realised_krw_overseas == 0.0
+    assert controller.lab_service._daily_loss_date is None
+    assert controller.lab_service._halted_at is None
+    assert controller.lab_service._daily_halted_at is None
+    assert dummy_cb.reset_order_rejections_called is True
+    assert dummy_cb.reset_called is True
+    assert controller.lab_service._exit_cooldown == {}
+    assert controller.lab_service._wait_cycles == {}
+    assert controller.lab_service._strategy_managers == {}
+    assert controller.lab_service._no_orderable_retry == {}
+    assert controller.lab_service._no_orderable_counts == {}
+    assert controller.lab_service._signal_cache == {}
+    assert controller.lab_service._session_owned_symbols == set()
+    assert "전체 거래이력·성과 초기화 완료" in controller.notifier.messages[-1]
+    backups = sorted(tmp_path.glob("reset_all_backup_*_pre_reset_all.db"))
+    assert backups
+
+
+def test_handle_menu_sends_root_category_keyboard() -> None:
+    controller = _build_async_controller()
+
+    asyncio.run(controller._handle_menu())
+
+    assert "카테고리를 선택하세요" in controller.notifier.messages[-1]
+    keyboard = controller.notifier.sent_markups[-1]
+    assert keyboard is not None
+    buttons = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert any(button["callback_data"] == "menu:cat:data" for button in buttons)
+
+
+def test_handle_update_routes_menu_root_callback_to_edit_message() -> None:
+    controller = _build_async_controller()
+    update = {
+        "callback_query": {
+            "id": "cbq-1",
+            "data": "menu:root",
+            "message": {
+                "message_id": 77,
+                "chat": {"id": "chat"},
+            },
+        }
+    }
+
+    asyncio.run(controller._handle_update(update))
+
+    assert controller.notifier.edit_calls[-1]["message_id"] == 77
+    assert "카테고리를 선택하세요" in controller.notifier.edit_calls[-1]["text"]
+    assert controller.notifier.answered_callback_ids == ["cbq-1"]
+
+
+def test_handle_menu_callback_shows_category_commands() -> None:
+    controller = _build_async_controller()
+    callback_query = {
+        "id": "cbq-2",
+        "data": "menu:cat:data",
+        "message": {
+            "message_id": 78,
+            "chat": {"id": "chat"},
+        },
+    }
+
+    asyncio.run(controller._handle_menu_callback(callback_query))
+
+    edited_text = controller.notifier.edit_calls[-1]["text"]
+    assert "/lab_reset_all" in edited_text
+    assert controller.notifier.edit_calls[-1]["reply_markup"]["inline_keyboard"][0][0][
+        "callback_data"
+    ] == "menu:root"
+    assert controller.notifier.answered_callback_ids == ["cbq-2"]
+
+
+def test_handle_menu_callback_ignores_unauthorized_chat() -> None:
+    controller = _build_async_controller()
+    controller.notifier.is_authorized_chat = lambda chat_id: False  # type: ignore[method-assign]
+    callback_query = {
+        "id": "cbq-3",
+        "data": "menu:root",
+        "message": {"message_id": 79, "chat": {"id": "someone_else"}},
+    }
+
+    asyncio.run(controller._handle_menu_callback(callback_query))
+
+    assert controller.notifier.edit_calls == []
+    assert controller.notifier.answered_callback_ids == ["cbq-3"]
 
 
 def test_handle_relist_updates_manual_pool() -> None:

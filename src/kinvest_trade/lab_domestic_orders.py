@@ -312,7 +312,9 @@ class DomesticOrderHelper:
         )
         if pending_sell_order is not None:
             pending_age_sec = service._pending_order_age_seconds(pending_sell_order)
-            if exit_reason not in service._protective_exit_reasons() or pending_age_sec < 45:
+            is_protective_exit = exit_reason in service._protective_exit_reasons()
+            stale_threshold_sec = 45.0 if is_protective_exit else service._stale_exit_replace_seconds()
+            if pending_age_sec < stale_threshold_sec:
                 service._record_trade_skip(
                     market="domestic",
                     symbol=candidate.stock_code,
@@ -347,6 +349,9 @@ class DomesticOrderHelper:
                 )
             except KisApiError as exc:
                 error_text = str(exc)
+                service._register_order_rejection(
+                    market="domestic", side="sell", error=f"pending_exit_cancel_failed: {error_text}"
+                )
                 service._record_trade_skip(
                     market="domestic",
                     symbol=candidate.stock_code,

@@ -114,6 +114,7 @@ def test_fixed_config_risk_section_contains_only_live_keys() -> None:
         "order_reject_threshold",
         "order_reject_window_minutes",
         "order_reject_cooldown_minutes",
+        "stale_exit_replace_minutes",
     }
     assert payload["_strategy_changes"][0]["date"] == "2026-07-13"
 

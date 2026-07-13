@@ -197,3 +197,123 @@ def test_send_without_repository_does_not_error() -> None:
         notifier_module.httpx.AsyncClient = original_async_client
 
     assert result is True
+
+
+def test_send_includes_reply_markup_when_provided() -> None:
+    calls: list[tuple[str, dict]] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeAsyncClient(  # type: ignore[assignment]
+        payload={"ok": True},
+        calls=calls,
+    )
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    keyboard = {"inline_keyboard": [[{"text": "메뉴", "callback_data": "menu:root"}]]}
+    try:
+        asyncio.run(notifier.send("메뉴를 선택하세요", reply_markup=keyboard))
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert calls[0][1]["reply_markup"] == keyboard
+
+
+def test_edit_message_sends_correct_payload_and_returns_ok() -> None:
+    calls: list[tuple[str, dict]] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeAsyncClient(  # type: ignore[assignment]
+        payload={"ok": True},
+        calls=calls,
+    )
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    keyboard = {"inline_keyboard": [[{"text": "◀ 메뉴", "callback_data": "menu:root"}]]}
+    try:
+        result = asyncio.run(
+            notifier.edit_message(message_id=42, text="갱신된 내용", reply_markup=keyboard)
+        )
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert result is True
+    assert calls == [
+        (
+            "https://api.telegram.org/bottoken123/editMessageText",
+            {
+                "chat_id": "chat456",
+                "message_id": 42,
+                "text": "갱신된 내용",
+                "reply_markup": keyboard,
+            },
+        )
+    ]
+
+
+def test_edit_message_returns_false_when_disabled() -> None:
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=False,
+            telegram_bot_token="",
+            telegram_chat_id="",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+
+    result = asyncio.run(notifier.edit_message(message_id=1, text="x"))
+
+    assert result is False
+
+
+def test_answer_callback_query_sends_correct_payload() -> None:
+    calls: list[tuple[str, dict]] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeAsyncClient(  # type: ignore[assignment]
+        payload={"ok": True},
+        calls=calls,
+    )
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    try:
+        result = asyncio.run(notifier.answer_callback_query("cbq-1", text="열었습니다"))
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert result is True
+    assert calls == [
+        (
+            "https://api.telegram.org/bottoken123/answerCallbackQuery",
+            {"callback_query_id": "cbq-1", "text": "열었습니다"},
+        )
+    ]
+
+
+def test_answer_callback_query_returns_false_when_disabled() -> None:
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=False,
+            telegram_bot_token="",
+            telegram_chat_id="",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+
+    result = asyncio.run(notifier.answer_callback_query("cbq-1"))
+
+    assert result is False

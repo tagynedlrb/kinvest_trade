@@ -867,7 +867,9 @@ class OverseasOrderHelper:
         )
         if pending_sell_order is not None:
             pending_age_sec = service._pending_order_age_seconds(pending_sell_order, now=now)
-            if exit_reason not in service._protective_exit_reasons() or pending_age_sec < 45:
+            is_protective_exit = exit_reason in service._protective_exit_reasons()
+            stale_threshold_sec = 45.0 if is_protective_exit else service._stale_exit_replace_seconds()
+            if pending_age_sec < stale_threshold_sec:
                 service._record_trade_skip(
                     market="overseas",
                     symbol=candidate.symbol,
@@ -901,6 +903,9 @@ class OverseasOrderHelper:
                     pending_order=pending_sell_order,
                 )
             except KisApiError as exc:
+                service._register_order_rejection(
+                    market="overseas", side="sell", error=f"pending_exit_cancel_failed: {exc}"
+                )
                 service._record_trade_skip(
                     market="overseas",
                     symbol=candidate.symbol,

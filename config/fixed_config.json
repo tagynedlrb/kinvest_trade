@@ -146,7 +146,8 @@
         "operating_capital_krw": 50000000,
         "order_reject_threshold": 5,
         "order_reject_window_minutes": 15,
-        "order_reject_cooldown_minutes": 30
+        "order_reject_cooldown_minutes": 30,
+        "stale_exit_replace_minutes": 15
     },
     "storage": {
         "db_path": "data/trading.db",

@@ -37,6 +37,32 @@ class SqliteRepository:
             conn.commit()
         return counts
 
+    _RESET_ALL_HISTORY_TABLES: tuple[str, ...] = (
+        "cycle_log",
+        "event_log",
+        "broker_order_events",
+        "virtual_positions",
+        "virtual_orders",
+        "virtual_sell_pending",
+        "lab_symbol_state",
+    )
+
+    def count_rows(self, table: str) -> int:
+        if table not in self._RESET_ALL_HISTORY_TABLES:
+            raise ValueError(f"unsupported table for count_rows: {table}")
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return int(row[0]) if row else 0
+
+    def reset_all_history(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in self._RESET_ALL_HISTORY_TABLES:
+                cursor = conn.execute(f"DELETE FROM {table}")
+                counts[table] = cursor.rowcount
+            conn.commit()
+        return counts
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(

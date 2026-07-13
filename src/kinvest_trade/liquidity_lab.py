@@ -1257,6 +1257,11 @@ class LiquidityLabService:
             "time_exit_loss",
         }
 
+    def _stale_exit_replace_seconds(self) -> float:
+        risk = getattr(self.config, "risk", None)
+        minutes = float(getattr(risk, "stale_exit_replace_minutes", 15) or 15)
+        return max(45.0, minutes * 60.0)
+
     def _format_domestic_symbol_label(self, stock_code: str) -> str:
         code = str(stock_code or "").strip().upper()
         if not code:

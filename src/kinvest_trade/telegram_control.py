@@ -51,36 +51,91 @@ from .time_utils import (
 from .trade_analysis import compare_before_after, summarize_wait_bottlenecks
 
 
-HELP_MESSAGE = "\n".join(
-    [
-        "[KIS][TELEGRAM_CONTROL_HELP]",
-        "/lab_start - 거래 루프 시작",
-        "/lab_pause - 현재 사이클 종료 후 일시정지",
-        "/lab_resume - 일시정지 해제",
-        "/lab_stop - 즉시 중지 후 세션 요약",
-        "/lab_terminate - 강제 종료 후 대기",
-        "/lab_service_restart - 텔레그램 제어 서비스 재시작",
-        "/lab_status - 현재 상태",
-        "/lab_watchlist - 감시 종목 요약",
-        "/lab_log - 최근 매매 내역 조회",
-        "/lab_performance [시간] - 최근 실주문접수 전략 성과",
-        "/lab_report compare <YYYY-MM-DD> - 기준일 전후 전략 성과 비교",
-        "/lab_report wait [시간] - 최근 WAIT 병목 요약",
-        "/lab_guard - 현재 성과 기반 전략 차단 상태",
-        "/lab_orders - 최근 주문 접수/취소 기록",
-        "/lab_cancel_stale_domestic - 30분 이상 국내 미체결 취소 확인",
-        "/lab_cancel_stale_overseas - 30분 이상 해외 미체결 취소 확인",
-        "/lab_portfolio - 보유현황 통합 (실보유·가상·성과)",
-        "/lab_trim_virtual - 가상보유 초과분만 성과 제외 정리",
-        "/lab_reset - 가상거래 초기화 (DB 백업 후 virtual 테이블 삭제)",
-        "/lab_relist <심볼...> - 해외 감시 풀 수동 교체",
-        "/lab_relist_schedule - 해외 relist 알림 시간 확인",
-        "/lab_cb_reset - 서킷브레이커 강제 해제 (연속손절 카운터 초기화)",
-        "/lab_gitlog [날짜] - 오늘(또는 지정 날짜) 거래 로그를 GitHub에 업로드",
-        "/lab_paper_test <종목코드> - 수동 페이퍼 테스트",
-        "/lab_help - 명령 목록",
-    ]
-)
+# Grouped by category so /lab_help doesn't dump 20+ commands as one flat list.
+# Keep in sync with MENU_CATEGORIES below (used by the /lab_menu inline-button browser).
+MENU_CATEGORIES: list[tuple[str, str, list[tuple[str, str]]]] = [
+    (
+        "lifecycle",
+        "🎛 운영 제어",
+        [
+            ("/lab_start", "거래 루프 시작"),
+            ("/lab_pause", "현재 사이클 종료 후 일시정지"),
+            ("/lab_resume", "일시정지 해제"),
+            ("/lab_stop", "즉시 중지 후 세션 요약"),
+            ("/lab_terminate", "강제 종료 후 대기"),
+            ("/lab_service_restart", "텔레그램 제어 서비스 재시작"),
+        ],
+    ),
+    (
+        "status",
+        "📊 상태 조회",
+        [
+            ("/lab_status", "현재 상태"),
+            ("/lab_watchlist", "감시 종목 요약"),
+            ("/lab_portfolio", "보유현황 통합 (실보유·가상·성과)"),
+            ("/lab_guard", "현재 성과 기반 전략 차단 상태"),
+        ],
+    ),
+    (
+        "logs",
+        "📜 로그 및 성과",
+        [
+            ("/lab_log", "최근 매매 내역 조회"),
+            ("/lab_performance [시간]", "최근 실주문접수 전략 성과"),
+            ("/lab_report compare <YYYY-MM-DD>", "기준일 전후 전략 성과 비교"),
+            ("/lab_report wait [시간]", "최근 WAIT 병목 요약"),
+            ("/lab_orders", "최근 주문 접수/취소 기록"),
+            ("/lab_gitlog [날짜]", "거래 로그를 GitHub에 업로드"),
+        ],
+    ),
+    (
+        "orders",
+        "🧾 주문 정리",
+        [
+            ("/lab_cancel_stale_domestic", "30분 이상 국내 미체결 취소 확인"),
+            ("/lab_cancel_stale_overseas", "30분 이상 해외 미체결 취소 확인"),
+        ],
+    ),
+    (
+        "data",
+        "🗄 데이터/성과 초기화",
+        [
+            ("/lab_trim_virtual", "가상보유 초과분만 성과 제외 정리"),
+            ("/lab_reset", "가상거래만 초기화 (DB 백업 후)"),
+            ("/lab_reset_all", "전체 거래이력·성과 초기화 (테스트 환경 재구성용)"),
+            ("/lab_cb_reset", "서킷브레이커 강제 해제 (연속손절 카운터 초기화)"),
+        ],
+    ),
+    (
+        "watch",
+        "👀 감시종목 설정",
+        [
+            ("/lab_relist <심볼...>", "해외 감시 풀 수동 교체"),
+            ("/lab_relist_schedule", "해외 relist 알림 시간 확인"),
+        ],
+    ),
+    (
+        "test",
+        "🧪 테스트",
+        [
+            ("/lab_paper_test <종목코드>", "수동 페이퍼 테스트"),
+        ],
+    ),
+]
+
+
+def _build_help_message() -> str:
+    lines = ["[KIS][TELEGRAM_CONTROL_HELP]", "카테고리별 명령 목록 (버튼 메뉴: /lab_menu)"]
+    for _key, label, commands in MENU_CATEGORIES:
+        lines.append("")
+        lines.append(f"── {label} ──")
+        lines.extend(f"{command} - {desc}" for command, desc in commands)
+    lines.append("")
+    lines.append("/lab_help - 명령 목록")
+    return "\n".join(lines)
+
+
+HELP_MESSAGE = _build_help_message()
 
 BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_start", "description": "거래 루프 시작"},
@@ -101,11 +156,13 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_portfolio", "description": "보유현황 통합 보기"},
     {"command": "lab_trim_virtual", "description": "가상보유 초과분 정리"},
     {"command": "lab_reset", "description": "가상거래 초기화 (백업 후)"},
+    {"command": "lab_reset_all", "description": "전체 이력·성과 초기화 (백업 후)"},
     {"command": "lab_relist", "description": "해외 감시 풀 수동 교체"},
     {"command": "lab_relist_schedule", "description": "해외 relist 알림 시간"},
     {"command": "lab_cb_reset", "description": "서킷브레이커 강제 해제"},
     {"command": "lab_gitlog", "description": "거래 로그 GitHub 업로드"},
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
+    {"command": "lab_menu", "description": "카테고리별 명령 버튼 메뉴"},
     {"command": "lab_help", "description": "명령 목록 보기"},
 ]
 
@@ -385,6 +442,80 @@ class TelegramLiquidityLabController:
         except Exception:  # noqa: BLE001
             pass
 
+    @staticmethod
+    def _build_menu_root_text() -> str:
+        return "[KIS][메뉴]\n카테고리를 선택하세요"
+
+    @staticmethod
+    def _build_menu_root_keyboard() -> dict:
+        buttons: list[list[dict[str, str]]] = []
+        row: list[dict[str, str]] = []
+        for key, label, _commands in MENU_CATEGORIES:
+            row.append({"text": label, "callback_data": f"menu:cat:{key}"})
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        return {"inline_keyboard": buttons}
+
+    @staticmethod
+    def _build_menu_back_keyboard() -> dict:
+        return {"inline_keyboard": [[{"text": "◀ 메뉴", "callback_data": "menu:root"}]]}
+
+    @staticmethod
+    def _build_menu_category_text(key: str) -> str | None:
+        for cat_key, label, commands in MENU_CATEGORIES:
+            if cat_key != key:
+                continue
+            lines = [f"[KIS][메뉴] {label}"]
+            lines.extend(f"{command} - {desc}" for command, desc in commands)
+            return "\n".join(lines)
+        return None
+
+    async def _handle_menu(self) -> None:
+        await self.notifier.send(
+            self._build_menu_root_text(),
+            reply_markup=self._build_menu_root_keyboard(),
+        )
+
+    async def _handle_menu_callback(self, callback_query: dict) -> None:
+        callback_id = str(callback_query.get("id") or "")
+        message = callback_query.get("message") if isinstance(callback_query, dict) else None
+        message = message if isinstance(message, dict) else {}
+        chat = message.get("chat") if isinstance(message, dict) else {}
+        chat = chat if isinstance(chat, dict) else {}
+        chat_id = chat.get("id")
+        message_id = message.get("message_id")
+
+        if not self.notifier.is_authorized_chat(chat_id):
+            if callback_id:
+                with contextlib.suppress(Exception):
+                    await self.notifier.answer_callback_query(callback_id)
+            return
+
+        data = str(callback_query.get("data") or "")
+        if isinstance(message_id, int):
+            if data == "menu:root":
+                await self.notifier.edit_message(
+                    message_id=message_id,
+                    text=self._build_menu_root_text(),
+                    reply_markup=self._build_menu_root_keyboard(),
+                )
+            elif data.startswith("menu:cat:"):
+                key = data.split(":", 2)[2]
+                text = self._build_menu_category_text(key)
+                if text is not None:
+                    await self.notifier.edit_message(
+                        message_id=message_id,
+                        text=text,
+                        reply_markup=self._build_menu_back_keyboard(),
+                    )
+
+        if callback_id:
+            with contextlib.suppress(Exception):
+                await self.notifier.answer_callback_query(callback_id)
+
     async def _command_loop(self) -> None:
         while True:
             updates = await self.notifier.get_updates(offset=self.update_offset)
@@ -397,6 +528,11 @@ class TelegramLiquidityLabController:
             await asyncio.sleep(0.2)
 
     async def _handle_update(self, update: dict) -> None:
+        callback_query = update.get("callback_query") if isinstance(update, dict) else None
+        if isinstance(callback_query, dict):
+            await self._handle_menu_callback(callback_query)
+            return
+
         message = update.get("message", {}) if isinstance(update, dict) else {}
         chat = message.get("chat", {}) if isinstance(message, dict) else {}
         chat_id = chat.get("id")
@@ -417,6 +553,9 @@ class TelegramLiquidityLabController:
 
         if command_name == "help":
             await self.notifier.send(HELP_MESSAGE)
+            return
+        if command_name == "menu":
+            await self._handle_menu()
             return
         if command_name == "status":
             await self._send_status_message()
@@ -474,6 +613,12 @@ class TelegramLiquidityLabController:
             return
         if command_name == "reset_virtual_confirm":
             await self._execute_reset_virtual()
+            return
+        if command_name == "reset_all":
+            await self._send_reset_all_prompt()
+            return
+        if command_name == "reset_all_confirm":
+            await self._execute_reset_all()
             return
         if command_name == "relist":
             symbols_text = parsed_command[1] if isinstance(parsed_command, tuple) else None
@@ -947,6 +1092,106 @@ class TelegramLiquidityLabController:
             await self.notifier.send("\n".join(lines))
         except Exception as exc:  # noqa: BLE001
             await self.notifier.send(f"❌ [가상거래 초기화 실패]\n오류={exc}")
+
+    def _build_reset_all_summary_lines(self) -> list[str]:
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return ["현재상태=조회불가"]
+        try:
+            counts = {
+                table: repository.count_rows(table)
+                for table in (
+                    "cycle_log",
+                    "event_log",
+                    "broker_order_events",
+                    "virtual_positions",
+                    "lab_symbol_state",
+                )
+            }
+        except Exception as exc:  # noqa: BLE001
+            return [f"현재상태=조회실패 ({str(exc)[:80]})"]
+        return [
+            "현재상태:",
+            f"  • 매매판단기록(cycle_log)={counts['cycle_log']:,}건",
+            f"  • 시스템이벤트(event_log)={counts['event_log']:,}건",
+            f"  • 실주문이력(broker_order_events)={counts['broker_order_events']:,}건",
+            f"  • 가상보유(virtual_positions)={counts['virtual_positions']:,}건",
+            f"  • 감시종목캐시(lab_symbol_state)={counts['lab_symbol_state']:,}건",
+        ]
+
+    async def _send_reset_all_prompt(self) -> None:
+        lines = [
+            "🛑 [전체 거래이력·성과 초기화]",
+            "",
+            *self._build_reset_all_summary_lines(),
+            "",
+            "삭제 대상:",
+            "  • cycle_log (매매판단/실현손익 기록)",
+            "  • event_log (시스템 이벤트, CB 발동 등)",
+            "  • broker_order_events (실주문 접수·취소 이력)",
+            "  • virtual_positions / virtual_orders / virtual_sell_pending (가상보유)",
+            "  • lab_symbol_state (감시종목 캐시)",
+            "",
+            "함께 초기화: 연속손절 카운터, 세션 실현손익, 서킷브레이커, 주문거부 차단",
+            "보존: telegram_message_log / api_call_log (감사용 운영 로그)",
+            "",
+            "삭제 전 DB 파일이 자동 백업됩니다.",
+            "초기화 후 다음 사이클부터는 실제 계좌 보유 종목만 기준으로 새로 시작합니다",
+            "(별도 입력 없이 실계좌/모의계좌 잔고를 그대로 반영).",
+            "",
+            "진행: /lab_reset_all_confirm",
+            "취소: 무시",
+        ]
+        await self.notifier.send("\n".join(lines))
+
+    async def _execute_reset_all(self) -> None:
+        now = datetime.now(timezone.utc)
+        try:
+            backup_path = self.repository.backup_db(suffix="pre_reset_all")
+            deleted = self.repository.reset_all_history()
+            if self.lab_service is not None:
+                lab_service = self.lab_service
+                setattr(lab_service, "_consecutive_losses", 0)
+                setattr(lab_service, "_session_realised_krw", 0.0)
+                if hasattr(lab_service, "_session_realised_krw_overseas"):
+                    setattr(lab_service, "_session_realised_krw_overseas", 0.0)
+                setattr(lab_service, "_daily_loss_date", None)
+                setattr(lab_service, "_halted_at", None)
+                setattr(lab_service, "_daily_halted_at", None)
+                reject_cb = getattr(lab_service, "cb", None)
+                if reject_cb is not None:
+                    reject_cb.reset_order_rejections()
+                    reject_cb.reset()
+                for attr in (
+                    "_exit_cooldown",
+                    "_wait_cycles",
+                    "_strategy_managers",
+                    "_no_orderable_retry",
+                    "_no_orderable_counts",
+                    "_signal_cache",
+                ):
+                    mapping = getattr(lab_service, attr, None)
+                    if mapping is not None:
+                        mapping.clear()
+                session_owned = getattr(lab_service, "_session_owned_symbols", None)
+                if session_owned is not None:
+                    session_owned.clear()
+            lines = [
+                "✅ [전체 거래이력·성과 초기화 완료]",
+                f"시각={format_kst_korean(now)}",
+                f"백업={backup_path.name}",
+                f"삭제된 매매판단기록={deleted.get('cycle_log', 0):,}건",
+                f"삭제된 시스템이벤트={deleted.get('event_log', 0):,}건",
+                f"삭제된 실주문이력={deleted.get('broker_order_events', 0):,}건",
+                f"삭제된 가상포지션={deleted.get('virtual_positions', 0):,}건",
+                f"삭제된 감시종목캐시={deleted.get('lab_symbol_state', 0):,}건",
+                "",
+                "성과/서킷브레이커 카운터 초기화 완료.",
+                "다음 사이클부터 실제 계좌 보유 종목만 기준으로 새로 집계됩니다.",
+            ]
+            await self.notifier.send("\n".join(lines))
+        except Exception as exc:  # noqa: BLE001
+            await self.notifier.send(f"❌ [전체 초기화 실패]\n오류={exc}")
 
     async def _handle_relist(self, symbols_text: str | None) -> None:
         raw_text = str(symbols_text or "").replace(",", " ")
@@ -2299,9 +2544,12 @@ class TelegramLiquidityLabController:
             "/lab_trim_virtual_confirm": "trim_virtual_confirm",
             "/lab_reset": "reset_virtual",
             "/lab_reset_confirm": "reset_virtual_confirm",
+            "/lab_reset_all": "reset_all",
+            "/lab_reset_all_confirm": "reset_all_confirm",
             "/lab_relist_schedule": "relist_schedule",
             "/lab_cb_reset": "cb_reset",
             "/lab_gitlog": "gitlog",
+            "/lab_menu": "menu",
             "/lab_help": "help",
             "/start": "help",
             "/help": "help",

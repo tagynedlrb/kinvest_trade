@@ -1,5 +1,58 @@
 # WORKLOG
 
+## [2026-07-13] 미체결 청산주문 정체 방지 + `/lab_reset_all` 전체 초기화 + 텔레그램 메뉴 카테고리화
+
+### 배경
+사용자가 두 가지를 물어봄:
+1. "pending exit order 주문거부가 발생했었는데, 이에 대한 해결책이 정의되어있는지?" — 실제로
+   확인해보니 MSEX 익절(take_profit) 매도 주문이 13:58부터 1시간 가까이 미체결로 남아 있었음.
+   원인은 "거부"가 아니라 설계 공백: 보호성 청산(손절/ATR하드스탑 등)은 미체결 45초 경과 시
+   자동으로 취소 후 재주문하지만, `take_profit`처럼 보호성이 아닌 청산은 이 로직이 전혀 없어서
+   목표가에 안 닿으면 무기한 미체결로 남아 다음 매도 시도를 계속 가로막고 있었음. 게다가 취소
+   시도 자체가 실패하는 경우(`pending_exit_cancel_failed`)는 어떤 서킷브레이커에도 연결되어
+   있지 않아 조용히 무한 재시도만 반복하는 구조였음.
+2. 예전 로그/실적 정리 + 테스트 환경 재구성용 "전체 초기화 후 실계좌 보유만 반영" 기능 요청,
+   그리고 "명령이 20개 넘어서 정신없다"는 텔레그램 메뉴 정리/카테고리화 요청.
+
+### 수정
+- `src/kinvest_trade/liquidity_lab.py`
+  - `_stale_exit_replace_seconds()` 신규: `risk.stale_exit_replace_minutes`(기본 15분)를 반환
+- `src/kinvest_trade/lab_domestic_orders.py`, `src/kinvest_trade/lab_overseas_orders.py`
+  - 미체결 청산주문 취소 판단을 `exit_reason not in _protective_exit_reasons() or age<45`에서
+    `age < (보호성이면 45초, 아니면 stale_exit_replace_minutes)`로 일반화 — 비보호성 청산도
+    15분 넘으면 취소 후 현재 호가로 재주문
+  - 취소(`revise_or_cancel_*`) 실패 시 `_register_order_rejection(market, side, ...)`을 호출해
+    기존 주문거부 서킷브레이커에 편입 — 반복 실패하면 자동 차단 + 텔레그램 알림
+- `src/kinvest_trade/config.py`, `config/fixed_config.json`
+  - `RiskConfig.stale_exit_replace_minutes: int = 15` 추가
+- `src/kinvest_trade/repository.py`
+  - `count_rows(table)`, `reset_all_history()` 신규 — `cycle_log`/`event_log`/
+    `broker_order_events`/가상거래 3종/`lab_symbol_state` 전량 삭제 (허용 테이블 화이트리스트만)
+- `src/kinvest_trade/telegram_control.py`
+  - `/lab_reset_all` → 삭제 대상 건수 미리보기 + 확인 요청, `/lab_reset_all_confirm` → DB 백업
+    후 `reset_all_history()` 실행 + 연속손절/세션손익/서킷브레이커/쿨다운 등 인메모리 카운터
+    초기화. 실계좌 잔고를 별도로 불러오는 단계는 없음 — `lab_symbol_state`를 비우면 다음
+    사이클이 평소처럼 KIS 잔고를 실시간 조회해서 캐시를 새로 채우므로 자연히 실계좌 보유만
+    반영됨. `telegram_message_log`/`api_call_log`(운영 감사 로그)는 초기화 대상에서 제외
+  - `HELP_MESSAGE`를 `MENU_CATEGORIES`(운영 제어/상태 조회/로그 및 성과/주문 정리/데이터 초기화/
+    감시종목 설정/테스트) 기반으로 재구성해 카테고리별로 출력
+  - `/lab_menu` 신규: 카테고리 인라인 버튼 메뉴. 버튼 클릭(`callback_query`)을 처리해 같은
+    메시지를 카테고리별 명령 목록으로 편집(`editMessageText`)하고 `◀ 메뉴`로 되돌아갈 수 있음
+- `src/kinvest_trade/notifier.py`
+  - `send()`에 `reply_markup` 파라미터 추가, `edit_message()`/`answer_callback_query()` 신규
+
+### 검증
+- `python3 -m pytest -q` → `510 passed` (신규 19개: liquidity_lab 6, repository 3, notifier 4,
+  telegram_control 6)
+- README.md에 미체결 청산주문 정체 방지, `/lab_reset_all` 상세 설명, 카테고리별 명령 목록,
+  `/lab_menu` 사용법 반영
+
+### 다음 단계
+- `/lab_menu` 버튼은 현재 카테고리 탐색용이며 명령을 직접 실행하지는 않음 — 인자 없는 명령을
+  버튼으로 바로 실행하는 것까지 원하면 추가 작업 필요
+- `/lab_reset_all`은 사용자가 직접 `/lab_reset_all_confirm`을 입력해야 실행됨(자동 실행 안 함) —
+  테스트 환경을 재구성할 때 텔레그램에서 직접 실행
+
 ## [2026-07-13] `/lab_gitlog` 5종 로그로 확장 - 요청/응답/텔레그램/API 호출 전체 기록
 
 ### 배경

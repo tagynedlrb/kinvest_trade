@@ -43,15 +43,22 @@ class TelegramNotifier:
         except Exception:  # noqa: BLE001
             pass
 
-    async def send(self, message: str) -> bool:
+    async def send(
+        self,
+        message: str,
+        *,
+        reply_markup: dict | None = None,
+    ) -> bool:
         if not self.enabled:
             return False
 
         url = self._api_url("sendMessage")
-        payload = {
+        payload: dict = {
             "chat_id": self.config.telegram_chat_id,
             "text": message,
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -62,6 +69,46 @@ class TelegramNotifier:
             raise
         self._log_outbound(message, success=True)
         return True
+
+    async def edit_message(
+        self,
+        *,
+        message_id: int,
+        text: str,
+        reply_markup: dict | None = None,
+    ) -> bool:
+        if not self.enabled:
+            return False
+
+        url = self._api_url("editMessageText")
+        payload: dict = {
+            "chat_id": self.config.telegram_chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            body = response.json()
+        return bool(body.get("ok"))
+
+    async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> bool:
+        if not self.enabled:
+            return False
+
+        url = self._api_url("answerCallbackQuery")
+        payload: dict = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            body = response.json()
+        return bool(body.get("ok"))
 
     async def set_commands(self, commands: list[dict[str, str]]) -> bool:
         if not self.enabled:

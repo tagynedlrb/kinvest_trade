@@ -814,6 +814,34 @@ class WatchStateHelper:
                 entry_by=strategy_result.entry_by,
             )
         signal_state, note = service._derive_watch_state(signal_snapshot, code)
+        if signal_state == "BUY":
+            # derive_watch_state (evaluate_entry_setup's independent momentum
+            # heuristic) can say "BUY" even when the PriorityStrategyManager
+            # verdict above (strategy_result.signal) did not. select_domestic_
+            # buy_targets/select_overseas_buy_targets trust action_bias=="BUY"
+            # as authoritative and either don't re-check the strategy/
+            # liquidity/reentry-cooldown gates applied in the branch above at
+            # all (domestic), or only partially (overseas) — so surfacing this
+            # as a real BUY here would silently bypass those gates, including
+            # the post-stop-loss reentry cooldown. Mirror the stale-signal-
+            # cache branch above, which never lets an unconfirmed BUY signal
+            # become a real action_bias either.
+            return service._make_watch_target_status(
+                market=market,
+                code=code,
+                exchange_code=exchange_code,
+                price=price,
+                activity_score=activity_score,
+                signal_score=entry_setup.score,
+                action_bias="WAIT",
+                signal_state=signal_state,
+                ma_summary=service._ma_relation_summary(signal_snapshot),
+                note=f"{note}|strategy_unconfirmed_buy_blocked",
+                holding_qty=holding_qty,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_result.flag,
+                entry_by=strategy_result.entry_by,
+            )
         return service._make_watch_target_status(
             market=market,
             code=code,

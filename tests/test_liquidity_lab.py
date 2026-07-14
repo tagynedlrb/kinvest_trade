@@ -3644,6 +3644,52 @@ def test_build_watch_target_status_preserves_ready_signal_state() -> None:
     assert watch_target.entry_by == ""
 
 
+def test_build_watch_target_status_blocks_unconfirmed_derive_watch_state_buy() -> None:
+    # Regression test: derive_watch_state (evaluate_entry_setup's independent
+    # momentum heuristic) can say "BUY" even when the PriorityStrategyManager
+    # verdict (strategy_result.signal) does not. select_domestic_buy_targets
+    # trusts action_bias=="BUY" outright with no re-check of the strategy/
+    # liquidity/reentry-cooldown gates that the strategy_result.signal=="BUY"
+    # branch applies, and select_overseas_buy_targets only partially
+    # re-checks — so this must never surface as a real BUY action_bias, or a
+    # symbol still inside its post-stop-loss reentry cooldown (or blocked by
+    # a liquidity/strategy gate) could get bought again immediately.
+    service = _build_run_service()
+    snapshot = _snapshot(
+        price=20.0,
+        vwap=25.0,
+        volume_ratio=1.7,
+        breakout_distance_pct=-0.01,
+        rsi14=52.0,
+        macd_golden=False,
+        macd_line=0.2,
+        macd_signal=0.1,
+    )
+    original_derive_watch_state = liquidity_lab_module.derive_watch_state
+    liquidity_lab_module.derive_watch_state = lambda *args, **kwargs: (
+        "BUY",
+        "momentum_breakout",
+    )
+
+    try:
+        watch_target = service._build_watch_target_status(
+            market="overseas",
+            code="SOXL",
+            exchange_code="AMEX",
+            price=20.0,
+            activity_score=12.0,
+            signal_snapshot=snapshot,
+            held_position=None,
+            holding_qty=0,
+        )
+    finally:
+        liquidity_lab_module.derive_watch_state = original_derive_watch_state
+
+    assert watch_target.action_bias != "BUY"
+    assert watch_target.signal_state == "BUY"
+    assert "strategy_unconfirmed_buy_blocked" in watch_target.note
+
+
 def test_build_watch_target_status_blocks_overseas_standalone_vwap() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.overseas_block_standalone_vwap = True

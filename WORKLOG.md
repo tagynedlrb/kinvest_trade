@@ -1,5 +1,66 @@
 # WORKLOG
 
+## [2026-07-14] 국내매수 주문거부 실사건 조사 + 전략로직 2차 전수감사(치명적 버그 1건)
+
+### 배경
+직전 배포 재기동 로그에서 국내매수(VTTC0012U)가 반복 실패하며 서킷브레이커가 계속 발동 중인 것을
+발견해 원인 조사를 요청받음. 추가로 "전반적인 전수조사, 특히 전략/매매로직의 논리적 오류"에
+집중해 재점검하되 "오류가 없으면 억지로 판단하지 말 것"이라는 조건이 붙음.
+
+### 조사 1: 국내매수 반복 주문거부
+`api_call_log`/`broker_order_events`를 직접 대조: 국내 매도(VTTC0011U)는 정상, 매수(VTTC0012U)만
+당일 71건 중 71건 전부 실패(`EGW00201` 초당한도초과 또는 `IGW00007` 전문바디오류). 같은 종목이
+성공/실패를 오가는 것으로 보아 요청 바디 자체 문제는 아니었고, 실패 시점마다 **서로 다른 종목의
+매수 주문이 약 240ms 간격으로 연달아 제출**되고 있었다 — 한 사이클에 여러 종목을 순차 제출하는
+구조(`max_concurrent_domestic_orders`)에 오늘 추가한 미체결조회 호출까지 겹치며 KIS 초당 호출
+한도를 자체적으로 초과한 것.
+
+### 수정 1
+- `src/kinvest_trade/client.py`: `KisRestClient`에 모든 실제 호출 전에 최소 0.3초 간격을 강제하는
+  전역 페이싱(`_throttle`, `asyncio.Lock` 기반)을 추가. 기존의 "거부 응답을 받은 뒤 재시도"가 아니라
+  애초에 폭주를 만들지 않도록 사전 예방.
+- 검증: `tests/test_client.py`에 페이싱 회귀 테스트 추가, 수정 전 코드로 되돌려 실패 재현 확인.
+
+### 조사 2: 전략/시그널 로직 2차 감사
+직전 라운드에서 감사하지 않았던 `lab_watch.py`(1294줄, 통합 감시종목·매수/매도 대상 선정),
+`technical_signals.py`, `adaptive_params.py`, `lab_positions.py`, `lab_risk.py`를 서브에이전트로
+정밀 재검토. 두 건 보고됨:
+
+1. **RSI 계산 순서 의혹 — 검증 결과 오탐(버그 아님)**: `technical_signals.py`가 RSI만 시간순으로
+   뒤집지 않고 원본(최신순) 배열을 그대로 `compute_rsi`에 넘긴다는 지적. 실제로 순수 교과서식
+   RSI(진짜 시간순 등락으로 직접 계산한 값)와 대조 계산해보니 **현재 코드가 이미 정답과 일치**했고,
+   "수정안"대로 시간순으로 뒤집어 넣으면 오히려 RSI가 반전(예: 77.8 → 22.2)되는 것으로 확인됨.
+   `compute_rsi` 내부 인덱싱(`closes[:period]`를 curr로, `closes[1:period+1]`를 prev로 사용)이
+   최신순 입력을 전제로 설계돼 있어, 호출부가 옳았다. **수정하지 않음** — 문제가 없는 것을 억지로
+   고치지 않는다는 원칙에 따름.
+2. **[치명적] 매수 판단 이중구조로 인한 안전장치 우회 — 실제 버그, 수정함**: `lab_watch.py`의
+   `build_watch_target_status`가 매수 여부를 두 개의 독립된 판단으로 계산: 정식
+   `PriorityStrategyManager.evaluate()`(`strategy_result.signal`)와, 별도의 모멘텀 휴리스틱인
+   `evaluate_entry_setup`/`derive_watch_state`. `strategy_result.signal != "BUY"`이지만
+   `derive_watch_state`가 독립적으로 `"BUY"`를 반환하면, 전략차단(`_entry_strategy_block_reason`)·
+   유동성차단(`_entry_liquidity_block_reason`)·VWAP/RSI 확인대기·**재진입 쿨다운
+   (`_cooldown_remaining_minutes`)**을 전혀 거치지 않고 그대로 `action_bias="BUY"`가 나갔다.
+   `select_domestic_buy_targets`는 `action_bias=="BUY"`만 보고 무조건 매수 후보로 채택(재검증 전혀
+   없음), `select_overseas_buy_targets`는 전략차단만 부분적으로 재검증할 뿐 유동성차단/쿨다운은
+   재검증하지 않아 해외도 새어나갈 수 있었다. 즉 **손절 직후 재진입 쿨다운 중인 종목이 이 경로로
+   즉시 재매수될 수 있는 실제 우회로**였다. 같은 파일의 "stale signal cache" 분기는 정확히 이
+   이중신호 위험을 이미 인지하고 항상 WAIT로 억제하고 있었는데(선행 커밋에서 의도적으로 만든 안전장치),
+   정작 평시(live) 경로에는 동일한 처리가 빠져 있었다.
+
+### 수정 2
+- `src/kinvest_trade/lab_watch.py`: `build_watch_target_status`의 live 경로에서
+  `strategy_result.signal != "BUY"`인데 `derive_watch_state`가 단독으로 `"BUY"`를 반환하는 경우,
+  기존 stale-cache 분기와 동일하게 항상 `action_bias="WAIT"`로 억제(`signal_state`는 그대로 노출해
+  진단은 가능하게 유지, note에 `strategy_unconfirmed_buy_blocked` 부기).
+- 검증: `tests/test_liquidity_lab.py`에 회귀 테스트 추가 — 수정 전 코드로 되돌리면 실제로
+  `action_bias=="BUY"`가 새어나가는 것을 직접 재현·확인.
+
+### 검증
+- `python3 -m pytest -q` → `530 passed`
+- 다른 파일(`adaptive_params.py`/`lab_positions.py`/`lab_risk.py`)은 정밀 검토 결과 진짜 오류를
+  찾지 못해 그대로 두었다(서킷브레이커 일별 리셋은 KST 기준으로 정확히 동작, 포지션 평단가/부분청산
+  회계도 정확함을 확인).
+
 ## [2026-07-14] git log 기반 전수 감사 — 로직 버그 9건 일괄 수정
 
 ### 배경

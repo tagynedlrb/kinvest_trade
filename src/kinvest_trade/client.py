@@ -85,6 +85,23 @@ class KisRestClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=10.0, write=10.0, pool=10.0)
         )
+        # KIS's per-second call limit (EGW00201) is strict enough that a cycle
+        # submitting several back-to-back calls (e.g. multiple domestic buy
+        # candidates, each now also doing a pending-order lookup) can trip it
+        # even with each individual call well-formed. Pace all outgoing calls
+        # through this client to a minimum gap instead of only reactively
+        # retrying after the limit is already hit.
+        self._rate_limit_lock = asyncio.Lock()
+        self._last_request_at: float = 0.0
+        self._min_request_interval_sec: float = 0.3
+
+    async def _throttle(self) -> None:
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            wait_sec = self._min_request_interval_sec - (now - self._last_request_at)
+            if wait_sec > 0:
+                await asyncio.sleep(wait_sec)
+            self._last_request_at = time.monotonic()
 
     def _log_api_call(
         self,
@@ -247,6 +264,7 @@ class KisRestClient:
             }
             if extra_headers:
                 headers.update(extra_headers)
+            await self._throttle()
             try:
                 response = await self._client.request(
                     method=method,

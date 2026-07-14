@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import httpx
@@ -145,6 +146,48 @@ def test_request_reports_api_calls_via_on_api_call_hook(tmp_path: Path) -> None:
         assert credentials.account_no not in serialized
         assert credentials.appkey not in serialized
         assert credentials.appsecret not in serialized
+
+
+def test_consecutive_requests_are_paced_to_avoid_rate_limit(tmp_path: Path) -> None:
+    # Regression test: back-to-back calls on the same client (e.g. several
+    # domestic buy candidates submitted in one cycle, each now also doing a
+    # pending-order lookup first) used to fire with no pacing at all, which in
+    # production repeatedly tripped KIS's per-second call limit (EGW00201) and
+    # a correlated "malformed body" error (IGW00007) on the same tr_id even
+    # though the request body itself was fine both before and after. Every
+    # call through this client must now be spaced by at least
+    # _min_request_interval_sec.
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    client.ensure_token = lambda: asyncio.sleep(0, result="tok")  # type: ignore[method-assign]
+    client._client = FakeAsyncClient(
+        [
+            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {}}),
+            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {}}),
+        ]
+    )
+
+    async def run_two_calls() -> float:
+        start = time.monotonic()
+        await client._request("GET", "/a", "TR1")
+        await client._request("GET", "/b", "TR2")
+        return time.monotonic() - start
+
+    elapsed = asyncio.run(run_two_calls())
+
+    assert elapsed >= client._min_request_interval_sec
 
 
 def test_request_without_on_api_call_hook_does_not_error(tmp_path: Path) -> None:

@@ -221,11 +221,23 @@ def evaluate_exit_setup(
         snapshot.atr_pct * config.atr_trailing_stop_multiplier,
     )
     note = _note(snapshot)
+    # Minimum gross pnl needed to clear round-trip commission + a slippage
+    # buffer. take_profit_pct/full_take_profit_pct are configured well above
+    # this in production, but a misconfigured/defaulted value below it would
+    # otherwise let a profit-exit reason propose a sell that gets net-negative
+    # after fees (the same class of bug fixed for time_exit_profit).
+    commission_floor = getattr(config, "commission_rate", 0.0025) * 2 + 0.003
 
     if pnl_pct <= -hard_stop:
         return ExitSetup("sell", "atr_hard_stop", "SELL_READY", note)
     if pnl_pct <= -soft_stop:
-        price_below_ma = snapshot.price < (snapshot.minute_ma_slow or snapshot.price + 1.0)
+        # minute_ma_slow can legitimately still be None here (has_required_context
+        # only requires daily_ma_fast/minute_ma_fast), so treat "don't know yet"
+        # as not-confirmed rather than fabricating a always-true bearish signal
+        # via a `price < price + 1.0` fallback.
+        price_below_ma = (
+            snapshot.minute_ma_slow is not None and snapshot.price < snapshot.minute_ma_slow
+        )
         momentum_negative = snapshot.intraday_momentum < 0
         bar_negative = snapshot.intraday_bar_return < 0
         if sum([price_below_ma, momentum_negative, bar_negative]) >= 2:
@@ -240,6 +252,7 @@ def evaluate_exit_setup(
         and position_qty > 1
         and not partial_exit_done
         and pnl_pct >= config.take_profit_pct
+        and pnl_pct >= commission_floor
         and (
             (snapshot.rsi14 is not None and snapshot.rsi14 >= config.partial_exit_rsi14)
             or snapshot.volume_ratio <= config.volume_fade_ratio
@@ -248,11 +261,15 @@ def evaluate_exit_setup(
     ):
         return ExitSetup("sell_partial", "partial_profit_lock", "SELL_READY", note)
 
-    if pnl_pct >= config.full_take_profit_pct and (
-        drawdown_from_peak <= -trailing_stop
-        or snapshot.volume_ratio <= config.volume_fade_ratio
-        or snapshot.price < (snapshot.minute_ma_fast or snapshot.price)
-        or (snapshot.rsi14 is not None and snapshot.rsi14 >= config.partial_exit_rsi14 + 4.0)
+    if (
+        pnl_pct >= config.full_take_profit_pct
+        and pnl_pct >= commission_floor
+        and (
+            drawdown_from_peak <= -trailing_stop
+            or snapshot.volume_ratio <= config.volume_fade_ratio
+            or snapshot.price < (snapshot.minute_ma_fast or snapshot.price)
+            or (snapshot.rsi14 is not None and snapshot.rsi14 >= config.partial_exit_rsi14 + 4.0)
+        )
     ):
         return ExitSetup("sell", "breakout_exhaustion_exit", "SELL_READY", note)
     marginal_threshold = config.take_profit_pct * 0.7
@@ -260,7 +277,6 @@ def evaluate_exit_setup(
     small_profit = marginal_threshold <= pnl_pct < config.take_profit_pct
     volume_fading = snapshot.volume_ratio <= (config.volume_fade_ratio or 0.8)
     momentum_fading = snapshot.intraday_momentum <= 0
-    commission_floor = getattr(config, "commission_rate", 0.0025) * 2 + 0.003
     if (
         small_profit
         and volume_fading

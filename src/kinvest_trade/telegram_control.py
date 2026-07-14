@@ -487,20 +487,25 @@ class TelegramLiquidityLabController:
         data = str(callback_query.get("data") or "")
         if isinstance(message_id, int):
             if data == "menu:root":
-                await self.notifier.edit_message(
-                    message_id=message_id,
-                    text=self._build_menu_root_text(),
-                    reply_markup=self._build_menu_root_keyboard(),
-                )
+                with contextlib.suppress(Exception):
+                    # Telegram returns 400 "message is not modified" for a
+                    # double-tap on the same button (identical text/keyboard),
+                    # which must not be treated as a real failure.
+                    await self.notifier.edit_message(
+                        message_id=message_id,
+                        text=self._build_menu_root_text(),
+                        reply_markup=self._build_menu_root_keyboard(),
+                    )
             elif data.startswith("menu:cat:"):
                 key = data.split(":", 2)[2]
                 text = self._build_menu_category_text(key)
                 if text is not None:
-                    await self.notifier.edit_message(
-                        message_id=message_id,
-                        text=text,
-                        reply_markup=self._build_menu_back_keyboard(),
-                    )
+                    with contextlib.suppress(Exception):
+                        await self.notifier.edit_message(
+                            message_id=message_id,
+                            text=text,
+                            reply_markup=self._build_menu_back_keyboard(),
+                        )
 
         if callback_id:
             with contextlib.suppress(Exception):
@@ -513,7 +518,19 @@ class TelegramLiquidityLabController:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     self.update_offset = update_id + 1
-                await self._handle_update(update)
+                try:
+                    await self._handle_update(update)
+                except Exception:  # noqa: BLE001
+                    # A single malformed/edge-case Telegram update must never be
+                    # able to crash the whole service (which also kills the
+                    # scheduler loop and stops all trading/exit monitoring).
+                    # Log it and keep processing subsequent updates; the offset
+                    # below is still persisted so the same update isn't replayed
+                    # forever on restart.
+                    _logger.exception(
+                        "[TELEGRAM] 업데이트 처리 중 예외 발생 (update_id=%s) - 다음 업데이트로 계속 진행",
+                        update_id,
+                    )
                 self._write_runtime_state()
             await asyncio.sleep(0.2)
 
@@ -1147,6 +1164,13 @@ class TelegramLiquidityLabController:
                     "_no_orderable_retry",
                     "_no_orderable_counts",
                     "_signal_cache",
+                    "_signal_cache_updated_at",
+                    "_overseas_signal_failures",
+                    "_overseas_signal_suppressed_until",
+                    "_repeated_skip_notify_last",
+                    "_exit_price_shock_guard",
+                    "_stop_loss_confirm_guard",
+                    "_last_held_symbols",
                 ):
                     mapping = getattr(lab_service, attr, None)
                     if mapping is not None:
@@ -2555,7 +2579,8 @@ class TelegramLiquidityLabController:
         *,
         symbol_label: str | None = None,
     ) -> str:
-        market = format_market_korean(str(watch_target.get("market", "overseas")))
+        market_raw = str(watch_target.get("market", "overseas")).strip().lower()
+        market = format_market_korean(market_raw)
         code = str(symbol_label or watch_target.get("code", "-"))
         action_bias = str(watch_target.get("action_bias", "WAIT")).upper()
         strategy_flag = str(watch_target.get("strategy_flag", "") or "")
@@ -2563,7 +2588,7 @@ class TelegramLiquidityLabController:
         note = format_reason_korean(note_raw)
         price = watch_target.get("price", "-")
         if isinstance(price, (int, float)):
-            if float(price) >= 1000:
+            if market_raw == "domestic":
                 price_text = f"{int(price):,}원"
             else:
                 price_text = f"${float(price):.4f}"

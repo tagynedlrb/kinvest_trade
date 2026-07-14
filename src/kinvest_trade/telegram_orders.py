@@ -89,7 +89,7 @@ class OrderAdminHelper:
                         f"시각={format_kst_korean(current)}",
                         "상태=장외취소보류",
                         f"대상={len(stale_orders)}건",
-                        "안내=국내 정규장 중에 /lab_cancel_stale_domestic_confirm 재시도",
+                        "안내=국내 정규장 중에 자동으로 재시도됩니다",
                     ]
                 )
             )

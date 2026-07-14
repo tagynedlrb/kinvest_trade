@@ -252,6 +252,75 @@ def test_momentum_loss_cut_triggers_when_two_conditions_align() -> None:
     assert result.reason == "momentum_loss_cut"
 
 
+def test_momentum_loss_cut_not_fabricated_when_minute_ma_slow_unwarmed() -> None:
+    # Regression test: has_required_context only requires daily_ma_fast/
+    # minute_ma_fast, so minute_ma_slow can legitimately still be None (e.g.
+    # a freshly-opened position, bar count between the fast/slow intraday
+    # windows). The price_below_ma check used to fall back to
+    # `price < price + 1.0`, which is always True, fabricating a second
+    # "confirmed bearish" signal out of thin air and triggering a premature
+    # momentum_loss_cut stop-out with only ONE genuine bearish condition
+    # (bar_negative) actually present.
+    result = evaluate_exit_setup(
+        _build_config(),
+        _snapshot(
+            price=99.8,
+            minute_ma_slow=None,
+            intraday_momentum=0.001,
+            intraday_bar_return=-0.001,
+            atr_pct=0.001,
+        ),
+        -0.006,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason != "momentum_loss_cut"
+
+
+def test_partial_profit_lock_requires_commission_floor() -> None:
+    # Regression test: partial_profit_lock/breakout_exhaustion_exit only
+    # gated on take_profit_pct/full_take_profit_pct, with no commission-floor
+    # check (unlike marginal_profit_exit and the now-fixed time_exit_profit).
+    # A misconfigured/defaulted take_profit_pct below the round-trip
+    # commission floor would let this propose a sell that nets negative after
+    # fees. Using a deliberately-too-low take_profit_pct to simulate that.
+    config = replace(_build_config(), take_profit_pct=0.001, commission_rate=0.0025)
+
+    result = evaluate_exit_setup(
+        config,
+        _snapshot(rsi14=70.0),
+        0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=2,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason != "partial_profit_lock"
+
+
+def test_breakout_exhaustion_exit_requires_commission_floor() -> None:
+    config = replace(_build_config(), full_take_profit_pct=0.001, commission_rate=0.0025)
+
+    result = evaluate_exit_setup(
+        config,
+        _snapshot(volume_ratio=0.5),
+        0.003,
+        drawdown_from_peak=0.0,
+        hold_cycles=1,
+        position_qty=1,
+        partial_exit_done=False,
+    )
+
+    assert result.action == "hold"
+    assert result.reason != "breakout_exhaustion_exit"
+
+
 def test_marginal_profit_exit_triggers() -> None:
     result = evaluate_exit_setup(
         replace(_build_config(), max_hold_cycles=100),

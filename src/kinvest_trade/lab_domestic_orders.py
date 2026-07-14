@@ -82,6 +82,92 @@ class DomesticOrderHelper:
                 "reason": "dry_run_enabled",
                 "candidate": asdict(candidate),
             }
+        # Mirrors the overseas duplicate-buy guard: without this, a restart
+        # between submitting an unfilled limit buy and it filling would leave
+        # nothing to stop the next cycle from resubmitting the same buy (the
+        # in-memory strategy-manager guard doesn't survive a restart, and an
+        # unfilled order doesn't show up in the live balance either).
+        pending_buy_order = await service._find_open_domestic_order(
+            symbol=candidate.stock_code,
+            side="BUY",
+        )
+        if pending_buy_order is not None:
+            pending_age_sec = service._pending_order_age_seconds(pending_buy_order)
+            if pending_age_sec < 120:
+                service._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason="pending_buy_order",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=qty,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "reason": "pending_buy_order",
+                }
+            try:
+                cancel_response = await service._cancel_open_domestic_order(
+                    symbol=candidate.stock_code,
+                    pending_order=pending_buy_order,
+                )
+            except KisApiError as exc:
+                error_text = str(exc)
+                service._register_order_rejection(
+                    market="domestic", side="buy", error=f"pending_buy_cancel_failed: {error_text}"
+                )
+                service._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason="pending_buy_cancel_failed",
+                    side="buy",
+                    price=buy_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=qty,
+                    error=error_text,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "buy",
+                    "candidate": asdict(candidate),
+                    "reason": "pending_buy_cancel_failed",
+                    "error": error_text,
+                }
+            service._record_broker_order_event(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                side="BUY",
+                order_kind="cancel",
+                requested_qty=int(pending_buy_order.get("open_qty") or 0),
+                requested_price=float(pending_buy_order.get("order_price") or 0.0),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                status="CANCELED",
+                reason="stale_buy_replace",
+                payload=service._broker_cancel_payload(
+                    cancel_response,
+                    pending_buy_order,
+                    reference_price=buy_price,
+                ),
+            )
         order_division = "00"
         order_kind = "limit"
         submit_price = buy_price

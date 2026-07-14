@@ -2203,6 +2203,115 @@ def test_load_domestic_positions_reads_balance_without_ranked_candidates() -> No
     assert service._domestic_balance_cache["cycle"] == 7
 
 
+def test_load_domestic_positions_falls_back_to_cache_on_balance_failure() -> None:
+    # Regression test: a failed get_balance() call used to make the bot think
+    # it holds zero domestic positions for that cycle (return []), which would
+    # silently drop real held positions from stop-loss/exit monitoring during
+    # a transient API hiccup. It must fall back to the last known-good balance
+    # snapshot instead.
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service._domestic_balance_cache = {
+        "cycle": 1,
+        "data": {
+            "positions": [
+                {
+                    "pdno": "005930",
+                    "hldg_qty": "2",
+                    "ord_psbl_qty": "1",
+                    "pchs_avg_pric": "80000",
+                    "prpr": "82000",
+                }
+            ]
+        },
+    }
+
+    class RaisingClient:
+        async def get_balance(self):
+            raise RuntimeError("boom")
+
+    service.client = RaisingClient()
+
+    positions = asyncio.run(service._load_domestic_positions([]))
+
+    assert positions == [
+        DomesticHeldPosition(
+            stock_code="005930",
+            quantity=2,
+            orderable_qty=1,
+            avg_price=80000.0,
+            current_price=82000.0,
+            pnl_pct=0.025,
+        )
+    ]
+
+
+def test_load_domestic_positions_returns_empty_when_balance_fails_with_no_cache() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+
+    class RaisingClient:
+        async def get_balance(self):
+            raise RuntimeError("boom")
+
+    service.client = RaisingClient()
+
+    positions = asyncio.run(service._load_domestic_positions([]))
+
+    assert positions == []
+
+
+def test_load_overseas_positions_falls_back_to_cache_for_failed_exchange() -> None:
+    # Regression test: a per-exchange get_overseas_balance() failure used to
+    # silently drop that exchange's holdings for the cycle (bare `continue`,
+    # no logging, no fallback) even though a previous cycle's snapshot for
+    # that exchange was available.
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service._cycle_count = 2
+    service._overseas_balance_cache = {
+        "cycle": 1,
+        "data": {
+            "NASD": {
+                "positions": [
+                    {
+                        "ovrs_pdno": "CRAN",
+                        "ovrs_excg_cd": "NASD",
+                        "ovrs_cblc_qty": "5251",
+                        "ord_psbl_qty": "5251",
+                        "pchs_avg_pric": "10.20",
+                        "ovrs_now_pric": "10.20",
+                    }
+                ]
+            }
+        },
+    }
+
+    class RaisingClient:
+        async def get_overseas_balance(self, *, exchange_code, currency_code):
+            raise RuntimeError("boom")
+
+    service.client = RaisingClient()
+    ranked = [
+        OverseasScanResult(
+            "CRAN",
+            "NASD",
+            10.20,
+            10.19,
+            10.21,
+            0.001,
+            0.0,
+            100_000,
+            0,
+            1350.0,
+            5.0,
+        )
+    ]
+
+    positions = asyncio.run(service._load_overseas_positions(ranked))
+
+    assert len(positions) == 1
+    assert positions[0].symbol == "CRAN"
+    assert positions[0].quantity == 5251
+
+
 def test_get_domestic_available_krw_uses_cycle_cache() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service._cycle_count = 11
@@ -2861,6 +2970,104 @@ def test_domestic_buy_rejected_marks_skipped_true() -> None:
     assert result["skipped"] is True
     assert result["reason"] == "order_rejected"
     assert service.notifier.messages == []
+
+
+def test_domestic_buy_skips_when_recent_pending_buy_exists() -> None:
+    # Regression test: unlike the overseas buy path, the domestic buy path had
+    # no pending-buy-order duplicate check at all. A restart between
+    # submitting an unfilled limit buy and it filling would leave nothing to
+    # stop the next cycle from resubmitting the same buy (the in-memory
+    # strategy-manager guard doesn't survive a restart, and an unfilled order
+    # doesn't show up in the live balance either).
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=False,
+        ),
+    )
+    service.client = DummyDomesticSellClient(
+        pending_orders=[
+            {
+                "pdno": "005930",
+                "sll_buy_dvsn_cd": "02",
+                "rmn_qty": "1",
+                "odno": "70001",
+                "ord_unpr": "82000",
+                "ord_dt": datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).strftime("%Y%m%d"),
+                "ord_tmd": datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).strftime("%H%M%S"),
+            }
+        ]
+    )
+    service.notifier = DummyNotifier()
+    service.repository = _build_repository()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "pending_buy_order"
+    assert service.client.order_calls == []
+
+
+def test_domestic_buy_replaces_stale_pending_buy() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=False,
+        ),
+    )
+    service.client = DummyDomesticSellClient(
+        pending_orders=[
+            {
+                "pdno": "005930",
+                "sll_buy_dvsn_cd": "02",
+                "rmn_qty": "1",
+                "odno": "70002",
+                "ord_unpr": "81500",
+                "ord_dt": "20260710",
+                "ord_tmd": "000000",
+                "ord_gno_brno": "05010",
+            }
+        ]
+    )
+    service.notifier = DummyNotifier()
+    service.repository = _build_repository()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["submitted"] is True
+    assert len(service.client.cancel_calls) == 1
+    assert service.client.cancel_calls[0]["original_order_no"] == "70002"
+    broker_rows = service.repository.list_broker_order_events(limit=2)
+    assert [row["status"] for row in broker_rows] == ["SUBMITTED", "CANCELED"]
+    assert broker_rows[1]["side"] == "BUY"
+    assert broker_rows[1]["reason"] == "stale_buy_replace"
+    assert broker_rows[1]["payload_json"]["original_order_no"] == "70002"
 
 
 def test_domestic_buy_uses_slot_sizing_when_balance_is_available() -> None:
@@ -4585,6 +4792,68 @@ def test_remaining_overseas_entry_slots_counts_virtual_positions() -> None:
     assert remaining == 0
 
 
+def test_run_does_not_crash_when_circuit_breaker_has_halted_trading() -> None:
+    # Regression test: when the session circuit breaker trips (consecutive
+    # losses / daily loss limit), `_run_cycle` took the `_is_trading_halted()`
+    # branch, which never assigned `domestic_reject_halted`/
+    # `overseas_reject_halted` — only the non-halted branch did. Those names
+    # were then referenced unconditionally a few lines later, raising
+    # UnboundLocalError on every single cycle for the entire cooldown window,
+    # which killed exit-order monitoring (stop-loss/take-profit) for all held
+    # positions right when the circuit breaker most needed to still watch them.
+    service = _build_run_service()
+    service._consecutive_losses = service.config.risk.max_consecutive_losses
+
+    async def fake_scan_domestic():
+        return []
+
+    async def fake_scan_overseas():
+        return [], set()
+
+    async def fake_load_domestic_positions(domestic_ranked):
+        return []
+
+    async def fake_load_overseas_positions(overseas_ranked, held_symbols_cache=None):
+        return []
+
+    async def fake_load_virtual_overseas_positions(overseas_ranked):
+        return []
+
+    async def fake_select_overseas_exit_targets(*args, **kwargs):
+        return []
+
+    async def fake_build_unified_watch_targets(**kwargs):
+        return []
+
+    service.scan_domestic = fake_scan_domestic  # type: ignore[method-assign]
+    service._load_domestic_positions = fake_load_domestic_positions  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._load_virtual_overseas_positions = fake_load_virtual_overseas_positions  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exit_targets  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
+
+    original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
+    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
+    original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda now: True
+    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
+    liquidity_lab_module.get_us_trading_session = lambda now: "closed"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
+        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_orderable_session_for_env = (
+            original_is_us_orderable_session_for_env
+        )
+        liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+
+    assert report.domestic_order["reason"] == "no_action"
+
+
 def test_run_reports_overseas_position_cap_reached_when_slots_full() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.max_concurrent_overseas_orders = 1
@@ -5475,6 +5744,74 @@ def test_send_summary_resends_net_profit_below_cost_after_cooldown_expires() -> 
     asyncio.run(service._send_summary(_net_profit_below_cost_report()))
 
     assert len(service.notifier.messages) == 2
+
+
+def _stuck_domestic_skip_report(*, primary_target: str) -> LiquidityLabReport:
+    # The primary market (overseas) has nothing meaningful going on this cycle
+    # (its rotating top candidate changes cycle to cycle), while an unrelated
+    # domestic position is the one stuck skipping on the same reason every
+    # cycle.
+    return LiquidityLabReport(
+        scanned_at="2026-07-14 03:02:00 KST",
+        krx_market_open=True,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target=primary_target,
+        primary_selection_reason="watchlist_wait",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        domestic_order={
+            "skipped": True,
+            "side": "sell",
+            "market": "domestic",
+            "reason": "net_profit_below_cost",
+            "exit_reason": "time_exit_profit",
+            "candidate": {"stock_code": "005930", "last_price": 70000},
+            "held_position": {"stock_code": "005930", "quantity": 10},
+        },
+        overseas_order={"skipped": True, "reason": "no_overseas_candidate"},
+    )
+
+
+def test_build_action_summary_surfaces_non_primary_market_skip() -> None:
+    # Regression test: when the primary market's own order this cycle is just
+    # a benign stub (no_overseas_candidate) but the *other* market has a real,
+    # repeating skip, the action summary must reflect that real skip (correct
+    # symbol/market) instead of falling through to a generic dict with no
+    # symbol_raw/market_raw at all.
+    service = _build_run_service()
+    report = _stuck_domestic_skip_report(primary_target="AMD")
+
+    action = service._build_action_summary(report)
+
+    assert action["symbol_raw"] == "005930"
+    assert action["market_raw"] == "domestic"
+    assert action["reason_raw"] == "time_exit_profit"
+
+
+def test_send_summary_collapses_repeated_skip_even_as_primary_target_rotates() -> None:
+    # Regression test: the repeated-skip notify cooldown keys on
+    # (market, symbol, reason). Previously, when the stuck skip lived in the
+    # non-primary market, _build_action_summary fell back to a generic dict
+    # with no symbol_raw, so the dedup key used the rotating primary_target
+    # symbol instead of the actual stuck symbol — a different "primary" each
+    # cycle meant the key never repeated and the notice fired every cycle
+    # anyway, defeating the cooldown.
+    service = _build_run_service()
+
+    asyncio.run(service._send_summary(_stuck_domestic_skip_report(primary_target="AMD")))
+    asyncio.run(service._send_summary(_stuck_domestic_skip_report(primary_target="MSFT")))
+    asyncio.run(service._send_summary(_stuck_domestic_skip_report(primary_target="NVDA")))
+
+    assert len(service.notifier.messages) == 1
 
 
 def test_send_summary_still_sends_when_overseas_buy_not_pre_notified() -> None:

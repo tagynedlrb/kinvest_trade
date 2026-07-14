@@ -2274,7 +2274,7 @@ def test_execute_cancel_stale_domestic_orders_defers_when_market_closed(tmp_path
         telegram_control_module.KisRestClient = original_client
 
     assert "상태=장외취소보류" in notifier.messages[-1]
-    assert "국내 정규장 중에 /lab_cancel_stale_domestic_confirm 재시도" in notifier.messages[-1]
+    assert "국내 정규장 중에 자동으로 재시도됩니다" in notifier.messages[-1]
     assert repository.list_broker_order_events(limit=1) == []
     events = repository.list_event_log(event_type="maintenance_skip", limit=1)
     assert "domestic_cancel_outside_regular_session" in events[0]["detail"]
@@ -4238,6 +4238,13 @@ def test_execute_reset_all_backs_up_and_clears_history_and_counters(tmp_path) ->
         _no_orderable_retry={"overseas:SOXL": 1},
         _no_orderable_counts={"overseas:SOXL": 2},
         _signal_cache={"SOXL": object()},
+        _signal_cache_updated_at={"SOXL": datetime.now(timezone.utc)},
+        _overseas_signal_failures={"SOXL": 3},
+        _overseas_signal_suppressed_until={"SOXL": datetime.now(timezone.utc)},
+        _repeated_skip_notify_last={("overseas", "SOXL", "net_profit_below_cost"): datetime.now(timezone.utc)},
+        _exit_price_shock_guard={"SOXL": {"price": 20.0}},
+        _stop_loss_confirm_guard={"SOXL": {"price": 20.0}},
+        _last_held_symbols={"SOXL"},
         _session_owned_symbols={"SOXL"},
     )
 
@@ -4262,6 +4269,13 @@ def test_execute_reset_all_backs_up_and_clears_history_and_counters(tmp_path) ->
     assert controller.lab_service._no_orderable_retry == {}
     assert controller.lab_service._no_orderable_counts == {}
     assert controller.lab_service._signal_cache == {}
+    assert controller.lab_service._signal_cache_updated_at == {}
+    assert controller.lab_service._overseas_signal_failures == {}
+    assert controller.lab_service._overseas_signal_suppressed_until == {}
+    assert controller.lab_service._repeated_skip_notify_last == {}
+    assert controller.lab_service._exit_price_shock_guard == {}
+    assert controller.lab_service._stop_loss_confirm_guard == {}
+    assert controller.lab_service._last_held_symbols == set()
     assert controller.lab_service._session_owned_symbols == set()
     assert "전체 거래이력·성과 초기화 완료" in controller.notifier.messages[-1]
     backups = sorted(tmp_path.glob("reset_all_backup_*_pre_reset_all.db"))
@@ -4319,6 +4333,30 @@ def test_handle_menu_callback_shows_category_commands() -> None:
         "callback_data"
     ] == "menu:root"
     assert controller.notifier.answered_callback_ids == ["cbq-2"]
+
+
+def test_handle_menu_callback_survives_edit_message_not_modified_error() -> None:
+    # Regression test: Telegram returns HTTP 400 "message is not modified" when
+    # editMessageText is called with identical text/keyboard (e.g. a user
+    # double-tapping the same menu button while the first tap's edit is still
+    # in flight). edit_message previously let this propagate uncaught, which
+    # crashed the whole telegram-control service (including the scheduler
+    # loop that runs trading/exit monitoring), not just the menu tap.
+    controller = _build_async_controller()
+
+    async def raise_not_modified(**kwargs):
+        raise RuntimeError("400 Bad Request: message is not modified")
+
+    controller.notifier.edit_message = raise_not_modified  # type: ignore[method-assign]
+    callback_query = {
+        "id": "cbq-4",
+        "data": "menu:root",
+        "message": {"message_id": 80, "chat": {"id": "chat"}},
+    }
+
+    asyncio.run(controller._handle_menu_callback(callback_query))
+
+    assert controller.notifier.answered_callback_ids == ["cbq-4"]
 
 
 def test_handle_menu_callback_ignores_unauthorized_chat() -> None:
@@ -4436,6 +4474,41 @@ def test_handle_gitlog_reports_all_five_log_categories() -> None:
     message = controller.notifier.messages[-1]
     for key in ("trades", "events", "orders", "telegram", "api_calls"):
         assert f"{key}=test.csv (3건)" in message
+
+
+def test_command_loop_survives_handle_update_exception_and_advances_offset() -> None:
+    # Regression test: _handle_update previously wasn't wrapped in a
+    # try/except inside _command_loop, so any single bad update (malformed
+    # callback data, a Telegram API error propagating from edit_message,
+    # etc.) would raise out of _command_loop, which run() treats as fatal —
+    # crashing the whole service including the scheduler loop that runs
+    # trading/exit monitoring. It also meant the offset was never persisted
+    # for the failing update, so a restart would replay the same update and
+    # crash again in a loop. Now a per-update exception must be swallowed,
+    # logged, and the offset must still advance/persist.
+    controller = _build_async_controller()
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller.update_offset = 0
+
+    batches = [[{"update_id": 100, "message": {"text": "/boom"}}]]
+
+    async def fake_get_updates(*, offset):
+        if batches:
+            return batches.pop(0)
+        raise asyncio.CancelledError
+
+    async def fake_handle_update(update):
+        raise RuntimeError("boom")
+
+    controller.notifier.get_updates = fake_get_updates  # type: ignore[method-assign]
+    controller._handle_update = fake_handle_update  # type: ignore[method-assign]
+
+    try:
+        asyncio.run(controller._command_loop())
+    except asyncio.CancelledError:
+        pass
+
+    assert controller.update_offset == 101
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

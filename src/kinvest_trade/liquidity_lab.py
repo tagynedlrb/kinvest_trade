@@ -1048,7 +1048,29 @@ class LiquidityLabService:
                 exchange_code=self._overseas_order_history_exchange_param(exchange_code),
                 sort_sqn="DS",
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # A failed lookup here must not be silently treated as "no pending
+            # order" by callers (duplicate-buy/duplicate-sell prevention) —
+            # that exact failure mode (a broken open-order lookup reading as
+            # "nothing pending") caused the CRAN duplicate-buy incident. We
+            # still return an empty list (raising here would crash the whole
+            # cycle for unrelated symbols/markets), but at least make the
+            # failure visible to operators instead of it looking identical to
+            # "genuinely no pending order".
+            _logger.warning(
+                "[ORDERS] 해외 미체결 조회 실패 - 조회결과 없음으로 처리됨 (symbol=%s, error=%s)",
+                symbol,
+                exc,
+            )
+            self._save_event(
+                event_type="maintenance_skip",
+                market="overseas",
+                symbol=symbol,
+                detail={
+                    "reason": "open_overseas_order_lookup_failed",
+                    "error": str(exc)[:200],
+                },
+            )
             return []
         results: list[dict] = []
         for row in history.get("orders", []):
@@ -1181,7 +1203,24 @@ class LiquidityLabService:
                 query_type="00",
                 exchange_code="KRX",
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # See the matching comment in _list_open_overseas_orders: a failed
+            # lookup must not silently read as "no pending order" without at
+            # least surfacing that the check itself couldn't be verified.
+            _logger.warning(
+                "[ORDERS] 국내 미체결 조회 실패 - 조회결과 없음으로 처리됨 (symbol=%s, error=%s)",
+                symbol,
+                exc,
+            )
+            self._save_event(
+                event_type="maintenance_skip",
+                market="domestic",
+                symbol=symbol,
+                detail={
+                    "reason": "open_domestic_order_lookup_failed",
+                    "error": str(exc)[:200],
+                },
+            )
             return []
         return self._parse_open_domestic_order_rows(history.get("orders", []), symbol=symbol)
 
@@ -1980,6 +2019,8 @@ class LiquidityLabService:
         overseas_entry_block_reason = ""
         overseas_entry_block_detail: dict[str, int] = {}
         if self._is_trading_halted():
+            domestic_reject_halted = False
+            overseas_reject_halted = False
             domestic_buy_targets = []
             domestic_buy_target = None
             overseas_buy_targets = []
@@ -2690,6 +2731,7 @@ class LiquidityLabService:
         if cache.get("cycle") == cycle and cache.get("data"):
             balance_map = cache["data"]
         else:
+            previous_balance_map = cache.get("data") or {}
             balance_map: dict[str, dict] = {}
             for exchange_code in sorted(exchange_codes):
                 try:
@@ -2698,7 +2740,30 @@ class LiquidityLabService:
                         currency_code="USD",
                     )
                     balance_map[exchange_code] = balance
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    # Dropping this exchange's holdings silently would hide a
+                    # real held position from stop-loss/exit monitoring for
+                    # this cycle. Fall back to its last known-good snapshot
+                    # instead, matching the sibling domestic-balance handling.
+                    fallback = previous_balance_map.get(exchange_code)
+                    _logger.warning(
+                        "[POSITIONS] 해외 잔고 조회 실패 - %s (exchange=%s, error=%s)",
+                        "이전 캐시로 대체" if fallback else "해당 거래소 보유종목 누락(캐시 없음)",
+                        exchange_code,
+                        exc,
+                    )
+                    self._save_event(
+                        event_type="maintenance_skip",
+                        market="overseas",
+                        symbol="",
+                        detail={
+                            "reason": "overseas_balance_lookup_failed",
+                            "exchange_code": exchange_code,
+                            "error": str(exc)[:200],
+                        },
+                    )
+                    if fallback is not None:
+                        balance_map[exchange_code] = fallback
                     continue
             self._overseas_balance_cache = {
                 "cycle": cycle,
@@ -2808,8 +2873,26 @@ class LiquidityLabService:
                 "cycle": getattr(self, "_cycle_count", 0),
                 "data": balance,
             }
-        except Exception:
-            return []
+        except Exception as exc:  # noqa: BLE001
+            # Treating a failed balance lookup as "zero domestic holdings"
+            # would silently drop a real held position from stop-loss/exit
+            # monitoring for this cycle. Fall back to the last known-good
+            # balance snapshot instead of pretending we hold nothing.
+            cached = getattr(self, "_domestic_balance_cache", {}) or {}
+            balance = cached.get("data")
+            _logger.warning(
+                "[POSITIONS] 국내 잔고 조회 실패 - %s (error=%s)",
+                "이전 캐시로 대체" if balance else "보유종목 없음으로 처리됨(캐시 없음)",
+                exc,
+            )
+            self._save_event(
+                event_type="maintenance_skip",
+                market="domestic",
+                symbol="",
+                detail={"reason": "domestic_balance_lookup_failed", "error": str(exc)[:200]},
+            )
+            if not balance:
+                return []
 
         positions: list[DomesticHeldPosition] = []
         rows = balance.get("positions", []) or balance.get("output1", [])
@@ -4146,9 +4229,8 @@ class LiquidityLabService:
             return
         yield order_result
 
-    def _summarize_skipped_orders(self, report: LiquidityLabReport) -> tuple[int, str]:
-        reason_counts: dict[str, int] = {}
-        ignored_reasons = {
+    _IGNORED_SKIP_REASONS = frozenset(
+        {
             "",
             "no_action",
             "market_closed",
@@ -4157,15 +4239,24 @@ class LiquidityLabService:
             "us_open_but_no_candidate",
             "us_open_but_mock_session_not_supported",
         }
+    )
+
+    @classmethod
+    def _order_has_meaningful_skip(cls, order: dict | None) -> bool:
+        if not order or order.get("submitted"):
+            return False
+        if not order.get("skipped") and not order.get("error"):
+            return False
+        reason = str(order.get("reason") or order.get("error") or "unknown")
+        return reason not in cls._IGNORED_SKIP_REASONS
+
+    def _summarize_skipped_orders(self, report: LiquidityLabReport) -> tuple[int, str]:
+        reason_counts: dict[str, int] = {}
         for root in (report.domestic_order or {}, report.overseas_order or {}):
             for order in self._iter_leaf_orders(root):
-                if order.get("submitted"):
-                    continue
-                if not order.get("skipped") and not order.get("error"):
+                if not self._order_has_meaningful_skip(order):
                     continue
                 reason = str(order.get("reason") or order.get("error") or "unknown")
-                if reason in ignored_reasons:
-                    continue
                 reason_counts[reason] = reason_counts.get(reason, 0) + 1
         if not reason_counts:
             return 0, "-"
@@ -4183,14 +4274,27 @@ class LiquidityLabService:
             return self._format_order_summary(overseas_order, currency="USD")
         if domestic_order and domestic_order.get("submitted"):
             return self._format_order_summary(domestic_order, currency="KRW")
-        if report.primary_market == "overseas" and overseas_order and (
-            overseas_order.get("skipped") or overseas_order.get("error")
-        ):
-            return self._format_order_summary(overseas_order, currency="USD")
-        if report.primary_market == "domestic" and domestic_order and (
-            domestic_order.get("skipped") or domestic_order.get("error")
-        ):
-            return self._format_order_summary(domestic_order, currency="KRW")
+        primary_is_overseas = report.primary_market == "overseas"
+        primary_is_domestic = report.primary_market == "domestic"
+        primary_order = overseas_order if primary_is_overseas else domestic_order if primary_is_domestic else None
+        primary_currency = "USD" if primary_is_overseas else "KRW"
+        other_order = domestic_order if primary_is_overseas else overseas_order
+        other_currency = "KRW" if primary_is_overseas else "USD"
+        # Prefer the primary market's own order when it's actually skipping for
+        # a real reason. A skip/error can also exist only in the *non-primary*
+        # market's order tree (e.g. this cycle's top-ranked candidate is
+        # overseas, but an unrelated domestic position is the one stuck
+        # skipping every cycle) — falling through to the generic WAIT dict
+        # below would then display an unrelated rotating symbol
+        # (primary_target) and drop symbol_raw/market_raw entirely, which both
+        # mislabels the notification and defeats the repeated-skip notify
+        # cooldown (its dedup key relies on symbol_raw being correct).
+        if primary_order and self._order_has_meaningful_skip(primary_order):
+            return self._format_order_summary(primary_order, currency=primary_currency)
+        if other_order and self._order_has_meaningful_skip(other_order):
+            return self._format_order_summary(other_order, currency=other_currency)
+        if primary_order and (primary_order.get("skipped") or primary_order.get("error")):
+            return self._format_order_summary(primary_order, currency=primary_currency)
         return {
             "action_raw": "WAIT",
             "action": format_side_korean("WAIT"),

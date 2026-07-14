@@ -577,7 +577,7 @@ class FixedSymbolAutoTrader:
                 self.last_exit_cycle > 0
                 and (self.loop_count - self.last_exit_cycle) < auto.force_reentry_after_cycles
             )
-            if cooldown_block and not entry_setup.ready:
+            if cooldown_block:
                 return TradeDecision(None, 0, "reentry_cooldown")
             if not entry_setup.ready:
                 return TradeDecision(None, 0, entry_setup.reason)

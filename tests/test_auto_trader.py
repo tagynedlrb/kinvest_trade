@@ -208,6 +208,26 @@ def test_decide_action_prefers_pullback_entry() -> None:
     assert decision.qty >= 1
 
 
+def test_decide_action_blocks_reentry_during_cooldown_even_when_signal_ready() -> None:
+    # Regression test: cooldown_block was only checked when entry_setup was
+    # NOT ready, so a fully-ready buy signal (e.g. right after a stop-out,
+    # when the same breakout/pullback conditions are often still true) fell
+    # through to a "buy" decision completely ignoring force_reentry_after_cycles.
+    trader = _build_trader()
+    trader.last_exit_cycle = trader.loop_count - 1  # 1 cycle ago; cooldown is 3 cycles
+
+    decision = trader._decide_action(
+        _snapshot(
+            volume_ratio=1.9,
+            intraday_bar_return=0.0008,
+            rsi14=55.0,
+        )
+    )
+
+    assert decision.side is None
+    assert decision.reason == "reentry_cooldown"
+
+
 def test_decide_action_sells_on_momentum_loss_cut() -> None:
     trader = _build_trader()
     trader.position = SimpleNamespace(

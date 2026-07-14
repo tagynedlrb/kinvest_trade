@@ -3515,6 +3515,34 @@ def test_active_overseas_pool_uses_held_symbol_exchange_map() -> None:
     ]
 
 
+def test_refresh_overseas_dynamic_pool_falls_back_to_static_candidates_when_tv_empty() -> None:
+    # config.liquidity_lab.overseas_candidates existed as a loadable config field
+    # but nothing ever read it once the TV scanner became the primary source --
+    # it was pure dead config, so a TV outage collapsed the pool to nothing
+    # (held positions only) instead of degrading to the operator-curated list.
+    service = _build_run_service()
+    service._tv_available = True
+    service._dynamic_overseas_pool = None
+    service._manual_overseas_pool = None
+    service.config.liquidity_lab.overseas_candidates = [
+        SimpleNamespace(symbol="nvda", exchange_code="NASD"),
+        SimpleNamespace(symbol="tsla", exchange_code="NASD"),
+    ]
+
+    async def _empty_scan(*, min_rel_volume=None):
+        return []
+
+    service._scan_tv_dynamic_pool_with_fallback = _empty_scan
+
+    asyncio.run(service._refresh_overseas_dynamic_pool())
+
+    assert service._dynamic_overseas_pool == [
+        {"symbol": "NVDA", "exchange_code": "NASD"},
+        {"symbol": "TSLA", "exchange_code": "NASD"},
+    ]
+    assert service._awaiting_relist is False
+
+
 def test_is_trading_halted_when_consecutive_losses_reach_limit() -> None:
     service = _build_run_service()
     service._consecutive_losses = 3

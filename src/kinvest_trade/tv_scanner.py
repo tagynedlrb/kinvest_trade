@@ -31,12 +31,14 @@ _SUPPORTED_EXCHANGES = {
 }
 
 
-def _parse_tv_symbol(raw_symbol: object) -> dict[str, str] | None:
-    text = str(raw_symbol or "").strip().upper()
-    if not text:
-        return None
+def _parse_tv_symbol(raw_ticker: object) -> dict[str, str] | None:
+    # The scanner's `s` field is always "EXCHANGE:SYMBOL" (e.g. "NASDAQ:AAPL",
+    # "OTC:PCRHY"). Do not fall back to defaulting an unprefixed name to NASD:
+    # that previously let every OTC/pink-sheet ticker through mislabeled as a
+    # NASDAQ symbol, since the bare `name` column has no exchange prefix at all.
+    text = str(raw_ticker or "").strip().upper()
     if ":" not in text:
-        return {"symbol": text, "exchange_code": "NASD"}
+        return None
     exchange_text, symbol = text.split(":", 1)
     exchange_key = exchange_text.replace(" ", "")
     exchange_code = _SUPPORTED_EXCHANGES.get(exchange_key)
@@ -121,9 +123,12 @@ async def scan_top_volume_surge(
             "relative_volume_10d_calc",
             "change",
             "market_cap_basic",
+            "typespecs",
         ],
         "sort": {"sortBy": "relative_volume_10d_calc", "sortOrder": "desc"},
-        "range": [0, max(int(top_n), 1)],
+        # Over-fetch: OTC/preferred/other non-tradeable rows get dropped below,
+        # so requesting exactly top_n would starve the pool after filtering.
+        "range": [0, max(int(top_n) * 4, 40)],
         "markets": ["america"],
     }
     try:
@@ -140,15 +145,26 @@ async def scan_top_volume_surge(
         results: list[dict[str, str]] = []
         seen: set[str] = set()
         for item in body.get("data", []) or []:
-            data = item.get("d", []) if isinstance(item, dict) else []
-            parsed = _parse_tv_symbol(data[0] if data else "")
+            if not isinstance(item, dict):
+                continue
+            # `s` (e.g. "NASDAQ:AAPL") carries the real exchange; the `d`/"name"
+            # column is a bare ticker with no exchange info at all.
+            parsed = _parse_tv_symbol(item.get("s"))
             if parsed is None:
                 continue
+            data = item.get("d", []) or []
+            typespecs = data[6] if len(data) > 6 else None
+            if isinstance(typespecs, list) and any(
+                spec in {"preferred", "warrant", "right", "unit"} for spec in typespecs
+            ):
+                continue
             symbol = parsed["symbol"].upper()
-            if symbol in seen:
+            if symbol in seen or "/" in symbol or "." in symbol:
                 continue
             seen.add(symbol)
             results.append(parsed)
+            if len(results) >= top_n:
+                break
         logger.info("[TV] scan_complete count=%s", len(results))
         return results
     except Exception as exc:  # noqa: BLE001

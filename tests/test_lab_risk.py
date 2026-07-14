@@ -38,6 +38,24 @@ def test_circuit_breaker_blocks_after_consecutive_losses() -> None:
     assert manager.halted_at is not None
 
 
+def test_daily_circuit_breaker_fallback_matches_configured_default_capital() -> None:
+    # operating_capital_krw=0 simulates a misconfigured/missing value falling
+    # through to the `or <fallback>` branch. That fallback must match the
+    # dataclass default (50,000,000 KRW, see config.py RiskConfig), not some
+    # unrelated stray literal -- otherwise the daily-loss threshold silently
+    # becomes far stricter than configured.
+    config = _build_config()
+    config.risk.operating_capital_krw = 0
+    config.risk.daily_loss_limit_pct = 0.01
+    manager = CircuitBreakerManager(config)
+    manager.load_state(
+        session_realised_krw=-400_000.0,
+        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+    )
+
+    assert manager.is_halted() is False
+
+
 def test_circuit_breaker_auto_releases_after_cooldown() -> None:
     async def run_case() -> None:
         messages: list[str] = []

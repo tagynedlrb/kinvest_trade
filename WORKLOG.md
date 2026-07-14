@@ -1,5 +1,78 @@
 # WORKLOG
 
+## [2026-07-14] 감시종목 공백 실사건(TV 스캐너 버그) + 초기설계 대비 구조표류 3차 전수감사 + README 재구성
+
+### 배경
+"감시종목이 왜 보유종목 둘뿐이고 새 후보가 안 보이는지"와 "몇십 번의 자동개선을 거치며 구조가
+꼬인 것 같으니 초기 설계 목표부터 지시한 구조들이 잘 유지됐는지 전수조사 후 대대적 개선 + README
+재작성"을 요청받음.
+
+### 조사 1: 감시종목 공백 — TV 스캐너 실사건
+`runtime_state.json`에 감시종목이 보유종목(CRAN, MSEX) 2개뿐이었음. `event_log`는 TV 스캔이 매번
+30종목 풀을 정상 반환한다고 기록하고 있어 처음엔 "새벽 프리마켓 저유동성" 정도로 의심했으나, 실제
+KIS API로 풀 내 종목의 시세를 직접 조회해보니 풀 자체가 가비지였다: OTC 장외 페니주(`SNEJF`,
+`PCRHY`, `DNKEY` 등 5글자+Y 전형적 ADR 티커)와 우선주(`APO/PA`, `HPE/PC`)가 다수 포함돼 있었고,
+이들은 KIS 시세 조회에서 빈 응답이거나 거래량 0으로 하위 유동성 필터에서 거의 전부 걸러졌다.
+
+원인: `tv_scanner.py`의 `_parse_tv_symbol`이 TradingView 응답의 `d`/`name` 컬럼(거래소 정보가
+전혀 없는 맨 티커)을 파싱하면서, 콜론(`:`)이 없으면 무조건 `NASD`로 간주하고 있었다. 실제 거래소
+정보는 각 행 최상위의 `s` 필드(예: `"OTC:SNEJF"`)에만 있는데 이 필드를 아예 읽지 않았다. 원본
+TradingView 응답을 직접 재현 요청해 `s`/`d` 필드 구조를 확인하고 확정.
+
+### 수정 1
+- `tv_scanner.py`: `s` 필드 기반으로 거래소를 파싱하도록 변경(더 이상 콜론 없으면 NASD로 추정하지
+  않음). `typespecs`에 `preferred`/`warrant`/`right`/`unit`이 포함된 행 제외. 필터링으로 줄어드는
+  분량을 보정하기 위해 요청 range를 `top_n*4`로 확대.
+- `tests/test_tv_scanner.py`: 기존 테스트 자체가 "d 컬럼에 EXCHANGE:SYMBOL이 들어있다"는 잘못된
+  가정으로 작성돼 있어(버그가 발견되지 않은 이유) 실제 API 응답 형태로 전부 재작성 + 신규 케이스 2개.
+- 실제 KIS API로 라이브 대조(수정 전: 가비지 다수 / 수정 후: 전부 유효 NASD/NYSE 공통주)로 확정.
+
+### 조사 2: 초기 설계 목표 대비 구조 표류(drift) 3차 전수감사
+서브에이전트로 `WORKLOG.md` 전체(4,276줄) + `git log --oneline --all`(253개 커밋) 기준 설계
+의도 타임라인을 재구성하고, 병행해서 (a) 판단-제출-차단 재발 패턴이 다른 곳에 더 있는지, (b) 국내
+동적스캔이 TV류 버그를 공유하는지, (c) 설정/텔레그램 명령어 정합성을 각각 재검사.
+
+결론: 핵심 구조(`auto-run`/`liquidity-lab` 공존, `momentum_policy` 공유, 시장별/합산 한도 임의조정
+금지 원칙)는 모두 유지되고 있었음. 유일한 실제 표류는 이미 전날(2026-07-14 1차) 발견·수정한
+"이중신호 BUY 우회" 버그였고(2026-07-02 `a75e3f5`가 세운 "watch_target 도달 시 이미 검증됨"이라는
+전제가 이후 리팩터링으로 조용히 깨진 사례), 추가 조사에서는 새로운 판단-제출-차단 인스턴스나 국내
+스캔 버그는 발견되지 않음(기존 안전장치가 정확히 작동 중임을 확인).
+
+설정/텔레그램 감사에서는 아래를 발견·수정:
+- `liquidity_lab.overseas_candidates`가 완전히 죽은 설정이었음 — TV 스캐너가 주 소스가 된 이후
+  아무도 읽지 않아 TV 장애 시 기대되는 정적 폴백 역할을 못 하고 있었음.
+- 일일손실 서킷브레이커의 `operating_capital_krw` 폴백 리터럴이 실제 기본값(5천만원)과 다른
+  500만원으로 박혀 있었음(현재는 항상 정상 설정돼 있어 잠재 위험만 있던 상태).
+- `overseas_exit_mid_mismatch_pct`/`overseas_exit_price_shock_pct`/`overseas_exit_price_shock_confirm_pct`
+  3개 값이 데이터클래스/JSON에 없이 코드에만 하드코딩돼 있어 조정 불가능했음.
+- `/lab_cb_reset`의 README 설명이 실제 동작(일일손실 정지는 해제 안 함)보다 범위를 과대 서술.
+
+### 수정 2
+- `liquidity_lab.py`: `_refresh_overseas_dynamic_pool`에 정적 폴백 분기 추가 — TV 스캔이 비고
+  수동 relist도 없을 때 `config.liquidity_lab.overseas_candidates`가 있으면 그것으로 대체하고,
+  둘 다 없을 때만 기존처럼 relist 요청 알림으로 넘어간다.
+- `config.py`/`fixed_config.json`: 위 3개 청산 가드 값을 정식 필드로 추가. `inverse_etf_symbols`/
+  `leveraged_etf_symbols`가 `liquidity_lab` JSON 섹션을 공유한다는 사실을 주석으로 명시.
+- `lab_risk.py`: `operating_capital_krw` 폴백 리터럴을 실제 기본값(5천만원)과 일치시킴.
+- `README.md`: `/lab_cb_reset` 설명 정정.
+- 검증: 모든 수정을 `tests/test_tv_scanner.py`, `tests/test_liquidity_lab.py`,
+  `tests/test_overseas_scan.py`, `tests/test_config.py`, `tests/test_lab_risk.py`에 회귀 테스트로
+  추가하고 수정 전 코드로 되돌려 실패 재현 확인 후 복구. 전체 스위트 535개 통과.
+
+### README 재구성
+"구조가 꼬인 느낌"이라는 지적에 맞춰 문서 자체도 정리:
+- 최상단에 [핵심 설계 원칙](README.md#핵심-설계-원칙-반드시-유지) 섹션 신설 — 리팩터링 중 실제로
+  깨졌던 원칙들(판단-제출-차단 금지, 매수판단 단일 권위 경로, auto-run/liquidity-lab 의도된 공존,
+  한도 임의조정 금지, 동적풀 무음 공백 금지, public repo 계좌정보 금지)을 앞으로도 지켜야 할
+  체크리스트로 명문화.
+- `Liquidity Lab` 섹션에 뒤섞여 있던 "현재도 유효한 동작 규칙"과 "이미 끝난 사건의 원인 분석
+  narrative"를 분리 — 사건 서술은 전부 [부록: 주요 인시던트 히스토리](README.md#부록-주요-인시던트-히스토리)로
+  이동하고, 본문에는 지금 살아있는 규칙만 남김.
+- 오늘 조사 내용(TV 스캐너 버그, 3차 감사 결과)을 부록에 추가.
+
+### 배포
+git push + `kinvest-telegram-control.service` 재기동 + 텔레그램 보고.
+
 ## [2026-07-14] 국내매수 주문거부 실사건 조사 + 전략로직 2차 전수감사(치명적 버그 1건)
 
 ### 배경

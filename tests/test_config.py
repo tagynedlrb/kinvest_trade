@@ -73,6 +73,9 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.overseas_stop_loss_hard_multiplier == 2.0
     assert config.liquidity_lab.overseas_stop_loss_volume_confirm_ratio == 1.5
     assert config.liquidity_lab.overseas_stop_loss_confirm_max_age_sec == 600
+    assert config.liquidity_lab.overseas_exit_mid_mismatch_pct == 0.03
+    assert config.liquidity_lab.overseas_exit_price_shock_pct == 0.20
+    assert config.liquidity_lab.overseas_exit_price_shock_confirm_pct == 0.02
     assert config.liquidity_lab.strategy_guard_enabled is True
     assert config.liquidity_lab.strategy_guard_lookback_hours == 48
     assert config.liquidity_lab.strategy_guard_min_trades == 3

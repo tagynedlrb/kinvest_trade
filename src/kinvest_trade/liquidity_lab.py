@@ -1622,6 +1622,27 @@ class LiquidityLabService:
                 return
             _logger.warning("[TV] scan_result_empty; will retry next rescan cycle")
 
+        static_candidates = getattr(self.config.liquidity_lab, "overseas_candidates", [])
+        if static_candidates:
+            static_pool = [
+                {"symbol": candidate.symbol.upper(), "exchange_code": candidate.exchange_code}
+                for candidate in static_candidates
+                if candidate.symbol.strip()
+            ]
+            if static_pool:
+                self._dynamic_overseas_pool = static_pool
+                self._awaiting_relist = False
+                self._save_event(
+                    event_type="pool_refresh",
+                    market="overseas",
+                    detail={"pool_size": len(static_pool), "source": "static_fallback"},
+                )
+                _logger.warning(
+                    "[풀] TV 스캔 불가 -> config.liquidity_lab.overseas_candidates 정적 폴백 사용 (%s개)",
+                    len(static_pool),
+                )
+                return
+
         self._dynamic_overseas_pool = []
         if not getattr(self, "_awaiting_relist", False):
             self._awaiting_relist = True

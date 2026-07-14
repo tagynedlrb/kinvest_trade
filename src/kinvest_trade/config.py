@@ -279,6 +279,9 @@ class LiquidityLabConfig:
     overseas_stop_loss_hard_multiplier: float
     overseas_stop_loss_volume_confirm_ratio: float
     overseas_stop_loss_confirm_max_age_sec: int
+    overseas_exit_mid_mismatch_pct: float
+    overseas_exit_price_shock_pct: float
+    overseas_exit_price_shock_confirm_pct: float
     overseas_max_position_qty: int
     overseas_min_strategy_volume_ratio: float
     overseas_block_standalone_vwap: bool
@@ -739,6 +742,10 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("usd_krw_fallback_rate", 1350.0)
             ),
             stale_run_grace_minutes=int(auto_trade_raw.get("stale_run_grace_minutes", 180)),
+            # Intentionally sourced from the "liquidity_lab" JSON section, not
+            # "auto_trade": both trading modes must classify inverse/leveraged
+            # ETFs identically, so there is one shared config key, not two.
+            # Setting these under "auto_trade" in fixed_config.json has no effect.
             inverse_etf_symbols=[
                 str(value)
                 for value in liquidity_lab_raw.get("inverse_etf_symbols", ["SQQQ", "SOXS"])
@@ -881,6 +888,15 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ),
             overseas_stop_loss_confirm_max_age_sec=int(
                 liquidity_lab_raw.get("overseas_stop_loss_confirm_max_age_sec", 600)
+            ),
+            overseas_exit_mid_mismatch_pct=float(
+                liquidity_lab_raw.get("overseas_exit_mid_mismatch_pct", 0.03)
+            ),
+            overseas_exit_price_shock_pct=float(
+                liquidity_lab_raw.get("overseas_exit_price_shock_pct", 0.20)
+            ),
+            overseas_exit_price_shock_confirm_pct=float(
+                liquidity_lab_raw.get("overseas_exit_price_shock_confirm_pct", 0.02)
             ),
             overseas_max_position_qty=int(liquidity_lab_raw.get("overseas_max_position_qty", 1)),
             overseas_min_strategy_volume_ratio=float(

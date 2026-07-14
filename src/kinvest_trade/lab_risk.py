@@ -277,7 +277,7 @@ class CircuitBreakerManager:
             return False
 
         operating_capital = float(
-            getattr(self._config.risk, "operating_capital_krw", 0) or 5_000_000
+            getattr(self._config.risk, "operating_capital_krw", 0) or 50_000_000
         )
         if operating_capital <= 0 or abs(session_realised_krw) / operating_capital <= daily_limit:
             return False

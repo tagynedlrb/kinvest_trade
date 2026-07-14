@@ -482,10 +482,13 @@ def test_scan_overseas_refreshes_dynamic_pool_from_tv() -> None:
     ]
 
 
-def test_scan_overseas_sets_empty_pool_when_tv_returns_empty() -> None:
+def test_scan_overseas_sets_empty_pool_when_tv_returns_empty_and_no_static_fallback() -> None:
     service = _build_service()
     service._tv_available = True
     service._dynamic_overseas_pool = None
+    # No static config.liquidity_lab.overseas_candidates configured either --
+    # this is the true worst case where nothing is left to scan.
+    service.config.liquidity_lab.overseas_candidates = []
     service.client._client = object()
 
     async def fake_scan_top_volume_surge(**kwargs):
@@ -510,6 +513,48 @@ def test_scan_overseas_sets_empty_pool_when_tv_returns_empty() -> None:
     assert service._dynamic_overseas_pool == []
     assert service._awaiting_relist is True
     assert ranked == []
+
+
+def test_scan_overseas_falls_back_to_static_candidates_when_tv_returns_empty() -> None:
+    # Regression: config.liquidity_lab.overseas_candidates used to be dead config
+    # -- nothing read it once the TV scanner became the primary source, so a TV
+    # outage collapsed the pool to nothing instead of degrading to this
+    # operator-curated static list (the 6 DummyCandidate rows _build_service
+    # wires up by default).
+    service = _build_service()
+    service._tv_available = True
+    service._dynamic_overseas_pool = None
+    service.client._client = object()
+
+    async def fake_scan_top_volume_surge(**kwargs):
+        return []
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, 10.0)
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    original = liquidity_lab_module.scan_top_volume_surge
+    liquidity_lab_module.scan_top_volume_surge = fake_scan_top_volume_surge
+    try:
+        service._scan_single_overseas = fake_scan
+        service._load_overseas_signal = fake_load_signal
+        ranked, _ = asyncio.run(service.scan_overseas())
+    finally:
+        liquidity_lab_module.scan_top_volume_surge = original
+
+    assert service._tv_available is True
+    assert service._awaiting_relist is False
+    assert {row["symbol"] for row in service._dynamic_overseas_pool} == {
+        "AAA",
+        "BBB",
+        "CCC",
+        "DDD",
+        "EEE",
+        "FFF",
+    }
+    assert ranked != []
 
 
 def test_scan_overseas_keeps_held_symbols_and_signal_cache_when_quotes_all_fail() -> None:

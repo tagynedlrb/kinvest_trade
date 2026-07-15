@@ -95,12 +95,18 @@ class KisRestClient:
     # racing past each other and tripping EGW00201 at a ~30-40% rate even after
     # the per-instance throttle was added (2026-07-14) -- these class attributes
     # (not `self.`) make the pacing clock shared process-wide across every
-    # instance instead. KIS's documented 모의투자(paper) limit is 2 calls/sec;
-    # 0.5s matches that once truly serialized (실전투자 allows far more, but this
-    # project stays on the conservative paper-account pace regardless of env).
+    # instance instead. KIS's documented 모의투자(paper) limit is 2 calls/sec
+    # (0.5s spacing), but that assumes a perfect sliding window; live
+    # verification after the 0.5s fix still showed a lingering ~10-25%
+    # EGW00201 rate even minutes after restart -- consistent with KIS bucketing
+    # by wall-clock second rather than a true rolling window, where 0.5s-exact
+    # spacing can still let 3 calls land in one calendar second under unlucky
+    # phase alignment. 0.7s leaves enough margin that at most 2 calls can ever
+    # fall in any 1-second window (실전투자 allows far more, but this project
+    # stays on the conservative paper-account pace regardless of env).
     _rate_limit_lock: "asyncio.Lock | None" = None
     _last_request_at: float = 0.0
-    _min_request_interval_sec: float = 0.5
+    _min_request_interval_sec: float = 0.7
 
     async def _throttle(self) -> None:
         if KisRestClient._rate_limit_lock is None:

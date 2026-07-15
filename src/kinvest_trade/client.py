@@ -85,23 +85,35 @@ class KisRestClient:
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=10.0, write=10.0, pool=10.0)
         )
-        # KIS's per-second call limit (EGW00201) is strict enough that a cycle
-        # submitting several back-to-back calls (e.g. multiple domestic buy
-        # candidates, each now also doing a pending-order lookup) can trip it
-        # even with each individual call well-formed. Pace all outgoing calls
-        # through this client to a minimum gap instead of only reactively
-        # retrying after the limit is already hit.
-        self._rate_limit_lock = asyncio.Lock()
-        self._last_request_at: float = 0.0
-        self._min_request_interval_sec: float = 0.3
+
+    # KIS's per-second call limit (EGW00201) is enforced per account/appkey, not
+    # per Python object. The main telegram-control process holds one long-lived
+    # KisRestClient for its scan/trade loop, but admin commands (/lab_portfolio,
+    # /lab_status, /lab_orders, gitlog upload, ...) each open a *separate*
+    # short-lived KisRestClient concurrently. An instance-scoped throttle only
+    # paces calls made through that one object, so those concurrent clients kept
+    # racing past each other and tripping EGW00201 at a ~30-40% rate even after
+    # the per-instance throttle was added (2026-07-14) -- these class attributes
+    # (not `self.`) make the pacing clock shared process-wide across every
+    # instance instead. KIS's documented 모의투자(paper) limit is 2 calls/sec;
+    # 0.5s matches that once truly serialized (실전투자 allows far more, but this
+    # project stays on the conservative paper-account pace regardless of env).
+    _rate_limit_lock: "asyncio.Lock | None" = None
+    _last_request_at: float = 0.0
+    _min_request_interval_sec: float = 0.5
 
     async def _throttle(self) -> None:
-        async with self._rate_limit_lock:
+        if KisRestClient._rate_limit_lock is None:
+            KisRestClient._rate_limit_lock = asyncio.Lock()
+        async with KisRestClient._rate_limit_lock:
             now = time.monotonic()
-            wait_sec = self._min_request_interval_sec - (now - self._last_request_at)
+            wait_sec = (
+                KisRestClient._min_request_interval_sec
+                - (now - KisRestClient._last_request_at)
+            )
             if wait_sec > 0:
                 await asyncio.sleep(wait_sec)
-            self._last_request_at = time.monotonic()
+            KisRestClient._last_request_at = time.monotonic()
 
     def _log_api_call(
         self,

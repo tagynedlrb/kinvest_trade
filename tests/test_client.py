@@ -5,9 +5,24 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 
 from kinvest_trade.client import KisRestClient
 from kinvest_trade.config import KisCredentials
+
+
+@pytest.fixture(autouse=True)
+def _reset_client_rate_limit_state():
+    # _rate_limit_lock/_last_request_at are class attributes shared across
+    # every KisRestClient instance in the process (2026-07-15 fix, so a
+    # temporary admin-command client and the main loop's long-lived client
+    # pace against the same clock). Reset them per test so test order and
+    # wall-clock timing don't leak between tests in this file.
+    KisRestClient._rate_limit_lock = None
+    KisRestClient._last_request_at = 0.0
+    yield
+    KisRestClient._rate_limit_lock = None
+    KisRestClient._last_request_at = 0.0
 
 
 class FakeResponse:
@@ -148,6 +163,18 @@ def test_request_reports_api_calls_via_on_api_call_hook(tmp_path: Path) -> None:
         assert credentials.appsecret not in serialized
 
 
+def _make_paced_test_client(credentials: KisCredentials) -> KisRestClient:
+    client = KisRestClient(credentials)
+    client.ensure_token = lambda: asyncio.sleep(0, result="tok")  # type: ignore[method-assign]
+    client._client = FakeAsyncClient(
+        [
+            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {}}),
+            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {}}),
+        ]
+    )
+    return client
+
+
 def test_consecutive_requests_are_paced_to_avoid_rate_limit(tmp_path: Path) -> None:
     # Regression test: back-to-back calls on the same client (e.g. several
     # domestic buy candidates submitted in one cycle, each now also doing a
@@ -170,14 +197,7 @@ def test_consecutive_requests_are_paced_to_avoid_rate_limit(tmp_path: Path) -> N
         appsecret_path=None,
         token_cache_path=tmp_path / "token.json",
     )
-    client = KisRestClient(credentials)
-    client.ensure_token = lambda: asyncio.sleep(0, result="tok")  # type: ignore[method-assign]
-    client._client = FakeAsyncClient(
-        [
-            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {}}),
-            FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {}}),
-        ]
-    )
+    client = _make_paced_test_client(credentials)
 
     async def run_two_calls() -> float:
         start = time.monotonic()
@@ -188,6 +208,43 @@ def test_consecutive_requests_are_paced_to_avoid_rate_limit(tmp_path: Path) -> N
     elapsed = asyncio.run(run_two_calls())
 
     assert elapsed >= client._min_request_interval_sec
+
+
+def test_pacing_is_shared_across_separate_client_instances(tmp_path: Path) -> None:
+    # Regression (2026-07-15): the throttle used to live on `self`, so a
+    # temporary KisRestClient opened by an admin command (/lab_portfolio,
+    # /lab_status, gitlog upload, ...) paced itself independently of the main
+    # loop's long-lived client. Two separate instances each individually
+    # honoring _min_request_interval_sec could still combine to exceed KIS's
+    # real per-account limit -- in production this showed up as a ~30-40%
+    # failure rate across almost every endpoint (EGW00201), including 100% of
+    # domestic buy orders, even though each client looked correctly paced on
+    # its own. The pacing clock must be shared across instances, not per-client.
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client_a = _make_paced_test_client(credentials)
+    client_b = _make_paced_test_client(credentials)
+
+    async def run_two_calls_on_separate_clients() -> float:
+        start = time.monotonic()
+        await client_a._request("GET", "/a", "TR1")
+        await client_b._request("GET", "/b", "TR2")
+        return time.monotonic() - start
+
+    elapsed = asyncio.run(run_two_calls_on_separate_clients())
+
+    assert elapsed >= KisRestClient._min_request_interval_sec
 
 
 def test_request_without_on_api_call_hook_does_not_error(tmp_path: Path) -> None:

@@ -245,3 +245,56 @@ time=2026-07-15 09:00:36 KST",1,
 주문거부=1건 (주문 거부)",1,
 362,2026-07-15T04:53:16.511892+00:00,received,/lab_gitlog,/lab_gitlog,1,
 363,2026-07-15T04:53:17.456693+00:00,sent,,📤 GitHub 로그 업로드 중...,1,
+364,2026-07-15T04:53:30.796669+00:00,sent,,"✅ 업로드 완료
+trades=20260715_trades.csv (5978건)
+URL=https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/trades/20260715_trades.csv
+events=20260715_events.csv (157건)
+URL=https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/events/20260715_events.csv
+orders=20260715_orders.csv (43건)
+URL=https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/orders/20260715_orders.csv
+telegram=20260715_telegram.csv (50건)
+URL=https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/telegram/20260715_telegram.csv
+api_calls=20260715_api_calls.csv (58570건)
+URL=https://github.com/tagynedlrb/kinvest_trade/blob/master/logs/api_calls/20260715_api_calls.csv",1,
+365,2026-07-15T05:05:05.217052+00:00,sent,,"[KIS][TELEGRAM_CONTROL_START]
+profile=paper
+loop_interval_sec=25
+controller_mode=persistent_service
+use /lab_help for commands",1,
+366,2026-07-15T05:05:10.580372+00:00,sent,,✅ TradingView Scanner 접근 가능 — 해외 동적 풀 활성화,1,
+367,2026-07-15T05:05:12.380051+00:00,sent,,"🔄 [국내 동적 풀 갱신] 20종목
+거래량 상위: SOL SK하이닉스선물단일종목인버스2X, KODEX SK하이닉스단일종목레버리지, TIGER SK하이닉스단일종목레버리지, KODEX 코스닥150레버리지, KODEX 삼성전자단일종목레버리지",1,
+368,2026-07-15T05:13:20.665484+00:00,sent,,✅ TradingView Scanner 접근 가능 — 해외 동적 풀 활성화,1,
+369,2026-07-15T05:13:25.297683+00:00,sent,,"🔄 [국내 동적 풀 갱신] 20종목
+거래량 상위: SOL SK하이닉스선물단일종목인버스2X, KODEX SK하이닉스단일종목레버리지, TIGER SK하이닉스단일종목레버리지, KODEX 코스닥150레버리지, KODEX 삼성전자단일종목레버리지",1,
+370,2026-07-15T05:42:22.137876+00:00,sent,,"[KIS][거래알림]
+시각=7월 15일 14:36
+시장=해외
+종목=-
+동작=주문거부
+가격=-
+수량=-
+지표=-
+사유=both_waiting
+주문거부=1건 (주문 거부)",1,
+371,2026-07-15T06:17:49.660759+00:00,sent,,"[KIS][거래알림]
+시각=7월 15일 15:11
+시장=해외
+종목=-
+동작=주문거부
+가격=-
+수량=-
+지표=-
+사유=both_waiting
+주문거부=1건 (주문 거부)",1,
+372,2026-07-15T06:31:22.428995+00:00,sent,,"[KIS][MARKET_STATE_CHANGE]
+from=krx_open
+to=both_closed
+time=2026-07-15 15:31:21 KST",1,
+373,2026-07-15T07:42:18.163619+00:00,sent,,"⚠️ 매매 빈도 낮음
+범위=최근 50사이클
+매매=0건 비율=0.0%
+주요원인=overseas:skip:us_open_but_mock_session_not_supported 50회, domestic:skip:no_action 41회, domestic:skip:order_rejected 9회
+확인=/lab_status /lab_report compare 2026-07-10",1,
+374,2026-07-15T09:29:35.955972+00:00,received,/lab_gitlog,/lab_gitlog,1,
+375,2026-07-15T09:29:36.946761+00:00,sent,,📤 GitHub 로그 업로드 중...,1,

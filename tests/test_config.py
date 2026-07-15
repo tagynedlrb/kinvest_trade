@@ -67,7 +67,8 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.overseas_min_strategy_volume_ratio == 0.8
     assert config.liquidity_lab.overseas_signal_failure_threshold == 3
     assert config.liquidity_lab.overseas_signal_failure_cooldown_minutes == 180
-    assert config.liquidity_lab.max_concurrent_domestic_orders == 8
+    assert config.liquidity_lab.max_concurrent_overseas_orders == 10
+    assert config.liquidity_lab.max_concurrent_domestic_orders == 10
     assert config.liquidity_lab.max_concurrent_total_positions == 10
     assert config.liquidity_lab.overseas_stop_loss_confirm_enabled is True
     assert config.liquidity_lab.overseas_stop_loss_hard_multiplier == 2.0

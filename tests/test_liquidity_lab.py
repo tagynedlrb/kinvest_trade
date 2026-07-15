@@ -3156,6 +3156,52 @@ def test_domestic_buy_saves_buy_real_cycle_log() -> None:
     assert broker_rows[0]["payload_json"]["reference_price"] == 80000.0
 
 
+def test_domestic_buy_submits_integer_price_not_float() -> None:
+    # Regression: place_test_order built submit_price as a bare float
+    # (buy_price = float(...)), unlike the sell path which explicitly casts
+    # to int. KIS's domestic order-cash body (ORD_UNPR) is stringified
+    # directly, so a float price becomes e.g. "80000.0" instead of "80000" --
+    # KRX won prices have no fractional subunit, and KIS rejected the decimal
+    # string with a generic "malformed body" error (IGW00007), causing every
+    # domestic buy order to fail regardless of API rate pacing.
+    class DummyDomesticBuyClient(DummyDomesticSellClient):
+        async def get_balance(self):
+            return {"summary": {"ord_psbl_cash": "2500000"}}
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=True,
+            slot_entry_pct=0.10,
+            slot_max_pct=0.20,
+        ),
+    )
+    service.client = DummyDomesticBuyClient()
+    service.repository = _build_repository()
+    service.notifier = DummyNotifier()
+    service._session_id = "sess-domestic-buy-int-price"
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=80000,
+        best_ask=80000,
+        best_bid=79950,
+        spread_pct=0.0006,
+        minute_change_pct=0.002,
+        intraday_turnover_krw=120_000_000_000,
+        volume_sum=600_000,
+        activity_score=12.0,
+    )
+
+    asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert len(service.client.order_calls) == 1
+    submitted_price = service.client.order_calls[0]["price"]
+    assert submitted_price == 80000
+    assert isinstance(submitted_price, int)
+
+
 def test_select_domestic_exit_target_uses_held_position_watch_targets() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     ranked = [

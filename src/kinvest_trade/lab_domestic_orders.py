@@ -170,7 +170,11 @@ class DomesticOrderHelper:
             )
         order_division = "00"
         order_kind = "limit"
-        submit_price = buy_price
+        # KRX won prices have no fractional subunit, and KIS's domestic
+        # order-cash body (ORD_UNPR) rejects a decimal string like "20645.0"
+        # with a generic "malformed body" error (IGW00007) -- unlike the sell
+        # path, which already casts to int via _sell_order_submit_spec.
+        submit_price = int(buy_price)
         try:
             response = await service.client.place_cash_order(
                 side="buy",

@@ -1,0 +1,9 @@
+﻿id,logged_at,session_id,event_type,market,symbol,detail,cycle_no
+1693,2026-07-15T15:06:08.263897+00:00,1e42d58103e5,lab_position_state_cleanup,,,"{""count"": 1, ""markets"": [""overseas""], ""symbols"": [""overseas:WNC""]}",517
+1694,2026-07-15T15:06:43.892814+00:00,1e42d58103e5,rsi_threshold_blocked,,,"{""blocked_count"": 40, ""symbol"": ""LEGN"", ""rsi14"": 45.49, ""threshold"": 30.0, ""strategy_flag"": ""VOL+RSI"", ""action_bias"": ""WAIT""}",518
+1695,2026-07-15T15:08:02.784404+00:00,1e42d58103e5,tv_scan,overseas,,"{""pool_size"": 13, ""threshold"": 1.8, ""fallback_used"": true}",521
+1696,2026-07-15T15:08:44.344143+00:00,1e42d58103e5,rsi_threshold_blocked,,,"{""blocked_count"": 60, ""symbol"": ""WNC"", ""rsi14"": 52.53, ""threshold"": 30.0, ""strategy_flag"": ""VWAP+RSI"", ""action_bias"": ""WAIT""}",521
+1697,2026-07-15T15:17:33.617587+00:00,1e42d58103e5,lab_position_state_cleanup,,,"{""count"": 1, ""markets"": [""overseas""], ""symbols"": [""overseas:BSBR""]}",534
+1698,2026-07-15T15:17:33.834358+00:00,1e42d58103e5,rsi_threshold_blocked,,,"{""blocked_count"": 80, ""symbol"": ""WNC"", ""rsi14"": 51.9, ""threshold"": 30.0, ""strategy_flag"": ""VWAP+RSI"", ""action_bias"": ""WAIT""}",534
+1699,2026-07-15T15:18:55.999203+00:00,1e42d58103e5,lab_position_state_cleanup,,,"{""count"": 1, ""markets"": [""overseas""], ""symbols"": [""overseas:BCAR""]}",536
+1700,2026-07-15T15:21:35.260458+00:00,1e42d58103e5,tv_scan,overseas,,"{""pool_size"": 15, ""threshold"": 1.8, ""fallback_used"": true}",541

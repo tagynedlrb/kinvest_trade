@@ -97,7 +97,7 @@ def test_format_watch_target_line_is_compact() -> None:
         }
     )
 
-    assert line == "해외 SOXL 상태=매수신호 전략=VWAP+VOL 가격=$218.0300"
+    assert line == "해외 SOXL 상태=매수신호 전략=VWAP+VOL 가격=$218.0300 보유=1주 손익=조회중"
 
 
 def test_build_positions_message_formats_held_positions() -> None:
@@ -169,7 +169,7 @@ def test_build_positions_message_uses_domestic_name_when_available() -> None:
 
     message = controller._build_positions_message()
 
-    assert "국내 005930(삼성전자) 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
+    assert "국내 삼성전자(005930) 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
 
 
 def test_build_positions_message_returns_none_when_no_positions() -> None:
@@ -1063,6 +1063,79 @@ def test_load_live_virtual_price_lookup_fetches_quotes_with_fallback(tmp_path) -
     assert prices[("overseas", "MSFT")] == 301.0
 
 
+def _build_portfolio_refresh_controller(tmp_path) -> "telegram_control_module.TelegramLiquidityLabController":
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_refresh.db")
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller.lab_service = SimpleNamespace(client=None)
+    controller._build_portfolio_lab_service = lambda client: SimpleNamespace(client=client)  # type: ignore[method-assign]
+    controller._load_live_portfolio_positions = lambda lab: asyncio.sleep(0, result=[])  # type: ignore[method-assign]
+
+    class FakeKisClient:
+        def __init__(self, credentials) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    telegram_control_module.KisRestClient = FakeKisClient
+    return controller
+
+
+def test_send_portfolio_message_skips_live_quote_refresh_when_report_is_fresh(tmp_path) -> None:
+    # A fresh, running report already carries live-enough prices (via
+    # watch_targets/lab_symbol_state) inside build_portfolio_message() --
+    # re-fetching a live quote per virtual position on top of that only adds
+    # latency for no freshness gain.
+    original_client = telegram_control_module.KisRestClient
+    controller = _build_portfolio_refresh_controller(tmp_path)
+    controller.mode = "running"
+    controller.last_report_summary = {"watch_targets": []}
+    controller.last_completed_at = datetime.now(timezone.utc)
+
+    live_quote_calls = []
+    controller._load_live_virtual_price_lookup = lambda lab: live_quote_calls.append(1) or asyncio.sleep(0, result={})  # type: ignore[method-assign]
+    controller._load_live_overseas_available_usd = lambda lab, **kwargs: live_quote_calls.append(1) or asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    try:
+        asyncio.run(controller._send_portfolio_message())
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert live_quote_calls == []
+    assert len(controller.notifier.messages) == 1
+
+
+def test_send_portfolio_message_still_refreshes_live_quotes_when_loop_not_running(tmp_path) -> None:
+    original_client = telegram_control_module.KisRestClient
+    controller = _build_portfolio_refresh_controller(tmp_path)
+    controller.mode = "stopped"
+    controller.last_report_summary = {"watch_targets": []}
+    controller.last_completed_at = datetime.now(timezone.utc)
+
+    live_quote_calls = []
+    controller._load_live_virtual_price_lookup = lambda lab: live_quote_calls.append(1) or asyncio.sleep(0, result={})  # type: ignore[method-assign]
+    controller._load_live_overseas_available_usd = lambda lab, **kwargs: live_quote_calls.append(1) or asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    try:
+        asyncio.run(controller._send_portfolio_message())
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert live_quote_calls == [1, 1]
+
+
 def test_load_live_portfolio_positions_parses_domestic_balance_without_ranked_scan(tmp_path) -> None:
     class FakeBalanceClient:
         async def get_balance(self):
@@ -1226,7 +1299,7 @@ def test_build_portfolio_message_uses_domestic_name_when_available(tmp_path) -> 
 
     message = controller._build_portfolio_message()
 
-    assert "국내 005930(삼성전자) 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
+    assert "국내 삼성전자(005930) 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
 
 
 def test_build_portfolio_message_marks_virtual_position_without_price(tmp_path) -> None:
@@ -3066,7 +3139,7 @@ def test_build_watchlist_message_uses_domestic_name_when_available() -> None:
 
     message = controller._build_watchlist_message()
 
-    assert "국내 005930(삼성전자) 상태=매수신호 전략=VWAP 가격=82,400원" in message
+    assert "국내 삼성전자(005930) 상태=매수신호 전략=VWAP 가격=82,400원" in message
 
 
 def test_format_watch_target_line_ready_status_is_readable() -> None:
@@ -3104,7 +3177,29 @@ def test_format_watch_target_line_marks_stale_signal_cache() -> None:
     )
 
     assert "해외 PGC 상태=보유중 전략=RSI 가격=$45.0600" in line
-    assert "신호=캐시" in line
+    assert "신호=갱신지연(직전값 사용)" in line
+
+
+def test_format_watch_target_line_shows_holding_qty_even_without_pnl() -> None:
+    # A held position's quantity is always known even when a live P&L
+    # lookup hasn't resolved yet -- it must not disappear from the line just
+    # because pnl_pct came back None.
+    line = TelegramLiquidityLabController._format_watch_target_line(
+        {
+            "market": "overseas",
+            "action_bias": "HOLD",
+            "code": "BCC",
+            "signal_state": "HOLD",
+            "strategy_flag": "VWAP+RSI",
+            "note": "vr=1.9x mom=+3.15%|stale_signal_cache",
+            "price": 74.09,
+            "holding_qty": 50,
+        },
+        pnl_pct=None,
+    )
+
+    assert "보유=50주" in line
+    assert "손익=조회중" in line
 
 
 def test_liquidity_lab_send_summary_skips_when_action_raw_is_wait() -> None:

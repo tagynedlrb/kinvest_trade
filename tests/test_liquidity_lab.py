@@ -2203,6 +2203,34 @@ def test_load_domestic_positions_reads_balance_without_ranked_candidates() -> No
     assert service._domestic_balance_cache["cycle"] == 7
 
 
+def test_load_domestic_positions_captures_name_from_balance_row() -> None:
+    # A held stock that isn't in today's volume/fluctuation-rank pool (the
+    # only other source of _dynamic_domestic_names) must still get a Korean
+    # name -- the balance row already carries it as prdt_name.
+    class DomesticBalanceWithNameClient:
+        async def get_balance(self):
+            return {
+                "positions": [
+                    {
+                        "pdno": "058730",
+                        "prdt_name": "한미반도체",
+                        "hldg_qty": "10",
+                        "ord_psbl_qty": "10",
+                        "pchs_avg_pric": "5,310",
+                        "prpr": "5,030",
+                    }
+                ]
+            }
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.client = DomesticBalanceWithNameClient()
+    service._cycle_count = 1
+
+    asyncio.run(service._load_domestic_positions([]))
+
+    assert service._dynamic_domestic_names["058730"] == "한미반도체"
+
+
 def test_load_domestic_positions_falls_back_to_cache_on_balance_failure() -> None:
     # Regression test: a failed get_balance() call used to make the bot think
     # it holds zero domestic positions for that cycle (return []), which would
@@ -5899,6 +5927,42 @@ def _stuck_domestic_skip_report(*, primary_target: str) -> LiquidityLabReport:
         },
         overseas_order={"skipped": True, "reason": "no_overseas_candidate"},
     )
+
+
+def test_send_summary_suppresses_overseas_position_cap_reached_notice() -> None:
+    # Reaching the configured concurrency cap is the risk limit working as
+    # designed, not a broker rejection -- it must not be pushed as a
+    # "주문거부" (order rejected) alert every cooldown window.
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-07-16 02:18:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target=None,
+        primary_selection_reason="overseas_position_cap_reached",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        domestic_order={"skipped": True, "reason": "no_action"},
+        overseas_order={
+            "skipped": True,
+            "reason": "overseas_position_cap_reached",
+            "open_positions": 8,
+            "max_positions": 8,
+        },
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
 
 
 def test_build_action_summary_surfaces_non_primary_market_skip() -> None:

@@ -358,6 +358,39 @@ def test_held_symbol_in_signal_cache_even_if_low_score() -> None:
     assert set(service._signal_cache.keys()) == {"AAA", "FFF"}
 
 
+def test_held_symbol_exempt_from_speculative_liquidity_filter() -> None:
+    # A held position must not be excluded from quote_results (and therefore
+    # from signal caching) just because its live quote momentarily trips the
+    # thin-volume/wide-spread "new candidate" quality filter -- that filter
+    # exists to gate new buys, not to stop refreshing the exit signal for a
+    # symbol already owned. Regression for BCC/FG showing "stale_signal_cache"
+    # and never generating a sell despite being up >3%.
+    service = _build_service()
+    service.client.positions_by_exchange = {
+        "NYSE": [{"ovrs_cblc_qty": "3", "ovrs_pdno": "FFF"}],
+    }
+    score_map = {"AAA": 10.0, "BBB": 9.0, "CCC": 8.0, "DDD": 7.0, "EEE": 6.0, "FFF": 1.0}
+
+    async def fake_scan(candidate):
+        # FFF's live quote is thin -- would normally be excluded as
+        # "thin_volume", but it's held, so it must still make it through.
+        volume = 10 if candidate.symbol == "FFF" else 1000
+        return _result(candidate.symbol, score_map[candidate.symbol], volume=volume)
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    ranked, held_symbols = asyncio.run(service.scan_overseas())
+
+    assert held_symbols == {"FFF"}
+    assert "FFF" in [item.symbol for item in ranked]
+    assert "FFF" not in [item.code for item in service._overseas_excluded]
+    assert "FFF" in service._signal_cache
+
+
 def test_build_watch_targets_uses_cache_not_api() -> None:
     service = _build_service()
     _install_watch_builder_stub(service)

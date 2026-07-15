@@ -1,5 +1,67 @@
 # WORKLOG
 
+## [2026-07-16] BCC/FG 매도 정지 실사건(held-symbol이 신규진입 필터에 걸리던 버그) + 알림/성능/표기 4건 개선
+
+### 요청 배경
+1. 현재 발생하는 "overseas position cap reached" 주문거부가 정상 상황인지, 아니라면 원인 해결
+2. `/lab_portfolio` 응답이 느린 이유 확인
+3. BCC/FG가 수익 3%+인데 매도 안 하고 대기 중인 게 정상인지, 매도/매수 전략·주문 경로가 정상
+   작동하는지 확인. watchlist에 손익 미표시 + "신호=캐시" 표시가 뜨는 원인 분석 및 개선
+4. 국내종목 텔레그램 표기를 종목코드가 아니라 한글 종목명으로 변경(긴 이름은 길이 제한)
+5. 그 외 발견되는 개선점
+
+### 1) "overseas_position_cap_reached" 오분류 (실제로 정상)
+`_send_summary`의 `_IGNORED_SKIP_REASONS`에 `overseas_position_cap_reached`/
+`total_position_cap_reached`가 빠져 있어, 동시보유 한도에 정상적으로 도달해 진입을 건너뛴
+상태가 "의미 있는 스킵"으로 집계되며 30분마다 `[KIS][거래알림] 동작=주문거부
+사유=overseas_position_cap_reached`로 반복 발송되고 있었다. 실제 텔레그램 로그로 확인
+(약 30분 간격 반복, `종목=-`라 어떤 종목인지도 알 수 없는 빈 정보). 두 사유를 무시 목록에
+추가해 알림 자체를 끔.
+
+### 2) `/lab_portfolio` 응답 지연
+두 가지 중복 지연 원인 확인.
+- `load_live_virtual_price_lookup`이 이미 전역으로 적용 중인 KIS 클라이언트 페이싱(0.7초/호출,
+  2026-07-15 수정)과 별개로 배치당 `asyncio.sleep(1.05)`를 추가로 걸고 있었다 — 이중 페이싱,
+  제거.
+- `build_portfolio_message`는 이미 `last_report.watch_targets`/`repository.list_lab_symbol_
+  state`에서 최근(대개 20초 이내) 가격을 읽어와 표시하는데, `send_portfolio_message`는 이
+  캐시가 신선한 상태(루프 실행 중 + 상태 지연 임계치 이내)에서도 매번 보유 가상종목 전부에
+  대해 실시간 시세를 다시 조회하고 있었다. 정확도 개선은 거의 없이 종목 수에 비례한 지연만
+  추가하던 것 — 캐시가 신선하면 재조회를 건너뛰도록 수정(루프 중지/데이터 오래됨일 때는 그대로
+  실시간 재조회, 안전장치 유지).
+
+### 3) BCC/FG 매도 정지 + watchlist "신호=캐시" 실사건 — 진짜 근본원인
+실시간 조회로 BCC/FG의 watch_target note에 `|stale_signal_cache`가 붙어 있는 것을 확인하고
+추적. `scan_overseas()`가 각 후보에 `_overseas_speculative_reasons`(저가/얇은거래량/넓은
+스프레드/얇은거래대금 — 신규 매수용 품질 필터)를 **held 여부와 무관하게** 적용하고 있었다.
+BCC/FG는 실시간 시세의 거래량/스프레드가 순간적으로 이 필터에 걸려 `quote_results`에서
+제외됐고, 그 사이클엔 `_signal_cache`에 값이 안 남아 다음 watch target 생성 시
+`signal_snapshot is None` -> 마지막으로 캐시된(오래된) 신호로 청산 판단을 하는 폴백 경로를
+탔다. 화면엔 "신호=캐시"로 표시되고, 정작 가격은 계속 움직이는데 그 움직임을 반영한 청산
+판단(RSI/MA 기반)은 멈춰 있었던 것 — 3%+ 수익에도 매도가 안 나간 이유. `_overseas_signal_
+suppression_reason`은 이미 held 종목을 예외 처리하고 있었는데(2456줄), 바로 옆의
+`_overseas_speculative_reasons` 필터는 예외가 없었던 비대칭. held 종목을 이 필터에서 예외
+처리하도록 수정. 국내 `scan_domestic()`도 동일한 비대칭이 있어(`_domestic_quote_speculative_
+reasons`/`_domestic_speculative_reasons`) 같은 원리로 held 종목 예외 처리 추가(직접 재현된
+실사건은 아니지만 정확히 같은 구조적 결함이라 함께 수정). README 핵심 설계 원칙 7번으로
+명문화.
+
+### 4) watchlist 표현 개선
+- "신호=캐시"가 무슨 뜻인지 알기 어렵다는 지적에 따라 "신호=갱신지연(직전값 사용)"으로 변경.
+- 보유 중인데 실시간 손익 조회가 아직 안 된 경우 `보유=N주` 표시 자체가 통째로 사라지던 것을
+  고쳐, 손익만 `손익=조회중`으로 표시하고 보유수량은 항상 보이게 함.
+
+### 5) 국내종목 표기를 코드 우선에서 한글 이름 우선으로 변경
+`005930(삼성전자)` -> `삼성전자(005930)`로 순서 변경(`format_domestic_symbol_label`,
+`message_format.py`, 신규 공용 헬퍼). 이름이 12자 초과 시 말줄임표로 축약. 추가로, 보유
+종목의 이름이 그날 거래량/등락율 순위 풀에 없으면 이름 자체를 못 찾던 문제도 발견 —
+`get_balance()` 응답에 이미 있는 `prdt_name` 필드를 이름 맵에 직접 채우도록 `_load_domestic_
+positions`를 수정해, 순위권 밖의 보유종목도 항상 한글명이 표시되게 함.
+
+### 검증/배포
+5개 항목 각각 회귀 테스트 추가, 전부 `git stash` 후 fail 확인 -> `stash pop` 후 pass 확인.
+전체 테스트 548개 통과. git push + 서비스 재기동.
+
 ## [2026-07-15] 시장별 동시보유 한도 완화 + 국내매수 3차 재조사 — 소수점 가격 수정으로도 여전히 100% 실패, 근본원인 미해결로 재오픈
 
 ### 요청 배경

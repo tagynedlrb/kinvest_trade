@@ -28,6 +28,7 @@ from .market_sessions import (
     us_holiday_date_for_kis_session,
 )
 from .message_format import (
+    format_domestic_symbol_label,
     format_krw,
     format_market_korean,
     format_pct,
@@ -2569,7 +2570,7 @@ class TelegramLiquidityLabController:
         code_text = str(code or "").strip().upper()
         if str(market).strip().lower() == "domestic":
             name = self._domestic_name_map(last_report=last_report).get(code_text, "")
-            return f"{code_text}({name})" if code_text and name else code_text
+            return format_domestic_symbol_label(code_text, name)
         return code_text or "-"
 
     @staticmethod
@@ -2610,13 +2611,18 @@ class TelegramLiquidityLabController:
             f"전략={strategy_flag or '-'}",
             f"가격={price_text}",
         ]
-        if holding_qty > 0 and pnl_pct is not None:
+        if holding_qty > 0:
             parts.append(f"보유={holding_qty}주")
-            parts.append(f"손익={format_pct(pnl_pct)}")
+            parts.append(f"손익={format_pct(pnl_pct)}" if pnl_pct is not None else "손익=조회중")
         elif note != note_raw:
             parts.append(f"사유={note}")
         if "stale_signal_cache" in note_raw:
-            parts.append("신호=캐시")
+            # The chart signal itself didn't refresh this cycle (e.g. the live
+            # quote was temporarily too thin/volatile to pass the new-entry
+            # quality filter) -- the price above is still live, only the
+            # RSI/MA-based signal is a carried-over value from the last time
+            # it did refresh.
+            parts.append("신호=갱신지연(직전값 사용)")
         return " ".join(parts)
 
     @staticmethod

@@ -1,4 +1,5 @@
 from kinvest_trade.message_format import (
+    format_domestic_symbol_label,
     format_krw,
     format_market_korean,
     format_pct,
@@ -6,6 +7,21 @@ from kinvest_trade.message_format import (
     format_side_korean,
     format_usd,
 )
+
+
+def test_format_domestic_symbol_label_shows_name_before_code() -> None:
+    assert format_domestic_symbol_label("005930", "삼성전자") == "삼성전자(005930)"
+
+
+def test_format_domestic_symbol_label_falls_back_to_code_without_name() -> None:
+    assert format_domestic_symbol_label("005930", "") == "005930"
+
+
+def test_format_domestic_symbol_label_truncates_long_names() -> None:
+    long_name = "KBSTAR 200고배당커버드콜ATM"
+    label = format_domestic_symbol_label("448290", long_name)
+    assert label == "KBSTAR 200고배…(448290)"
+    assert len(label.split("(")[0]) <= 13
 
 
 def test_format_krw_uses_signed_korean_currency() -> None:

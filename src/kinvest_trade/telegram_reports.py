@@ -1179,6 +1179,22 @@ class ReportHelper:
             lines.append("조치=/lab_trim_virtual 초과분 정리 또는 /lab_start 재개")
         return lines
 
+    def _portfolio_cache_is_fresh(self) -> bool:
+        # build_portfolio_message() already assembles a price_lookup from the
+        # last completed cycle's watch_targets + lab_symbol_state (updated
+        # every loop_interval_sec while running) before any live override is
+        # applied. Re-fetching a live quote per virtual position on top of
+        # that is redundant latency when that cached data is still fresh --
+        # it costs one throttled API call per held symbol for a price that's
+        # already been observed within the last cycle or two.
+        controller = self.controller
+        if controller.mode != "running":
+            return False
+        age_min = controller._last_report_age_minutes()
+        if age_min is None:
+            return False
+        return age_min < controller._status_stale_threshold_min()
+
     async def send_portfolio_message(self) -> None:
         controller = self.controller
         from . import telegram_control as _tc
@@ -1186,16 +1202,18 @@ class ReportHelper:
         live_real_positions = None
         live_virtual_prices: dict[tuple[str, str], float] = {}
         live_available_usd = None
+        skip_live_quote_refresh = self._portfolio_cache_is_fresh()
         try:
             async with _tc.KisRestClient(controller.config.credentials) as client:
                 portfolio_lab = controller._build_portfolio_lab_service(client)
                 live_real_positions = await controller._load_live_portfolio_positions(portfolio_lab)
-                live_virtual_prices = await controller._load_live_virtual_price_lookup(portfolio_lab)
-                live_available_usd = await controller._load_live_overseas_available_usd(
-                    portfolio_lab,
-                    real_positions=live_real_positions or [],
-                    price_lookup=live_virtual_prices,
-                )
+                if not skip_live_quote_refresh:
+                    live_virtual_prices = await controller._load_live_virtual_price_lookup(portfolio_lab)
+                    live_available_usd = await controller._load_live_overseas_available_usd(
+                        portfolio_lab,
+                        real_positions=live_real_positions or [],
+                        price_lookup=live_virtual_prices,
+                    )
         except Exception as exc:  # noqa: BLE001
             _logger.warning("portfolio_live_refresh_failed error=%s", exc)
         await controller.notifier.send(
@@ -1315,10 +1333,11 @@ class ReportHelper:
 
         fetched = []
         limited_positions = positions[:25]
+        # KisRestClient._throttle() already serializes every call process-wide
+        # to a safe minimum interval; an extra fixed sleep between batches here
+        # was double-pacing on top of that and only added latency.
         batch_size = 2
         for start in range(0, len(limited_positions), batch_size):
-            if start > 0:
-                await asyncio.sleep(1.05)
             batch = limited_positions[start : start + batch_size]
             fetched.extend(await asyncio.gather(*(fetch_price(position) for position in batch)))
         for item in fetched:

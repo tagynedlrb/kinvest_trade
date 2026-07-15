@@ -31,6 +31,7 @@ from .lab_risk import CircuitBreakerManager
 from .lab_runtime import LabRuntimeManager
 from .lab_watch import WatchStateHelper
 from .message_format import (
+    format_domestic_symbol_label,
     format_side_korean,
     format_market_korean,
     format_pct,
@@ -1304,7 +1305,7 @@ class LiquidityLabService:
         if not code:
             return "-"
         name = str(getattr(self, "_dynamic_domestic_names", {}).get(code, "") or "").strip()
-        return f"{code}({name})" if name else code
+        return format_domestic_symbol_label(code, name)
 
     def _format_trade_symbol_label(self, market: str, code: str) -> str:
         if str(market).strip().lower() == "domestic":
@@ -2309,6 +2310,22 @@ class LiquidityLabService:
         await self._send_summary(report)
         return report
 
+    def _held_domestic_codes(self) -> set[str]:
+        # Reuses the balance cache _load_domestic_positions() already
+        # populates (one cycle stale at most) instead of an extra API call --
+        # this only needs to know *which* codes are held, not their qty/price.
+        cache = getattr(self, "_domestic_balance_cache", {}) or {}
+        data = cache.get("data") or {}
+        rows = data.get("positions", []) or data.get("output1", [])
+        codes: set[str] = set()
+        for row in rows:
+            if parse_kis_number(row.get("hldg_qty")) <= 0:
+                continue
+            code = str(row.get("pdno", "")).strip()
+            if code:
+                codes.add(code)
+        return codes
+
     async def scan_domestic(self) -> list[DomesticScanResult]:
         config = self.config.liquidity_lab
         if getattr(config, "domestic_dynamic_scan", False):
@@ -2324,6 +2341,7 @@ class LiquidityLabService:
             if getattr(self, "_dynamic_domestic_codes", None)
             else list(config.domestic_candidates)
         )
+        held_codes = self._held_domestic_codes()
         quote_results: list[DomesticScanResult] = []
         excluded: list[ExcludedCandidate] = []
         for stock_code in active_codes:
@@ -2332,7 +2350,14 @@ class LiquidityLabService:
             except Exception:
                 await asyncio.sleep(0.05)
                 continue
-            reasons = self._domestic_quote_speculative_reasons(candidate)
+            # Mirrors the overseas held-symbol exemption: a new-candidate
+            # liquidity/spread filter must not also block a symbol we already
+            # hold from getting a fresh quote/signal this cycle.
+            reasons = (
+                []
+                if candidate.stock_code in held_codes
+                else self._domestic_quote_speculative_reasons(candidate)
+            )
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
@@ -2374,7 +2399,11 @@ class LiquidityLabService:
                 refined.append(candidate)
                 await asyncio.sleep(0.05)
                 continue
-            reasons = self._domestic_speculative_reasons(full_candidate)
+            reasons = (
+                []
+                if full_candidate.stock_code in held_codes
+                else self._domestic_speculative_reasons(full_candidate)
+            )
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
@@ -2473,7 +2502,14 @@ class LiquidityLabService:
             except Exception:
                 await asyncio.sleep(0.05)
                 continue
-            reasons = self._overseas_speculative_reasons(scan_result)
+            # The speculative filter (thin volume/wide spread/low turnover) exists
+            # to keep the bot from *buying into* an illiquid new candidate. It must
+            # not also gate a symbol we already hold -- doing so drops the held
+            # position out of quote_results, so it never gets a fresh chart signal
+            # this cycle and the exit decision silently falls back to whatever
+            # signal was last cached (surfaced to the user as "stale_signal_cache"),
+            # even while its price keeps moving.
+            reasons = [] if symbol in held_symbols else self._overseas_speculative_reasons(scan_result)
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
@@ -2924,6 +2960,19 @@ class LiquidityLabService:
             stock_code = str(row.get("pdno", "")).strip()
             if not stock_code:
                 continue
+            # The balance row already carries the stock's Korean name --
+            # capture it into the same name map the Telegram formatters read
+            # from. Without this, a held position that isn't in today's
+            # volume/fluctuation-rank pool (the only other source of this
+            # map) would display as a bare code forever, even though the
+            # name was sitting right here on every balance refresh.
+            stock_name = str(row.get("prdt_name", "") or "").strip()
+            if stock_name:
+                name_map = getattr(self, "_dynamic_domestic_names", None)
+                if name_map is None:
+                    name_map = {}
+                    self._dynamic_domestic_names = name_map
+                name_map.setdefault(stock_code, stock_name)
             avg_price = self._parse_float(row.get("pchs_avg_pric"))
             orderable_qty = int(parse_kis_number(row.get("ord_psbl_qty")) or qty)
             quote = quote_map.get(stock_code)
@@ -4259,6 +4308,10 @@ class LiquidityLabService:
             "krx_open_but_no_candidate",
             "us_open_but_no_candidate",
             "us_open_but_mock_session_not_supported",
+            # Reaching a configured concurrency cap is the risk limit working as
+            # designed, not a broker rejection -- don't badge it "주문거부".
+            "overseas_position_cap_reached",
+            "total_position_cap_reached",
         }
     )
 

@@ -1,5 +1,23 @@
 from __future__ import annotations
 
+DOMESTIC_STOCK_NAME_MAX_LEN = 12
+
+
+def format_domestic_symbol_label(code: str, name: str) -> str:
+    """Korean-name-first label for domestic stocks (e.g. "삼성전자(005930)").
+
+    Falls back to the bare code when no name is known. Long names (some
+    ETF/ETN names run well past 12 characters) are truncated so a single
+    watch/trade line stays readable in Telegram.
+    """
+    code_text = str(code or "").strip().upper()
+    name_text = str(name or "").strip()
+    if not name_text:
+        return code_text or "-"
+    if len(name_text) > DOMESTIC_STOCK_NAME_MAX_LEN:
+        name_text = name_text[:DOMESTIC_STOCK_NAME_MAX_LEN] + "…"
+    return f"{name_text}({code_text})" if code_text else name_text
+
 
 def format_krw(amount: float) -> str:
     rounded = int(round(amount))
@@ -89,6 +107,8 @@ REASON_KOREAN_MAP = {
     "vwap_pullback": "VWAP 눌림목",
     "vol_breakout": "거래량 돌파",
     "macd_golden": "MACD 골든크로스",
+    "overseas_position_cap_reached": "해외 동시보유 한도 도달(정상)",
+    "total_position_cap_reached": "국내+해외 합산 한도 도달(정상)",
 }
 
 

@@ -55,6 +55,7 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.auto_trade.capital_gains_tax_rate == 0.22
     assert config.auto_trade.daily_fast_window < config.auto_trade.daily_slow_window
     assert config.auto_trade.intraday_fast_window < config.auto_trade.intraday_slow_window
+    assert config.auto_trade.min_hold_before_trend_exit == 30
     assert len(config.liquidity_lab.domestic_candidates) >= 1
     assert len(config.liquidity_lab.overseas_candidates) == 0
     assert config.notifications.telegram_command_poll_timeout_sec > 0

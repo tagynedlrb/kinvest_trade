@@ -233,6 +233,7 @@ class LiquidityLabService:
         self._session_id: str = uuid.uuid4().hex[:12]
         self._wait_cycles: dict[str, int] = {}
         self._exit_cooldown: dict[str, datetime] = {}
+        self._symbol_loss_streak: dict[str, int] = {}
         self._vol_history: dict[str, deque] = {}
         self._vol_history_maxlen: int = 12
         self._dynamic_domestic_codes: list[str] | None = None
@@ -401,6 +402,7 @@ class LiquidityLabService:
             exit_cooldown=getattr(self, "_exit_cooldown", {}),
             no_orderable_retry=getattr(self, "_no_orderable_retry", {}),
             no_orderable_counts=getattr(self, "_no_orderable_counts", {}),
+            symbol_loss_streak=getattr(self, "_symbol_loss_streak", {}),
         )
         return runtime
 
@@ -420,6 +422,7 @@ class LiquidityLabService:
         self._exit_cooldown = dict(snapshot["exit_cooldown"])
         self._no_orderable_retry = dict(snapshot["no_orderable_retry"])
         self._no_orderable_counts = dict(snapshot["no_orderable_counts"])
+        self._symbol_loss_streak = dict(snapshot["symbol_loss_streak"])
 
     def _get_watch_state_helper(self) -> WatchStateHelper:
         helper = getattr(self, "watch_state", None)
@@ -4989,9 +4992,11 @@ class LiquidityLabService:
         market: str,
         symbol: str,
         exit_reason: str,
+        *,
+        pnl_pct: float | None = None,
     ) -> None:
         runtime = self._get_runtime_manager()
-        runtime.register_exit_cooldown(market, symbol, exit_reason)
+        runtime.register_exit_cooldown(market, symbol, exit_reason, pnl_pct=pnl_pct)
         self._sync_runtime_legacy_state(runtime)
 
     def _set_exit_cooldown_minutes(

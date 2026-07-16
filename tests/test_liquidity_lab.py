@@ -6366,6 +6366,46 @@ def test_register_exit_cooldown_uses_reason_specific_minutes() -> None:
     assert 7.5 <= default_delta <= 8.5
 
 
+def test_register_exit_cooldown_escalates_on_repeated_losses() -> None:
+    # Trade history showed the same overseas symbol re-entering and losing
+    # via trend_filter_lost repeatedly within a single session (e.g. BSBR
+    # lost twice within ~1 hour on 2026-07-15). The flat 12-minute cooldown
+    # let the scanner buy right back into the same whipsaw setup. A 2nd
+    # consecutive loss (without an intervening win) must escalate the
+    # re-entry cooldown well past the reason-specific default so the scanner
+    # looks for a different candidate instead of repeating the same loss.
+    service = _build_run_service()
+    service._exit_cooldown = {}
+    service._symbol_loss_streak = {}
+    before = datetime.now(timezone.utc)
+
+    service._register_exit_cooldown("overseas", "BSBR", "trend_filter_lost", pnl_pct=-0.0015)
+    first_delta = (service._exit_cooldown["overseas:BSBR"] - before).total_seconds() / 60.0
+    assert 11.5 <= first_delta <= 12.5
+
+    service._register_exit_cooldown("overseas", "BSBR", "trend_filter_lost", pnl_pct=-0.0019)
+    second_delta = (service._exit_cooldown["overseas:BSBR"] - before).total_seconds() / 60.0
+    assert second_delta >= 59.5
+
+    service._register_exit_cooldown("overseas", "BSBR", "trend_filter_lost", pnl_pct=-0.0008)
+    third_delta = (service._exit_cooldown["overseas:BSBR"] - before).total_seconds() / 60.0
+    assert third_delta >= 179.5
+
+
+def test_register_exit_cooldown_streak_resets_after_a_win() -> None:
+    service = _build_run_service()
+    service._exit_cooldown = {}
+    service._symbol_loss_streak = {}
+    before = datetime.now(timezone.utc)
+
+    service._register_exit_cooldown("overseas", "WNC", "trend_filter_lost", pnl_pct=-0.002)
+    service._register_exit_cooldown("overseas", "WNC", "take_profit", pnl_pct=0.02)
+    service._register_exit_cooldown("overseas", "WNC", "trend_filter_lost", pnl_pct=-0.001)
+
+    delta = (service._exit_cooldown["overseas:WNC"] - before).total_seconds() / 60.0
+    assert 11.5 <= delta <= 12.5
+
+
 def test_overseas_buy_stays_skipped_when_market_closed() -> None:
     service = _build_run_service()
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session

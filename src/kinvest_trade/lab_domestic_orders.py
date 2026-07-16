@@ -710,7 +710,12 @@ class DomesticOrderHelper:
             fallback_price=held.avg_price,
         )
         service._reset_strategy_position(candidate.stock_code)
-        service._register_exit_cooldown("domestic", candidate.stock_code, exit_reason)
+        service._register_exit_cooldown(
+            "domestic",
+            candidate.stock_code,
+            exit_reason,
+            pnl_pct=pnl_pct if held.avg_price > 0 else None,
+        )
         if held.avg_price > 0:
             service._on_realised(
                 market="domestic",

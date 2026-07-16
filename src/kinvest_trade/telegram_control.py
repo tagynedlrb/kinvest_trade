@@ -514,7 +514,20 @@ class TelegramLiquidityLabController:
 
     async def _command_loop(self) -> None:
         while True:
-            updates = await self.notifier.get_updates(offset=self.update_offset)
+            try:
+                updates = await self.notifier.get_updates(offset=self.update_offset)
+            except Exception:  # noqa: BLE001
+                # A transient network blip on the long-poll request (seen in
+                # production as httpx.ReadError/anyio.BrokenResourceError) must
+                # never be able to crash the whole service -- that also kills
+                # the scheduler loop and stops all trading/exit monitoring.
+                # Log it, back off briefly, and retry instead of propagating.
+                _logger.warning(
+                    "[TELEGRAM] getUpdates 통신 오류 - 잠시 대기 후 재시도",
+                    exc_info=True,
+                )
+                await asyncio.sleep(3.0)
+                continue
             for update in updates:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):

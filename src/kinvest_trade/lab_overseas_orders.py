@@ -1211,7 +1211,12 @@ class OverseasOrderHelper:
             fallback_price=held.avg_price,
         )
         service._reset_strategy_position(candidate.symbol)
-        service._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
+        service._register_exit_cooldown(
+            "overseas",
+            candidate.symbol,
+            exit_reason,
+            pnl_pct=pnl_pct if held.avg_price > 0 else None,
+        )
         if held.avg_price > 0:
             real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
             auto_trade_cfg = getattr(service.config, "auto_trade", None)
@@ -1765,7 +1770,12 @@ class OverseasOrderHelper:
             force=service._trade_notification_force_immediate()
         )
         service._reset_strategy_position(candidate.symbol)
-        service._register_exit_cooldown("overseas", candidate.symbol, exit_reason)
+        service._register_exit_cooldown(
+            "overseas",
+            candidate.symbol,
+            exit_reason,
+            pnl_pct=realized_pnl_pct,
+        )
         service._persist_trade_state(
             market="overseas",
             symbol=candidate.symbol,

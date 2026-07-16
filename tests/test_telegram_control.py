@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import kinvest_trade.telegram_control as telegram_control_module
 import pytest
 from kinvest_trade.client import KisApiError
@@ -4604,6 +4605,42 @@ def test_command_loop_survives_handle_update_exception_and_advances_offset() -> 
         pass
 
     assert controller.update_offset == 101
+
+
+def test_command_loop_survives_get_updates_network_error() -> None:
+    # Regression test: a transient network error (httpx.ReadError etc.) from
+    # the long-polling getUpdates call was not caught inside _command_loop,
+    # so it propagated out of asyncio.gather(scheduler, command_loop) in
+    # run() and crashed the whole service (observed in production as
+    # "Failed with result 'exit-code'", auto-restarted by systemd). A single
+    # flaky read must be swallowed, logged, and retried instead of killing
+    # the process.
+    controller = _build_async_controller()
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller.update_offset = 0
+
+    calls = {"count": 0}
+
+    async def flaky_get_updates(*, offset):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ReadError("simulated network blip")
+        raise asyncio.CancelledError
+
+    controller.notifier.get_updates = flaky_get_updates  # type: ignore[method-assign]
+
+    async def fast_sleep(_seconds):
+        return None
+
+    real_sleep = asyncio.sleep
+    asyncio.sleep = fast_sleep  # type: ignore[assignment]
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(controller._command_loop())
+    finally:
+        asyncio.sleep = real_sleep  # type: ignore[assignment]
+
+    assert calls["count"] == 2
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

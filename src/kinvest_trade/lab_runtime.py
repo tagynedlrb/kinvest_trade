@@ -44,6 +44,7 @@ class LabRuntimeManager:
         self.exit_cooldown: dict[str, datetime] = {}
         self.no_orderable_retry: dict[str, datetime] = {}
         self.no_orderable_counts: dict[str, int] = {}
+        self.symbol_loss_streak: dict[str, int] = {}
 
     def configure(
         self,
@@ -71,6 +72,7 @@ class LabRuntimeManager:
         exit_cooldown: dict[str, datetime] | None,
         no_orderable_retry: dict[str, datetime] | None,
         no_orderable_counts: dict[str, int] | None,
+        symbol_loss_streak: dict[str, int] | None = None,
     ) -> None:
         self._cycle_no = int(cycle_no)
         self._session_id = str(session_id or "")
@@ -83,6 +85,7 @@ class LabRuntimeManager:
         self.exit_cooldown = dict(exit_cooldown or {})
         self.no_orderable_retry = dict(no_orderable_retry or {})
         self.no_orderable_counts = dict(no_orderable_counts or {})
+        self.symbol_loss_streak = dict(symbol_loss_streak or {})
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -95,6 +98,7 @@ class LabRuntimeManager:
             "exit_cooldown": dict(self.exit_cooldown),
             "no_orderable_retry": dict(self.no_orderable_retry),
             "no_orderable_counts": dict(self.no_orderable_counts),
+            "symbol_loss_streak": dict(self.symbol_loss_streak),
         }
 
     def record_cycle_trade_frequency(
@@ -414,7 +418,14 @@ class LabRuntimeManager:
     def clear_no_orderable_retry(self, market: str, symbol: str) -> None:
         self.no_orderable_retry.pop(f"{market}:{symbol.strip().upper()}", None)
 
-    def register_exit_cooldown(self, market: str, symbol: str, exit_reason: str) -> None:
+    def register_exit_cooldown(
+        self,
+        market: str,
+        symbol: str,
+        exit_reason: str,
+        *,
+        pnl_pct: float | None = None,
+    ) -> None:
         if exit_reason in ("stop_loss", "atr_hard_stop"):
             cooldown_minutes = 25
         elif exit_reason in ("momentum_loss_cut", "trend_filter_lost"):
@@ -423,6 +434,33 @@ class LabRuntimeManager:
             cooldown_minutes = 15
         else:
             cooldown_minutes = 8
+
+        key = f"{market}:{symbol.strip().upper()}"
+        is_loss = pnl_pct is not None and pnl_pct < 0
+        streak = (self.symbol_loss_streak.get(key, 0) + 1) if is_loss else 0
+        self.symbol_loss_streak[key] = streak
+
+        # Repeatedly re-entering the same symbol right after it whipsaws out
+        # rarely fixes anything -- the same noisy setup tends to repeat. Once
+        # a symbol has lost 2+ times in a row without an intervening win,
+        # escalate its re-entry cooldown well past the reason-specific default
+        # so the scanner spends that time on a fresh candidate instead.
+        if streak >= 3:
+            cooldown_minutes = max(cooldown_minutes, 180)
+        elif streak == 2:
+            cooldown_minutes = max(cooldown_minutes, 60)
+
+        if streak >= 2:
+            self.save_event(
+                event_type="symbol_loss_streak_cooldown",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "streak": streak,
+                    "exit_reason": exit_reason,
+                    "cooldown_minutes": cooldown_minutes,
+                },
+            )
         self.set_exit_cooldown_minutes(market, symbol, cooldown_minutes)
 
     def set_exit_cooldown_minutes(

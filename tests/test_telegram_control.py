@@ -2787,6 +2787,66 @@ def test_execute_cancel_stale_overseas_orders_records_cancel_event(tmp_path) -> 
     assert payload["open_qty"] == 2
 
 
+def test_execute_cancel_stale_overseas_orders_treats_order_not_found_as_resolved(tmp_path) -> None:
+    # Regression test for the 2026-07-21 CRAN incident: a day-old stale sell
+    # order kept getting resurfaced by the live open-order listing, but KIS
+    # rejected every cancel attempt with "40320000 모의투자 원주문번호가
+    # 존재하지 않습니다" (order no longer exists) every 10 minutes for over an
+    # hour. There is nothing left to cancel in that case, so it must be
+    # recorded as resolved (CANCELED), not as a repeating failure.
+    repository = SqliteRepository(tmp_path / "telegram_cancel_overseas_gone.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    row = {
+        "created_at": datetime.now(timezone.utc) - timedelta(minutes=45),
+        "symbol": "CRAN",
+        "exchange_code": "NASD",
+        "sll_buy_dvsn_cd": "01",
+        "open_qty": 5251,
+        "order_price": 10.15,
+        "order_no": "ov-002",
+    }
+
+    class FakeKisClient:
+        def __init__(self, credentials) -> None:
+            self.credentials = credentials
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def revise_or_cancel_overseas_order(self, **kwargs):
+            raise KisApiError("VTTT1004U error: 40320000 모의투자 원주문번호가 존재하지 않습니다.")
+
+    original_client = telegram_control_module.KisRestClient
+    telegram_control_module.KisRestClient = FakeKisClient
+    try:
+        asyncio.run(
+            controller._execute_cancel_stale_overseas_orders(
+                source="auto",
+                candidate_orders=[row],
+            )
+        )
+    finally:
+        telegram_control_module.KisRestClient = original_client
+
+    assert "CRAN 이미 처리됨(취소 대상 없음) 원주문=ov-002" in notifier.messages[-1]
+    rows = repository.list_broker_order_events(limit=1)
+    assert rows[0]["status"] == "CANCELED"
+    assert rows[0]["reason"] == "stale_order_already_resolved"
+
+
 def test_lab_orders_command_sends_recent_order_events(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_orders_command.db")
     repository.save_broker_order_event(

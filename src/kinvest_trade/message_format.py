@@ -97,6 +97,7 @@ REASON_KOREAN_MAP = {
     "stale_live_order_cancel_failed": "장기미체결 취소거부",
     "stale_live_overseas_order_cancel": "해외 장기미체결 취소",
     "stale_live_overseas_order_cancel_failed": "해외 장기미체결 취소거부",
+    "stale_order_already_resolved": "이미 처리된 주문(취소 불필요)",
     "session_not_orderable_in_profile": "현재 계정에서 거래 불가한 세션",
     "order_rejected": "주문 거부",
     "trail_stop": "트레일링 스탑",

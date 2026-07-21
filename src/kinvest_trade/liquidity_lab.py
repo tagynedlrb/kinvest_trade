@@ -2775,6 +2775,70 @@ class LiquidityLabService:
             activity_score=round(activity_score, 4),
         )
 
+    def _oversized_overseas_position_qty_ceiling(self) -> int:
+        app_config = getattr(self, "config", None)
+        if app_config is None:
+            return 0
+        config = getattr(app_config, "liquidity_lab", object())
+        auto_cfg = getattr(app_config, "auto_trade", object())
+        risk_cfg = getattr(app_config, "risk", object())
+        capital_krw = float(getattr(risk_cfg, "operating_capital_krw", 0) or 0)
+        fx_rate = float(getattr(auto_cfg, "usd_krw_fallback_rate", 1350.0) or 1350.0)
+        slot_max_pct = float(getattr(config, "slot_max_pct", 0.2) or 0.2)
+        min_price_usd = float(getattr(config, "overseas_min_price_usd", 5.0) or 5.0)
+        if capital_krw <= 0 or fx_rate <= 0 or min_price_usd <= 0:
+            return 0
+        max_slot_usd = (capital_krw / fx_rate) * slot_max_pct
+        return int(max_slot_usd / min_price_usd)
+
+    async def _warn_if_overseas_position_oversized(
+        self,
+        position: OverseasHeldPosition,
+    ) -> None:
+        # A legitimate slot-sized buy can never exceed this ceiling by more
+        # than a small margin; a position several times over it is a sign
+        # something bypassed normal sizing entirely (e.g. the 2026-07-13
+        # duplicate-order incident left a ~5,251-share CRAN position that
+        # sat undetected for over a week before exit logic finally caught
+        # it). Alert once per symbol so this gets noticed within hours next
+        # time, not a week later.
+        ceiling = self._oversized_overseas_position_qty_ceiling()
+        if ceiling <= 0 or position.quantity <= ceiling * 3:
+            return
+        warned = getattr(self, "_oversized_position_warned", None)
+        if warned is None:
+            warned = set()
+            self._oversized_position_warned = warned
+        key = f"overseas:{position.symbol.upper()}"
+        if key in warned:
+            return
+        warned.add(key)
+        notional_usd = position.quantity * position.avg_price
+        self._save_event(
+            event_type="oversized_position_detected",
+            market="overseas",
+            symbol=position.symbol,
+            detail={
+                "quantity": position.quantity,
+                "expected_ceiling": ceiling,
+                "avg_price": position.avg_price,
+                "notional_usd": round(notional_usd, 2),
+            },
+        )
+        notifier = getattr(self, "notifier", None)
+        if notifier is None:
+            return
+        try:
+            await notifier.send(
+                "⚠️ [KIS] 비정상 대형 포지션 감지\n"
+                f"종목={position.symbol}(해외) 수량={position.quantity}주 "
+                f"평단=${position.avg_price:.2f} 평가액=${notional_usd:,.0f}\n"
+                f"정상 슬롯 기준 예상 최대치({ceiling}주)를 크게 초과 - "
+                "중복주문/누적오류 가능성 점검 필요"
+            )
+        except Exception:  # noqa: BLE001
+            _logger.debug("oversized_position_notify_failed", exc_info=True)
+
     async def _load_overseas_positions(
         self,
         overseas_ranked: list[OverseasScanResult],
@@ -2857,7 +2921,7 @@ class LiquidityLabService:
                 if current_price <= 0:
                     current_price = avg_price
                 pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0.0
-                positions_by_key[(symbol, row_exchange_code)] = OverseasHeldPosition(
+                position = OverseasHeldPosition(
                     symbol=symbol,
                     exchange_code=row_exchange_code,
                     quantity=quantity,
@@ -2867,6 +2931,8 @@ class LiquidityLabService:
                     pnl_pct=pnl_pct,
                     is_virtual=False,
                 )
+                positions_by_key[(symbol, row_exchange_code)] = position
+                await self._warn_if_overseas_position_oversized(position)
 
         return list(positions_by_key.values())
 

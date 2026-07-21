@@ -2524,6 +2524,105 @@ def test_overseas_balance_cache_reused_within_cycle() -> None:
     assert service.client.calls == 1
 
 
+def test_load_overseas_positions_warns_on_anomalously_large_position() -> None:
+    # Regression test for the 2026-07-16 CRAN incident aftermath: a
+    # ~5,251-share position (~3.5x a legitimate max-slot buy) sat
+    # undetected in the account for over a week before exit logic finally
+    # caught it, contaminating trade stats and consuming a huge chunk of
+    # capital the whole time. A held position several times over the
+    # largest a slot-sized buy could ever produce must trigger a one-time
+    # alert instead of going unnoticed.
+    service = _build_run_service()
+    service._cycle_count = 1
+    service._overseas_balance_cache = {}
+    service._last_held_symbols = set()
+    service._manual_overseas_pool = None
+    service._dynamic_overseas_pool = None
+    service.client = DummyOverseasBalanceClient(
+        {
+            "NASD": [
+                {
+                    "ovrs_pdno": "CRAN",
+                    "ovrs_cblc_qty": "5251",
+                    "ord_psbl_qty": "0",
+                    "pchs_avg_pric": "10.15",
+                }
+            ]
+        }
+    )
+    overseas_ranked = [
+        OverseasScanResult(
+            symbol="CRAN",
+            exchange_code="NASD",
+            last_price=10.16,
+            bid=10.15,
+            ask=10.17,
+            spread_pct=0.001,
+            change_rate_pct=0.1,
+            volume=500000,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=10.0,
+        )
+    ]
+
+    positions = asyncio.run(service._load_overseas_positions(overseas_ranked))
+
+    assert positions[0].quantity == 5251
+    assert len(service.notifier.messages) == 1
+    assert "CRAN" in service.notifier.messages[0]
+    assert "비정상 대형 포지션" in service.notifier.messages[0]
+    events = service.repository.list_event_log(event_type="oversized_position_detected", limit=1)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["quantity"] == 5251
+
+    # A second load in the same session must not re-alert for the same symbol.
+    service._overseas_balance_cache = {}
+    asyncio.run(service._load_overseas_positions(overseas_ranked))
+    assert len(service.notifier.messages) == 1
+
+
+def test_load_overseas_positions_does_not_warn_for_normal_sized_position() -> None:
+    service = _build_run_service()
+    service._cycle_count = 1
+    service._overseas_balance_cache = {}
+    service._last_held_symbols = set()
+    service._manual_overseas_pool = None
+    service._dynamic_overseas_pool = None
+    service.client = DummyOverseasBalanceClient(
+        {
+            "NASD": [
+                {
+                    "ovrs_pdno": "BANC",
+                    "ovrs_cblc_qty": "351",
+                    "ord_psbl_qty": "351",
+                    "pchs_avg_pric": "21.78",
+                }
+            ]
+        }
+    )
+    overseas_ranked = [
+        OverseasScanResult(
+            symbol="BANC",
+            exchange_code="NASD",
+            last_price=21.83,
+            bid=21.80,
+            ask=21.85,
+            spread_pct=0.001,
+            change_rate_pct=0.2,
+            volume=500000,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=10.0,
+        )
+    ]
+
+    asyncio.run(service._load_overseas_positions(overseas_ranked))
+
+    assert service.notifier.messages == []
+
+
 def _build_domestic_sell_service(
     *,
     dry_run: bool = False,

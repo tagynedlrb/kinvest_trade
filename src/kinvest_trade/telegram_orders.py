@@ -32,6 +32,21 @@ def _normalize_order_no(order_no: object) -> str:
     return stripped or ("0" if text else "")
 
 
+_KIS_ORDER_NOT_FOUND_CODE = "40320000"
+
+
+def _is_order_not_found_error(exc: Exception) -> bool:
+    """True when KIS rejected a cancel because the original order no longer exists.
+
+    Seen live on a day-old stale overseas sell order (msg_cd 40320000,
+    "모의투자 원주문번호가 존재하지 않습니다") -- the live open-order listing kept
+    resurfacing it as still-open every 10 minutes, so the auto-canceller
+    retried and failed identically for over an hour. There's nothing left to
+    cancel in this case, so it must not be logged/alerted as a failure.
+    """
+    return _KIS_ORDER_NOT_FOUND_CODE in str(exc)
+
+
 class OrderAdminHelper:
     """Stale-order cancellation, live open-order loading, and order-audit formatting for telegram control."""
 
@@ -417,6 +432,7 @@ class OrderAdminHelper:
                         pending_order={**row, "order_no": order_no, "open_qty": open_qty},
                     )
                 except Exception as exc:  # noqa: BLE001
+                    already_gone = _is_order_not_found_error(exc)
                     controller.repository.save_broker_order_event(
                         created_at=datetime.now(timezone.utc).isoformat(),
                         market="overseas",
@@ -426,8 +442,12 @@ class OrderAdminHelper:
                         order_kind="cancel",
                         requested_qty=open_qty,
                         requested_price=price,
-                        status="REJECTED",
-                        reason="stale_live_overseas_order_cancel_failed",
+                        status="CANCELED" if already_gone else "REJECTED",
+                        reason=(
+                            "stale_order_already_resolved"
+                            if already_gone
+                            else "stale_live_overseas_order_cancel_failed"
+                        ),
                         broker_order_no=order_no,
                         is_virtual=0,
                         payload={
@@ -439,7 +459,10 @@ class OrderAdminHelper:
                             "error": str(exc),
                         },
                     )
-                    lines.append(f"{symbol} 취소실패={str(exc)[:80]}")
+                    if already_gone:
+                        lines.append(f"{symbol} 이미 처리됨(취소 대상 없음) 원주문={order_no}")
+                    else:
+                        lines.append(f"{symbol} 취소실패={str(exc)[:80]}")
                     continue
 
                 output = response.get("output") if isinstance(response, dict) else {}

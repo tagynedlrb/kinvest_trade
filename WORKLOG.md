@@ -1,5 +1,43 @@
 # WORKLOG
 
+## [2026-07-24] 로그 재점검 — 인프라 안정성 확인 + `analyze_trades.py` 청산사유 오분류 버그 발견/수정
+
+### 요청 배경
+"현재까지 로그를 확인하여 분석 및 개선 수행"(반복 지시). 지난 배포(07-21 21:52) 이후
+~3일치 로그/거래를 재점검.
+
+### 1) 인프라 안정성 재확인
+서비스 재시작 0회(2일+ 연속 가동), 07-16 크래시 수정이 이번에도 여러 getUpdates 통신 오류를
+정상적으로 흡수. `oversized_position_detected` 이벤트 없음(CRAN류 좌초 포지션 재발 없음).
+`symbol_loss_streak_cooldown` 9건 발생했으나 전부 streak=2(60분 쿨다운)에서 그침 —
+streak=3 이상(180분)까지 간 사례가 한 번도 없어, 같은 종목이 반복 손실을 내더라도 이번엔
+3연속까지 가기 전에 억제되고 있음을 확인.
+
+### 2) 서킷브레이커 17회 발동 조사 — 이번엔 진짜 전략 손실
+CRAN류 오염 없이 실제로 3일간 해외 실거래 승률 8%(36건 중 약 3건), 누적 약 -$1,850. 다만
+per-trade 손실 크기 자체는 대부분 -0.1%~-0.3%로 작게 통제되고 있어(과거처럼 5~6분 만에
+잘리는 패턴 아님, `min_hold_before_trend_exit` 조정이 여전히 유효), "잡음에 잘린다"기보다는
+"돌파 진입 후 익절까지 도달하는 비율 자체가 낮다"는 전략 엣지 문제로 보임. 새로운 버그로
+단정할 근거는 부족해 강제로 결론짓지 않음 — 데이터를 더 쌓고 재평가 필요.
+
+### 3) `analyze_trades.py` 청산사유 분류 버그 발견
+전략별 손익 breakdown에서 "VWAP"/"RSI" exit로 잡힌 거래들이 유독 손실폭이 커서(-1.4%,
+-0.42%) 조사한 결과, `cycle_log.exit_by` 컬럼은 momentum_policy의 실제 청산판단
+(`atr_hard_stop`/`trend_filter_lost`/`momentum_loss_cut`)이 아니라 **종목별 전략매니저
+자체의 독립적인 청산신호 미리보기 라벨**(`_get_strategy_labels`, 표시용 "VWAP"/"RSI")로
+덮어써져 있던 경우가 있었다 — 반면 `action_reason` 컬럼엔 항상 momentum_policy의 진짜
+사유가 정확히 남아있었다(직접 대조로 확인: exit_by="VWAP"인 행들의 action_reason은 실제로
+`atr_hard_stop`/`momentum_loss_cut`이었음). 문제는 라이브 트레이딩 로직이 아니라
+`scripts/analyze_trades.py`의 `COALESCE(NULLIF(exit_by,''), NULLIF(action_reason,''), ...)`
+가 덜 정확한 `exit_by`를 우선시하고 있던 것 — 즉 실거래/판단에는 영향 없고, 분석 스크립트가
+집계를 잘못 보여주고 있었을 뿐이다. `action_reason`을 우선하도록 순서를 바꿔 수정(주석 추가).
+
+### 검증/배포
+회귀테스트 1건 추가(`test_strategy_breakdown_prefers_action_reason_over_exit_by`, 수정 전
+코드에서 실패 확인 후 통과 재확인). 전체 스위트 555개 통과. 수정 후 재분석 결과, 이전에
+"VWAP"/"RSI"로 뭉뚱그려졌던 거래들이 정확히 `atr_hard_stop`(해외 3건, 평균 -1.49%)/
+`momentum_loss_cut`으로 재분류됨 — 해외 손실의 실체를 더 정확히 파악할 수 있게 됨.
+
 ## [2026-07-21] CRAN 5,251주 좌초 포지션, 07-14에 발견된 그 자리에서 6일간 방치되어 있었음 — 청산 완료 확인 + 재발 방지 2건
 
 ### 요청 배경

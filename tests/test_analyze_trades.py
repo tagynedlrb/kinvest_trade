@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 
-from scripts.analyze_trades import compare_before_after, summarize_wait_bottlenecks
+from scripts.analyze_trades import compare_before_after, main, summarize_wait_bottlenecks
 from kinvest_trade.repository import SqliteRepository
 
 
@@ -131,6 +132,36 @@ def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:
     assert "domestic VWAP" in output
     assert "net=-0.500%" in output
     assert "승률=50%" in output
+
+
+def test_strategy_breakdown_prefers_action_reason_over_exit_by(tmp_path, monkeypatch, capsys) -> None:
+    # Regression test for a mislabeling bug found 2026-07-24: exit_by holds a
+    # coarser label from the per-symbol strategy manager's own preview check
+    # (often just "VWAP"/"RSI"), which is a DIFFERENT, less authoritative
+    # signal than action_reason (momentum_policy's actual exit decision, e.g.
+    # atr_hard_stop/momentum_loss_cut). When both are set, the strategy
+    # breakdown must group by action_reason -- otherwise a real hard-stop
+    # exit gets silently reclassified as a generic "VWAP" exit, corrupting
+    # the whole per-exit-reason performance breakdown.
+    repository = SqliteRepository(tmp_path / "strategy_breakdown.db")
+    repository.save_cycle_log(
+        logged_at="2026-07-22T14:19:03+00:00",
+        market="overseas",
+        symbol="BANC",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="atr_hard_stop",
+        exit_by="VWAP",
+        strategy_flag="VWAP+VOL",
+        pnl_pct=-0.0161,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["analyze_trades.py", str(repository.db_path)])
+    main()
+    output = capsys.readouterr().out
+
+    assert "exit=atr_hard_stop" in output
+    assert "exit=VWAP" not in output
 
 
 def test_summarize_wait_bottlenecks_groups_recent_wait_rows(tmp_path) -> None:

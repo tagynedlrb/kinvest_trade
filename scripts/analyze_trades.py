@@ -157,8 +157,15 @@ def main() -> None:
         )
 
     if has_strategy_flag:
+        # action_reason holds momentum_policy's actual exit decision
+        # (trend_filter_lost/atr_hard_stop/momentum_loss_cut/...); exit_by is
+        # a separate, coarser label from the per-symbol strategy manager's own
+        # preview check and is often just "VWAP"/"RSI" -- overwritten there
+        # whenever that check also independently agrees a sell is due. It
+        # must only be a fallback, not take precedence, or this breakdown
+        # silently reclassifies e.g. a hard-stop as a generic "VWAP" exit.
         exit_expr = (
-            "COALESCE(NULLIF(exit_by, ''), NULLIF(action_reason, ''), 'N/A')"
+            "COALESCE(NULLIF(action_reason, ''), NULLIF(exit_by, ''), 'N/A')"
             if has_exit_by
             else "COALESCE(NULLIF(action_reason, ''), 'N/A')"
         )

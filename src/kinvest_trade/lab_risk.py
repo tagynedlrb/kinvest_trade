@@ -32,12 +32,15 @@ class CircuitBreakerManager:
         self._event_hook = event_hook
         self._notify_hook = notify_hook
         self.consecutive_losses: int = 0
+        self._consecutive_losses_by_market: dict[str, int] = {}
         self.session_realised_krw: float = 0.0
         self.session_realised_krw_overseas: float = 0.0
         self.daily_loss_date: date | None = None
         self._halted_at: datetime | None = None
+        self._halted_at_by_market: dict[str, datetime] = {}
         self._daily_halted_at: datetime | None = None
         self._last_cb_released_at: datetime | None = None
+        self._last_cb_released_at_by_market: dict[str, datetime] = {}
         self._overseas_cb_active: bool = False
         self._order_reject_history: dict[str, list[datetime]] = {}
         self._order_reject_halted_at: dict[str, datetime] = {}
@@ -46,16 +49,25 @@ class CircuitBreakerManager:
         self,
         *,
         consecutive_losses: int | None = None,
+        consecutive_losses_by_market: dict[str, int] | None = None,
         session_realised_krw: float | None = None,
         session_realised_krw_overseas: float | None = None,
         daily_loss_date: date | None = None,
         halted_at: datetime | None | object = _UNSET,
+        halted_at_by_market: dict[str, datetime] | None = None,
         daily_halted_at: datetime | None | object = _UNSET,
         last_cb_released_at: datetime | None | object = _UNSET,
         overseas_cb_active: bool | None = None,
     ) -> None:
         if consecutive_losses is not None:
             self.consecutive_losses = int(consecutive_losses)
+        if consecutive_losses_by_market is not None:
+            self._consecutive_losses_by_market = {
+                self._normalize_market(market): max(0, int(count))
+                for market, count in consecutive_losses_by_market.items()
+                if str(market).strip()
+            }
+            self._sync_aggregate_consecutive_losses()
         if session_realised_krw is not None:
             self.session_realised_krw = float(session_realised_krw)
         if session_realised_krw_overseas is not None:
@@ -63,6 +75,13 @@ class CircuitBreakerManager:
         self.daily_loss_date = daily_loss_date
         if halted_at is not _UNSET:
             self._halted_at = halted_at
+        if halted_at_by_market is not None:
+            self._halted_at_by_market = {
+                self._normalize_market(market): ensure_timezone(value)
+                for market, value in halted_at_by_market.items()
+                if str(market).strip() and value is not None
+            }
+            self._sync_aggregate_halted_at()
         if daily_halted_at is not _UNSET:
             self._daily_halted_at = daily_halted_at
         if last_cb_released_at is not _UNSET:
@@ -73,10 +92,12 @@ class CircuitBreakerManager:
     def snapshot(self) -> dict[str, object]:
         return {
             "consecutive_losses": self.consecutive_losses,
+            "consecutive_losses_by_market": dict(self._consecutive_losses_by_market),
             "session_realised_krw": self.session_realised_krw,
             "session_realised_krw_overseas": self.session_realised_krw_overseas,
             "daily_loss_date": self.daily_loss_date,
             "halted_at": self._halted_at,
+            "halted_at_by_market": dict(self._halted_at_by_market),
             "daily_halted_at": self._daily_halted_at,
             "last_cb_released_at": self._last_cb_released_at,
             "overseas_cb_active": self._overseas_cb_active,
@@ -100,14 +121,22 @@ class CircuitBreakerManager:
 
     @property
     def is_active(self) -> bool:
-        return self._halted_at is not None or self._daily_halted_at is not None
+        return bool(self._halted_at_by_market) or self._halted_at is not None or self._daily_halted_at is not None
 
-    def is_halted(self) -> bool:
+    def is_halted(self, market: str | None = None) -> bool:
         self._maybe_reset_daily()
         risk = getattr(self._config, "risk", None)
         if risk is None:
             return False
-        if self._check_consecutive(risk):
+        if market is not None:
+            normalized_market = self._normalize_market(market)
+            if self._check_consecutive(risk, market=normalized_market):
+                return True
+        elif self._consecutive_losses_by_market:
+            for known_market in sorted(self._consecutive_losses_by_market):
+                if self._check_consecutive(risk, market=known_market):
+                    return True
+        elif self._check_consecutive(risk, market=None):
             return True
         return self._check_daily(risk)
 
@@ -125,18 +154,31 @@ class CircuitBreakerManager:
         gross_pnl_krw: float,
         pnl_pct: float | None = None,
     ) -> None:
+        normalized_market = self._normalize_market(market)
         is_loss = pnl_pct < 0 if pnl_pct is not None else gross_pnl_krw < 0
         if is_loss:
-            self.consecutive_losses += 1
+            self._consecutive_losses_by_market[normalized_market] = (
+                self._consecutive_losses_by_market.get(normalized_market, 0) + 1
+            )
         else:
-            self.consecutive_losses = 0
+            self._consecutive_losses_by_market[normalized_market] = 0
+        self._sync_aggregate_consecutive_losses()
         self.session_realised_krw += float(gross_pnl_krw)
-        if str(market).strip().lower() == "overseas":
+        if normalized_market == "overseas":
             self.session_realised_krw_overseas += float(gross_pnl_krw)
 
-    def reset(self) -> None:
+    def reset(self, market: str | None = None) -> None:
+        if market is not None:
+            normalized_market = self._normalize_market(market)
+            self._consecutive_losses_by_market[normalized_market] = 0
+            self._halted_at_by_market.pop(normalized_market, None)
+            self._sync_aggregate_consecutive_losses()
+            self._sync_aggregate_halted_at()
+            return
         self.consecutive_losses = 0
+        self._consecutive_losses_by_market = {}
         self._halted_at = None
+        self._halted_at_by_market = {}
         self._daily_halted_at = None
         self._overseas_cb_active = False
 
@@ -216,6 +258,41 @@ class CircuitBreakerManager:
         self._order_reject_history = {}
         self._order_reject_halted_at = {}
 
+    @staticmethod
+    def _normalize_market(market: str) -> str:
+        normalized = str(market).strip().lower()
+        aliases = {
+            "krx": "domestic",
+            "korea": "domestic",
+            "us": "overseas",
+            "usa": "overseas",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _market_risk_value(
+        self,
+        market: str | None,
+        field_name: str,
+        fallback: int,
+    ) -> int:
+        if market is None:
+            return fallback
+        policies = getattr(self._config, "market_policies", None)
+        definition = getattr(policies, market, None) if policies is not None else None
+        configured = getattr(definition, field_name, None)
+        return fallback if configured is None else int(configured)
+
+    def _sync_aggregate_consecutive_losses(self) -> None:
+        if self._consecutive_losses_by_market:
+            self.consecutive_losses = max(self._consecutive_losses_by_market.values())
+
+    def _sync_aggregate_halted_at(self) -> None:
+        self._halted_at = (
+            min(self._halted_at_by_market.values())
+            if self._halted_at_by_market
+            else None
+        )
+
     def _maybe_reset_daily(self) -> None:
         today = datetime.now(timezone.utc).astimezone(KST).date()
         if self.daily_loss_date == today:
@@ -227,46 +304,89 @@ class CircuitBreakerManager:
         self._overseas_cb_active = False
         _logger.info("[CB] KST 날짜 전환 → daily_loss 초기화 (date=%s)", today)
 
-    def _check_consecutive(self, risk: object) -> bool:
-        max_consecutive = int(getattr(risk, "max_consecutive_losses", 0) or 0)
-        if max_consecutive <= 0 or self.consecutive_losses < max_consecutive:
+    def _check_consecutive(
+        self,
+        risk: object,
+        *,
+        market: str | None,
+    ) -> bool:
+        fallback_max = int(getattr(risk, "max_consecutive_losses", 0) or 0)
+        max_consecutive = self._market_risk_value(
+            market,
+            "max_consecutive_losses",
+            fallback_max,
+        )
+        consecutive_losses = (
+            self.consecutive_losses
+            if market is None
+            else self._consecutive_losses_by_market.get(market, 0)
+        )
+        if max_consecutive <= 0 or consecutive_losses < max_consecutive:
             return False
 
-        cooldown_minutes = int(getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0)
+        fallback_cooldown = int(
+            getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0
+        )
+        cooldown_minutes = self._market_risk_value(
+            market,
+            "circuit_breaker_cooldown_minutes",
+            fallback_cooldown,
+        )
         if cooldown_minutes <= 0:
             return True
 
         now = datetime.now(timezone.utc)
-        if self._halted_at is None:
-            self._halted_at = now
-            self._emit_event(
-                "cb_fired",
-                {
-                    "consecutive_losses": self.consecutive_losses,
-                    "type": "consecutive",
-                },
-            )
+        halted_at = (
+            self._halted_at
+            if market is None
+            else self._halted_at_by_market.get(market)
+        )
+        if halted_at is None:
+            if market is None:
+                self._halted_at = now
+            else:
+                self._halted_at_by_market[market] = now
+                self._sync_aggregate_halted_at()
+            detail = {
+                "consecutive_losses": consecutive_losses,
+                "type": "consecutive",
+            }
+            if market is not None:
+                detail["market"] = market
+            self._emit_event("cb_fired", detail)
             return True
 
-        elapsed_minutes = (now - ensure_timezone(self._halted_at)).total_seconds() / 60
+        elapsed_minutes = (now - ensure_timezone(halted_at)).total_seconds() / 60
         if elapsed_minutes < cooldown_minutes:
             return True
 
-        _logger.info("[CB] 서킷브레이커 자동 해제 (%.0f분 경과)", elapsed_minutes)
-        self.consecutive_losses = 0
-        self._halted_at = None
-        self._last_cb_released_at = now
-        self._emit_event(
-            "cb_released",
-            {
-                "elapsed_min": round(elapsed_minutes, 1),
-                "trigger": "auto_cooldown",
-                "type": "consecutive",
-            },
+        _logger.info(
+            "[CB] 서킷브레이커 자동 해제 market=%s (%.0f분 경과)",
+            market or "all",
+            elapsed_minutes,
         )
+        if market is None:
+            self.consecutive_losses = 0
+            self._halted_at = None
+        else:
+            self._consecutive_losses_by_market[market] = 0
+            self._halted_at_by_market.pop(market, None)
+            self._last_cb_released_at_by_market[market] = now
+            self._sync_aggregate_consecutive_losses()
+            self._sync_aggregate_halted_at()
+        self._last_cb_released_at = now
+        detail = {
+            "elapsed_min": round(elapsed_minutes, 1),
+            "trigger": "auto_cooldown",
+            "type": "consecutive",
+        }
+        if market is not None:
+            detail["market"] = market
+        self._emit_event("cb_released", detail)
+        market_line = f"시장={market} " if market is not None else ""
         self._schedule_notification(
             f"✅ 서킷브레이커 자동 해제\n"
-            f"쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
+            f"{market_line}쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
         )
         return False
 

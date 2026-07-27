@@ -14,7 +14,8 @@ from .auto_trade_math import (
 )
 from .adaptive_params import AdaptiveOverride, apply_override, compute_adaptive_override
 from .client import KisApiError, KisRestClient
-from .config import AppConfig
+from .config import AppConfig, AutoTradeConfig
+from .market_policy import get_market_auto_trade_config
 from .market_sessions import is_us_orderable_session_for_env
 from .message_format import format_pct, format_reason_korean, format_side_korean, format_usd
 from .momentum_policy import (
@@ -100,11 +101,14 @@ class FixedSymbolAutoTrader:
         self.client = client
         self.repository = repository
         self.notifier = notifier
+        self._auto_trade = get_market_auto_trade_config(config, "overseas")
+        if self._auto_trade is None:
+            raise RuntimeError("overseas market policy requires auto_trade configuration")
         self.position = AutoPosition()
         self.flat_cycles = 0
         self.loop_count = 0
         self.last_exit_cycle = 0
-        self.last_fx_rate_krw = config.auto_trade.usd_krw_fallback_rate
+        self.last_fx_rate_krw = self.auto_trade.usd_krw_fallback_rate
         self.last_available_usd: float = 0.0
         self._daily_closes: list[float] = []
         self._minute_closes: list[float] = []
@@ -115,8 +119,17 @@ class FixedSymbolAutoTrader:
         self._intraday_refreshed_at: datetime | None = None
         self._last_adaptive_override = AdaptiveOverride()
 
+    @property
+    def auto_trade(self) -> AutoTradeConfig:
+        configured = getattr(self, "_auto_trade", None)
+        if configured is None:
+            configured = get_market_auto_trade_config(self.config, "overseas")
+        if configured is None:
+            raise RuntimeError("overseas market policy requires auto_trade configuration")
+        return configured
+
     async def run(self) -> AutoTradeSummary:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         cleaned_runs = self.repository.abort_stale_auto_trade_runs(
             older_than_minutes=auto.stale_run_grace_minutes,
             reason="auto-marked ABORTED because a newer auto-run started after the grace window.",
@@ -436,7 +449,7 @@ class FixedSymbolAutoTrader:
         return summary
 
     async def _sync_startup_position(self) -> None:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         balance = await self.client.get_overseas_balance(
             exchange_code=auto.exchange_code,
             currency_code=auto.currency_code,
@@ -484,22 +497,22 @@ class FixedSymbolAutoTrader:
             minute_highs=self._minute_highs,
             minute_lows=self._minute_lows,
             minute_volumes=self._minute_volumes,
-            daily_fast_window=self.config.auto_trade.daily_fast_window,
-            daily_slow_window=self.config.auto_trade.daily_slow_window,
-            intraday_fast_window=self.config.auto_trade.intraday_fast_window,
-            intraday_slow_window=self.config.auto_trade.intraday_slow_window,
-            volatility_window=self.config.auto_trade.volatility_window,
-            momentum_window=self.config.auto_trade.momentum_window,
-            volume_window=self.config.auto_trade.volume_window,
-            rsi_period=self.config.auto_trade.rsi_period,
-            breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
-            bollinger_window=self.config.auto_trade.bollinger_window,
-            bollinger_stddev=self.config.auto_trade.bollinger_stddev,
-            atr_window=self.config.auto_trade.atr_window,
+            daily_fast_window=self.auto_trade.daily_fast_window,
+            daily_slow_window=self.auto_trade.daily_slow_window,
+            intraday_fast_window=self.auto_trade.intraday_fast_window,
+            intraday_slow_window=self.auto_trade.intraday_slow_window,
+            volatility_window=self.auto_trade.volatility_window,
+            momentum_window=self.auto_trade.momentum_window,
+            volume_window=self.auto_trade.volume_window,
+            rsi_period=self.auto_trade.rsi_period,
+            breakout_lookback_bars=self.auto_trade.breakout_lookback_bars,
+            bollinger_window=self.auto_trade.bollinger_window,
+            bollinger_stddev=self.auto_trade.bollinger_stddev,
+            atr_window=self.auto_trade.atr_window,
         )
 
     async def _refresh_chart_context(self, captured_at: datetime) -> None:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         daily_due = (
             self._daily_refreshed_at is None
             or (captured_at - self._daily_refreshed_at).total_seconds()
@@ -561,9 +574,9 @@ class FixedSymbolAutoTrader:
                 pass
 
     def _decide_action(self, snapshot: StrategySnapshot) -> TradeDecision:
-        _override = compute_adaptive_override(self.config.auto_trade, snapshot)
+        _override = compute_adaptive_override(self.auto_trade, snapshot)
         self._last_adaptive_override = _override
-        auto = apply_override(self.config.auto_trade, _override)
+        auto = apply_override(self.auto_trade, _override)
 
         if snapshot.spread_pct > auto.max_spread_pct:
             return TradeDecision(None, 0, "spread_too_wide")
@@ -689,7 +702,7 @@ class FixedSymbolAutoTrader:
         return max(1, min(base_qty, remaining))
 
     def _determine_sell_qty(self, *, full_exit: bool) -> int:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         if full_exit or not auto.allow_partial_exit or self.position.qty <= 1:
             return self.position.qty
         return max(1, math.ceil(self.position.qty / 2))
@@ -761,7 +774,7 @@ class FixedSymbolAutoTrader:
         return max(auto.take_profit_pct, reward_from_atr, reward_from_breakout)
 
     def _estimate_roundtrip_fees_usd(self, *, price: float, qty: int) -> float:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         buy_fees = estimate_trade_fees(
             side="buy",
             qty=qty,
@@ -779,7 +792,7 @@ class FixedSymbolAutoTrader:
         return buy_fees.total_fees_usd + sell_fees.total_fees_usd
 
     async def _refresh_fx_context(self, last_price: float) -> tuple[float, int]:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         fx_rate = self.last_fx_rate_krw or auto.usd_krw_fallback_rate
         max_buy_qty = auto.max_position_qty
         self.last_available_usd = 0.0
@@ -844,7 +857,7 @@ class FixedSymbolAutoTrader:
         self.position.entry_fx_fees_krw += estimate_fx_fee_krw(
             notional_usd=fee_estimate.notional_usd,
             fx_rate_krw=fx_rate_krw,
-            fx_fee_rate=self.config.auto_trade.fx_fee_rate,
+            fx_fee_rate=self.auto_trade.fx_fee_rate,
         )
         self.position.opened_at = self.position.opened_at or datetime.now(timezone.utc)
         self.position.hold_cycles = 0
@@ -862,7 +875,7 @@ class FixedSymbolAutoTrader:
         fee_estimate: TradeFeeEstimate,
         cumulative_net_pnl_krw_before_tax: float,
     ) -> RealizedBreakdown:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         qty_before = self.position.qty
         qty_sold = min(qty, qty_before)
         if qty_sold <= 0 or qty_before <= 0:
@@ -921,7 +934,7 @@ class FixedSymbolAutoTrader:
         )
 
     async def _send_start_message(self, run_id: int) -> None:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         await self.notifier.send(
             "\n".join(
                 [
@@ -957,7 +970,7 @@ class FixedSymbolAutoTrader:
         avg_price_before_fill: float = 0.0,
         hold_cycles_before_fill: int = 0,
     ) -> None:
-        auto = self.config.auto_trade
+        auto = self.auto_trade
         lines = [
             "[KIS][AUTO_TRADE]",
             f"시각={format_kst_korean(captured_at)}",
@@ -1008,7 +1021,7 @@ class FixedSymbolAutoTrader:
         )
 
     def _soft_break_band_pct(self, snapshot: StrategySnapshot, *, auto=None) -> float:
-        auto = auto or self.config.auto_trade
+        auto = auto or self.auto_trade
         return max(
             auto.stop_loss_pct,
             snapshot.atr_pct * auto.atr_soft_stop_multiplier,

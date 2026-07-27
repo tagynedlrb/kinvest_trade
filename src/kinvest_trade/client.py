@@ -97,16 +97,21 @@ class KisRestClient:
     # (not `self.`) make the pacing clock shared process-wide across every
     # instance instead. KIS's documented 모의투자(paper) limit is 2 calls/sec
     # (0.5s spacing), but that assumes a perfect sliding window; live
-    # verification after the 0.5s fix still showed a lingering ~10-25%
-    # EGW00201 rate even minutes after restart -- consistent with KIS bucketing
-    # by wall-clock second rather than a true rolling window, where 0.5s-exact
-    # spacing can still let 3 calls land in one calendar second under unlucky
-    # phase alignment. 0.7s leaves enough margin that at most 2 calls can ever
-    # fall in any 1-second window (실전투자 allows far more, but this project
-    # stays on the conservative paper-account pace regardless of env).
+    # verification after the 0.7s fix still showed a stable 27-32% EGW00201
+    # retry rate over several days. That pattern is consistent with this paper
+    # account effectively accepting one request per second. Pace VPS at 1.05s
+    # so boundary jitter cannot put two requests in the same server-side
+    # bucket; keep the existing conservative 0.7s floor for production.
     _rate_limit_lock: "asyncio.Lock | None" = None
     _last_request_at: float = 0.0
     _min_request_interval_sec: float = 0.7
+    _vps_min_request_interval_sec: float = 1.05
+    _RATE_LIMIT_MSG_CODES = frozenset({"EGW00201", "EGW00215"})
+
+    def _request_interval_sec(self) -> float:
+        if str(self.credentials.env).strip().lower() == "vps":
+            return self._vps_min_request_interval_sec
+        return self._min_request_interval_sec
 
     async def _throttle(self) -> None:
         if KisRestClient._rate_limit_lock is None:
@@ -114,7 +119,7 @@ class KisRestClient:
         async with KisRestClient._rate_limit_lock:
             now = time.monotonic()
             wait_sec = (
-                KisRestClient._min_request_interval_sec
+                self._request_interval_sec()
                 - (now - KisRestClient._last_request_at)
             )
             if wait_sec > 0:
@@ -335,7 +340,7 @@ class KisRestClient:
                     self._invalidate_token()
                     await asyncio.sleep(0.2)
                     continue
-                if payload.get("msg_cd") == "EGW00201" and attempt < 2:
+                if payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES and attempt < 2:
                     await asyncio.sleep(1.0)
                     continue
                 raise KisApiError(
@@ -370,7 +375,7 @@ class KisRestClient:
                 self._invalidate_token()
                 await asyncio.sleep(0.2)
                 continue
-            if payload.get("msg_cd") == "EGW00201" and attempt < 2:
+            if payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES and attempt < 2:
                 await asyncio.sleep(1.0)
                 continue
 

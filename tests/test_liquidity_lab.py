@@ -407,6 +407,105 @@ def test_overseas_exit_price_shock_requires_confirmation(tmp_path) -> None:
     assert second[0][2] == "stop_loss"
 
 
+def test_overseas_exit_price_shock_rejects_repeated_low_volume_bad_print(
+    tmp_path,
+) -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_exit_price_shock_pct": 0.20,
+                    "overseas_exit_price_shock_confirm_pct": 0.02,
+                    "overseas_exit_price_shock_min_volume_ratio": 0.5,
+                    "overseas_exit_price_shock_min_bar_volume": 10,
+                    "overseas_exit_mid_mismatch_pct": 0.03,
+                },
+            )()
+        },
+    )()
+    service.repository = SqliteRepository(tmp_path / "bad_print.db")
+    service._cycle_exit_reference_prices = {"overseas:THC": 233.2}
+    service._exit_price_shock_guard = {}
+    service._record_trade_skip = lambda **kwargs: None  # type: ignore[method-assign]
+    bad_print = OverseasScanResult(
+        symbol="THC",
+        exchange_code="NYSE",
+        last_price=357.9988,
+        bid=0.0,
+        ask=0.0,
+        spread_pct=0.0,
+        change_rate_pct=53.5,
+        volume=1,
+        orderable_qty=32,
+        fx_rate_krw=1350.0,
+        activity_score=5.0,
+    )
+    low_volume_snapshot = _snapshot(
+        price=357.9988,
+        volume_last=1.0,
+        volume_avg=14.0,
+        volume_ratio=1.0 / 14.0,
+        vwap=234.17,
+        intraday_momentum=0.535,
+        intraday_bar_return=0.532,
+    )
+
+    first = service._overseas_exit_price_guard_reason(
+        symbol="THC",
+        quote=bad_print,
+        avg_price=233.045,
+        holding_qty=32,
+        signal_snapshot=low_volume_snapshot,
+    )
+    service._cycle_exit_reference_prices = {"overseas:THC": 357.9988}
+    second = service._overseas_exit_price_guard_reason(
+        symbol="THC",
+        quote=bad_print,
+        avg_price=233.045,
+        holding_qty=32,
+        signal_snapshot=low_volume_snapshot,
+    )
+
+    assert first == "price_shock_confirm:+53.5%"
+    assert second == "price_shock_confirm:+53.5%"
+    assert "overseas:THC" in service._exit_price_shock_guard
+
+
+def test_overseas_bad_print_does_not_replace_persisted_reference_price() -> None:
+    service = _build_run_service()
+    service._cycle_exit_reference_prices = {"overseas:THC": 233.2}
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="THC",
+        exchange_code="NYSE",
+        price=357.9988,
+        activity_score=5.0,
+        signal_score=1.0,
+        action_bias="SELL",
+        signal_state="SELL_READY",
+        ma_summary="shock",
+        note="partial_profit_lock",
+        holding_qty=32,
+        signal_snapshot=_snapshot(price=357.9988, volume_last=1.0),
+    )
+
+    service._get_watch_state_helper().persist_watch_target_state(
+        watch_target,
+        pnl_pct=0.536,
+    )
+
+    state = service.repository.get_lab_symbol_state("overseas", "THC")
+    assert state is not None
+    assert state["last_price"] == 233.2
+    assert state["pnl_pct"] is None
+    assert state["snapshot_json"]["price"] == 233.2
+
+
 def _build_stop_loss_confirm_service(tmp_path, db_name: str) -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -3900,7 +3999,7 @@ def test_build_watch_target_status_blocks_overseas_standalone_vwap() -> None:
         def evaluate(self, *args, **kwargs):
             return SimpleNamespace(signal="BUY", flag="VWAP", entry_by="VWAP", exit_by="")
 
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
 
     watch_target = service._build_watch_target_status(
         market="overseas",
@@ -3929,7 +4028,7 @@ def test_build_watch_target_status_blocks_overseas_standalone_rsi() -> None:
         def evaluate(self, *args, **kwargs):
             return SimpleNamespace(signal="BUY", flag="RSI", entry_by="RSI", exit_by="")
 
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
 
     watch_target = service._build_watch_target_status(
         market="overseas",
@@ -3958,7 +4057,7 @@ def test_build_watch_target_status_blocks_overseas_standalone_vol() -> None:
         def evaluate(self, *args, **kwargs):
             return SimpleNamespace(signal="BUY", flag="VOL", entry_by="VOL", exit_by="")
 
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
 
     watch_target = service._build_watch_target_status(
         market="overseas",
@@ -3992,7 +4091,7 @@ def test_build_watch_target_status_blocks_low_volume_overseas_combo() -> None:
         def evaluate(self, *args, **kwargs):
             return SimpleNamespace(signal="BUY", flag="VWAP+RSI", entry_by="VWAP", exit_by="")
 
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
 
     watch_target = service._build_watch_target_status(
         market="overseas",
@@ -4029,7 +4128,7 @@ def test_build_watch_target_status_allows_low_volume_domestic_combo() -> None:
         def buy_score(self, *args, **kwargs):
             return 50.0
 
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
 
     watch_target = service._build_watch_target_status(
         market="domestic",
@@ -4072,7 +4171,7 @@ def test_build_watch_target_status_blocks_cached_overseas_standalone_vwap() -> N
             return SimpleNamespace(signal="BUY", flag="VWAP", entry_by="VWAP", exit_by="")
 
     original_derive_watch_state = liquidity_lab_module.derive_watch_state
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
     liquidity_lab_module.derive_watch_state = lambda *args, **kwargs: (
         "BUY",
         "cached_buy",
@@ -4123,7 +4222,7 @@ def test_build_watch_target_status_blocks_cached_buy_for_flat_symbol() -> None:
             return SimpleNamespace(signal="BUY", flag="VWAP+RSI", entry_by="VWAP", exit_by="")
 
     original_derive_watch_state = liquidity_lab_module.derive_watch_state
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
     liquidity_lab_module.derive_watch_state = lambda *args, **kwargs: (
         "BUY",
         "cached_combo_buy",
@@ -4161,7 +4260,7 @@ def test_build_watch_target_status_allows_overseas_vwap_combo() -> None:
         def buy_score(self, snapshot):
             return 10.0
 
-    service._get_strategy_manager = lambda code: FakeStrategyManager()  # type: ignore[method-assign]
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
 
     watch_target = service._build_watch_target_status(
         market="overseas",
@@ -4215,6 +4314,29 @@ def test_restore_strategy_contexts_recovers_held_position_after_restart() -> Non
     assert manager.position.flag == "VWAP+VOL"
     assert manager.position.entry_by == "VWAP"
     assert manager.position.entry_price == 165.03
+
+
+def test_strategy_managers_are_isolated_by_market_for_same_symbol() -> None:
+    service = _build_run_service()
+
+    domestic = service._get_strategy_manager("TEST", "domestic")
+    overseas = service._get_strategy_manager("TEST", "overseas")
+    opened_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    domestic.position = SimpleNamespace(
+        entry_price=100.0,
+        peak_price=101.0,
+        entry_time=opened_at,
+    )
+    overseas.position = SimpleNamespace(
+        entry_price=200.0,
+        peak_price=202.0,
+        entry_time=opened_at,
+    )
+
+    assert domestic is not overseas
+    assert set(service._strategy_managers) >= {"domestic:TEST", "overseas:TEST"}
+    assert service._get_entry_context("domestic", "TEST")[0] == 100.0
+    assert service._get_entry_context("overseas", "TEST")[0] == 200.0
 
 
 def test_clear_stale_lab_position_states_uses_refreshed_positions() -> None:

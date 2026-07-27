@@ -117,7 +117,11 @@ def test_request_reissues_token_after_expired_token_response(tmp_path: Path) -> 
     assert credentials.token_cache_path.exists() is False
 
 
-def test_request_reports_api_calls_via_on_api_call_hook(tmp_path: Path) -> None:
+@pytest.mark.parametrize("rate_code", ["EGW00201", "EGW00215"])
+def test_request_reports_api_calls_via_on_api_call_hook(
+    tmp_path: Path,
+    rate_code: str,
+) -> None:
     credentials = KisCredentials(
         env="vps",
         appkey="appkey",
@@ -135,7 +139,7 @@ def test_request_reports_api_calls_via_on_api_call_hook(tmp_path: Path) -> None:
     client = KisRestClient(credentials, on_api_call=calls.append)
     fake_http = FakeAsyncClient(
         [
-            FakeResponse(500, {"msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다."}),
+            FakeResponse(500, {"msg_cd": rate_code, "msg1": "초당 거래건수를 초과하였습니다."}),
             FakeResponse(200, {"rt_cd": "0", "msg_cd": "0", "msg1": "정상", "output": {"value": "ok"}}),
         ]
     )
@@ -148,7 +152,7 @@ def test_request_reports_api_calls_via_on_api_call_hook(tmp_path: Path) -> None:
     assert len(calls) == 2
     assert calls[0]["success"] is False
     assert calls[0]["http_status"] == 500
-    assert calls[0]["msg_cd"] == "EGW00201"
+    assert calls[0]["msg_cd"] == rate_code
     assert calls[0]["tr_id"] == "TRTEST"
     assert calls[0]["path"] == "/test"
     assert calls[0]["method"] == "GET"
@@ -207,7 +211,8 @@ def test_consecutive_requests_are_paced_to_avoid_rate_limit(tmp_path: Path) -> N
 
     elapsed = asyncio.run(run_two_calls())
 
-    assert elapsed >= client._min_request_interval_sec
+    assert client._request_interval_sec() == client._vps_min_request_interval_sec
+    assert elapsed >= client._vps_min_request_interval_sec
 
 
 def test_pacing_is_shared_across_separate_client_instances(tmp_path: Path) -> None:
@@ -244,7 +249,8 @@ def test_pacing_is_shared_across_separate_client_instances(tmp_path: Path) -> No
 
     elapsed = asyncio.run(run_two_calls_on_separate_clients())
 
-    assert elapsed >= KisRestClient._min_request_interval_sec
+    assert client_a._request_interval_sec() == KisRestClient._vps_min_request_interval_sec
+    assert elapsed >= KisRestClient._vps_min_request_interval_sec
 
 
 def test_request_without_on_api_call_hook_does_not_error(tmp_path: Path) -> None:

@@ -78,6 +78,8 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.liquidity_lab.overseas_exit_mid_mismatch_pct == 0.03
     assert config.liquidity_lab.overseas_exit_price_shock_pct == 0.20
     assert config.liquidity_lab.overseas_exit_price_shock_confirm_pct == 0.02
+    assert config.liquidity_lab.overseas_exit_price_shock_min_volume_ratio == 0.5
+    assert config.liquidity_lab.overseas_exit_price_shock_min_bar_volume == 10
     assert config.liquidity_lab.strategy_guard_enabled is True
     assert config.liquidity_lab.strategy_guard_lookback_hours == 48
     assert config.liquidity_lab.strategy_guard_min_trades == 3
@@ -101,6 +103,36 @@ def test_load_app_config_includes_circuit_breaker_cooldown(monkeypatch) -> None:
 
     assert config.risk.circuit_breaker_cooldown_minutes == 30
     assert config.risk.operating_capital_krw == 50_000_000
+
+
+def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> None:
+    monkeypatch.setenv("KIS_ENV", "vps")
+    monkeypatch.setenv("KIS_VPS_APPKEY", "paper-key")
+    monkeypatch.setenv("KIS_VPS_APPSECRET", "paper-secret")
+    monkeypatch.setenv("KIS_VPS_ACCOUNT_NO", "8765432101")
+
+    config = load_app_config()
+    assert config.market_policies is not None
+    domestic = config.market_policies.domestic
+    overseas = config.market_policies.overseas
+
+    assert domestic.policy_id == "domestic_momentum_v1"
+    assert overseas.policy_id == "overseas_momentum_v1"
+    assert domestic.engine == overseas.engine == "momentum_v1"
+    assert domestic.auto_trade == config.auto_trade
+    assert overseas.auto_trade == config.auto_trade
+    assert domestic.auto_trade is not overseas.auto_trade
+    assert domestic.auto_trade.inverse_etf_symbols is not overseas.auto_trade.inverse_etf_symbols
+
+    domestic.auto_trade.take_profit_pct = 0.123
+    domestic.auto_trade.inverse_etf_symbols.append("KRX_TEST")
+
+    assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
+    assert "KRX_TEST" not in overseas.auto_trade.inverse_etf_symbols
+    assert domestic.source_path is not None
+    assert domestic.source_path.name == "domestic.json"
+    assert overseas.source_path is not None
+    assert overseas.source_path.name == "overseas.json"
 
 
 def test_fixed_config_risk_section_contains_only_live_keys() -> None:

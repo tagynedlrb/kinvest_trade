@@ -1,10 +1,55 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
 from kinvest_trade.repository import SqliteRepository
+
+
+def test_prune_operational_logs_preserves_trade_history(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_api_call(
+        created_at="2026-06-01T00:00:00+00:00",
+        method="GET",
+        path="/old",
+    )
+    repository.save_api_call(
+        created_at="2026-07-26T00:00:00+00:00",
+        method="GET",
+        path="/new",
+    )
+    repository.save_telegram_message(
+        created_at="2026-01-01T00:00:00+00:00",
+        direction="out",
+        text="old",
+    )
+    repository.save_telegram_message(
+        created_at="2026-07-26T00:00:00+00:00",
+        direction="out",
+        text="new",
+    )
+    repository.save_cycle_log(
+        logged_at="2025-01-01T00:00:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        action_bias="SELL_REAL",
+        action_reason="history",
+    )
+
+    deleted = repository.prune_operational_logs(
+        api_call_retention_days=30,
+        telegram_message_retention_days=90,
+        now=datetime(2026, 7, 27, tzinfo=timezone.utc),
+    )
+
+    assert deleted == {"api_call_log": 1, "telegram_message_log": 1}
+    with repository._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM api_call_log").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM telegram_message_log").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM cycle_log").fetchone()[0] == 1
 
 
 def test_abort_stale_auto_trade_runs_marks_old_running_rows(tmp_path) -> None:

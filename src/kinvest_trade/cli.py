@@ -12,6 +12,7 @@ from .auto_trader import FixedSymbolAutoTrader
 from .config import AppConfig, load_app_config
 from .indicators import summarize_indicators
 from .liquidity_lab import LiquidityLabService
+from .market_policy import get_market_auto_trade_config
 from .notifier import TelegramNotifier
 from .paper import PaperTradingService
 from .repository import SqliteRepository
@@ -600,8 +601,11 @@ async def run_telegram_control(config: AppConfig) -> None:
 
 
 async def run_auto_trade(config: AppConfig) -> None:
-    if not config.auto_trade.enabled:
-        raise KisApiError("auto_trade.enabled is false in config/fixed_config.json")
+    overseas_policy = get_market_auto_trade_config(config, "overseas")
+    if overseas_policy is None or not overseas_policy.enabled:
+        raise KisApiError(
+            "overseas market policy parameters.enabled is false"
+        )
     if config.credentials.dry_run:
         raise KisApiError(
             "Auto trade requires DRY_RUN=false. Update .env before running python3 main.py."

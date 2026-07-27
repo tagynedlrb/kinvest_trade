@@ -153,7 +153,17 @@
     "storage": {
         "db_path": "data/trading.db",
         "log_dir": "logs",
-        "runtime_state_path": "state/runtime_state.json"
+        "runtime_state_path": "state/runtime_state.json",
+        "api_call_log_retention_days": 30,
+        "telegram_message_log_retention_days": 90
+    },
+    "market_policies": {
+        "domestic": {
+            "path": "config/market_policies/domestic.json"
+        },
+        "overseas": {
+            "path": "config/market_policies/overseas.json"
+        }
     },
     "notifications": {
         "telegram_enabled": true,
@@ -225,6 +235,8 @@
         "overseas_exit_mid_mismatch_pct": 0.03,
         "overseas_exit_price_shock_pct": 0.20,
         "overseas_exit_price_shock_confirm_pct": 0.02,
+        "overseas_exit_price_shock_min_volume_ratio": 0.5,
+        "overseas_exit_price_shock_min_bar_volume": 10,
         "overseas_max_position_qty": 1,
         "overseas_min_strategy_volume_ratio": 0.8,
         "overseas_block_standalone_vwap": true,

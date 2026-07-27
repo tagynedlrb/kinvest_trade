@@ -3,7 +3,7 @@
 `kiwoom_trade`의 운영 감각을 유지하면서 브로커 연동만 한국투자증권 Open API로 바꾼 단기투자 프로젝트다.  
 현재 구조는 `실시간 시세 확인`, `지표 계산`, `paper trading`, `텔레그램 알림`, `모의/실전 계정 분리`, `주문 테스트 CLI`까지 포함한다.
 또한 프로세스 간 `KIS 접근토큰 캐시`를 사용해 `1분당 1회` 토큰 발급 제한에 덜 걸리도록 정리했다.
-현재 기본 진입점 `python3 main.py` 는 `auto_trade.symbol`에 지정한 해외 종목 1개를 고정 감시하는 `auto-run` 모드로 연결되어 있다.
+현재 기본 진입점 `python3 main.py` 는 `config/market_policies/overseas.json`의 `parameters.symbol`에 지정한 해외 종목 1개를 고정 감시하는 `auto-run` 모드로 연결되어 있다.
 
 ## 핵심 설계 원칙 (반드시 유지)
 이 프로젝트는 세션을 거듭하며 반복적으로 리팩터링되어 왔다. 리팩터링 도중 아래 원칙이 조용히
@@ -18,9 +18,10 @@
    최종 권위이며, 보조 모멘텀 휴리스틱(`evaluate_entry_setup`/`derive_watch_state`)이 독자적으로
    `"BUY"`를 반환해도 전략차단·유동성차단·재진입 쿨다운을 우회해 실매수로 이어져서는 안 된다
    (`lab_watch.py`, 2026-07-14 수정).
-3. **`auto-run`과 `liquidity-lab`은 의도된 공존 구조다.** 중복 로직이 아니라 같은
-   `momentum_policy.py`를 공유하는 서로 다른 두 실행 모드다. "하나로 합쳐야 하지 않을까"라는
-   의문이 들면, 이미 처음부터 그렇게 설계됐다는 뜻이니 통합하지 않는다.
+3. **`auto-run`과 `liquidity-lab`은 의도된 공존 구조다.** 같은 모멘텀 엔진을 사용하되
+   `auto-run`은 미장 정책만, `liquidity-lab`은 시장별 정책을 선택하는 서로 다른 실행 모드다.
+   "하나로 합쳐야 하지 않을까"라는 의문이 들면, 이미 처음부터 그렇게 설계됐다는 뜻이니
+   통합하지 않는다.
 4. **시장별/합산 주문 한도(`max_concurrent_*`)는 리스크 노출 관리용이지 KIS 트래픽 제약이
    아니며, 현재는 전략/시스템 수정 단계이므로 단기 성과를 근거로 임의로 올리거나 내리지 않는다**
    (2026-07-11 원칙 수립, 근거: 과거 이 값들이 성과에 따라 오르내린 것이 실제로는 기술적 근거
@@ -37,9 +38,15 @@
    `domestic_ranked`)에서 빠지면, 그 사이클엔 신선한 차트 신호도 계산되지 않아 청산 판단이 오래된
    캐시 신호로 정지된다 — 가격은 계속 움직이는데 매도 판단은 멈추는 상태 (2026-07-16 BCC/FG
    실사건, 부록 참고).
+8. **국장과 미장의 전략 정책·전략 상태·연속손실 차단은 서로 독립적이다.** 현재 두 정책 파일은
+   같은 기준값을 복제해 시작하지만 한 시장의 파라미터, ETF 분류, 수수료 공식, 전략 관리자,
+   연속손실 카운터를 바꿔도 다른 시장에 전파되면 안 된다. 단, 계좌 전체 일일손실 한도와
+   국내+해외 합산 포지션 한도는 의도적으로 공유한다.
 
 ## 현재 구조
 - `config/fixed_config.json`: 고정 설정
+- `config/market_policies/domestic.json`: 국장 전략 파라미터와 연속손실 정책
+- `config/market_policies/overseas.json`: 미장 전략 파라미터와 연속손실 정책
 - `state/runtime_state.json`: 최신 실행 상태
 - `src/kinvest_trade/client.py`: KIS OAuth, 시세, 잔고, 매수가능조회, 주문
 - `src/kinvest_trade/auto_trader.py`: `auto_trade.symbol`에 지정한 고정 1종목 자동매매
@@ -50,6 +57,7 @@
 - `src/kinvest_trade/lab_positions.py`: 실보유/가상보유 통합 포지션 트래커, 가상거래 관리자
 - `src/kinvest_trade/lab_runtime.py`: 쿨다운/재시도/체결확정 대기 등 사이클 간 런타임 상태
 - `src/kinvest_trade/lab_risk.py`: 연속손절·일일손실 서킷브레이커, 주문거부 서킷브레이커 상태 관리
+- `src/kinvest_trade/market_policy.py`: 시장별 정책 선택, 전략 관리자 생성, 공통 엔진 연결
 - `src/kinvest_trade/lab_notify.py`: 거래 알림 큐/배치 전송
   - (위 `lab_*.py`는 원래 `liquidity_lab.py` 한 파일이었으나, 8,700줄을 넘기며 유지보수가
     어려워져 성격별로 분리했다. 각 파일은 `LiquidityLabService` 인스턴스를 `service`로 받아
@@ -237,18 +245,36 @@ DRY_RUN=false python3 main.py overseas-order-test sell <종목코드> --exchange
 - 모의투자 미국주식 주문은 `00` 지정가 기준으로 테스트하는 쪽이 안전하다.
 - KIS 모의투자는 미국주식 `매도`에서 제약이 있을 수 있어, 실제 응답 메시지를 함께 확인해야 한다.
 
+## 시장별 전략 정책
+`config/fixed_config.json`의 `market_policies`가 아래 두 독립 파일을 연결한다.
+
+- 국장: `config/market_policies/domestic.json`
+- 미장: `config/market_policies/overseas.json`
+
+현재 두 파일은 기존 `auto_trade` 정책의 모든 값을 동일하게 복제한 초기 상태다. 이후에는 각
+파일을 따로 수정하며 시장별로 고도화한다. 런타임에서도 `DomesticMomentumPolicy`와
+`OverseasMomentumPolicy`가 별도 설정 객체를 보유하고, 전략 관리자는 `market:symbol` 키로
+분리된다. 미장 고정종목 모드인 `auto-run`도 미장 정책 파일을 사용한다.
+
+연속손실 카운터와 쿨다운은 시장별로 동작하므로 국장 연속손실이 미장 신규 진입을 멈추지 않는다.
+반면 계좌 단위 안전장치인 `daily_loss_limit_pct`와 `max_concurrent_total_positions`는 두 시장에
+공통 적용된다. 정책 파일을 생략한 이전 설정은 `auto_trade`를 시장별로 복제해 호환된다.
+
 ## 운용 모드 비교: auto-run vs liquidity-lab
-이 프로젝트는 같은 진입/청산 판단 로직(`momentum_policy.py`)을 공유하는 두 가지 실행 모드를 제공한다. 목적이 다르므로 상황에 맞게 선택한다.
+이 프로젝트는 같은 모멘텀 엔진(`momentum_policy.py`)을 시장별 정책 객체를 통해 사용하는 두
+가지 실행 모드를 제공한다. 목적이 다르므로 상황에 맞게 선택한다.
 
 | | `auto-run` | `liquidity-lab` |
 |---|---|---|
-| 감시 대상 | `auto_trade.symbol`에 지정한 **고정 1종목** | 국내는 `domestic_candidates`, 해외는 `TV scan` 또는 `/lab_relist` 목록에서 **매 사이클 자동 선정** |
+| 감시 대상 | 미장 정책의 `parameters.symbol`에 지정한 **고정 1종목** | 국내는 `domestic_candidates`, 해외는 `TV scan` 또는 `/lab_relist` 목록에서 **매 사이클 자동 선정** |
 | 적합한 상황 | 이미 매매하고 싶은 종목이 정해져 있을 때 | 그날 가장 활발한 종목을 자동으로 찾고 싶을 때 |
 | 실행 | `python3 main.py` 또는 `python3 main.py auto-run` | `python3 main.py liquidity-lab` |
 | 국내/해외 | `exchange_code` 설정에 따라 한 시장만 | 국내·해외 동시 운용 |
-| 종목 변경 방법 | `config/fixed_config.json`의 `auto_trade.symbol` 수정 | 국내는 `liquidity_lab.domestic_candidates`, 해외는 TV 스캔 또는 `/lab_relist`로 조정 |
+| 종목 변경 방법 | `config/market_policies/overseas.json`의 `parameters.symbol` 수정 | 국내는 `liquidity_lab.domestic_candidates`, 해외는 TV 스캔 또는 `/lab_relist`로 조정 |
 
-같은 종목을 두 모드 모두에서 보고 싶다면, `auto_trade.symbol`에 지정한 뒤 국내는 `domestic_candidates`에 넣고, 해외는 `/lab_relist`로 수동 고정하거나 TV 스캔으로 자동 선별되게 두면 된다. `auto-run`은 그 종목을 무조건 보고, `liquidity-lab`은 그날 활성 풀 안에서 더 활발한 종목을 우선 본다.
+같은 종목을 두 모드 모두에서 보고 싶다면, 미장 정책의 `parameters.symbol`에 지정한 뒤
+`/lab_relist`로 수동 고정하거나 TV 스캔으로 자동 선별되게 두면 된다. `auto-run`은 그 종목을
+무조건 보고, `liquidity-lab`은 그날 활성 풀 안에서 더 활발한 종목을 우선 본다.
 
 ## 기본 자동 실행 (auto-run)
 아무 옵션 없이 아래처럼 실행하면 된다.
@@ -256,9 +282,9 @@ DRY_RUN=false python3 main.py overseas-order-test sell <종목코드> --exchange
 python3 main.py
 ```
 
-이 명령은 `config/fixed_config.json`의 `auto_trade` 정책을 읽어 다음을 수행한다.
-- 대상: `auto_trade.symbol`에 지정한 고정 1종목
-- 거래소: `auto_trade.exchange_code`
+이 명령은 `config/market_policies/overseas.json`의 미장 정책을 읽어 다음을 수행한다.
+- 대상: `parameters.symbol`에 지정한 고정 1종목
+- 거래소: `parameters.exchange_code`
 - 계정: 현재 `.env`의 `KIS_ENV`가 가리키는 프로필
 - 기본 실행: `중지 전까지` 또는 `장 종료 전까지` 계속
 - `max_actions_per_run=0`, `max_decision_cycles_per_run=0`이면 무제한 감시로 해석
@@ -331,11 +357,12 @@ python3 main.py liquidity-lab
 - 시장별/합산 주문 한도는 KIS API 트래픽 제약 때문이 아니라 순수 리스크 노출 관리용 값이다. 현재는 전략·시스템 수정 단계라 단기 성과를 근거로 한도를 올리거나 내리는 조정은 하지 않는 것을 원칙으로 한다. (예외: 2026-07-15, 시장별 한도를 총량 캡과 같은 값(10)으로 맞춘 것은 성과 기반 조정이 아니라, 총량 캡이 이미 실질 자본 노출을 막고 있어 그보다 낮은 시장별 캡이 리스크를 추가로 줄이지 못하고 시장 간 슬롯을 인위적으로 8:8 분배하는 역할만 하던 구조적 중복을 정리한 것 — 부록 참고.)
 - 자동 사이클에서는 더 이상 국내 `paper-run` 25초 검증을 끼워 넣지 않는다. 수동 검증이 필요하면 텔레그램 `/lab_paper_test <종목코드>`를 사용한다.
 - 해외 고정 손절(`overseas_stop_loss_pct`)은 일시적 wick(단일 체결 급락 후 즉시 회복)에 속지 않도록 확인 단계를 거친다(`overseas_stop_loss_confirm_enabled=true`). 손절 기준을 갓 넘긴 첫 관측이고 매도 거래량 확인이 안 되면 다음 사이클까지 한 번 대기(`stop_loss_confirm_wait`)하고, 다음 사이클에도 손절권이면 그때 손절한다. 단, ①손실이 `overseas_stop_loss_hard_multiplier`(기본 2.0)배를 넘는 깊은 손실이거나 ②현재 분봉 거래량이 평소 대비 `overseas_stop_loss_volume_confirm_ratio`(기본 1.5)배 이상 급증한 음봉(실제 매도세 확인)이면 대기 없이 즉시 손절한다. 손실이 손절권 위로 회복되면 대기 기록은 초기화된다.
-- 위 손절 확인과 별개로, 기준가 대비 `overseas_exit_price_shock_pct`(기본 20%) 이상 튀는 극단적 가격은 데이터 오류 가능성이 있어 기존처럼 다음 사이클 재확인 후에만 청산 판단에 사용한다. 두 장치는 계층이 다르다: 손절 확인은 현실적인 1~2% 급락 구간의 회복 가능성 판단, 쇼크 가드는 이상 호가/오염 데이터 차단.
+- 위 손절 확인과 별개로, 기준가 대비 `overseas_exit_price_shock_pct`(기본 20%) 이상 튀는 극단적 가격은 데이터 오류 가능성이 있어 청산 판단과 감시 상태 기준가 갱신을 보류한다. 같은 이상값이 반복되더라도 정상 양방향 호가가 있거나 분봉 거래량이 `overseas_exit_price_shock_min_bar_volume`(기본 10주) 이상이면서 거래량비가 `overseas_exit_price_shock_min_volume_ratio`(기본 0.5) 이상일 때만 확인된 가격으로 인정한다. 두 장치는 계층이 다르다: 손절 확인은 현실적인 1~2% 급락 구간의 회복 가능성 판단, 쇼크 가드는 이상 호가/오염 데이터 차단.
 - 기본 매수와 일반 익절/시간청산은 지정가로 제출한다. 다만 `손절`, `ATR 하드스탑`, `모멘텀 손절`, `추세 이탈 손절`, `손실 상태 시간청산` 같은 보호성 청산은 체결력을 우선한다.
 - 보호성 청산 주문은 국내는 시장가(`ORD_DVSN=01`, 제출가 0), 해외 실계좌는 시장가, 해외 모의투자는 KIS 안정성을 위해 기준 호가의 공격지정가(`ORD_DVSN=00`)로 제출한다.
 - 손익 계산과 텔레그램 표시는 실제 제출가 0이 아니라 청산 판단 당시의 기준 호가(`reference_price`)를 사용한다. 내부 broker audit에는 `order_kind`, `order_division`, `requested_price`, `reference_price`를 함께 기록한다.
 - **주문거부 서킷브레이커**: 매도 주문거부는 시장별로 개별 종목 쿨다운(국내 10분/해외 20분)을 걸지만, 매수 주문거부에는 원래 아무 백오프가 없어 같은 오류가 나는 동안 사이클마다 계속 재시도했다. 이제 시장×방향(`domestic:buy`, `overseas:sell` 등) 기준으로 최근 `order_reject_window_minutes`(기본 15분) 안에 `order_reject_threshold`(기본 5)회 이상 주문거부가 쌓이면 그 시장/방향의 신규 주문을 `order_reject_cooldown_minutes`(기본 30분) 동안 중단하고, KIS가 반환한 실제 오류 메시지를 담아 텔레그램으로 즉시 알린다. `/lab_guard`에 `주문거부차단=` 줄로 현재 차단 대상과 누적 건수를 보여주고, `/lab_cb_reset`으로 즉시 해제할 수 있다. `order_reject_threshold=0`이면 기능을 끈다.
+- **연속손실 서킷브레이커**: `max_consecutive_losses`와 `circuit_breaker_cooldown_minutes`는 각 시장 정책 파일에서 별도로 관리한다. 국장 발동 시 국장 신규 매수만, 미장 발동 시 미장 신규 매수만 중단하며 보유 포지션 청산 감시는 계속한다. 계좌 합산 일일손실 한도는 어느 시장에서 발생했든 두 시장 신규 진입을 함께 중단한다.
 - **미체결 청산주문 정체 방지**: 손절/ATR하드스탑 등 보호성 청산은 45초 이상 미체결이면 즉시 취소 후 재주문한다. 반면 `take_profit` 같은 비보호성 청산은 이 조건이 없어, 목표가에 닿지 않으면 해당 주문이 무기한 미체결로 남아 다음 매도 시도를 계속 막았다(예: 2026-07-13 MSEX 익절 주문이 1시간 가까이 정체). 이제 비보호성 청산도 `stale_exit_replace_minutes`(기본 15분)를 넘기면 동일하게 취소 후 현재 호가로 재주문한다. 취소 자체가 실패하면(`pending_exit_cancel_failed`) 위 주문거부 서킷브레이커에도 함께 등록되어, 반복 실패 시 해당 시장/방향이 자동 차단되고 텔레그램 알림이 온다(과거에는 이 경로가 서킷브레이커에 전혀 연결되어 있지 않아 조용히 무한 재시도했다).
 과거 CRAN 중복매수 사건, `time_exit_profit` 수수료 미고려 버그, 전수감사로 찾은 로직 버그 9건, TV 스캐너 버그 등 이미 고쳐진 사건의 원인 분석은 [부록: 주요 인시던트 히스토리](#부록-주요-인시던트-히스토리)로 옮겼다. 여기 남긴 항목은 현재도 살아있는 동작 규칙만이다.
 

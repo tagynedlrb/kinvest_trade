@@ -73,6 +73,7 @@ class OverseasOrderHelper:
             strategy_flag, entry_by, _ = service._get_strategy_labels(
                 candidate.symbol,
                 signal_snapshot,
+                "overseas",
             )
         block_reason = service._entry_strategy_block_reason(
             market="overseas",
@@ -466,7 +467,7 @@ class OverseasOrderHelper:
                 session_id=getattr(service, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
-                consecutive_losses=int(getattr(service, "_consecutive_losses", 0) or 0),
+                consecutive_losses=service._consecutive_losses_for_market("overseas"),
                 entry_price=buy_price,
                 qty_executed=qty,
                 net_pnl_usd=0.0,
@@ -479,7 +480,7 @@ class OverseasOrderHelper:
                 hold_duration_min=0.0,
                 entry_time=now_iso,
                 exit_cooldown_remaining=0.0,
-                cb_active=service._cb_active_flag(),
+                cb_active=service._cb_active_flag("overseas"),
                 pool_size=service._pool_size_for_market("overseas"),
             )
         service._record_broker_order_event(
@@ -521,6 +522,7 @@ class OverseasOrderHelper:
             signal_snapshot,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
+            market="overseas",
         )
         service._persist_trade_state(
             market="overseas",
@@ -564,7 +566,11 @@ class OverseasOrderHelper:
         signal_snapshot: "MovingAverageSnapshot | None" = None,
     ) -> dict:
         service = self.service
-        strategy_flag, entry_by, exit_by = service._get_strategy_labels(candidate.symbol, signal_snapshot)
+        strategy_flag, entry_by, exit_by = service._get_strategy_labels(
+            candidate.symbol,
+            signal_snapshot,
+            "overseas",
+        )
         exit_by = exit_by or exit_reason
         entry_label, exit_label = service._build_sell_strategy_labels(
             strategy_flag=strategy_flag,
@@ -725,7 +731,7 @@ class OverseasOrderHelper:
         order_kind = str(order_spec["order_kind"])
         pnl_pct = (sell_price - held.avg_price) / held.avg_price if held.avg_price > 0 else None
         if held.avg_price > 0 and service._is_profit_exit_reason(exit_reason):
-            auto_trade_cfg = getattr(service.config, "auto_trade", None)
+            auto_trade_cfg = service._get_market_policy("overseas").auto_trade
             fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
             estimated_net_usd, _, _, _ = service._estimate_overseas_net_pnl(
                 entry_price=float(held.avg_price or 0.0),
@@ -1210,7 +1216,7 @@ class OverseasOrderHelper:
             candidate.symbol,
             fallback_price=held.avg_price,
         )
-        service._reset_strategy_position(candidate.symbol)
+        service._reset_strategy_position(candidate.symbol, "overseas")
         service._register_exit_cooldown(
             "overseas",
             candidate.symbol,
@@ -1219,7 +1225,7 @@ class OverseasOrderHelper:
         )
         if held.avg_price > 0:
             real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
-            auto_trade_cfg = getattr(service.config, "auto_trade", None)
+            auto_trade_cfg = service._get_market_policy("overseas").auto_trade
             fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
             gross_pnl_usd = (sell_price - held.avg_price) * real_qty_sold
             gross_pnl_krw = gross_pnl_usd * fx_rate
@@ -1228,10 +1234,16 @@ class OverseasOrderHelper:
                 gross_pnl_krw=float(gross_pnl_krw),
                 pnl_pct=float(pnl_pct),
             )
-            if service._is_trading_halted():
+            if service._is_trading_halted("overseas"):
+                overseas_losses = int(
+                    getattr(service, "_consecutive_losses_by_market", {}).get(
+                        "overseas",
+                        service._consecutive_losses,
+                    )
+                )
                 _logger.warning(
-                    "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
-                    service._consecutive_losses,
+                    "[CB] 미장 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
+                    overseas_losses,
                     service._session_realised_krw,
                 )
                 notifier = getattr(service, "notifier", None)
@@ -1239,9 +1251,9 @@ class OverseasOrderHelper:
                     asyncio.create_task(
                         notifier.send(
                             f"⛔ 서킷브레이커 발동\n"
-                            f"연속손절 {service._consecutive_losses}회 | "
+                            f"시장=미장 | 연속손절 {overseas_losses}회 | "
                             f"세션손익 {service._session_realised_krw:+,.0f}원\n"
-                            f"신규 매수를 중단합니다."
+                            f"미장 신규 매수만 중단합니다."
                         )
                     )
             if entry_price is None:
@@ -1287,8 +1299,8 @@ class OverseasOrderHelper:
                 entry_by=entry_by,
                 exit_by=exit_by,
                 is_session_trade=1 if service._is_session_owned(candidate.symbol) else 0,
-                consecutive_losses=int(getattr(service, "_consecutive_losses", 0) or 0),
-                hold_cycles=service._estimate_hold_cycles(candidate.symbol),
+                consecutive_losses=service._consecutive_losses_for_market("overseas"),
+                hold_cycles=service._estimate_hold_cycles(candidate.symbol, "overseas"),
                 entry_price=entry_price,
                 qty_executed=real_qty_sold,
                 net_pnl_usd=net_pnl_usd,
@@ -1300,7 +1312,7 @@ class OverseasOrderHelper:
                 stock_name=candidate.symbol,
                 hold_duration_min=hold_duration_min,
                 entry_time=entry_time_iso,
-                cb_active=service._cb_active_flag(),
+                cb_active=service._cb_active_flag("overseas"),
                 pool_size=service._pool_size_for_market("overseas"),
                 activity_score=candidate.activity_score,
             )
@@ -1419,7 +1431,11 @@ class OverseasOrderHelper:
         strategy_flag = "" if watch_target is None else watch_target.strategy_flag
         entry_by = "" if watch_target is None else watch_target.entry_by
         if snapshot is not None and (not strategy_flag or not entry_by):
-            strategy_flag, entry_by, _ = service._get_strategy_labels(candidate.symbol, snapshot)
+            strategy_flag, entry_by, _ = service._get_strategy_labels(
+                candidate.symbol,
+                snapshot,
+                "overseas",
+            )
         block_reason = service._entry_strategy_block_reason(
             market="overseas",
             strategy_flag=strategy_flag,
@@ -1627,6 +1643,7 @@ class OverseasOrderHelper:
             snapshot,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
+            market="overseas",
         )
         service._persist_trade_state(
             market="overseas",
@@ -1673,6 +1690,7 @@ class OverseasOrderHelper:
         strategy_flag, entry_by, exit_by = service._get_strategy_labels(
             candidate.symbol,
             signal_snapshot,
+            "overseas",
         )
         entry_label, exit_label = service._build_sell_strategy_labels(
             strategy_flag=strategy_flag,
@@ -1769,7 +1787,7 @@ class OverseasOrderHelper:
         await service._flush_trade_notifications(
             force=service._trade_notification_force_immediate()
         )
-        service._reset_strategy_position(candidate.symbol)
+        service._reset_strategy_position(candidate.symbol, "overseas")
         service._register_exit_cooldown(
             "overseas",
             candidate.symbol,

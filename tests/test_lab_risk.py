@@ -38,6 +38,57 @@ def test_circuit_breaker_blocks_after_consecutive_losses() -> None:
     assert manager.halted_at is not None
 
 
+def test_consecutive_loss_breakers_are_independent_by_market() -> None:
+    config = _build_config()
+    config.market_policies = SimpleNamespace(
+        domestic=SimpleNamespace(
+            max_consecutive_losses=2,
+            circuit_breaker_cooldown_minutes=30,
+        ),
+        overseas=SimpleNamespace(
+            max_consecutive_losses=4,
+            circuit_breaker_cooldown_minutes=30,
+        ),
+    )
+    events: list[tuple[str, dict]] = []
+    manager = CircuitBreakerManager(
+        config,
+        event_hook=lambda event_type, detail: events.append((event_type, detail)),
+    )
+    manager.load_state(
+        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+    )
+
+    for _ in range(2):
+        manager.on_realised(market="domestic", gross_pnl_krw=-1_000, pnl_pct=-0.01)
+        manager.on_realised(market="overseas", gross_pnl_krw=-1_000, pnl_pct=-0.01)
+
+    assert manager.is_halted("domestic") is True
+    assert manager.is_halted("overseas") is False
+    assert manager.snapshot()["consecutive_losses_by_market"] == {
+        "domestic": 2,
+        "overseas": 2,
+    }
+    assert events[-1][1]["market"] == "domestic"
+
+    for _ in range(2):
+        manager.on_realised(market="overseas", gross_pnl_krw=-1_000, pnl_pct=-0.01)
+
+    assert manager.is_halted("overseas") is True
+    assert events[-1][1]["market"] == "overseas"
+
+
+def test_daily_loss_limit_remains_shared_across_markets() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    manager.load_state(
+        session_realised_krw=-600_000.0,
+        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+    )
+
+    assert manager.is_halted("domestic") is True
+    assert manager.is_halted("overseas") is True
+
+
 def test_daily_circuit_breaker_fallback_matches_configured_default_capital() -> None:
     # operating_capital_krw=0 simulates a misconfigured/missing value falling
     # through to the `or <fallback>` branch. That fallback must match the

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from .client import parse_kis_number
 from .liquidity_lab import VirtualTradeManager
+from .market_policy import get_market_auto_trade_config
 from .market_sessions import (
     determine_loop_interval_sec,
     minutes_until_next_tradeable_session,
@@ -945,9 +946,9 @@ class ReportHelper:
         controller = self.controller
         if not real_positions:
             return []
+        domestic_policy = get_market_auto_trade_config(controller.config, "domestic")
         domestic_threshold = float(
-            getattr(getattr(controller.config, "auto_trade", None), "hard_stop_loss_pct", 0.01)
-            or 0.01
+            getattr(domestic_policy, "hard_stop_loss_pct", 0.01) or 0.01
         )
         overseas_threshold = float(
             getattr(getattr(controller.config, "liquidity_lab", None), "overseas_stop_loss_pct", 0.01)
@@ -991,9 +992,9 @@ class ReportHelper:
         controller = self.controller
         if not effective_positions:
             return []
+        domestic_policy = get_market_auto_trade_config(controller.config, "domestic")
         domestic_threshold = float(
-            getattr(getattr(controller.config, "auto_trade", None), "hard_stop_loss_pct", 0.01)
-            or 0.01
+            getattr(domestic_policy, "hard_stop_loss_pct", 0.01) or 0.01
         )
         overseas_threshold = float(
             getattr(getattr(controller.config, "liquidity_lab", None), "overseas_stop_loss_pct", 0.01)
@@ -1514,7 +1515,7 @@ class ReportHelper:
         controller = self.controller
         now = datetime.now(timezone.utc)
         config = getattr(controller.config, "liquidity_lab", object())
-        auto_trade = getattr(controller.config, "auto_trade", object())
+        auto_trade = get_market_auto_trade_config(controller.config, "overseas")
         enabled = bool(getattr(config, "strategy_guard_enabled", False))
         lookback_hours = max(1, int(getattr(config, "strategy_guard_lookback_hours", 48) or 48))
         min_trades = max(1, int(getattr(config, "strategy_guard_min_trades", 3) or 3))

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable
 
 from .config import AppConfig
+from .market_policy import get_market_auto_trade_config
 from .time_utils import ensure_timezone
 
 if TYPE_CHECKING:
@@ -204,8 +205,9 @@ class LabRuntimeManager:
         )
 
     def track_rsi_threshold_blocks(self, watch_targets: list["WatchTargetStatus"]) -> None:
+        overseas_policy = get_market_auto_trade_config(self._config, "overseas")
         rsi_threshold = float(
-            getattr(getattr(self._config, "auto_trade", object()), "rsi_entry_threshold", 50.0)
+            getattr(overseas_policy, "rsi_entry_threshold", 50.0)
             or 50.0
         )
         for watch_target in watch_targets:
@@ -276,7 +278,7 @@ class LabRuntimeManager:
                 "total_sell_real": total,
                 "ratio": round(ratio, 4),
                 "min_hold_before_trend_exit": getattr(
-                    getattr(self._config, "auto_trade", object()),
+                    get_market_auto_trade_config(self._config, "overseas"),
                     "min_hold_before_trend_exit",
                     12,
                 ),

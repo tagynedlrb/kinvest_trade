@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -209,6 +209,8 @@ class StorageConfig:
     db_path: Path
     log_dir: Path
     runtime_state_path: Path
+    api_call_log_retention_days: int = 30
+    telegram_message_log_retention_days: int = 90
 
 
 @dataclass(slots=True)
@@ -219,6 +221,22 @@ class NotificationConfig:
     telegram_bot_token_path: Path | None
     telegram_chat_id_path: Path | None
     telegram_command_poll_timeout_sec: int
+
+
+@dataclass(slots=True)
+class MarketPolicyDefinition:
+    policy_id: str
+    engine: str
+    auto_trade: AutoTradeConfig
+    max_consecutive_losses: int
+    circuit_breaker_cooldown_minutes: int
+    source_path: Path | None = None
+
+
+@dataclass(slots=True)
+class MarketPoliciesConfig:
+    domestic: MarketPolicyDefinition
+    overseas: MarketPolicyDefinition
 
 
 @dataclass(slots=True)
@@ -282,6 +300,8 @@ class LiquidityLabConfig:
     overseas_exit_mid_mismatch_pct: float
     overseas_exit_price_shock_pct: float
     overseas_exit_price_shock_confirm_pct: float
+    overseas_exit_price_shock_min_volume_ratio: float
+    overseas_exit_price_shock_min_bar_volume: int
     overseas_max_position_qty: int
     overseas_min_strategy_volume_ratio: float
     overseas_block_standalone_vwap: bool
@@ -316,6 +336,7 @@ class AppConfig:
     github_repo: str
     skip_holiday_overseas: bool
     skip_holiday_domestic: bool
+    market_policies: MarketPoliciesConfig | None = None
 
 
 def _project_root() -> Path:
@@ -327,6 +348,140 @@ def _resolve_path(project_root: Path, raw_path: str) -> Path:
     if path.is_absolute():
         return path
     return project_root / path
+
+
+def _coerce_market_policy_value(base_value: object, raw_value: object) -> object:
+    if isinstance(base_value, bool):
+        if not isinstance(raw_value, bool):
+            raise ValueError(f"expected bool, got {type(raw_value).__name__}")
+        return raw_value
+    if isinstance(base_value, int):
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise ValueError(f"expected int, got {type(raw_value).__name__}")
+        return int(raw_value)
+    if isinstance(base_value, float):
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise ValueError(f"expected float, got {type(raw_value).__name__}")
+        return float(raw_value)
+    if isinstance(base_value, str):
+        if not isinstance(raw_value, str):
+            raise ValueError(f"expected str, got {type(raw_value).__name__}")
+        return raw_value
+    if isinstance(base_value, list):
+        if not isinstance(raw_value, list):
+            raise ValueError(f"expected list, got {type(raw_value).__name__}")
+        return list(raw_value)
+    return raw_value
+
+
+def _load_market_policy_definition(
+    *,
+    project_root: Path,
+    market: str,
+    raw_definition: object,
+    base_auto_trade: AutoTradeConfig,
+    base_risk: RiskConfig,
+) -> MarketPolicyDefinition:
+    definition = raw_definition if isinstance(raw_definition, dict) else {}
+    source_path: Path | None = None
+    raw_path = str(definition.get("path", "") or "").strip()
+    if raw_path:
+        source_path = _resolve_path(project_root, raw_path)
+        try:
+            definition = json.loads(source_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ValueError(f"{market} market policy file not found: {source_path}") from exc
+        if not isinstance(definition, dict):
+            raise ValueError(f"{market} market policy must be a JSON object")
+
+    engine = str(definition.get("engine", "momentum_v1") or "").strip()
+    if engine != "momentum_v1":
+        raise ValueError(f"unsupported {market} market policy engine: {engine}")
+
+    raw_parameters = definition.get("parameters", {})
+    if not isinstance(raw_parameters, dict):
+        raise ValueError(f"{market} market policy parameters must be a JSON object")
+    allowed_fields = {item.name for item in fields(AutoTradeConfig)}
+    unknown_fields = sorted(set(raw_parameters) - allowed_fields)
+    if unknown_fields:
+        raise ValueError(
+            f"unknown {market} market policy parameters: {', '.join(unknown_fields)}"
+        )
+    overrides: dict[str, object] = {}
+    for key, raw_value in raw_parameters.items():
+        try:
+            overrides[key] = _coerce_market_policy_value(
+                getattr(base_auto_trade, key),
+                raw_value,
+            )
+        except ValueError as exc:
+            raise ValueError(f"invalid {market} market policy parameter {key}: {exc}") from exc
+
+    raw_risk = definition.get("risk", {})
+    if not isinstance(raw_risk, dict):
+        raise ValueError(f"{market} market policy risk must be a JSON object")
+    allowed_risk_fields = {
+        "max_consecutive_losses",
+        "circuit_breaker_cooldown_minutes",
+    }
+    unknown_risk_fields = sorted(set(raw_risk) - allowed_risk_fields)
+    if unknown_risk_fields:
+        raise ValueError(
+            f"unknown {market} market policy risk fields: {', '.join(unknown_risk_fields)}"
+        )
+
+    cloned_base = replace(
+        base_auto_trade,
+        inverse_etf_symbols=list(base_auto_trade.inverse_etf_symbols),
+        leveraged_etf_symbols=list(base_auto_trade.leveraged_etf_symbols),
+    )
+    return MarketPolicyDefinition(
+        policy_id=str(
+            definition.get("policy_id", f"{market}_momentum_v1")
+            or f"{market}_momentum_v1"
+        ).strip(),
+        engine=engine,
+        auto_trade=replace(cloned_base, **overrides),
+        max_consecutive_losses=int(
+            raw_risk.get(
+                "max_consecutive_losses",
+                base_risk.max_consecutive_losses,
+            )
+        ),
+        circuit_breaker_cooldown_minutes=int(
+            raw_risk.get(
+                "circuit_breaker_cooldown_minutes",
+                base_risk.circuit_breaker_cooldown_minutes,
+            )
+        ),
+        source_path=source_path,
+    )
+
+
+def _load_market_policies(
+    *,
+    project_root: Path,
+    raw_definitions: object,
+    base_auto_trade: AutoTradeConfig,
+    base_risk: RiskConfig,
+) -> MarketPoliciesConfig:
+    definitions = raw_definitions if isinstance(raw_definitions, dict) else {}
+    return MarketPoliciesConfig(
+        domestic=_load_market_policy_definition(
+            project_root=project_root,
+            market="domestic",
+            raw_definition=definitions.get("domestic", {}),
+            base_auto_trade=base_auto_trade,
+            base_risk=base_risk,
+        ),
+        overseas=_load_market_policy_definition(
+            project_root=project_root,
+            market="overseas",
+            raw_definition=definitions.get("overseas", {}),
+            base_auto_trade=base_auto_trade,
+            base_risk=base_risk,
+        ),
+    )
 
 
 def _parse_bool(name: str, default: bool) -> bool:
@@ -420,6 +575,7 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
     storage_raw = raw["storage"]
     notification_raw = raw.get("notifications", {})
     liquidity_lab_raw = raw.get("liquidity_lab", {})
+    market_policies_raw = raw.get("market_policies", {})
     github_token = (
         os.getenv("GITHUB_TOKEN", "").strip()
         or str(raw.get("github_token", "") or "").strip()
@@ -520,9 +676,15 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
         db_path=_resolve_path(project_root, storage_raw["db_path"]),
         log_dir=_resolve_path(project_root, storage_raw["log_dir"]),
         runtime_state_path=_resolve_path(project_root, storage_raw["runtime_state_path"]),
+        api_call_log_retention_days=int(
+            storage_raw.get("api_call_log_retention_days", 30)
+        ),
+        telegram_message_log_retention_days=int(
+            storage_raw.get("telegram_message_log_retention_days", 90)
+        ),
     )
 
-    return AppConfig(
+    config = AppConfig(
         project_root=project_root,
         credentials=KisCredentials(
             env=normalized_env,
@@ -898,6 +1060,18 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             overseas_exit_price_shock_confirm_pct=float(
                 liquidity_lab_raw.get("overseas_exit_price_shock_confirm_pct", 0.02)
             ),
+            overseas_exit_price_shock_min_volume_ratio=float(
+                liquidity_lab_raw.get(
+                    "overseas_exit_price_shock_min_volume_ratio",
+                    0.5,
+                )
+            ),
+            overseas_exit_price_shock_min_bar_volume=int(
+                liquidity_lab_raw.get(
+                    "overseas_exit_price_shock_min_bar_volume",
+                    10,
+                )
+            ),
             overseas_max_position_qty=int(liquidity_lab_raw.get("overseas_max_position_qty", 1)),
             overseas_min_strategy_volume_ratio=float(
                 liquidity_lab_raw.get("overseas_min_strategy_volume_ratio", 0.8)
@@ -949,3 +1123,10 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
         skip_holiday_overseas=bool(raw.get("skip_holiday_overseas", True)),
         skip_holiday_domestic=bool(raw.get("skip_holiday_domestic", True)),
     )
+    config.market_policies = _load_market_policies(
+        project_root=project_root,
+        raw_definitions=market_policies_raw,
+        base_auto_trade=config.auto_trade,
+        base_risk=config.risk,
+    )
+    return config

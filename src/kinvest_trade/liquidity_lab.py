@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import math
 import uuid
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -23,6 +22,7 @@ from .market_sessions import (
     us_holiday_date_for_kis_session,
 )
 from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
+from .market_policy import MarketPolicyRegistry, MomentumMarketPolicy, normalize_market_name
 from .lab_domestic_orders import DomesticOrderHelper
 from .lab_notify import TradeNotifier
 from .lab_overseas_orders import OverseasOrderHelper
@@ -221,6 +221,7 @@ class LiquidityLabService:
             event_hook=self._save_event,
             notify_hook=self._send_circuit_breaker_notification,
         )
+        self.market_policy_registry = MarketPolicyRegistry(self.config)
         self._domestic_excluded: list[ExcludedCandidate] = []
         self._overseas_excluded: list[ExcludedCandidate] = []
         self._last_held_symbols: set[str] = set()
@@ -252,9 +253,14 @@ class LiquidityLabService:
         self._tv_available: bool = False
         self._last_tv_scan_used_fallback: bool = False
         self._consecutive_losses: int = 0
+        self._consecutive_losses_by_market: dict[str, int] = {
+            "domestic": 0,
+            "overseas": 0,
+        }
         self._session_realised_krw: float = 0.0
         self._daily_loss_date: date | None = None
         self._halted_at: datetime | None = None
+        self._halted_at_by_market: dict[str, datetime] = {}
         self._daily_halted_at: datetime | None = None
         self._tv_diagnostic_ran: bool = False
         self._last_holiday_notice_key: tuple[bool, bool, str] | None = None
@@ -303,11 +309,28 @@ class LiquidityLabService:
                 notify_hook=self._send_circuit_breaker_notification,
             )
             self.cb = cb
+        consecutive_losses = int(getattr(self, "_consecutive_losses", 0) or 0)
+        losses_by_market = getattr(self, "_consecutive_losses_by_market", None)
+        if (
+            isinstance(losses_by_market, dict)
+            and consecutive_losses > 0
+            and not any(int(value or 0) > 0 for value in losses_by_market.values())
+        ):
+            losses_by_market = None
+        halted_at_by_market = getattr(self, "_halted_at_by_market", None)
         cb.load_state(
-            consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+            consecutive_losses=consecutive_losses,
+            consecutive_losses_by_market=(
+                dict(losses_by_market) if isinstance(losses_by_market, dict) else None
+            ),
             session_realised_krw=float(getattr(self, "_session_realised_krw", 0.0) or 0.0),
             daily_loss_date=getattr(self, "_daily_loss_date", None),
             halted_at=getattr(self, "_halted_at", None),
+            halted_at_by_market=(
+                dict(halted_at_by_market)
+                if isinstance(halted_at_by_market, dict) and halted_at_by_market
+                else None
+            ),
             daily_halted_at=getattr(self, "_daily_halted_at", None),
         )
         return cb
@@ -318,9 +341,15 @@ class LiquidityLabService:
             return
         snapshot = cb.snapshot()
         self._consecutive_losses = int(snapshot["consecutive_losses"])
+        self._consecutive_losses_by_market = dict(
+            snapshot["consecutive_losses_by_market"]  # type: ignore[arg-type]
+        )
         self._session_realised_krw = float(snapshot["session_realised_krw"])
         self._daily_loss_date = snapshot["daily_loss_date"]
         self._halted_at = snapshot["halted_at"]
+        self._halted_at_by_market = dict(
+            snapshot["halted_at_by_market"]  # type: ignore[arg-type]
+        )
         self._daily_halted_at = snapshot["daily_halted_at"]
 
     async def _send_circuit_breaker_notification(self, message: str) -> None:
@@ -484,31 +513,45 @@ class LiquidityLabService:
         self,
         signal_snapshot: MovingAverageSnapshot,
         code: str,
+        market: str = "overseas",
     ):
-        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
-        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
+        policy = self._get_market_policy(market)
+        if policy.auto_trade is None:
+            raise RuntimeError(f"{market} market policy requires auto_trade configuration")
         return evaluate_entry_setup(
-            self.config.auto_trade,
+            policy.auto_trade,
             signal_snapshot,
             symbol=code,
-            inverse_etf_symbols=inverse_symbols,
-            leveraged_etf_symbols=leveraged_symbols,
+            inverse_etf_symbols=policy.auto_trade.inverse_etf_symbols,
+            leveraged_etf_symbols=policy.auto_trade.leveraged_etf_symbols,
         )
 
     def _derive_watch_state(
         self,
         signal_snapshot: MovingAverageSnapshot,
         code: str,
+        market: str = "overseas",
     ) -> tuple[str, str]:
-        inverse_symbols = getattr(self.config.liquidity_lab, "inverse_etf_symbols", [])
-        leveraged_symbols = getattr(self.config.liquidity_lab, "leveraged_etf_symbols", [])
+        policy = self._get_market_policy(market)
+        if policy.auto_trade is None:
+            raise RuntimeError(f"{market} market policy requires auto_trade configuration")
         return derive_watch_state(
-            self.config.auto_trade,
+            policy.auto_trade,
             signal_snapshot,
             symbol=code,
-            inverse_etf_symbols=inverse_symbols,
-            leveraged_etf_symbols=leveraged_symbols,
+            inverse_etf_symbols=policy.auto_trade.inverse_etf_symbols,
+            leveraged_etf_symbols=policy.auto_trade.leveraged_etf_symbols,
         )
+
+    def _get_market_policy_registry(self) -> MarketPolicyRegistry:
+        registry = getattr(self, "market_policy_registry", None)
+        if registry is None:
+            registry = MarketPolicyRegistry(self.config)
+            self.market_policy_registry = registry
+        return registry
+
+    def _get_market_policy(self, market: str) -> MomentumMarketPolicy:
+        return self._get_market_policy_registry().for_market(market)
 
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
@@ -721,7 +764,7 @@ class LiquidityLabService:
             if str(flag).strip()
         }
         after_logged_at = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
-        auto_config = getattr(self.config, "auto_trade", object())
+        auto_config = self._get_market_policy("overseas").auto_trade
         cost_pct = max(
             0.005,
             float(getattr(auto_config, "overseas_commission_rate", 0.0025) or 0.0025) * 2,
@@ -2043,95 +2086,108 @@ class LiquidityLabService:
         )
         overseas_entry_block_reason = ""
         overseas_entry_block_detail: dict[str, int] = {}
-        if self._is_trading_halted():
-            domestic_reject_halted = False
-            overseas_reject_halted = False
-            domestic_buy_targets = []
-            domestic_buy_target = None
-            overseas_buy_targets = []
-            overseas_buy_target = None
+        config_ll = self.config.liquidity_lab
+        open_domestic_symbols = {
+            position.stock_code.strip()
+            for position in domestic_positions
+            if position.stock_code.strip() and position.quantity > 0
+        }
+        open_overseas_symbols = {
+            position.symbol.strip().upper()
+            for position in monitored_overseas_positions
+            if position.symbol.strip() and position.quantity > 0
+        }
+        _max_total = int(getattr(config_ll, "max_concurrent_total_positions", 0) or 0)
+        remaining_total_slots = WatchStateHelper.remaining_total_position_slots(
+            open_domestic_count=len(open_domestic_symbols),
+            open_overseas_count=len(open_overseas_symbols),
+            max_total_positions=_max_total,
+        )
+        domestic_cb_halted = self._is_trading_halted("domestic")
+        overseas_cb_halted = self._is_trading_halted("overseas")
+        if domestic_cb_halted or overseas_cb_halted:
             _logger.info(
-                "[CB] 서킷브레이커 활성 — 이번 사이클 매수 스킵"
-                " (consecutive=%d, session_pnl=%.0f)",
-                getattr(self, "_consecutive_losses", 0),
+                "[CB] 시장별 서킷브레이커 상태 domestic=%s overseas=%s"
+                " losses=%s session_pnl=%.0f",
+                domestic_cb_halted,
+                overseas_cb_halted,
+                getattr(self, "_consecutive_losses_by_market", {}),
                 getattr(self, "_session_realised_krw", 0.0),
             )
+        domestic_budget = int(getattr(config_ll, "max_concurrent_domestic_orders", 2))
+        if remaining_total_slots is not None:
+            domestic_budget = min(domestic_budget, remaining_total_slots)
+        domestic_reject_halted = self._is_order_reject_halted(
+            market="domestic",
+            side="buy",
+        )
+        if domestic_reject_halted or domestic_cb_halted:
+            domestic_budget = 0
+        domestic_buy_targets = self._select_domestic_buy_targets(
+            domestic_ranked,
+            domestic_watch_targets,
+            max_concurrent=domestic_budget,
+        )
+        domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
+
+        _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
+        remaining_overseas_slots = self._remaining_overseas_entry_slots(
+            monitored_overseas_positions,
+            max_positions=_max_os,
+        )
+        overseas_reject_halted = self._is_order_reject_halted(
+            market="overseas",
+            side="buy",
+        )
+        if overseas_reject_halted or overseas_cb_halted:
+            remaining_overseas_slots = 0
+        total_cap_binds_overseas = False
+        if remaining_total_slots is not None:
+            overseas_total_budget = max(
+                0,
+                remaining_total_slots - len(domestic_buy_targets),
+            )
+            if overseas_total_budget < remaining_overseas_slots:
+                remaining_overseas_slots = overseas_total_budget
+                total_cap_binds_overseas = True
+        if remaining_overseas_slots <= 0:
+            overseas_entry_block_reason = (
+                "overseas_circuit_breaker_halted"
+                if overseas_cb_halted
+                else "overseas_order_reject_halted"
+                if overseas_reject_halted
+                else "total_position_cap_reached"
+                if total_cap_binds_overseas
+                else "overseas_position_cap_reached"
+            )
+            overseas_entry_block_detail = {
+                "open_positions": len(open_overseas_symbols),
+                "max_positions": int(_max_os),
+            }
+            if total_cap_binds_overseas:
+                overseas_entry_block_detail["open_total_positions"] = (
+                    len(open_domestic_symbols) + len(open_overseas_symbols)
+                )
+                overseas_entry_block_detail["max_total_positions"] = _max_total
+            overseas_buy_targets = []
+            overseas_buy_target = None
         else:
-            config_ll = self.config.liquidity_lab
-            open_domestic_symbols = {
-                position.stock_code.strip()
-                for position in domestic_positions
-                if position.stock_code.strip() and position.quantity > 0
-            }
-            open_overseas_symbols = {
-                position.symbol.strip().upper()
-                for position in monitored_overseas_positions
-                if position.symbol.strip() and position.quantity > 0
-            }
-            _max_total = int(getattr(config_ll, "max_concurrent_total_positions", 0) or 0)
-            remaining_total_slots = WatchStateHelper.remaining_total_position_slots(
-                open_domestic_count=len(open_domestic_symbols),
-                open_overseas_count=len(open_overseas_symbols),
-                max_total_positions=_max_total,
+            overseas_buy_targets = self._select_overseas_buy_targets(
+                overseas_ranked,
+                overseas_watch_targets,
+                max_concurrent=remaining_overseas_slots,
+                held_positions=monitored_overseas_positions,
             )
-            domestic_budget = int(getattr(config_ll, "max_concurrent_domestic_orders", 2))
-            if remaining_total_slots is not None:
-                domestic_budget = min(domestic_budget, remaining_total_slots)
-            domestic_reject_halted = self._is_order_reject_halted(market="domestic", side="buy")
-            if domestic_reject_halted:
-                domestic_budget = 0
-            domestic_buy_targets = self._select_domestic_buy_targets(
-                domestic_ranked,
-                domestic_watch_targets,
-                max_concurrent=domestic_budget,
-            )
-            domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
-            _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
-            remaining_overseas_slots = self._remaining_overseas_entry_slots(
-                monitored_overseas_positions,
-                max_positions=_max_os,
-            )
-            overseas_reject_halted = self._is_order_reject_halted(market="overseas", side="buy")
-            if overseas_reject_halted:
-                remaining_overseas_slots = 0
-            total_cap_binds_overseas = False
-            if remaining_total_slots is not None:
-                overseas_total_budget = max(
-                    0, remaining_total_slots - len(domestic_buy_targets)
-                )
-                if overseas_total_budget < remaining_overseas_slots:
-                    remaining_overseas_slots = overseas_total_budget
-                    total_cap_binds_overseas = True
-            if remaining_overseas_slots <= 0:
-                overseas_entry_block_reason = (
-                    "overseas_order_reject_halted"
-                    if overseas_reject_halted
-                    else "total_position_cap_reached"
-                    if total_cap_binds_overseas
-                    else "overseas_position_cap_reached"
-                )
-                overseas_entry_block_detail = {
-                    "open_positions": len(open_overseas_symbols),
-                    "max_positions": int(_max_os),
-                }
-                if total_cap_binds_overseas:
-                    overseas_entry_block_detail["open_total_positions"] = (
-                        len(open_domestic_symbols) + len(open_overseas_symbols)
-                    )
-                    overseas_entry_block_detail["max_total_positions"] = _max_total
-                overseas_buy_targets = []
-                overseas_buy_target = None
-            else:
-                overseas_buy_targets = self._select_overseas_buy_targets(
-                    overseas_ranked,
-                    overseas_watch_targets,
-                    max_concurrent=remaining_overseas_slots,
-                    held_positions=monitored_overseas_positions,
-                )
-                overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
+            overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
         domestic_order: dict = {
             "skipped": True,
-            "reason": "domestic_order_reject_halted" if domestic_reject_halted else "no_action",
+            "reason": (
+                "domestic_circuit_breaker_halted"
+                if domestic_cb_halted
+                else "domestic_order_reject_halted"
+                if domestic_reject_halted
+                else "no_action"
+            ),
         }
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
         domestic_orders: list[dict] = []
@@ -2780,7 +2836,7 @@ class LiquidityLabService:
         if app_config is None:
             return 0
         config = getattr(app_config, "liquidity_lab", object())
-        auto_cfg = getattr(app_config, "auto_trade", object())
+        auto_cfg = self._get_market_policy("overseas").auto_trade
         risk_cfg = getattr(app_config, "risk", object())
         capital_krw = float(getattr(risk_cfg, "operating_capital_krw", 0) or 0)
         fx_rate = float(getattr(auto_cfg, "usd_krw_fallback_rate", 1350.0) or 1350.0)
@@ -3247,6 +3303,7 @@ class LiquidityLabService:
         quote: OverseasScanResult,
         avg_price: float,
         holding_qty: int,
+        signal_snapshot: MovingAverageSnapshot | None = None,
         strategy_flag: str = "",
         entry_by: str = "",
         exit_by: str = "",
@@ -3288,6 +3345,8 @@ class LiquidityLabService:
 
         reference_price = float(avg_price or 0.0)
         key = f"overseas:{symbol.strip().upper()}"
+        guard = getattr(self, "_exit_price_shock_guard", None)
+        guarded_state = guard.get(key) if isinstance(guard, dict) else None
         cycle_refs = getattr(self, "_cycle_exit_reference_prices", {}) or {}
         cycle_reference_price = float(cycle_refs.get(key, 0.0) or 0.0)
         if cycle_reference_price > 0:
@@ -3302,6 +3361,12 @@ class LiquidityLabService:
                     or abs(previous_price - last_price) / previous_price > 0.000001
                 ):
                     reference_price = previous_price
+        if guarded_state is not None:
+            guarded_reference_price = float(
+                guarded_state.get("reference_price", 0.0) or 0.0
+            )
+            if guarded_reference_price > 0:
+                reference_price = guarded_reference_price
 
         if reference_price <= 0:
             return None
@@ -3311,12 +3376,10 @@ class LiquidityLabService:
             getattr(self.config.liquidity_lab, "overseas_exit_price_shock_pct", 0.20)
         )
         if abs(shock_pct) <= shock_threshold:
-            guard = getattr(self, "_exit_price_shock_guard", None)
             if guard is not None:
-                guard.pop(f"overseas:{symbol.strip().upper()}", None)
+                guard.pop(key, None)
             return None
 
-        guard = getattr(self, "_exit_price_shock_guard", None)
         if guard is None:
             guard = {}
             self._exit_price_shock_guard = guard
@@ -3326,7 +3389,38 @@ class LiquidityLabService:
         )
         if previous is not None:
             previous_price = float(previous.get("price", 0.0) or 0.0)
-            if previous_price > 0 and abs(last_price - previous_price) / reference_price <= confirm_pct:
+            stable_repeat = (
+                previous_price > 0
+                and abs(last_price - previous_price) / reference_price <= confirm_pct
+            )
+            has_two_sided_quote = quote.bid > 0 and quote.ask > 0
+            min_volume_ratio = float(
+                getattr(
+                    self.config.liquidity_lab,
+                    "overseas_exit_price_shock_min_volume_ratio",
+                    0.5,
+                )
+            )
+            min_bar_volume = int(
+                getattr(
+                    self.config.liquidity_lab,
+                    "overseas_exit_price_shock_min_bar_volume",
+                    10,
+                )
+            )
+            bar_volume = float(
+                getattr(signal_snapshot, "volume_last", 0.0) or 0.0
+            )
+            volume_ratio = float(
+                getattr(signal_snapshot, "volume_ratio", 0.0) or 0.0
+            )
+            has_volume_confirmation = (
+                bar_volume >= min_bar_volume
+                and volume_ratio >= min_volume_ratio
+            )
+            if stable_repeat and (
+                has_two_sided_quote or has_volume_confirmation
+            ):
                 guard.pop(key, None)
                 self._save_event(
                     event_type="trade_guard",
@@ -3337,6 +3431,9 @@ class LiquidityLabService:
                         "reference_price": reference_price,
                         "last_price": last_price,
                         "shock_pct": shock_pct,
+                        "two_sided_quote": has_two_sided_quote,
+                        "bar_volume": bar_volume,
+                        "volume_ratio": volume_ratio,
                     },
                 )
                 return None
@@ -3954,6 +4051,7 @@ class LiquidityLabService:
         self,
         candidate: OverseasScanResult,
     ) -> MovingAverageSnapshot | None:
+        auto = self._get_market_policy("overseas").auto_trade
         try:
             daily_rows = await self.client.get_overseas_daily_prices(
                 candidate.symbol,
@@ -3963,13 +4061,13 @@ class LiquidityLabService:
             minute_rows = await self.client.get_overseas_minute_chart(
                 candidate.symbol,
                 candidate.exchange_code,
-                interval_minutes=self.config.auto_trade.intraday_bar_minutes,
+                interval_minutes=auto.intraday_bar_minutes,
                 include_previous_day=True,
                 record_count=max(
-                    self.config.auto_trade.intraday_slow_window + 8,
-                    self.config.auto_trade.breakout_lookback_bars + 6,
-                    self.config.auto_trade.bollinger_window + 4,
-                    self.config.auto_trade.atr_window + 4,
+                    auto.intraday_slow_window + 8,
+                    auto.breakout_lookback_bars + 6,
+                    auto.bollinger_window + 4,
+                    auto.atr_window + 4,
                     40,
                 ),
             )
@@ -3993,8 +4091,8 @@ class LiquidityLabService:
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
         if (
-            len(daily_closes) < self.config.auto_trade.daily_slow_window
-            or len(minute_closes) < self.config.auto_trade.intraday_slow_window
+            len(daily_closes) < auto.daily_slow_window
+            or len(minute_closes) < auto.intraday_slow_window
         ):
             return None
 
@@ -4007,24 +4105,25 @@ class LiquidityLabService:
             minute_highs=minute_series.highs,
             minute_lows=minute_series.lows,
             minute_volumes=minute_series.volumes,
-            daily_fast_window=self.config.auto_trade.daily_fast_window,
-            daily_slow_window=self.config.auto_trade.daily_slow_window,
-            intraday_fast_window=self.config.auto_trade.intraday_fast_window,
-            intraday_slow_window=self.config.auto_trade.intraday_slow_window,
-            volatility_window=self.config.auto_trade.volatility_window,
-            momentum_window=self.config.auto_trade.momentum_window,
-            volume_window=self.config.auto_trade.volume_window,
-            rsi_period=self.config.auto_trade.rsi_period,
-            breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
-            bollinger_window=self.config.auto_trade.bollinger_window,
-            bollinger_stddev=self.config.auto_trade.bollinger_stddev,
-            atr_window=self.config.auto_trade.atr_window,
+            daily_fast_window=auto.daily_fast_window,
+            daily_slow_window=auto.daily_slow_window,
+            intraday_fast_window=auto.intraday_fast_window,
+            intraday_slow_window=auto.intraday_slow_window,
+            volatility_window=auto.volatility_window,
+            momentum_window=auto.momentum_window,
+            volume_window=auto.volume_window,
+            rsi_period=auto.rsi_period,
+            breakout_lookback_bars=auto.breakout_lookback_bars,
+            bollinger_window=auto.bollinger_window,
+            bollinger_stddev=auto.bollinger_stddev,
+            atr_window=auto.atr_window,
         )
 
     async def _load_domestic_signal(
         self,
         candidate: DomesticScanResult,
     ) -> MovingAverageSnapshot | None:
+        auto = self._get_market_policy("domestic").auto_trade
         now_kst = datetime.now(timezone.utc).astimezone(KST)
         target_date = now_kst.strftime("%Y%m%d")
         start_date = (now_kst - timedelta(days=200)).strftime("%Y%m%d")
@@ -4058,8 +4157,8 @@ class LiquidityLabService:
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
         if (
-            len(daily_closes) < self.config.auto_trade.daily_slow_window
-            or len(minute_closes) < self.config.auto_trade.intraday_slow_window
+            len(daily_closes) < auto.daily_slow_window
+            or len(minute_closes) < auto.intraday_slow_window
         ):
             return None
 
@@ -4072,18 +4171,18 @@ class LiquidityLabService:
             minute_highs=minute_series.highs,
             minute_lows=minute_series.lows,
             minute_volumes=minute_series.volumes,
-            daily_fast_window=self.config.auto_trade.daily_fast_window,
-            daily_slow_window=self.config.auto_trade.daily_slow_window,
-            intraday_fast_window=self.config.auto_trade.intraday_fast_window,
-            intraday_slow_window=self.config.auto_trade.intraday_slow_window,
-            volatility_window=self.config.auto_trade.volatility_window,
-            momentum_window=self.config.auto_trade.momentum_window,
-            volume_window=self.config.auto_trade.volume_window,
-            rsi_period=self.config.auto_trade.rsi_period,
-            breakout_lookback_bars=self.config.auto_trade.breakout_lookback_bars,
-            bollinger_window=self.config.auto_trade.bollinger_window,
-            bollinger_stddev=self.config.auto_trade.bollinger_stddev,
-            atr_window=self.config.auto_trade.atr_window,
+            daily_fast_window=auto.daily_fast_window,
+            daily_slow_window=auto.daily_slow_window,
+            intraday_fast_window=auto.intraday_fast_window,
+            intraday_slow_window=auto.intraday_slow_window,
+            volatility_window=auto.volatility_window,
+            momentum_window=auto.momentum_window,
+            volume_window=auto.volume_window,
+            rsi_period=auto.rsi_period,
+            breakout_lookback_bars=auto.breakout_lookback_bars,
+            bollinger_window=auto.bollinger_window,
+            bollinger_stddev=auto.bollinger_stddev,
+            atr_window=auto.atr_window,
         )
 
     def _should_exit_overseas_position(
@@ -4095,6 +4194,7 @@ class LiquidityLabService:
             snapshot,
             held.pnl_pct,
             symbol=held.symbol,
+            market="overseas",
             take_profit_override=getattr(
                 self.config.liquidity_lab,
                 "overseas_take_profit_pct",
@@ -4108,6 +4208,7 @@ class LiquidityLabService:
         pnl_pct: float,
         *,
         symbol: str = "",
+        market: str = "overseas",
         take_profit_override: float | None = None,
     ) -> tuple[bool, str]:
         exit_setup = self._build_exit_setup(
@@ -4115,6 +4216,7 @@ class LiquidityLabService:
             pnl_pct,
             1,
             symbol=symbol,
+            market=market,
             take_profit_override=take_profit_override,
         )
         return exit_setup.action in {"sell", "sell_partial"}, exit_setup.reason
@@ -4557,15 +4659,23 @@ class LiquidityLabService:
             "replacement_note": str(order.get("replacement_note") or ""),
         }
 
-    def _get_strategy_manager(self, symbol: str) -> PriorityStrategyManager:
-        key = symbol.strip().upper()
+    @staticmethod
+    def _strategy_manager_key(market: str, symbol: str) -> str:
+        return f"{normalize_market_name(market)}:{symbol.strip().upper()}"
+
+    def _get_strategy_manager(
+        self,
+        symbol: str,
+        market: str = "overseas",
+    ) -> PriorityStrategyManager:
+        key = self._strategy_manager_key(market, symbol)
         managers = getattr(self, "_strategy_managers", None)
         if managers is None:
             managers = {}
             self._strategy_managers = managers
         manager = managers.get(key)
         if manager is None:
-            manager = PriorityStrategyManager(getattr(self.config, "auto_trade", None))
+            manager = self._get_market_policy(market).make_strategy_manager()
             managers[key] = manager
         return manager
 
@@ -4624,10 +4734,11 @@ class LiquidityLabService:
         *,
         strategy_flag: str,
         entry_by: str,
+        market: str = "overseas",
     ) -> None:
         if snapshot is None:
             return
-        manager = self._get_strategy_manager(symbol)
+        manager = self._get_strategy_manager(symbol, market)
         preview = manager.evaluate(symbol, snapshot, commit=False)
         triggered = preview.triggered_by
         if not triggered:
@@ -4641,8 +4752,14 @@ class LiquidityLabService:
                 triggered_by=triggered,
             )
 
-    def _reset_strategy_position(self, symbol: str) -> None:
-        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+    def _reset_strategy_position(
+        self,
+        symbol: str,
+        market: str = "overseas",
+    ) -> None:
+        manager = getattr(self, "_strategy_managers", {}).get(
+            self._strategy_manager_key(market, symbol)
+        )
         if manager is not None:
             manager.reset()
 
@@ -4650,12 +4767,19 @@ class LiquidityLabService:
         self,
         symbol: str,
         snapshot: MovingAverageSnapshot | None,
+        market: str = "overseas",
     ) -> tuple[str, str, str]:
-        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+        manager = getattr(self, "_strategy_managers", {}).get(
+            self._strategy_manager_key(market, symbol)
+        )
         if manager is None:
             if snapshot is None:
                 return "", "", ""
-            preview = self._get_strategy_manager(symbol).evaluate(symbol, snapshot, commit=False)
+            preview = self._get_strategy_manager(symbol, market).evaluate(
+                symbol,
+                snapshot,
+                commit=False,
+            )
             return preview.flag, preview.entry_by, preview.exit_by
 
         if manager.position is None:
@@ -4672,8 +4796,14 @@ class LiquidityLabService:
             exit_by = preview.exit_by
         return flag, entry_by, exit_by
 
-    def _estimate_hold_cycles(self, symbol: str) -> int:
-        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+    def _estimate_hold_cycles(
+        self,
+        symbol: str,
+        market: str = "overseas",
+    ) -> int:
+        manager = getattr(self, "_strategy_managers", {}).get(
+            self._strategy_manager_key(market, symbol)
+        )
         if manager is None or manager.position is None:
             return 0
         loop_interval_sec = max(
@@ -4687,25 +4817,25 @@ class LiquidityLabService:
         return max(0, int(elapsed_sec // loop_interval_sec))
 
     def _domestic_commission_rate(self) -> float:
-        auto_trade = getattr(self.config, "auto_trade", None)
+        auto_trade = self._get_market_policy("domestic").auto_trade
         legacy = float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
         return float(getattr(auto_trade, "domestic_commission_rate", 0.00015) or legacy)
 
     def _overseas_commission_rate(self) -> float:
-        auto_trade = getattr(self.config, "auto_trade", None)
+        auto_trade = self._get_market_policy("overseas").auto_trade
         legacy = float(getattr(auto_trade, "commission_rate", 0.0025) or 0.0025)
         return float(getattr(auto_trade, "overseas_commission_rate", legacy) or legacy)
 
     def _domestic_sell_tax_rate(self) -> float:
-        auto_trade = getattr(self.config, "auto_trade", None)
+        auto_trade = self._get_market_policy("domestic").auto_trade
         return float(getattr(auto_trade, "domestic_sell_tax_rate", 0.0) or 0.0)
 
     def _sec_fee_rate(self) -> float:
-        auto_trade = getattr(self.config, "auto_trade", None)
+        auto_trade = self._get_market_policy("overseas").auto_trade
         return float(getattr(auto_trade, "sec_fee_rate", 0.0000206) or 0.0)
 
     def _fx_fee_rate(self) -> float:
-        auto_trade = getattr(self.config, "auto_trade", None)
+        auto_trade = self._get_market_policy("overseas").auto_trade
         return float(getattr(auto_trade, "fx_fee_rate", 0.0) or 0.0)
 
     def _estimate_domestic_net_pnl_krw(
@@ -4759,10 +4889,18 @@ class LiquidityLabService:
             "breakout_exhaustion_exit",
         }
 
-    def _cb_active_flag(self) -> int:
+    def _cb_active_flag(self, market: str | None = None) -> int:
         cb = self._get_circuit_breaker()
         self._sync_circuit_breaker_legacy_state(cb)
-        return int(cb.is_active)
+        return int(cb.is_halted(market))
+
+    def _consecutive_losses_for_market(self, market: str) -> int:
+        losses = getattr(self, "_consecutive_losses_by_market", None)
+        if isinstance(losses, dict):
+            normalized = normalize_market_name(market)
+            if normalized in losses:
+                return int(losses.get(normalized, 0) or 0)
+        return int(getattr(self, "_consecutive_losses", 0) or 0)
 
     def _register_order_rejection(self, *, market: str, side: str, error: str = "") -> None:
         cb = self._get_circuit_breaker()
@@ -4879,7 +5017,9 @@ class LiquidityLabService:
         *,
         fallback_price: float | None = None,
     ) -> tuple[float | None, str | None, float | None]:
-        manager = getattr(self, "_strategy_managers", {}).get(symbol.strip().upper())
+        manager = getattr(self, "_strategy_managers", {}).get(
+            self._strategy_manager_key(market, symbol)
+        )
         entry_price: float | None = None
         entry_time_iso: str | None = None
         hold_duration_min: float | None = None
@@ -5023,11 +5163,11 @@ class LiquidityLabService:
             ),
             atr=signal_snapshot.atr if signal_snapshot else None,
             spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
-            consecutive_losses=int(getattr(self, "_consecutive_losses", 0) or 0),
+            consecutive_losses=self._consecutive_losses_for_market(market),
             orderable_qty=orderable_qty,
             stock_name=stock_name,
             exit_cooldown_remaining=self._cooldown_remaining_minutes(market, symbol),
-            cb_active=self._cb_active_flag(),
+            cb_active=self._cb_active_flag(market),
             pool_size=self._pool_size_for_market(market),
         )
         detail = {
@@ -5040,7 +5180,7 @@ class LiquidityLabService:
             if signal_snapshot and signal_snapshot.volume_ratio is not None
             else None,
             "exit_cooldown_remaining": self._cooldown_remaining_minutes(market, symbol),
-            "cb_active": self._cb_active_flag(),
+            "cb_active": self._cb_active_flag(market),
         }
         if error:
             detail["error"] = error[:160]
@@ -5075,14 +5215,18 @@ class LiquidityLabService:
         runtime.set_exit_cooldown_minutes(market, symbol, cooldown_minutes)
         self._sync_runtime_legacy_state(runtime)
 
-    def _is_trading_halted(self) -> bool:
+    def _is_trading_halted(self, market: str | None = None) -> bool:
         cb = self._get_circuit_breaker()
-        halted = cb.is_halted()
+        halted = cb.is_halted(market)
         self._sync_circuit_breaker_legacy_state(cb)
         return halted
 
-    def _ma_relation_summary(self, snapshot: MovingAverageSnapshot) -> str:
-        auto = self.config.auto_trade
+    def _ma_relation_summary(
+        self,
+        snapshot: MovingAverageSnapshot,
+        market: str = "overseas",
+    ) -> str:
+        auto = self._get_market_policy(market).auto_trade
         if not snapshot.has_required_context:
             return "-"
         daily_relation = ">" if (snapshot.daily_ma_fast or 0) >= (snapshot.daily_ma_slow or 0) else "<"
@@ -5179,17 +5323,20 @@ class LiquidityLabService:
         position_qty: int,
         *,
         symbol: str = "",
+        market: str = "overseas",
         take_profit_override: float | None = None,
     ):
-        config = self.config.auto_trade
-        if take_profit_override is not None:
-            config = dataclasses.replace(config, take_profit_pct=take_profit_override)
+        policy = self._get_market_policy(market)
         return evaluate_exit_setup(
-            config,
+            (
+                policy.auto_trade
+                if take_profit_override is None
+                else replace(policy.auto_trade, take_profit_pct=take_profit_override)
+            ),
             snapshot,
             pnl_pct,
             drawdown_from_peak=0.0,
-            hold_cycles=self._estimate_hold_cycles(symbol) if symbol else 0,
+            hold_cycles=self._estimate_hold_cycles(symbol, market) if symbol else 0,
             position_qty=position_qty,
             partial_exit_done=False,
         )

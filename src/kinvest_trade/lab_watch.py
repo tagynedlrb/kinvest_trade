@@ -137,7 +137,7 @@ class WatchStateHelper:
         service = self.service
         symbol = candidate.symbol.upper()
         now_utc = datetime.now(timezone.utc)
-        auto_trade_cfg = getattr(service.config, "auto_trade", None)
+        auto_trade_cfg = service._get_market_policy("overseas").auto_trade
         refresh_sec = max(
             5,
             int(getattr(auto_trade_cfg, "intraday_chart_refresh_sec", 60) or 60),
@@ -205,7 +205,8 @@ class WatchStateHelper:
         if repository is None:
             return
         symbol = watch_target.code.strip().upper()
-        manager = getattr(service, "_strategy_managers", {}).get(symbol)
+        manager_key = service._strategy_manager_key(watch_target.market, symbol)
+        manager = getattr(service, "_strategy_managers", {}).get(manager_key)
         entry_price = None
         peak_price = None
         if manager is not None and manager.position is not None:
@@ -222,6 +223,35 @@ class WatchStateHelper:
             if watch_target.signal_snapshot is not None
             else state.get("snapshot_json")
         )
+        persisted_price = watch_target.price
+        persisted_pnl_pct = pnl_pct
+        if watch_target.market == "overseas" and watch_target.holding_qty > 0:
+            reference_key = f"overseas:{symbol}"
+            reference_price = float(
+                getattr(service, "_cycle_exit_reference_prices", {}).get(
+                    reference_key,
+                    0.0,
+                )
+                or 0.0
+            )
+            shock_threshold = float(
+                getattr(
+                    service.config.liquidity_lab,
+                    "overseas_exit_price_shock_pct",
+                    0.20,
+                )
+            )
+            shock_pct = (
+                abs(watch_target.price - reference_price) / reference_price
+                if reference_price > 0
+                else 0.0
+            )
+            if shock_pct > shock_threshold:
+                persisted_price = reference_price
+                persisted_pnl_pct = state.get("pnl_pct")
+                if isinstance(snapshot_payload, dict):
+                    snapshot_payload = dict(snapshot_payload)
+                    snapshot_payload["price"] = reference_price
         has_position = 1 if watch_target.holding_qty > 0 else 0
         updated_at = datetime.now(timezone.utc).isoformat()
         repository.upsert_lab_symbol_state(
@@ -235,8 +265,8 @@ class WatchStateHelper:
             entry_by=entry_by_value,
             exit_by=exit_by,
             holding_qty=watch_target.holding_qty,
-            last_price=watch_target.price,
-            pnl_pct=pnl_pct,
+            last_price=persisted_price,
+            pnl_pct=persisted_pnl_pct,
             entry_price=entry_price,
             peak_price=peak_price,
             has_position=has_position,
@@ -255,8 +285,8 @@ class WatchStateHelper:
                 "entry_by": entry_by_value,
                 "exit_by": exit_by,
                 "holding_qty": watch_target.holding_qty,
-                "last_price": watch_target.price,
-                "pnl_pct": pnl_pct,
+                "last_price": persisted_price,
+                "pnl_pct": persisted_pnl_pct,
                 "entry_price": entry_price,
                 "peak_price": peak_price,
                 "has_position": has_position,
@@ -287,7 +317,9 @@ class WatchStateHelper:
         repository = getattr(service, "repository", None)
         if repository is None:
             return
-        manager = getattr(service, "_strategy_managers", {}).get(symbol.strip().upper())
+        manager = getattr(service, "_strategy_managers", {}).get(
+            service._strategy_manager_key(market, symbol)
+        )
         entry_price = None
         peak_price = None
         if manager is not None and manager.position is not None:
@@ -412,7 +444,7 @@ class WatchStateHelper:
         service = self.service
         if quantity <= 0:
             return
-        manager = service._get_strategy_manager(symbol)
+        manager = service._get_strategy_manager(symbol, market)
         if manager.position is not None:
             return
         state = self.get_persisted_symbol_state(market, symbol)
@@ -454,6 +486,7 @@ class WatchStateHelper:
             _, _, exit_by = service._get_strategy_labels(
                 watch_target.code,
                 signal_snapshot,
+                watch_target.market,
             )
         service.repository.save_cycle_log(
             logged_at=datetime.now(timezone.utc).isoformat(),
@@ -487,7 +520,7 @@ class WatchStateHelper:
             ),
             atr=signal_snapshot.atr if signal_snapshot else None,
             spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
-            consecutive_losses=int(getattr(service, "_consecutive_losses", 0) or 0),
+            consecutive_losses=service._consecutive_losses_for_market(watch_target.market),
         )
         self.persist_watch_target_state(
             watch_target,
@@ -523,6 +556,7 @@ class WatchStateHelper:
                         held_position.pnl_pct,
                         holding_qty,
                         symbol=code,
+                        market=market,
                         take_profit_override=(
                             getattr(service.config.liquidity_lab, "overseas_take_profit_pct", None)
                             if market == "overseas"
@@ -539,7 +573,7 @@ class WatchStateHelper:
                             signal_score=0.0,
                             action_bias="SELL",
                             signal_state="SELL_READY",
-                            ma_summary=service._ma_relation_summary(fallback_snapshot),
+                            ma_summary=service._ma_relation_summary(fallback_snapshot, market),
                             note=exit_setup.reason,
                             holding_qty=holding_qty,
                             signal_snapshot=fallback_snapshot,
@@ -555,14 +589,14 @@ class WatchStateHelper:
                         signal_score=0.0,
                         action_bias="HOLD",
                         signal_state="HOLD",
-                        ma_summary=service._ma_relation_summary(fallback_snapshot),
+                        ma_summary=service._ma_relation_summary(fallback_snapshot, market),
                         note=f"{exit_setup.note}|stale_signal_cache",
                         holding_qty=holding_qty,
                         signal_snapshot=fallback_snapshot,
                         strategy_flag=existing_flag,
                         entry_by=existing_entry_by,
                     )
-                strategy_result = service._get_strategy_manager(code).evaluate(
+                strategy_result = service._get_strategy_manager(code, market).evaluate(
                     code,
                     fallback_snapshot,
                     commit=False,
@@ -570,6 +604,7 @@ class WatchStateHelper:
                 signal_state, note = service._derive_watch_state(
                     fallback_snapshot,
                     code,
+                    market,
                 )
                 block_reason = service._entry_strategy_block_reason(
                     market=market,
@@ -585,7 +620,7 @@ class WatchStateHelper:
                         signal_score=0.0,
                         action_bias="WAIT",
                         signal_state="WAIT",
-                        ma_summary=service._ma_relation_summary(fallback_snapshot),
+                        ma_summary=service._ma_relation_summary(fallback_snapshot, market),
                         note=f"[{strategy_result.flag or '-'}] {block_reason}|stale_signal_cache",
                         holding_qty=holding_qty,
                         signal_snapshot=fallback_snapshot,
@@ -602,7 +637,7 @@ class WatchStateHelper:
                         signal_score=0.0,
                         action_bias="WAIT",
                         signal_state="WAIT",
-                        ma_summary=service._ma_relation_summary(fallback_snapshot),
+                        ma_summary=service._ma_relation_summary(fallback_snapshot, market),
                         note=f"[{strategy_result.flag or 'CACHE'}] stale_signal_cache_buy_blocked",
                         holding_qty=holding_qty,
                         signal_snapshot=fallback_snapshot,
@@ -620,7 +655,7 @@ class WatchStateHelper:
                     signal_score=0.0,
                     action_bias=signal_state,
                     signal_state=signal_state,
-                    ma_summary=service._ma_relation_summary(fallback_snapshot),
+                    ma_summary=service._ma_relation_summary(fallback_snapshot, market),
                     note=f"{note}|stale_signal_cache",
                     holding_qty=holding_qty,
                     signal_snapshot=fallback_snapshot,
@@ -644,13 +679,18 @@ class WatchStateHelper:
                 entry_by="" if persisted is None else str(persisted.get("entry_by", "") or ""),
             )
 
-        existing_flag, existing_entry_by, _ = service._get_strategy_labels(code, signal_snapshot)
+        existing_flag, existing_entry_by, _ = service._get_strategy_labels(
+            code,
+            signal_snapshot,
+            market,
+        )
         if held_position is not None:
             exit_setup = service._build_exit_setup(
                 signal_snapshot,
                 held_position.pnl_pct,
                 holding_qty,
                 symbol=code,
+                market=market,
                 take_profit_override=(
                     getattr(service.config.liquidity_lab, "overseas_take_profit_pct", None)
                     if market == "overseas"
@@ -667,7 +707,7 @@ class WatchStateHelper:
                     signal_score=0.0,
                     action_bias="SELL",
                     signal_state="SELL_READY",
-                    ma_summary=service._ma_relation_summary(signal_snapshot),
+                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
                     note=exit_setup.reason,
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
@@ -683,7 +723,7 @@ class WatchStateHelper:
                 signal_score=0.0,
                 action_bias="HOLD",
                 signal_state="HOLD",
-                ma_summary=service._ma_relation_summary(signal_snapshot),
+                ma_summary=service._ma_relation_summary(signal_snapshot, market),
                 note=exit_setup.note,
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
@@ -691,8 +731,8 @@ class WatchStateHelper:
                 entry_by=existing_entry_by,
             )
 
-        entry_setup = service._evaluate_entry_setup(signal_snapshot, code)
-        strategy_result = service._get_strategy_manager(code).evaluate(
+        entry_setup = service._evaluate_entry_setup(signal_snapshot, code, market)
+        strategy_result = service._get_strategy_manager(code, market).evaluate(
             code,
             signal_snapshot,
             commit=False,
@@ -712,7 +752,7 @@ class WatchStateHelper:
                     signal_score=entry_setup.score,
                     action_bias="WAIT",
                     signal_state="WAIT",
-                    ma_summary=service._ma_relation_summary(signal_snapshot),
+                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
                     note=f"[{strategy_result.flag or '-'}] {block_reason}",
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
@@ -733,7 +773,7 @@ class WatchStateHelper:
                     signal_score=entry_setup.score,
                     action_bias="WAIT",
                     signal_state="WAIT",
-                    ma_summary=service._ma_relation_summary(signal_snapshot),
+                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
                     note=f"[{strategy_result.flag or '-'}] {liquidity_block_reason}",
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
@@ -754,7 +794,7 @@ class WatchStateHelper:
                     signal_score=entry_setup.score,
                     action_bias="WAIT",
                     signal_state="WAIT",
-                    ma_summary=service._ma_relation_summary(signal_snapshot),
+                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
                     note=f"[{strategy_result.flag}] confirm_wait:{entry_setup.reason}",
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
@@ -782,7 +822,7 @@ class WatchStateHelper:
                     signal_score=0.0,
                     action_bias="WAIT",
                     signal_state="WAIT",
-                    ma_summary=service._ma_relation_summary(signal_snapshot),
+                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
                     note=f"재진입대기 {remaining_min}분",
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
@@ -790,7 +830,7 @@ class WatchStateHelper:
                     entry_by="",
                 )
             combined_score = (
-                service._get_strategy_manager(code).buy_score(signal_snapshot)
+                service._get_strategy_manager(code, market).buy_score(signal_snapshot)
                 + entry_setup.score
             )
             return service._make_watch_target_status(
@@ -802,7 +842,7 @@ class WatchStateHelper:
                 signal_score=round(combined_score, 2),
                 action_bias="BUY",
                 signal_state="BUY",
-                ma_summary=service._ma_relation_summary(signal_snapshot),
+                ma_summary=service._ma_relation_summary(signal_snapshot, market),
                 note=(
                     f"[{strategy_result.flag}] {entry_setup.reason}"
                     if entry_setup.ready
@@ -813,7 +853,7 @@ class WatchStateHelper:
                 strategy_flag=strategy_result.flag,
                 entry_by=strategy_result.entry_by,
             )
-        signal_state, note = service._derive_watch_state(signal_snapshot, code)
+        signal_state, note = service._derive_watch_state(signal_snapshot, code, market)
         if signal_state == "BUY":
             # derive_watch_state (evaluate_entry_setup's independent momentum
             # heuristic) can say "BUY" even when the PriorityStrategyManager
@@ -835,7 +875,7 @@ class WatchStateHelper:
                 signal_score=entry_setup.score,
                 action_bias="WAIT",
                 signal_state=signal_state,
-                ma_summary=service._ma_relation_summary(signal_snapshot),
+                ma_summary=service._ma_relation_summary(signal_snapshot, market),
                 note=f"{note}|strategy_unconfirmed_buy_blocked",
                 holding_qty=holding_qty,
                 signal_snapshot=signal_snapshot,
@@ -851,7 +891,7 @@ class WatchStateHelper:
             signal_score=entry_setup.score,
             action_bias=signal_state,
             signal_state=signal_state,
-            ma_summary=service._ma_relation_summary(signal_snapshot),
+            ma_summary=service._ma_relation_summary(signal_snapshot, market),
             note=note,
             holding_qty=holding_qty,
             signal_snapshot=signal_snapshot,
@@ -1127,11 +1167,16 @@ class WatchStateHelper:
             exit_reason: str | None = None
             priority: tuple[int, float] | None = None
             signal_snapshot = getattr(service, "_signal_cache", {}).get(symbol)
-            strategy_flag, entry_by, exit_by = service._get_strategy_labels(symbol, signal_snapshot)
+            strategy_flag, entry_by, exit_by = service._get_strategy_labels(
+                symbol,
+                signal_snapshot,
+                "overseas",
+            )
             if service._overseas_exit_price_guard_reason(
                 symbol=symbol,
                 quote=quote,
                 avg_price=avg_price,
+                signal_snapshot=signal_snapshot,
                 holding_qty=(
                     virtual_buy.qty
                     if is_virtual_only and virtual_buy
@@ -1238,11 +1283,16 @@ class WatchStateHelper:
             signal_snapshot = getattr(service, "_signal_cache", {}).get(held.symbol.upper())
             if signal_snapshot is None:
                 continue
-            strategy_flag, entry_by, exit_by = service._get_strategy_labels(symbol, signal_snapshot)
+            strategy_flag, entry_by, exit_by = service._get_strategy_labels(
+                symbol,
+                signal_snapshot,
+                "overseas",
+            )
             if service._overseas_exit_price_guard_reason(
                 symbol=symbol,
                 quote=quote,
                 avg_price=held.avg_price,
+                signal_snapshot=signal_snapshot,
                 holding_qty=held.quantity,
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .time_utils import parse_datetime
@@ -62,6 +63,45 @@ class SqliteRepository:
                 counts[table] = cursor.rowcount
             conn.commit()
         return counts
+
+    def prune_operational_logs(
+        self,
+        *,
+        api_call_retention_days: int,
+        telegram_message_retention_days: int,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Delete only expired high-volume operational logs.
+
+        Trading decisions, orders, events, and performance history are not
+        touched. SQLite can reuse the released pages without an online VACUUM.
+        """
+
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        targets = (
+            ("api_call_log", "created_at", int(api_call_retention_days)),
+            (
+                "telegram_message_log",
+                "created_at",
+                int(telegram_message_retention_days),
+            ),
+        )
+        deleted: dict[str, int] = {}
+        with self._connect() as conn:
+            for table, time_column, retention_days in targets:
+                if retention_days <= 0:
+                    deleted[table] = 0
+                    continue
+                cutoff = (current - timedelta(days=retention_days)).isoformat()
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE {time_column} < ?",
+                    (cutoff,),
+                )
+                deleted[table] = max(0, int(cursor.rowcount))
+            conn.commit()
+        return deleted
 
     def _initialize(self) -> None:
         with self._connect() as conn:

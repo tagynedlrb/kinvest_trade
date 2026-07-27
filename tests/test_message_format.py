@@ -47,5 +47,13 @@ def test_format_side_market_and_reason_korean() -> None:
     assert format_market_korean("both") == "국내+해외"
     assert format_reason_korean("stop_loss") == "손절"
     assert format_reason_korean("order_rejected") == "주문 거부"
+    assert (
+        format_reason_korean("domestic_circuit_breaker_halted")
+        == "국장 연속손실 서킷브레이커 활성"
+    )
+    assert (
+        format_reason_korean("overseas_circuit_breaker_halted")
+        == "미장 연속손실 서킷브레이커 활성"
+    )
     assert format_reason_korean("stale_live_overseas_order_cancel") == "해외 장기미체결 취소"
     assert format_reason_korean("stale_live_overseas_order_cancel_failed") == "해외 장기미체결 취소거부"

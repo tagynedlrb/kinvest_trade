@@ -267,6 +267,7 @@ class DomesticOrderHelper:
             signal_snapshot,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
+            market="domestic",
         )
         service._mark_session_owned(candidate.stock_code)
         repository = getattr(service, "repository", None)
@@ -307,7 +308,7 @@ class DomesticOrderHelper:
                 session_id=getattr(service, "_session_id", ""),
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
-                consecutive_losses=int(getattr(service, "_consecutive_losses", 0) or 0),
+                consecutive_losses=service._consecutive_losses_for_market("domestic"),
                 entry_price=buy_price,
                 qty_executed=qty,
                 net_pnl_usd=None,
@@ -320,7 +321,7 @@ class DomesticOrderHelper:
                 hold_duration_min=0.0,
                 entry_time=now_iso,
                 exit_cooldown_remaining=0.0,
-                cb_active=service._cb_active_flag(),
+                cb_active=service._cb_active_flag("domestic"),
                 pool_size=service._pool_size_for_market("domestic"),
             )
         service._persist_trade_state(
@@ -366,6 +367,7 @@ class DomesticOrderHelper:
         strategy_flag, entry_by, exit_by = service._get_strategy_labels(
             candidate.stock_code,
             signal_snapshot,
+            "domestic",
         )
         exit_by = exit_by or exit_reason
         entry_label, exit_label = service._build_sell_strategy_labels(
@@ -709,7 +711,7 @@ class DomesticOrderHelper:
             candidate.stock_code,
             fallback_price=held.avg_price,
         )
-        service._reset_strategy_position(candidate.stock_code)
+        service._reset_strategy_position(candidate.stock_code, "domestic")
         service._register_exit_cooldown(
             "domestic",
             candidate.stock_code,
@@ -722,10 +724,16 @@ class DomesticOrderHelper:
                 gross_pnl_krw=float(gross_pnl),
                 pnl_pct=float(pnl_pct),
             )
-            if service._is_trading_halted():
+            if service._is_trading_halted("domestic"):
+                domestic_losses = int(
+                    getattr(service, "_consecutive_losses_by_market", {}).get(
+                        "domestic",
+                        service._consecutive_losses,
+                    )
+                )
                 _logger.warning(
-                    "[CB] 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
-                    service._consecutive_losses,
+                    "[CB] 국장 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
+                    domestic_losses,
                     service._session_realised_krw,
                 )
                 notifier = getattr(service, "notifier", None)
@@ -733,9 +741,9 @@ class DomesticOrderHelper:
                     asyncio.create_task(
                         notifier.send(
                             f"⛔ 서킷브레이커 발동\n"
-                            f"연속손절 {service._consecutive_losses}회 | "
+                            f"시장=국장 | 연속손절 {domestic_losses}회 | "
                             f"세션손익 {service._session_realised_krw:+,.0f}원\n"
-                            f"신규 매수를 중단합니다."
+                            f"국장 신규 매수만 중단합니다."
                         )
                     )
             if entry_price is None:
@@ -780,8 +788,8 @@ class DomesticOrderHelper:
                 entry_by=entry_by,
                 exit_by=exit_by,
                 is_session_trade=1 if service._is_session_owned(candidate.stock_code) else 0,
-                consecutive_losses=int(getattr(service, "_consecutive_losses", 0) or 0),
-                hold_cycles=service._estimate_hold_cycles(candidate.stock_code),
+                consecutive_losses=service._consecutive_losses_for_market("domestic"),
+                hold_cycles=service._estimate_hold_cycles(candidate.stock_code, "domestic"),
                 entry_price=entry_price,
                 qty_executed=sell_qty,
                 net_pnl_usd=None,
@@ -793,7 +801,7 @@ class DomesticOrderHelper:
                 stock_name=candidate.stock_name,
                 hold_duration_min=hold_duration_min,
                 entry_time=entry_time_iso,
-                cb_active=service._cb_active_flag(),
+                cb_active=service._cb_active_flag("domestic"),
                 pool_size=service._pool_size_for_market("domestic"),
                 activity_score=candidate.activity_score,
             )

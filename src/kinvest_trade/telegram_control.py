@@ -19,6 +19,7 @@ from .config import AppConfig
 from .git_uploader import upload_log
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from .market_calendar import is_krx_holiday, is_nyse_holiday
+from .market_policy import get_market_auto_trade_config
 from .market_sessions import (
     determine_loop_interval_sec,
     get_us_trading_session,
@@ -329,6 +330,7 @@ class TelegramLiquidityLabController:
         if not self.notifier.enabled:
             raise RuntimeError("Telegram bot token/chat id are required for telegram-control.")
         self._restore_runtime_state()
+        self._prune_expired_operational_logs()
         self._write_runtime_state()
         try:
             await self.notifier.set_commands(BOT_COMMANDS)
@@ -385,6 +387,34 @@ class TelegramLiquidityLabController:
                 await stop_task
             signal.signal(signal.SIGTERM, previous_sigterm_handler)
             _release_pid_lock()
+
+    def _prune_expired_operational_logs(self) -> None:
+        storage = self.config.storage
+        try:
+            deleted = self.repository.prune_operational_logs(
+                api_call_retention_days=int(
+                    getattr(storage, "api_call_log_retention_days", 30) or 0
+                ),
+                telegram_message_retention_days=(
+                    int(
+                        getattr(
+                            storage,
+                            "telegram_message_log_retention_days",
+                            90,
+                        )
+                        or 0
+                    )
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            _logger.exception("operational_log_retention_failed")
+            return
+        if any(deleted.values()):
+            _logger.info(
+                "[RETENTION] 만료 운영로그 정리 api_calls=%d telegram=%d",
+                deleted.get("api_call_log", 0),
+                deleted.get("telegram_message_log", 0),
+            )
 
     async def _scheduler_loop(self) -> None:
         while True:
@@ -1161,16 +1191,24 @@ class TelegramLiquidityLabController:
             if self.lab_service is not None:
                 lab_service = self.lab_service
                 setattr(lab_service, "_consecutive_losses", 0)
+                setattr(
+                    lab_service,
+                    "_consecutive_losses_by_market",
+                    {"domestic": 0, "overseas": 0},
+                )
                 setattr(lab_service, "_session_realised_krw", 0.0)
                 if hasattr(lab_service, "_session_realised_krw_overseas"):
                     setattr(lab_service, "_session_realised_krw_overseas", 0.0)
                 setattr(lab_service, "_daily_loss_date", None)
                 setattr(lab_service, "_halted_at", None)
+                setattr(lab_service, "_halted_at_by_market", {})
                 setattr(lab_service, "_daily_halted_at", None)
                 reject_cb = getattr(lab_service, "cb", None)
                 if reject_cb is not None:
                     reject_cb.reset_order_rejections()
-                    reject_cb.reset()
+                    reset_cb = getattr(reject_cb, "reset", None)
+                    if callable(reset_cb):
+                        reset_cb()
                 for attr in (
                     "_exit_cooldown",
                     "_wait_cycles",
@@ -1348,7 +1386,17 @@ class TelegramLiquidityLabController:
         self.mode = target_mode
         if verb == "resumed" and self.lab_service is not None:
             setattr(self.lab_service, "_consecutive_losses", 0)
+            setattr(
+                self.lab_service,
+                "_consecutive_losses_by_market",
+                {"domestic": 0, "overseas": 0},
+            )
             setattr(self.lab_service, "_halted_at", None)
+            setattr(self.lab_service, "_halted_at_by_market", {})
+            cb = getattr(self.lab_service, "cb", None)
+            reset_cb = getattr(cb, "reset", None)
+            if callable(reset_cb):
+                reset_cb()
         self.next_run_at = datetime.now(timezone.utc)
         self.last_error = None
         self._consecutive_errors = 0
@@ -1428,15 +1476,28 @@ class TelegramLiquidityLabController:
         if self.lab_service is None:
             await self.notifier.send("⚠️ lab 인스턴스에 접근할 수 없습니다.")
             return
+        previous_by_market = dict(
+            getattr(self.lab_service, "_consecutive_losses_by_market", {}) or {}
+        )
         previous = int(getattr(self.lab_service, "_consecutive_losses", 0) or 0)
         setattr(self.lab_service, "_consecutive_losses", 0)
+        setattr(
+            self.lab_service,
+            "_consecutive_losses_by_market",
+            {"domestic": 0, "overseas": 0},
+        )
         setattr(self.lab_service, "_halted_at", None)
+        setattr(self.lab_service, "_halted_at_by_market", {})
         reject_cb = getattr(self.lab_service, "cb", None)
         if reject_cb is not None:
             reject_cb.reset_order_rejections()
+            reset_cb = getattr(reject_cb, "reset", None)
+            if callable(reset_cb):
+                reset_cb()
         await self.notifier.send(
             f"✅ 서킷브레이커 수동 해제\n"
-            f"연속손절 카운터: {previous} → 0\n"
+            f"국장 연속손절: {int(previous_by_market.get('domestic', previous) or 0)} → 0\n"
+            f"미장 연속손절: {int(previous_by_market.get('overseas', previous) or 0)} → 0\n"
             f"주문거부 서킷브레이커도 함께 초기화\n"
             f"다음 사이클부터 매수 재개"
         )
@@ -2345,7 +2406,10 @@ class TelegramLiquidityLabController:
         qty = int(order_result.get("qty", 0) or 0)
         current_price = self._parse_float(candidate.get("last_price") or held.get("current_price"))
         avg_price = self._parse_float(held.get("avg_price"))
-        fx_rate = self._parse_float(candidate.get("fx_rate_krw")) or self.config.auto_trade.usd_krw_fallback_rate
+        overseas_policy = get_market_auto_trade_config(self.config, "overseas")
+        fx_rate = self._parse_float(candidate.get("fx_rate_krw")) or float(
+            getattr(overseas_policy, "usd_krw_fallback_rate", 1350.0)
+        )
         if qty <= 0 or current_price <= 0 or avg_price <= 0:
             return 0
         return int(round((current_price - avg_price) * qty * fx_rate))

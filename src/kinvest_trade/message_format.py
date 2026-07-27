@@ -110,6 +110,10 @@ REASON_KOREAN_MAP = {
     "macd_golden": "MACD 골든크로스",
     "overseas_position_cap_reached": "해외 동시보유 한도 도달(정상)",
     "total_position_cap_reached": "국내+해외 합산 한도 도달(정상)",
+    "domestic_circuit_breaker_halted": "국장 연속손실 서킷브레이커 활성",
+    "overseas_circuit_breaker_halted": "미장 연속손실 서킷브레이커 활성",
+    "domestic_order_reject_halted": "국장 매수 주문거부 차단 활성",
+    "overseas_order_reject_halted": "미장 매수 주문거부 차단 활성",
 }
 
 

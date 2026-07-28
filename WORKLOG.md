@@ -42,6 +42,20 @@
   `integrity_check=ok`, 외래키 위반 0, SHA-256
   `212098b4ab7b311e30bd249b17ebf234b6d58bc7c5da6b5d2c0c6370bc4bd55c`이다.
 
+### 배포 검증
+- 커밋 `84b58cf`을 `git_token.txt` credential helper로 원격 `master`에
+  푸시하고 서비스를 재시작했다. PID `1273427`, `NRestarts=0`,
+  `active/running`이다.
+- 첫 폐장 주기에서 현재 위험일 `2026-07-29`는 확정 청산 0건·손익 0원으로
+  복원됐고 기존 해외 연속손실 2회도 유지됐다. 재시작 이후 KIS API 호출은
+  0건이며, FSUN 157주·HUBB 11주는 `PENDING`, 체결 0, 전량 잔여,
+  `last_checked_at=22:43:51 UTC`로 불변이다.
+- 운영 DB는 `integrity_check=ok`, 외래키 위반 0이다. 정책평가
+  `policy_evaluation_log.id=35`는 기존 폐장 폴링 교정만으로 놓쳤던 시간귀속
+  오류를 회귀 테스트와 공식 필드 정의로 확인했으므로 고맥락 추론의 비교가치를
+  `confirmed`로 기록했다. 텔레그램 개선보고는
+  `telegram_message_log.id=1123`, 전송 성공이다.
+
 ## [2026-07-28] 양 시장 폐장 중 체결원장 반복조회 보류
 
 ### 운영 증거

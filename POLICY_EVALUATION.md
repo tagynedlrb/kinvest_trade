@@ -68,6 +68,15 @@ cannot train or score policy.
   from a watch cache's mutable update time. Persist it separately, fall back to
   a broker-confirmed buy for legacy state, prefer broker average fill price over
   a submitted-price cache, and retain entry context across partial exits.
+- `cycle_log.entry_time` and `hold_duration_min` are derived evaluation fields.
+  Their canonical interval runs from the active broker-confirmed buy fill to
+  the first sell submission in the confirmed sell execution group. A repair
+  may update only these derived fields, only when no fully filled sell
+  intervenes; raw execution rows remain immutable evidence.
+- A replacement order may carry a newer, more severe exit signal. Performance
+  attribution still uses the first sell submission's reason and signal
+  snapshot because that decision initiated the exit. Replacement latency and
+  its later signal remain available in the raw execution group for audit.
 - A fill caused by a missing safety state still counts in account PnL and risk.
   It is incident evidence, not evidence for loosening the entry formula; its
   policy attribution must be called out in later regime reviews.

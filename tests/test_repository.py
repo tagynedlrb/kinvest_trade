@@ -736,6 +736,79 @@ def test_latest_position_entry_time_uses_confirmed_buy_fill(
     assert repository.get_latest_position_entry_time("overseas", "COIN") is None
 
 
+def test_repair_confirmed_cycle_entry_timing_uses_active_buy_fill(
+    tmp_path,
+    save_confirmed_buy,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    save_confirmed_buy(
+        repository,
+        logged_at="2026-07-06T10:00:00+00:00",
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="BUY_REAL",
+        action_reason="strategy_buy_signal",
+        price=100.0,
+        qty_executed=2,
+        entry_price=100.0,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-06T11:00:00+00:00",
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        price=101.0,
+        pnl_pct=0.01,
+        qty_executed=2,
+        entry_price=100.0,
+        entry_time="2026-07-06T10:45:00+00:00",
+        hold_duration_min=15.0,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-06T12:00:00+00:00",
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="stale_balance_duplicate",
+        price=101.0,
+        pnl_pct=0.01,
+        qty_executed=2,
+        entry_price=100.0,
+        entry_time="2026-07-06T11:45:00+00:00",
+        hold_duration_min=15.0,
+    )
+
+    dry_run = repository.repair_confirmed_cycle_entry_timing()
+
+    assert len(dry_run) == 1
+    assert dry_run[0]["action_reason"] == "trend_filter_lost"
+    assert dry_run[0]["canonical_entry_time"] == "2026-07-06T10:00:00+00:00"
+    assert dry_run[0]["canonical_hold_duration_min"] == 60.0
+    before = repository.query_cycle_log(action_bias="SELL_REAL", limit=10)
+    original = next(row for row in before if row["action_reason"] == "trend_filter_lost")
+    assert original["entry_time"] == "2026-07-06T10:45:00+00:00"
+
+    applied = repository.repair_confirmed_cycle_entry_timing(apply=True)
+
+    assert applied == dry_run
+    after = repository.query_cycle_log(action_bias="SELL_REAL", limit=10)
+    repaired = next(row for row in after if row["action_reason"] == "trend_filter_lost")
+    duplicate = next(
+        row for row in after if row["action_reason"] == "stale_balance_duplicate"
+    )
+    assert repaired["entry_time"] == "2026-07-06T10:00:00+00:00"
+    assert repaired["hold_duration_min"] == 60.0
+    assert duplicate["entry_time"] == "2026-07-06T11:45:00+00:00"
+    assert repository.repair_confirmed_cycle_entry_timing() == []
+
+
 def test_get_lab_symbol_state_falls_back_to_cycle_log(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_cycle_log(

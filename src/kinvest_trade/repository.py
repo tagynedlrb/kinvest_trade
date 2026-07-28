@@ -2416,6 +2416,202 @@ class SqliteRepository:
             return None
         return max(candidates, key=lambda item: item[0])[1]
 
+    def repair_confirmed_cycle_entry_timing(
+        self,
+        *,
+        apply: bool = False,
+        tolerance_seconds: float = 5.0,
+    ) -> list[dict]:
+        """Audit or repair SELL_REAL entry timing from confirmed execution groups."""
+        tolerance = max(0.0, float(tolerance_seconds))
+        repairs: list[dict] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    cycle_log.id,
+                    cycle_log.market,
+                    cycle_log.symbol,
+                    cycle_log.action_reason,
+                    cycle_log.execution_group_id,
+                    cycle_log.entry_time,
+                    cycle_log.hold_duration_min,
+                    MIN(sell_execution.created_at) AS signal_at
+                FROM cycle_log
+                JOIN broker_order_executions AS sell_execution
+                  ON sell_execution.execution_group_id =
+                     cycle_log.execution_group_id
+                 AND UPPER(sell_execution.side) = 'SELL'
+                WHERE cycle_log.action_bias = 'SELL_REAL'
+                  AND COALESCE(cycle_log.execution_group_id, '') != ''
+                  AND EXISTS (
+                      SELECT 1
+                      FROM broker_order_executions AS confirmed_sell
+                      WHERE confirmed_sell.execution_group_id =
+                            cycle_log.execution_group_id
+                        AND UPPER(confirmed_sell.side) = 'SELL'
+                        AND confirmed_sell.filled_qty > 0
+                  )
+                GROUP BY cycle_log.id
+                ORDER BY cycle_log.id
+                """
+            ).fetchall()
+            for row in rows:
+                signal_text = str(row["signal_at"] or "").strip()
+                signal_at = parse_datetime(signal_text)
+                if signal_at is None:
+                    continue
+                buy = conn.execute(
+                    """
+                    WITH buy_groups AS (
+                        SELECT
+                            execution_group_id,
+                            MIN(
+                                COALESCE(
+                                    fill_recorded_at,
+                                    updated_at,
+                                    created_at
+                                )
+                            ) AS entry_at,
+                            MAX(
+                                COALESCE(
+                                    fill_recorded_at,
+                                    updated_at,
+                                    created_at
+                                )
+                            ) AS latest_fill_at
+                        FROM broker_order_executions
+                        WHERE market = ?
+                          AND symbol = ?
+                          AND UPPER(side) = 'BUY'
+                          AND filled_qty > 0
+                        GROUP BY execution_group_id
+                    )
+                    SELECT entry_at, latest_fill_at
+                    FROM buy_groups
+                    WHERE latest_fill_at <= ?
+                    ORDER BY latest_fill_at DESC
+                    LIMIT 1
+                    """,
+                    (
+                        str(row["market"] or "").strip().lower(),
+                        str(row["symbol"] or "").strip().upper(),
+                        signal_text,
+                    ),
+                ).fetchone()
+                if buy is None:
+                    continue
+                canonical_entry_text = str(buy["entry_at"] or "").strip()
+                canonical_entry_at = parse_datetime(canonical_entry_text)
+                if canonical_entry_at is None or canonical_entry_at > signal_at:
+                    continue
+
+                prior_sell = conn.execute(
+                    """
+                    WITH sell_groups AS (
+                        SELECT
+                            execution_group_id,
+                            MAX(group_target_qty) AS target_qty,
+                            SUM(COALESCE(filled_qty, 0)) AS filled_qty,
+                            MAX(
+                                COALESCE(
+                                    fill_recorded_at,
+                                    updated_at,
+                                    created_at
+                                )
+                            ) AS completed_at
+                        FROM broker_order_executions
+                        WHERE market = ?
+                          AND symbol = ?
+                          AND UPPER(side) = 'SELL'
+                          AND execution_group_id != ?
+                        GROUP BY execution_group_id
+                    )
+                    SELECT MAX(completed_at) AS completed_at
+                    FROM sell_groups
+                    WHERE target_qty > 0
+                      AND filled_qty >= target_qty
+                      AND completed_at <= ?
+                    """,
+                    (
+                        str(row["market"] or "").strip().lower(),
+                        str(row["symbol"] or "").strip().upper(),
+                        str(row["execution_group_id"] or ""),
+                        signal_text,
+                    ),
+                ).fetchone()
+                prior_sell_at = parse_datetime(
+                    ""
+                    if prior_sell is None
+                    else str(prior_sell["completed_at"] or "")
+                )
+                if prior_sell_at is not None and prior_sell_at >= canonical_entry_at:
+                    continue
+
+                canonical_hold_min = round(
+                    max(
+                        0.0,
+                        (signal_at - canonical_entry_at).total_seconds() / 60.0,
+                    ),
+                    2,
+                )
+                recorded_entry_text = str(row["entry_time"] or "").strip()
+                recorded_entry_at = parse_datetime(recorded_entry_text)
+                entry_error_seconds = (
+                    float("inf")
+                    if recorded_entry_at is None
+                    else abs(
+                        (recorded_entry_at - canonical_entry_at).total_seconds()
+                    )
+                )
+                recorded_hold = row["hold_duration_min"]
+                hold_error_seconds = (
+                    float("inf")
+                    if recorded_hold is None
+                    else abs(
+                        (float(recorded_hold) - canonical_hold_min) * 60.0
+                    )
+                )
+                if (
+                    entry_error_seconds <= tolerance
+                    and hold_error_seconds <= tolerance
+                ):
+                    continue
+
+                repair = {
+                    "cycle_log_id": int(row["id"]),
+                    "market": str(row["market"] or ""),
+                    "symbol": str(row["symbol"] or ""),
+                    "action_reason": str(row["action_reason"] or ""),
+                    "signal_at": signal_text,
+                    "recorded_entry_time": recorded_entry_text or None,
+                    "canonical_entry_time": canonical_entry_text,
+                    "recorded_hold_duration_min": (
+                        None
+                        if recorded_hold is None
+                        else float(recorded_hold)
+                    ),
+                    "canonical_hold_duration_min": canonical_hold_min,
+                }
+                repairs.append(repair)
+                if apply:
+                    conn.execute(
+                        """
+                        UPDATE cycle_log
+                        SET entry_time = ?,
+                            hold_duration_min = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            canonical_entry_text,
+                            canonical_hold_min,
+                            int(row["id"]),
+                        ),
+                    )
+            if apply:
+                conn.commit()
+        return repairs
+
     def list_lab_symbol_states(
         self,
         *,

@@ -691,6 +691,12 @@ python3 main.py overseas-order-test buy <종목코드> --exchange <거래소코�
 python3 main.py indicator-check <국내종목코드> --timeframe minute
 # 국내 종목 일봉 기준 지표 조회
 python3 main.py indicator-check <국내종목코드> --timeframe daily
+# 최근 7일 KIS 체결확정 거래와 마감 시장 레짐 분석
+PYTHONPATH=src python3 scripts/analyze_trades.py data/trading.db --days 7
+# 확정 매수 원장 대비 SELL_REAL 진입시각·보유시간 감사(변경 없음)
+PYTHONPATH=src python3 scripts/repair_confirmed_hold_times.py data/trading.db
+# 감사 대상만 온라인 백업 후 파생 cycle_log 필드에 적용
+PYTHONPATH=src python3 scripts/repair_confirmed_hold_times.py data/trading.db --apply
 # 국내 매수 가능 수량 조회
 python3 main.py orderable-check <국내종목코드> --price <가격> --order-division 01
 # 국내 매수 주문 미리보기

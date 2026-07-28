@@ -17,6 +17,11 @@
 - Domestic and overseas policies are independently owned and versioned.
 - Shared policy values are an initial baseline only. A result from one market
   is not evidence for changing the other market.
+- Operational diagnostics that may initiate a policy review are also
+  market-specific. Exit-reason ratios, minimum-hold warnings, and their audit
+  events must group by market and display that market's configured value;
+  combining KRX and US exits can hide a local problem or falsely implicate the
+  other formula.
 - Domestic performance is joined to the final KOSPI session regime.
 - Overseas performance is joined to the final NASDAQ Composite session regime.
 - Provisional benchmark rows are stored for monitoring but excluded from policy
@@ -185,6 +190,10 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   comes from one market day, or is concentrated in a hostile regime.
 - Report both submission and confirmed-fill frequency by market, and only
   during sessions orderable by the active broker profile.
+- A high share of near-flat, after-cost trend exits is evidence to inspect
+  turnover, not automatic evidence to delay exits. Compare post-exit paths at
+  declared horizons and require multiple final benchmark sessions before
+  changing a market's hold hysteresis. Keep hard stops outside that delay.
 
 ## Down-market inverse policy
 
@@ -258,6 +267,12 @@ the current direction is wrong.
   wins and -98,792.54 KRW net. `VWAP+RSI` was positive in four same-day exits,
   while `VWAP+VOL` was negative in six. Neither is eligible for a policy change
   because each bucket still spans fewer than three final sessions.
+- Overseas `trend_filter_lost` review: ten confirmed exits span only two final
+  NASDAQ sessions. Observable post-exit prices had mean returns of -0.066% at
+  five minutes (10 rows), -0.115% at fifteen (7), +0.040% at thirty (6), and
+  -0.049% at sixty (7), using a five-minute matching tolerance. Coverage is
+  incomplete and direction is mixed, so retain the 30-cycle minimum hold and
+  reject both a longer exit delay and a frequency increase for now.
 - Do not extend the aggregate standalone-strategy guard to combination labels
   from the current 48-hour average alone. Under True Range, the eleven
   `VWAP+VOL` exits belong to the same sideways/normal-activity/normal-volatility

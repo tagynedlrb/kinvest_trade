@@ -3218,7 +3218,7 @@ class SqliteRepository:
         return result
 
     def get_sell_reason_counts(self, *, after_logged_at: str = "") -> list[dict]:
-        """Return broker-confirmed sell counts grouped by action_reason."""
+        """Return confirmed sell counts grouped by market and action reason."""
         params: list[object] = []
         where = [
             "action_bias = 'SELL_REAL'",
@@ -3231,12 +3231,13 @@ class SqliteRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT COALESCE(action_reason, '') AS action_reason,
+                SELECT lower(COALESCE(market, '')) AS market,
+                       COALESCE(action_reason, '') AS action_reason,
                        COUNT(*) AS cnt
                 FROM cycle_log
                 WHERE {' AND '.join(where)}
-                GROUP BY action_reason
-                ORDER BY cnt DESC
+                GROUP BY lower(COALESCE(market, '')), action_reason
+                ORDER BY market, cnt DESC
                 """,
                 params,
             ).fetchall()

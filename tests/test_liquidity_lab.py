@@ -5457,14 +5457,71 @@ def test_check_trend_filter_lost_ratio_saves_warning_event(
         )
     service._cycle_count = 200
 
-    service._check_trend_filter_lost_ratio()
+    async def evaluate_with_notifier() -> None:
+        service._check_trend_filter_lost_ratio()
+        await asyncio.sleep(0)
+
+    asyncio.run(evaluate_with_notifier())
 
     events = service.repository.list_event_log(event_type="trend_filter_lost_ratio_high", limit=1)
     assert len(events) == 1
     detail = json.loads(events[0]["detail"])
+    assert events[0]["market"] == "overseas"
     assert detail["trend_filter_lost"] == 4
     assert detail["total_sell_real"] == 6
     assert detail["ratio"] == 0.6667
+
+
+def test_check_trend_filter_lost_ratio_evaluates_markets_independently(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc).isoformat()
+    for idx in range(6):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=now,
+            market="domestic",
+            symbol=f"KR{idx}",
+            exchange_code="KRX",
+            action_reason=(
+                "trend_filter_lost"
+                if idx < 4
+                else "stop_loss"
+            ),
+            pnl_pct=-0.01,
+            qty_executed=1,
+        )
+        save_confirmed_sell(
+            service.repository,
+            logged_at=now,
+            market="overseas",
+            symbol=f"US{idx}",
+            exchange_code="NASD",
+            action_reason="stop_loss",
+            pnl_pct=-0.01,
+            qty_executed=1,
+        )
+    service._cycle_count = 200
+
+    async def evaluate_with_notifier() -> None:
+        service._check_trend_filter_lost_ratio()
+        await asyncio.sleep(0)
+
+    asyncio.run(evaluate_with_notifier())
+
+    events = service.repository.list_event_log(
+        event_type="trend_filter_lost_ratio_high",
+        limit=10,
+    )
+    assert len(events) == 1
+    assert events[0]["market"] == "domestic"
+    detail = json.loads(events[0]["detail"])
+    assert detail["trend_filter_lost"] == 4
+    assert detail["total_sell_real"] == 6
+    assert detail["ratio"] == 0.6667
+    assert "국내=67% (4/6건)" in service.notifier.messages[-1]
+    assert "해외=" not in service.notifier.messages[-1]
 
 
 def test_active_overseas_pool_includes_held_symbols_without_positions() -> None:

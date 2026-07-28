@@ -1333,6 +1333,15 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(
         action_bias="SELL_REAL",
         action_reason="stop_loss",
     )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-02T00:01:30+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+    )
     repository.save_cycle_log(
         logged_at="2026-07-02T00:02:00+00:00",
         market="overseas",
@@ -1344,8 +1353,15 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(
 
     rows = repository.get_sell_reason_counts(after_logged_at="2026-07-02T00:00:00+00:00")
 
-    by_reason = {row["action_reason"]: row["cnt"] for row in rows}
-    assert by_reason == {"trend_filter_lost": 1, "stop_loss": 1}
+    by_reason = {
+        (row["market"], row["action_reason"]): row["cnt"]
+        for row in rows
+    }
+    assert by_reason == {
+        ("domestic", "trend_filter_lost"): 1,
+        ("overseas", "trend_filter_lost"): 1,
+        ("overseas", "stop_loss"): 1,
+    }
 
 
 def test_get_recent_strategy_guard_performance_groups_executed_sell_real(

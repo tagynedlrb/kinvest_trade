@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Callable
 
 from .config import AppConfig
 from .market_policy import get_market_auto_trade_config
+from .message_format import format_market_korean
 from .time_utils import ensure_timezone
 
 if TYPE_CHECKING:
@@ -322,44 +323,82 @@ class LabRuntimeManager:
         cycle_no = self._cycle_no
         if cycle_no <= 0 or cycle_no % 200 != 0:
             return
+        if self.last_trend_filter_alert_cycle == cycle_no:
+            return
         repository = self._repository
         if repository is None or not hasattr(repository, "get_sell_reason_counts"):
             return
         after_logged_at = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         rows = repository.get_sell_reason_counts(after_logged_at=after_logged_at)
-        total = sum(int(row.get("cnt") or 0) for row in rows)
-        trend_filter_lost = sum(
-            int(row.get("cnt") or 0)
-            for row in rows
-            if "trend_filter" in str(row.get("action_reason") or "")
-        )
-        if total <= 5:
-            return
-        ratio = trend_filter_lost / total
-        if ratio <= 0.50:
-            return
-        if self.last_trend_filter_alert_cycle == cycle_no:
+        counts_by_market: dict[str, dict[str, int]] = {}
+        for row in rows:
+            market = str(row.get("market") or "").strip().lower()
+            if not market:
+                continue
+            bucket = counts_by_market.setdefault(
+                market,
+                {"total": 0, "trend_filter_lost": 0},
+            )
+            count = int(row.get("cnt") or 0)
+            bucket["total"] += count
+            if "trend_filter" in str(row.get("action_reason") or ""):
+                bucket["trend_filter_lost"] += count
+
+        alerts: list[dict[str, object]] = []
+        market_order = {"domestic": 0, "overseas": 1}
+        for market, counts in sorted(
+            counts_by_market.items(),
+            key=lambda item: (market_order.get(item[0], 2), item[0]),
+        ):
+            total = counts["total"]
+            trend_filter_lost = counts["trend_filter_lost"]
+            if total <= 5:
+                continue
+            ratio = trend_filter_lost / total
+            if ratio <= 0.50:
+                continue
+            market_policy = get_market_auto_trade_config(self._config, market)
+            alerts.append(
+                {
+                    "market": market,
+                    "trend_filter_lost": trend_filter_lost,
+                    "total": total,
+                    "ratio": ratio,
+                    "min_hold_before_trend_exit": int(
+                        getattr(
+                            market_policy,
+                            "min_hold_before_trend_exit",
+                            12,
+                        )
+                        or 12
+                    ),
+                }
+            )
+
+        if not alerts:
             return
         self.last_trend_filter_alert_cycle = cycle_no
-        _logger.warning(
-            "[TREND] trend_filter_lost 비율 %.0f%% (%d/%d)",
-            ratio * 100.0,
-            trend_filter_lost,
-            total,
-        )
-        self.save_event(
-            event_type="trend_filter_lost_ratio_high",
-            detail={
-                "trend_filter_lost": trend_filter_lost,
-                "total_sell_real": total,
-                "ratio": round(ratio, 4),
-                "min_hold_before_trend_exit": getattr(
-                    get_market_auto_trade_config(self._config, "overseas"),
-                    "min_hold_before_trend_exit",
-                    12,
-                ),
-            },
-        )
+        for alert in alerts:
+            market = str(alert["market"])
+            _logger.warning(
+                "[TREND] %s trend_filter_lost 비율 %.0f%% (%d/%d)",
+                market,
+                float(alert["ratio"]) * 100.0,
+                int(alert["trend_filter_lost"]),
+                int(alert["total"]),
+            )
+            self.save_event(
+                event_type="trend_filter_lost_ratio_high",
+                market=market,
+                detail={
+                    "trend_filter_lost": alert["trend_filter_lost"],
+                    "total_sell_real": alert["total"],
+                    "ratio": round(float(alert["ratio"]), 4),
+                    "min_hold_before_trend_exit": alert[
+                        "min_hold_before_trend_exit"
+                    ],
+                },
+            )
         notifier = self._notifier
         if notifier is None:
             return
@@ -372,8 +411,17 @@ class LabRuntimeManager:
                 "\n".join(
                     [
                         "⚠️ trend_filter_lost 비율 경고",
-                        f"비율={ratio * 100:.0f}% ({trend_filter_lost}/{total}건)",
                         "범위=최근 24시간 SELL_REAL",
+                        *[
+                            (
+                                f"{format_market_korean(str(alert['market']))}="
+                                f"{float(alert['ratio']) * 100:.0f}% "
+                                f"({int(alert['trend_filter_lost'])}/"
+                                f"{int(alert['total'])}건) "
+                                f"최소보유={int(alert['min_hold_before_trend_exit'])}주기"
+                            )
+                            for alert in alerts
+                        ],
                         "확인=min_hold_before_trend_exit/추세청산 조건",
                     ]
                 )

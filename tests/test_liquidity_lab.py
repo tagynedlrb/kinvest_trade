@@ -5373,7 +5373,7 @@ def test_restore_strategy_contexts_recovers_held_position_after_restart() -> Non
         holding_qty=57,
         last_price=170.29,
         pnl_pct=0.028,
-        entry_price=165.03,
+        entry_price=166.0,
         entry_time=entry_time,
         peak_price=171.0,
         has_position=1,

@@ -497,7 +497,7 @@ class WatchStateHelper:
         triggered = service._decode_strategy_ids(strategy_flag, entry_by)
         if not triggered:
             return
-        entry_price = float(state.get("entry_price") or avg_price or current_price or 0.0)
+        entry_price = float(avg_price or state.get("entry_price") or current_price or 0.0)
         if entry_price <= 0:
             entry_price = max(float(avg_price or 0.0), float(current_price or 0.0))
         entry_time = self.resolve_position_entry_time(market, symbol, state)

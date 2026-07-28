@@ -1289,6 +1289,130 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def has_inverse_policy_observation(
+        self,
+        *,
+        event_type: str,
+        market: str,
+        symbol: str,
+        expected_session_date: str,
+        reason: str,
+    ) -> bool:
+        """Return whether one durable observation key was already recorded."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT detail
+                FROM event_log
+                WHERE event_type = ?
+                  AND market = ?
+                  AND symbol = ?
+                ORDER BY id DESC
+                """,
+                (
+                    str(event_type),
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
+                ),
+            ).fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(str(row["detail"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (
+                str(detail.get("expected_session_date") or "")
+                == str(expected_session_date)
+                and str(detail.get("reason") or "") == str(reason)
+            ):
+                return True
+        return False
+
+    def get_inverse_policy_observation_summary(
+        self,
+        *,
+        after_logged_at: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Summarize unique inverse-policy observations without restart inflation."""
+        observation_types = (
+            "inverse_regime_observed",
+            "inverse_quote_failed",
+            "inverse_quote_excluded",
+            "inverse_product_blocked",
+            "inverse_product_ready",
+        )
+        placeholders = ", ".join("?" for _ in observation_types)
+        where = [f"event_type IN ({placeholders})"]
+        params: list[object] = [*observation_types]
+        if after_logged_at:
+            where.append("logged_at >= ?")
+            params.append(str(after_logged_at))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT logged_at, event_type, market, symbol, detail
+                FROM event_log
+                WHERE {' AND '.join(where)}
+                ORDER BY id DESC
+                """,
+                params,
+            ).fetchall()
+
+        grouped: dict[tuple[str, str, str], dict] = {}
+        for row in rows:
+            try:
+                detail = json.loads(str(row["detail"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                detail = {}
+            event_type = str(row["event_type"] or "")
+            market = str(row["market"] or "").strip().lower()
+            reason = str(detail.get("reason") or "unknown")
+            key = (market, event_type, reason)
+            bucket = grouped.setdefault(
+                key,
+                {
+                    "market": market,
+                    "event_type": event_type,
+                    "reason": reason,
+                    "observation_count": 0,
+                    "latest_logged_at": str(row["logged_at"] or ""),
+                    "symbols": set(),
+                    "_keys": set(),
+                },
+            )
+            symbol = str(row["symbol"] or "").strip().upper()
+            session_date = str(detail.get("expected_session_date") or "")
+            observation_key = (session_date, symbol)
+            keys = bucket["_keys"]
+            if observation_key not in keys:
+                keys.add(observation_key)
+                bucket["observation_count"] += 1
+            if symbol:
+                bucket["symbols"].add(symbol)
+
+        result: list[dict] = []
+        for bucket in grouped.values():
+            result.append(
+                {
+                    "market": bucket["market"],
+                    "event_type": bucket["event_type"],
+                    "reason": bucket["reason"],
+                    "observation_count": bucket["observation_count"],
+                    "latest_logged_at": bucket["latest_logged_at"],
+                    "symbols": sorted(bucket["symbols"]),
+                }
+            )
+        result.sort(
+            key=lambda row: (
+                -int(row["observation_count"]),
+                str(row["market"]),
+                str(row["event_type"]),
+                str(row["reason"]),
+            )
+        )
+        return result[: max(1, int(limit))]
+
     def save_broker_order_event(
         self,
         *,
@@ -1937,6 +2061,42 @@ class SqliteRepository:
             for row in rows
             if (decoded := self._decode_broker_execution_row(row)) is not None
         ]
+
+    def get_recent_completed_sell_execution(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        after_updated_at: str,
+    ) -> dict | None:
+        """Return a recent execution group only when its full sell target filled."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    execution_group_id,
+                    MAX(group_target_qty) AS target_qty,
+                    SUM(COALESCE(filled_qty, 0)) AS filled_qty,
+                    MAX(updated_at) AS latest_updated_at,
+                    MAX(fill_recorded_at) AS latest_fill_recorded_at
+                FROM broker_order_executions
+                WHERE market = ?
+                  AND symbol = ?
+                  AND side = 'SELL'
+                  AND updated_at >= ?
+                GROUP BY execution_group_id
+                HAVING MAX(group_target_qty) > 0
+                   AND SUM(COALESCE(filled_qty, 0)) >= MAX(group_target_qty)
+                ORDER BY latest_updated_at DESC
+                LIMIT 1
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
+                    str(after_updated_at),
+                ),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def list_submitted_order_audit_rows(
         self,

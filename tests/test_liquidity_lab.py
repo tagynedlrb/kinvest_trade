@@ -949,6 +949,162 @@ def test_select_overseas_exit_targets_uses_held_qty_when_orderable_is_zero() -> 
     assert signal_snapshot is None
 
 
+def test_select_overseas_exit_targets_suppresses_stale_balance_after_full_fill() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        liquidity_lab=SimpleNamespace(
+            overseas_take_profit_pct=0.025,
+            overseas_stop_loss_pct=0.015,
+            loop_interval_sec=25,
+        )
+    )
+    service.repository = _build_repository()
+    service.notifier = DummyNotifier()
+    service._session_id = "post-fill-test"
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    now = datetime.now(timezone.utc)
+    event_id = service.repository.save_broker_order_event(
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=417,
+        requested_price=15.0,
+        status="SUBMITTED",
+        broker_order_no="full-fill-1",
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        side="SELL",
+        broker_order_no="full-fill-1",
+        requested_qty=417,
+        requested_price=15.0,
+    )
+    assert execution is not None
+    service.repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=417,
+        filled_amount=6255.0,
+        avg_fill_price=15.0,
+        remaining_qty=0,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="FILLED",
+        history={"test": True},
+        checked_at=now.isoformat(),
+        fill_recorded_at=now.isoformat(),
+    )
+    ranked = [
+        OverseasScanResult(
+            symbol="ARX",
+            exchange_code="NYSE",
+            last_price=14.9,
+            bid=14.89,
+            ask=14.91,
+            spread_pct=0.001,
+            change_rate_pct=-3.0,
+            volume=600_000,
+            orderable_qty=0,
+            fx_rate_krw=1350.0,
+            activity_score=8.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="ARX",
+            exchange_code="NYSE",
+            quantity=417,
+            orderable_qty=0,
+            avg_price=15.5,
+            current_price=14.9,
+            pnl_pct=-0.038,
+        )
+    ]
+
+    first = asyncio.run(
+        service._select_overseas_exit_targets(
+            ranked,
+            held_positions,
+            max_exits=5,
+        )
+    )
+    second = asyncio.run(
+        service._select_overseas_exit_targets(
+            ranked,
+            held_positions,
+            max_exits=5,
+        )
+    )
+
+    assert first == []
+    assert second == []
+    events = service.repository.list_event_log(
+        event_type="post_fill_stale_balance_suppressed",
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["execution_group_id"] == execution["execution_group_id"]
+    assert detail["filled_qty"] == 417
+
+
+def test_recent_completed_sell_requires_full_execution_group_fill() -> None:
+    repository = _build_repository()
+    now = datetime.now(timezone.utc)
+    event_id = repository.save_broker_order_event(
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="PART",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=100,
+        requested_price=10.0,
+        status="SUBMITTED",
+        broker_order_no="partial-fill-1",
+    )
+    execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="PART",
+        exchange_code="NASD",
+        side="SELL",
+        broker_order_no="partial-fill-1",
+        requested_qty=100,
+        requested_price=10.0,
+    )
+    assert execution is not None
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=40,
+        filled_amount=400.0,
+        avg_fill_price=10.0,
+        remaining_qty=60,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="PARTIAL",
+        history={"test": True},
+        checked_at=now.isoformat(),
+        fill_recorded_at=now.isoformat(),
+    )
+
+    result = repository.get_recent_completed_sell_execution(
+        market="overseas",
+        symbol="PART",
+        after_updated_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+
+    assert result is None
+
+
 def test_select_overseas_exit_targets_skips_during_no_orderable_retry_window() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -4261,6 +4417,105 @@ def test_inverse_candidates_reject_stale_benchmark_regime() -> None:
         service._inverse_regime_decision("domestic", "252670", now=now).reason
         == "inverse_benchmark_regime_stale"
     )
+
+
+def test_inverse_regime_observation_is_deduplicated_across_service_restart() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+
+    assert service._observe_inverse_regime(
+        "domestic",
+        market_open=False,
+        now=now,
+    )
+    assert not service._observe_inverse_regime(
+        "domestic",
+        market_open=False,
+        now=now,
+    )
+
+    restarted = _build_run_service()
+    restarted.config.market_policies = loaded.market_policies
+    restarted.repository = service.repository
+    assert not restarted._observe_inverse_regime(
+        "domestic",
+        market_open=False,
+        now=now,
+    )
+
+    events = service.repository.list_event_log(
+        event_type="inverse_regime_observed",
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["reason"] == "inverse_market_closed"
+    assert detail["regime_reason"] == "inverse_regime_shadow"
+    assert detail["expected_session_date"] == "2026-07-28"
+    summary = service.repository.get_inverse_policy_observation_summary()
+    assert summary[0]["observation_count"] == 1
+
+
+def test_inverse_product_observations_record_blocked_and_ready_states() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+    blocked_snapshot = _snapshot(volume_ratio=0.5)
+
+    blocked = service._evaluate_entry_setup(
+        blocked_snapshot,
+        "252670",
+        "domestic",
+        now=now,
+    )
+    service._evaluate_entry_setup(
+        blocked_snapshot,
+        "252670",
+        "domestic",
+        now=now,
+    )
+    ready = service._evaluate_entry_setup(
+        _snapshot(
+            volume_ratio=4.0,
+            intraday_bar_return=0.01,
+            intraday_momentum=0.01,
+        ),
+        "252670",
+        "domestic",
+        now=now,
+    )
+
+    assert blocked.reason == "inverse_product_volume_low"
+    assert ready.ready is True
+    blocked_events = service.repository.list_event_log(
+        event_type="inverse_product_blocked",
+    )
+    ready_events = service.repository.list_event_log(
+        event_type="inverse_product_ready",
+    )
+    assert len(blocked_events) == 1
+    assert len(ready_events) == 1
+    assert json.loads(ready_events[0]["detail"])["reason"] == ready.reason
 
 
 def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:

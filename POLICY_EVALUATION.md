@@ -21,6 +21,9 @@
 - Overseas performance is joined to the final NASDAQ Composite session regime.
 - Provisional benchmark rows are stored for monitoring but excluded from policy
   evaluation until the market close is final.
+- A confirmed fill with a provisional same-session benchmark is reported as
+  `pending final`, not `missing`. `Missing` is reserved for a session with no
+  benchmark row at all.
 
 ## Required evidence
 
@@ -83,6 +86,11 @@ audit but cannot train or score policy.
   gains are concentrated in one shock session, or net expectancy is nonpositive.
   Daily leverage, compounding, volatility drag, and sharp bear-market rallies
   are first-class risks, not implementation noise.
+- Zero inverse trades must remain explainable. Record one durable observation
+  per local session, market, symbol, policy stage, and reason for regime
+  rejection, quote failure/exclusion, product rejection, or product readiness.
+  Restarts must not inflate this evidence. Observation counts are diagnostics,
+  not trades and not performance samples.
 
 Official product/risk references:
 
@@ -118,16 +126,23 @@ the current direction is wrong.
   -2,380.92 KRW net. Do not loosen entry thresholds from this sample. Blocked
   candidates had materially negative forward returns, and each observed regime
   still covers only one final KOSPI session.
-- Overseas: eleven broker-confirmed exits produced four after-cost wins and
-  -156,081.30 KRW net. Do not loosen entry thresholds yet. The apparent
+- Overseas: fourteen broker-confirmed exits produced four after-cost wins and
+  -353,126.79 KRW net. Do not loosen entry thresholds yet. The apparent
   `VWAP+VOL` edge in a sideways/normal-activity/high-volatility NASDAQ regime is
   five exits from one final session, while blocked-signal forward returns did
   not clear the cost hurdle.
 - Both markets: inverse trading remains shadow-only. Current evidence justifies
   testing a separate down-market formula, but not risking broker capital. The
   first deployment occurred after the observed KOSPI crash session had closed,
-  and NASDAQ had not crossed the -1% gate, so zero shadow exits is currently
-  "not observed", not evidence of failure or success.
+  and the current provisional NASDAQ return is above the -1% gate, so zero
+  shadow exits is currently "not observed", not evidence of failure or success.
+  Durable regime and product-stage observations now make each zero-sample
+  reason auditable.
 - Performance now uses the broker execution ledger. Submission rows, canceled
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.
+- A temporary KIS balance row may remain after a complete sell fill. When
+  `holding > 0` and `orderable = 0`, suppress another sell only if a broker
+  execution group reached its full target within five minutes and its filled
+  quantity covers the stale holding. Never apply this exception to a partial
+  group fill.

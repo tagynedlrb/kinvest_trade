@@ -343,3 +343,56 @@ def test_market_regime_performance_marks_one_day_sample_insufficient(
     output = summarize_market_regime_performance(repository.db_path)
 
     assert "표본부족(5/5건,1/3일)" in output
+
+
+def test_market_regime_performance_separates_provisional_from_missing_data(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "regime_pending.db")
+    repository.upsert_market_regime(
+        {
+            "market": "overseas",
+            "session_date": "2026-07-28",
+            "benchmark_code": "COMP",
+            "benchmark_name": "NASDAQ Composite",
+            "source": "test",
+            "captured_at": "2026-07-28T18:00:00+00:00",
+            "is_final": 0,
+            "close_price": 100.0,
+            "return_pct": -0.2,
+            "trend_regime": "sideways",
+            "activity_regime": "normal",
+            "volatility_regime": "normal",
+            "regime_key": "sideways|normal|normal",
+            "sample_days": 20,
+            "raw_json": {},
+        }
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-28T18:30:00+00:00",
+        market="overseas",
+        symbol="AAA",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        pnl_pct=0.01,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-27T18:30:00+00:00",
+        market="overseas",
+        symbol="BBB",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        strategy_flag="VWAP",
+        pnl_pct=-0.01,
+    )
+
+    output = summarize_market_regime_performance(repository.db_path)
+
+    assert "확정대기=1건(임시 지수자료 존재; 확정 전 정책평가 제외)" in output
+    assert "미연결=1건(해당일 지수자료 자체가 없음)" in output

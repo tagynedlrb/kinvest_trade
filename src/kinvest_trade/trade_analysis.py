@@ -300,15 +300,17 @@ def summarize_market_regime_performance(
             result.append("  환경자료=미수집")
             return "\n".join(result)
 
-        final_rows = conn.execute(
+        regime_rows = conn.execute(
             """
             SELECT *
             FROM market_regimes
-            WHERE is_final = 1
             ORDER BY session_date DESC
             """
         ).fetchall()
-        final_regimes = [dict(row) for row in final_rows]
+        all_regimes = [dict(row) for row in regime_rows]
+        final_regimes = [
+            row for row in all_regimes if int(row.get("is_final") or 0) == 1
+        ]
         for market in ("domestic", "overseas"):
             latest = next(
                 (
@@ -358,6 +360,11 @@ def summarize_market_regime_performance(
             (str(row["market"]).lower(), str(row["session_date"])): row
             for row in final_regimes
         }
+        provisional_regime_keys = {
+            (str(row["market"]).lower(), str(row["session_date"]))
+            for row in all_regimes
+            if int(row.get("is_final") or 0) == 0
+        }
         grouped: dict[
             tuple[str, str, str],
             dict[str, object],
@@ -372,12 +379,16 @@ def summarize_market_regime_performance(
             }
         )
         unmatched = 0
+        pending_final = 0
         for trade in trade_rows:
             market = str(trade.get("market") or "").strip().lower()
             session_date = _cycle_session_date(trade)
             regime = regime_map.get((market, str(session_date)))
             if regime is None:
-                unmatched += 1
+                if (market, str(session_date)) in provisional_regime_keys:
+                    pending_final += 1
+                else:
+                    unmatched += 1
                 continue
             strategy = str(trade.get("strategy_flag") or "N/A").strip() or "N/A"
             regime_key = str(regime.get("regime_key") or "unknown")
@@ -431,8 +442,13 @@ def summarize_market_regime_performance(
                     f"Net={float(bucket['net_sum']) / count * 100:+.3f}% "
                     f"{readiness}"
                 )
+        if pending_final:
+            result.append(
+                f"  확정대기={pending_final}건"
+                "(임시 지수자료 존재; 확정 전 정책평가 제외)"
+            )
         if unmatched:
-            result.append(f"  미연결={unmatched}건(해당일 확정 지수자료 없음)")
+            result.append(f"  미연결={unmatched}건(해당일 지수자료 자체가 없음)")
         result.append(
             f"  정책변경조건=레짐별 최소 {MIN_REGIME_TRADES}청산/{MIN_REGIME_DAYS}거래일, "
             "비용차감 Net 기준; 단일 장세 결과로 자동변경 금지"

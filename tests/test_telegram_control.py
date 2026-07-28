@@ -1755,6 +1755,58 @@ def test_lab_performance_command_reports_realized_strategy_only(
     assert "─── 하위 전략 ───" in message
     assert "해외 VWAP 진입=VWAP 청산=손절 1건" in message
     assert "손익=-$12.50/-16,875원" in message
+    assert "─── 역방향 shadow ───" in message
+    assert "종료=0 진행=0 진입표본=없음" in message
+    assert "관측=없음(해당 기간 영구 로그 없음)" in message
+
+
+def test_lab_performance_command_explains_inverse_zero_sample(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_inverse_observation.db")
+    repository.save_event(
+        event_type="inverse_regime_observed",
+        market="overseas",
+        detail={
+            "reason": "inverse_benchmark_decline_insufficient",
+            "expected_session_date": datetime.now(timezone.utc).date().isoformat(),
+            "benchmark_return_pct": -0.2,
+        },
+    )
+    repository.save_event(
+        event_type="inverse_product_blocked",
+        market="overseas",
+        symbol="SQQQ",
+        detail={
+            "reason": "inverse_product_volume_low",
+            "expected_session_date": datetime.now(timezone.utc).date().isoformat(),
+            "volume_ratio": 0.8,
+        },
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_performance 24",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "해외 레짐=기준지수 하락폭 미달 1세션" in message
+    assert "해외 상품차단=인버스 상품 거래량 부족 1세션·종목 종목=SQQQ" in message
 
 
 def test_lab_report_compare_command_reports_before_after_strategy(

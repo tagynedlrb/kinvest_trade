@@ -1690,6 +1690,17 @@ class ReportHelper:
         shadow_rows = controller.repository.get_inverse_shadow_performance(
             after_opened_at=after_logged_at,
         )
+        inverse_observations = (
+            controller.repository.get_inverse_policy_observation_summary(
+                after_logged_at=after_logged_at,
+                limit=6,
+            )
+            if hasattr(
+                controller.repository,
+                "get_inverse_policy_observation_summary",
+            )
+            else []
+        )
         lines = [
             "[KIS][전략성과]",
             f"시각={format_kst_korean(now)}",
@@ -1719,8 +1730,8 @@ class ReportHelper:
             lines.append("─── 하위 전략 ───")
             for row in worst_rows:
                 lines.append(controller._format_performance_row(row))
+        lines.append("─── 역방향 shadow ───")
         if shadow_rows:
-            lines.append("─── 역방향 shadow ───")
             for row in shadow_rows:
                 closed_count = int(row.get("closed_count") or 0)
                 win_count = int(row.get("win_count") or 0)
@@ -1730,5 +1741,29 @@ class ReportHelper:
                     f"종료={closed_count} 진행={int(row.get('open_count') or 0)} "
                     f"승률={win_rate * 100:.0f}% "
                     f"평균순수익={format_pct(float(row.get('avg_net_pnl_pct') or 0.0))}"
+                )
+        else:
+            lines.append("종료=0 진행=0 진입표본=없음")
+        lines.append("─── 역방향 관측 ───")
+        if not inverse_observations:
+            lines.append("관측=없음(해당 기간 영구 로그 없음)")
+        else:
+            event_labels = {
+                "inverse_regime_observed": "레짐",
+                "inverse_quote_failed": "조회실패",
+                "inverse_quote_excluded": "후보제외",
+                "inverse_product_blocked": "상품차단",
+                "inverse_product_ready": "상품준비",
+            }
+            for row in inverse_observations:
+                symbols = ",".join(row.get("symbols") or [])
+                symbol_label = f" 종목={symbols}" if symbols else ""
+                count_unit = "세션·종목" if symbols else "세션"
+                lines.append(
+                    f"{format_market_korean(str(row.get('market') or ''))} "
+                    f"{event_labels.get(str(row.get('event_type') or ''), '관측')}="
+                    f"{format_reason_korean(str(row.get('reason') or 'unknown'))} "
+                    f"{int(row.get('observation_count') or 0)}{count_unit}"
+                    f"{symbol_label}"
                 )
         return "\n".join(lines)

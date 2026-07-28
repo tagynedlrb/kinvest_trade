@@ -324,6 +324,10 @@ class LiquidityLabService:
         self._last_execution_reconcile_at: datetime | None = None
         self._execution_reconcile_interval_sec = 20
         self._inverse_regime_notice_keys: set[tuple[str, str, str]] = set()
+        self._inverse_observation_keys: set[
+            tuple[str, str, str, str, str]
+        ] = set()
+        self._post_fill_balance_notice_keys: set[str] = set()
 
     def _get_circuit_breaker(self) -> CircuitBreakerManager:
         cb = getattr(self, "cb", None)
@@ -574,12 +578,19 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot,
         code: str,
         market: str = "overseas",
+        *,
+        now: datetime | None = None,
     ):
         policy = self._get_market_policy(market)
         if policy.auto_trade is None:
             raise RuntimeError(f"{market} market policy requires auto_trade configuration")
-        inverse_decision = self._inverse_regime_decision(market, code)
-        return evaluate_entry_setup(
+        observation_now = now or datetime.now(timezone.utc)
+        inverse_decision = self._inverse_regime_decision(
+            market,
+            code,
+            now=observation_now,
+        )
+        result = evaluate_entry_setup(
             policy.auto_trade,
             signal_snapshot,
             symbol=code,
@@ -591,6 +602,41 @@ class LiquidityLabService:
                 else None
             ),
         )
+        if self._is_inverse_symbol(market, code):
+            self._record_inverse_observation(
+                event_type=(
+                    "inverse_product_ready"
+                    if result.ready
+                    else "inverse_product_blocked"
+                ),
+                market=market,
+                symbol=code,
+                reason=result.reason,
+                now=observation_now,
+                detail={
+                    "state": result.state,
+                    "score": result.score,
+                    "regime_reason": (
+                        inverse_decision.reason
+                        if inverse_decision is not None
+                        else "inverse_policy_unavailable"
+                    ),
+                    "regime_eligible": (
+                        inverse_decision.eligible
+                        if inverse_decision is not None
+                        else False
+                    ),
+                    "price": signal_snapshot.price,
+                    "spread_pct": signal_snapshot.spread_pct,
+                    "volume_ratio": signal_snapshot.volume_ratio,
+                    "intraday_momentum": signal_snapshot.intraday_momentum,
+                    "intraday_bar_return": signal_snapshot.intraday_bar_return,
+                    "intraday_trend_up": signal_snapshot.intraday_trend_up,
+                    "minute_ma_fast": signal_snapshot.minute_ma_fast,
+                    "minute_ma_slow": signal_snapshot.minute_ma_slow,
+                },
+            )
+        return result
 
     def _derive_watch_state(
         self,
@@ -657,6 +703,126 @@ class LiquidityLabService:
             policy.auto_trade,
             regime,
             expected_session_date=self._market_session_date(market_key, now),
+        )
+
+    def _record_inverse_observation(
+        self,
+        *,
+        event_type: str,
+        market: str,
+        reason: str,
+        symbol: str = "",
+        now: datetime | None = None,
+        detail: dict | None = None,
+    ) -> bool:
+        market_key = normalize_market_name(market)
+        symbol_key = str(symbol).strip().upper()
+        expected_session_date = self._market_session_date(market_key, now)
+        observation_key = (
+            expected_session_date,
+            str(event_type),
+            market_key,
+            symbol_key,
+            str(reason),
+        )
+        observation_keys = getattr(self, "_inverse_observation_keys", None)
+        if observation_keys is None:
+            observation_keys = set()
+            self._inverse_observation_keys = observation_keys
+        if observation_key in observation_keys:
+            return False
+        repository = getattr(self, "repository", None)
+        try:
+            already_recorded = bool(
+                repository is not None
+                and hasattr(repository, "has_inverse_policy_observation")
+                and repository.has_inverse_policy_observation(
+                    event_type=event_type,
+                    market=market_key,
+                    symbol=symbol_key,
+                    expected_session_date=expected_session_date,
+                    reason=reason,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[INVERSE] observation_lookup_failed market=%s symbol=%s error=%s",
+                market_key,
+                symbol_key,
+                exc,
+            )
+            already_recorded = False
+        observation_keys.add(observation_key)
+        if already_recorded:
+            return False
+        payload = {
+            **(detail or {}),
+            "reason": str(reason),
+            "expected_session_date": expected_session_date,
+        }
+        try:
+            self._save_event(
+                event_type=event_type,
+                market=market_key,
+                symbol=symbol_key,
+                detail=payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            observation_keys.discard(observation_key)
+            _logger.warning(
+                "[INVERSE] observation_save_failed market=%s symbol=%s error=%s",
+                market_key,
+                symbol_key,
+                exc,
+            )
+            return False
+        return True
+
+    def _observe_inverse_regime(
+        self,
+        market: str,
+        *,
+        market_open: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        market_key = normalize_market_name(market)
+        try:
+            decision = self._inverse_regime_decision(market_key, now=now)
+        except Exception as exc:  # noqa: BLE001
+            return self._record_inverse_observation(
+                event_type="inverse_regime_observed",
+                market=market_key,
+                reason="inverse_policy_unavailable",
+                now=now,
+                detail={
+                    "market_open": bool(market_open),
+                    "error_type": type(exc).__name__,
+                },
+            )
+        if decision is None:
+            return self._record_inverse_observation(
+                event_type="inverse_regime_observed",
+                market=market_key,
+                reason="inverse_policy_unavailable",
+                now=now,
+                detail={"market_open": bool(market_open)},
+            )
+        reason = decision.reason if market_open else "inverse_market_closed"
+        return self._record_inverse_observation(
+            event_type="inverse_regime_observed",
+            market=market_key,
+            reason=reason,
+            now=now,
+            detail={
+                "market_open": bool(market_open),
+                "regime_reason": decision.reason,
+                "eligible": decision.eligible,
+                "execution_mode": decision.execution_mode,
+                "observed_session_date": decision.session_date,
+                "benchmark": decision.benchmark_name,
+                "benchmark_return_pct": decision.benchmark_return_pct,
+                "regime_key": decision.regime_key,
+            },
         )
 
     def _inverse_entry_block_reason(
@@ -2871,6 +3037,16 @@ class LiquidityLabService:
             now,
             self.config.credentials.env,
         ) and not nyse_holiday
+        self._observe_inverse_regime(
+            "domestic",
+            market_open=krx_open,
+            now=now,
+        )
+        self._observe_inverse_regime(
+            "overseas",
+            market_open=us_open,
+            now=now,
+        )
 
         if not krx_open and not us_open:
             return LiquidityLabReport(
@@ -3312,7 +3488,19 @@ class LiquidityLabService:
         for stock_code in active_codes:
             try:
                 candidate = await self._scan_single_domestic_quote(stock_code)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                if self._is_inverse_symbol("domestic", stock_code):
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_failed",
+                        market="domestic",
+                        symbol=stock_code,
+                        reason="inverse_quote_fetch_failed",
+                        detail={
+                            "stage": "quote",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:240],
+                        },
+                    )
                 await asyncio.sleep(0.05)
                 continue
             # Mirrors the overseas held-symbol exemption: a new-candidate
@@ -3332,6 +3520,18 @@ class LiquidityLabService:
                         snapshot=asdict(candidate),
                     )
                 )
+                if self._is_inverse_symbol("domestic", stock_code):
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_excluded",
+                        market="domestic",
+                        symbol=stock_code,
+                        reason=str(reasons[0]),
+                        detail={
+                            "stage": "quote_filter",
+                            "reasons": reasons,
+                            "snapshot": asdict(candidate),
+                        },
+                    )
             else:
                 quote_results.append(candidate)
             await asyncio.sleep(0.05)
@@ -3360,7 +3560,19 @@ class LiquidityLabService:
         for candidate in quote_results[:refine_n]:
             try:
                 full_candidate = await self._scan_single_domestic(candidate.stock_code)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                if self._is_inverse_symbol("domestic", candidate.stock_code):
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_failed",
+                        market="domestic",
+                        symbol=candidate.stock_code,
+                        reason="inverse_signal_fetch_failed",
+                        detail={
+                            "stage": "signal",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:240],
+                        },
+                    )
                 refined.append(candidate)
                 await asyncio.sleep(0.05)
                 continue
@@ -3378,6 +3590,18 @@ class LiquidityLabService:
                         snapshot=asdict(full_candidate),
                     )
                 )
+                if self._is_inverse_symbol("domestic", full_candidate.stock_code):
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_excluded",
+                        market="domestic",
+                        symbol=full_candidate.stock_code,
+                        reason=str(reasons[0]),
+                        detail={
+                            "stage": "signal_filter",
+                            "reasons": reasons,
+                            "snapshot": asdict(full_candidate),
+                        },
+                    )
             else:
                 refined.append(full_candidate)
             await asyncio.sleep(0.05)
@@ -3483,10 +3707,34 @@ class LiquidityLabService:
                             },
                         )
                     )
+                    if self._is_inverse_symbol("overseas", symbol):
+                        self._record_inverse_observation(
+                            event_type="inverse_quote_excluded",
+                            market="overseas",
+                            symbol=symbol,
+                            reason=suppression_reason,
+                            detail={
+                                "stage": "signal_suppression",
+                                "exchange_code": candidate.exchange_code,
+                            },
+                        )
                     continue
             try:
                 scan_result = await self._scan_single_overseas(candidate)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                if self._is_inverse_symbol("overseas", symbol):
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_failed",
+                        market="overseas",
+                        symbol=symbol,
+                        reason="inverse_quote_or_signal_fetch_failed",
+                        detail={
+                            "stage": "quote_and_signal",
+                            "exchange_code": candidate.exchange_code,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:240],
+                        },
+                    )
                 await asyncio.sleep(0.05)
                 continue
             # The speculative filter (thin volume/wide spread/low turnover) exists
@@ -3506,6 +3754,18 @@ class LiquidityLabService:
                         snapshot=asdict(scan_result),
                     )
                 )
+                if self._is_inverse_symbol("overseas", symbol):
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_excluded",
+                        market="overseas",
+                        symbol=symbol,
+                        reason=str(reasons[0]),
+                        detail={
+                            "stage": "speculative_filter",
+                            "reasons": reasons,
+                            "snapshot": asdict(scan_result),
+                        },
+                    )
             else:
                 quote_results.append(scan_result)
             await asyncio.sleep(0.05)
@@ -5947,6 +6207,78 @@ class LiquidityLabService:
         remaining = runtime.cooldown_remaining_minutes(market, symbol)
         self._sync_runtime_legacy_state(runtime)
         return remaining
+
+    def _suppress_recent_full_sell_stale_balance(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        holding_qty: int,
+        now: datetime | None = None,
+        window_sec: int = 300,
+    ) -> bool:
+        """Suppress a duplicate sell while KIS balance lags a confirmed full fill."""
+        if holding_qty <= 0:
+            return False
+        repository = getattr(self, "repository", None)
+        getter = getattr(repository, "get_recent_completed_sell_execution", None)
+        if not callable(getter):
+            return False
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        cutoff = current.astimezone(timezone.utc) - timedelta(
+            seconds=max(1, int(window_sec))
+        )
+        try:
+            execution = getter(
+                market=market,
+                symbol=symbol,
+                after_updated_at=cutoff.isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[EXECUTION] recent_sell_lookup_failed market=%s symbol=%s error=%s",
+                market,
+                symbol,
+                exc,
+            )
+            return False
+        if execution is None:
+            return False
+        filled_qty = int(execution.get("filled_qty") or 0)
+        target_qty = int(execution.get("target_qty") or 0)
+        if filled_qty < target_qty or filled_qty < int(holding_qty):
+            return False
+
+        execution_group_id = str(execution.get("execution_group_id") or "")
+        notice_keys = getattr(self, "_post_fill_balance_notice_keys", None)
+        if notice_keys is None:
+            notice_keys = set()
+            self._post_fill_balance_notice_keys = notice_keys
+        if execution_group_id not in notice_keys:
+            notice_keys.add(execution_group_id)
+            self._save_event(
+                event_type="post_fill_stale_balance_suppressed",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "reason": "recent_full_sell_balance_pending",
+                    "execution_group_id": execution_group_id,
+                    "target_qty": target_qty,
+                    "filled_qty": filled_qty,
+                    "stale_holding_qty": int(holding_qty),
+                    "execution_updated_at": execution.get("latest_updated_at"),
+                    "window_sec": max(1, int(window_sec)),
+                },
+            )
+        self._defer_no_orderable_position(
+            market=market,
+            symbol=symbol,
+            holding_qty=int(holding_qty),
+            orderable_qty=0,
+        )
+        return True
 
     def _get_entry_context(
         self,

@@ -1152,6 +1152,14 @@ def test_get_session_pnl_summary_real_only(tmp_path, save_confirmed_sell) -> Non
     assert summary["real"]["overseas"]["trade_count"] == 1
     assert summary["real"]["overseas"]["total_pnl_usd"] == 12.5
 
+    account_risk_summary = repository.get_session_pnl_summary(
+        session_id="sess-real",
+        include_virtual=False,
+        include_non_session_real=True,
+    )
+    assert account_risk_summary["real"]["overseas"]["trade_count"] == 2
+    assert account_risk_summary["real"]["overseas"]["total_pnl_usd"] == 62.5
+
 
 def test_confirmed_performance_excludes_unverified_rows_and_uses_net_pnl(
     tmp_path,

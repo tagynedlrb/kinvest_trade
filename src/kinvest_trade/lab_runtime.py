@@ -503,7 +503,13 @@ class LabRuntimeManager:
         exit_reason: str,
         *,
         pnl_pct: float | None = None,
+        occurred_at: datetime | None = None,
+        observed_at: datetime | None = None,
     ) -> None:
+        current = ensure_timezone(observed_at or datetime.now(timezone.utc))
+        cooldown_started_at = ensure_timezone(occurred_at or current)
+        if cooldown_started_at > current:
+            cooldown_started_at = current
         if exit_reason in ("stop_loss", "atr_hard_stop"):
             cooldown_minutes = 25
         elif exit_reason in ("momentum_loss_cut", "trend_filter_lost"):
@@ -539,14 +545,29 @@ class LabRuntimeManager:
                     "cooldown_minutes": cooldown_minutes,
                 },
             )
-        self.set_exit_cooldown_minutes(market, symbol, cooldown_minutes)
+        self.set_exit_cooldown_minutes(
+            market,
+            symbol,
+            cooldown_minutes,
+            started_at=cooldown_started_at,
+            observed_at=current,
+        )
 
     def set_exit_cooldown_minutes(
         self,
         market: str,
         symbol: str,
         cooldown_minutes: int,
+        *,
+        started_at: datetime | None = None,
+        observed_at: datetime | None = None,
     ) -> None:
-        self.exit_cooldown[f"{market}:{symbol.strip().upper()}"] = (
-            datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
-        )
+        current = ensure_timezone(observed_at or datetime.now(timezone.utc))
+        cooldown_started_at = ensure_timezone(started_at or current)
+        cooldown_until = cooldown_started_at + timedelta(minutes=cooldown_minutes)
+        if cooldown_until <= current:
+            return
+        key = f"{market}:{symbol.strip().upper()}"
+        existing = self.exit_cooldown.get(key)
+        if existing is None or ensure_timezone(existing) < cooldown_until:
+            self.exit_cooldown[key] = cooldown_until

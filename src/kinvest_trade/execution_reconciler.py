@@ -152,6 +152,7 @@ class BrokerExecutionReconciler:
                 filled_qty=total_filled,
                 filled_amount=total_amount,
                 target_qty=target_qty,
+                reconciled_at=current,
             )
             if inserted:
                 stats["finalized"] += 1
@@ -327,11 +328,17 @@ class BrokerExecutionReconciler:
             "canceled_qty": canceled_qty,
             "rejected_qty": rejected_qty,
             "status": status,
-            "fill_recorded_at": self._history_timestamp(market, row),
+            "fill_recorded_at": self._history_order_timestamp(market, row),
         }
 
     @staticmethod
-    def _history_timestamp(market: str, row: dict) -> str | None:
+    def _history_order_timestamp(market: str, row: dict) -> str | None:
+        """Return KIS's order timestamp, the only event time in these rows.
+
+        The history APIs expose aggregate fill quantity/price but no distinct
+        fill timestamp. Keep this as the best available effective time and
+        retain the full response in history_json for later broker audits.
+        """
         if market == "domestic":
             date_text = str(row.get("ord_dt") or "").strip()
             time_text = str(row.get("ord_tmd") or "").strip()

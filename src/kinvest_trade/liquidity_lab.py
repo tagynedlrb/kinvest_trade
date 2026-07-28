@@ -417,6 +417,7 @@ class LiquidityLabService:
             summary = self.repository.get_session_pnl_summary(
                 include_virtual=False,
                 after_logged_at=risk_day_start.isoformat(),
+                include_non_session_real=True,
             )
         except Exception as exc:  # noqa: BLE001
             _logger.exception("confirmed_risk_day_pnl_reconcile_failed")
@@ -498,12 +499,14 @@ class LiquidityLabService:
         market: str,
         net_pnl_krw: float,
         net_pnl_pct: float,
+        include_session_pnl: bool = True,
     ) -> None:
         cb = self._get_circuit_breaker()
         cb.on_realised(
             market=market,
             realized_pnl_krw=net_pnl_krw,
             pnl_pct=net_pnl_pct,
+            include_session_pnl=include_session_pnl,
         )
         self._sync_circuit_breaker_legacy_state(cb)
 
@@ -2843,6 +2846,7 @@ class LiquidityLabService:
         filled_qty: int,
         filled_amount: float,
         target_qty: int,
+        reconciled_at: datetime | None = None,
     ) -> bool:
         rows = sorted(
             executions,
@@ -2878,6 +2882,13 @@ class LiquidityLabService:
             if str(row.get("fill_recorded_at") or "")
         ]
         logged_at = max(fill_times) if fill_times else datetime.now(timezone.utc).isoformat()
+        confirmed_at = ensure_timezone(reconciled_at or datetime.now(timezone.utc))
+        parsed_execution_at = parse_datetime(logged_at)
+        execution_at = ensure_timezone(parsed_execution_at or confirmed_at)
+        confirmation_delay_sec = max(
+            0.0,
+            (confirmed_at - execution_at).total_seconds(),
+        )
         strategy_flag = str(first.get("strategy_flag") or "")
         entry_by = str(first.get("entry_by") or "")
         exit_by = str(first.get("exit_by") or "")
@@ -3116,6 +3127,14 @@ class LiquidityLabService:
         was_halted = bool(common["cb_active"])
         cb = self._get_circuit_breaker()
         daily_was_halted = cb.daily_halted_at is not None
+        execution_risk_day = cb.current_risk_day(execution_at)
+        current_risk_day = cb.current_risk_day(confirmed_at)
+        same_risk_day = execution_risk_day == current_risk_day
+        risk_controls_replayed = (
+            same_risk_day
+            or confirmation_delay_sec
+            <= _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN * 60
+        )
         entry_notional_krw = entry_price * filled_qty
         if market == "overseas":
             entry_notional_krw *= fx_rate
@@ -3124,11 +3143,14 @@ class LiquidityLabService:
             if entry_notional_krw > 0
             else float(pnl_pct)
         )
-        self._on_realised(
-            market=market,
-            net_pnl_krw=float(net_pnl_krw),
-            net_pnl_pct=net_pnl_pct,
-        )
+        if risk_controls_replayed:
+            self._on_realised(
+                market=market,
+                net_pnl_krw=float(net_pnl_krw),
+                net_pnl_pct=net_pnl_pct,
+                include_session_pnl=same_risk_day,
+            )
+        risk_summary = self._reconcile_confirmed_risk_day_pnl(confirmed_at)
         is_halted = self._is_trading_halted(market)
         daily_is_halted = cb.daily_halted_at is not None
         consecutive_losses = self._consecutive_losses_for_market(market)
@@ -3145,7 +3167,7 @@ class LiquidityLabService:
                 )
                 * 100.0
             )
-            risk_day = cb.current_risk_day().isoformat()
+            risk_day = current_risk_day.isoformat()
             _logger.warning(
                 "[CB] confirmed-fill daily limit fired "
                 "risk_day=%s session_pnl=%.0f",
@@ -3188,14 +3210,43 @@ class LiquidityLabService:
                     ]
                 )
             )
-        self._register_exit_cooldown(
-            market,
-            symbol,
-            reason,
-            pnl_pct=pnl_pct,
-        )
+        if risk_controls_replayed:
+            self._register_exit_cooldown(
+                market,
+                symbol,
+                reason,
+                pnl_pct=pnl_pct,
+                occurred_at=execution_at,
+                observed_at=confirmed_at,
+            )
+        else:
+            self._save_event(
+                event_type="historical_execution_risk_not_replayed",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "execution_group_id": execution_group_id,
+                    "execution_at": execution_at.isoformat(),
+                    "execution_time_source": "kis_order_timestamp",
+                    "reconciled_at": confirmed_at.isoformat(),
+                    "confirmation_delay_sec": round(confirmation_delay_sec, 3),
+                    "execution_risk_day": execution_risk_day.isoformat(),
+                    "current_risk_day": current_risk_day.isoformat(),
+                    "current_risk_day_pnl_krw": risk_summary.get(
+                        "total_pnl_krw"
+                    ),
+                    "reason": "outside_30_minute_risk_replay_window",
+                },
+            )
         if is_full_group_fill:
             self._reset_strategy_position(symbol, market)
+        delayed_labels = []
+        if confirmation_delay_sec >= 60:
+            delayed_labels.append(
+                f"확인지연={confirmation_delay_sec / 60:.0f}분"
+            )
+        if not risk_controls_replayed:
+            delayed_labels.append("위험제어=과거귀속")
         self._queue_trade_notification(
             " ".join(
                 [
@@ -3207,6 +3258,7 @@ class LiquidityLabService:
                     f"수익률={format_pct(pnl_pct)}",
                     f"순손익={pnl_label}",
                     f"청산={format_reason_korean(exit_by or reason)}",
+                    *delayed_labels,
                 ]
             )
         )
@@ -3221,6 +3273,13 @@ class LiquidityLabService:
                 "target_qty": target_qty,
                 "avg_fill_price": round(fill_price, 8),
                 "pnl_pct": round(pnl_pct, 8),
+                "execution_at": execution_at.isoformat(),
+                "execution_time_source": "kis_order_timestamp",
+                "reconciled_at": confirmed_at.isoformat(),
+                "confirmation_delay_sec": round(confirmation_delay_sec, 3),
+                "execution_risk_day": execution_risk_day.isoformat(),
+                "current_risk_day": current_risk_day.isoformat(),
+                "risk_controls_replayed": risk_controls_replayed,
             },
         )
         return True
@@ -6955,9 +7014,18 @@ class LiquidityLabService:
         exit_reason: str,
         *,
         pnl_pct: float | None = None,
+        occurred_at: datetime | None = None,
+        observed_at: datetime | None = None,
     ) -> None:
         runtime = self._get_runtime_manager()
-        runtime.register_exit_cooldown(market, symbol, exit_reason, pnl_pct=pnl_pct)
+        runtime.register_exit_cooldown(
+            market,
+            symbol,
+            exit_reason,
+            pnl_pct=pnl_pct,
+            occurred_at=occurred_at,
+            observed_at=observed_at,
+        )
         self._sync_runtime_legacy_state(runtime)
 
     def _set_exit_cooldown_minutes(

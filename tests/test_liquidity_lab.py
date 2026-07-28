@@ -1829,6 +1829,61 @@ def _run_orderable_overseas_sell(
         return asyncio.run(service._place_overseas_sell_order(candidate, held, exit_reason))
 
 
+def _submit_and_reconcile_overseas_loss(
+    service: LiquidityLabService,
+    *,
+    domestic_order_date: str,
+    broker_order_time: str,
+    reconciled_at: datetime,
+) -> None:
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=278.0,
+        bid=278.0,
+        ask=278.1,
+        spread_pct=0.0004,
+        change_rate_pct=-1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=278.0,
+        pnl_pct=(278.0 - 280.0) / 280.0,
+    )
+    _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "orgn_odno": "0",
+            "pdno": "TSLA",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "2",
+            "ft_ccld_unpr3": "278",
+            "ft_ccld_amt3": "556",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": domestic_order_date,
+            "thco_ord_tmd": broker_order_time,
+        }
+    ]
+    result = asyncio.run(
+        service._reconcile_broker_executions(
+            reconciled_at,
+            force=True,
+        )
+    )
+    assert result["finalized"] == 1
+
+
 def test_place_overseas_sell_order_sends_telegram_on_success() -> None:
     service = _build_sell_service()
     candidate = OverseasScanResult(
@@ -1942,6 +1997,7 @@ def test_place_overseas_sell_order_records_realized_pnl_only_after_fill() -> Non
             limit=5,
         )
     ) == 1
+    broker_now = datetime.now(timezone(timedelta(hours=9)))
     service.client.pending_orders = [
         {
             "odno": "9001",
@@ -1954,8 +2010,8 @@ def test_place_overseas_sell_order_records_realized_pnl_only_after_fill() -> Non
             "ft_ccld_amt3": "563.8",
             "nccs_qty": "0",
             "rvse_cncl_dvsn": "00",
-            "dmst_ord_dt": "20260728",
-            "thco_ord_tmd": "230000",
+            "dmst_ord_dt": broker_now.strftime("%Y%m%d"),
+            "thco_ord_tmd": broker_now.strftime("%H%M%S"),
         }
     ]
 
@@ -2156,6 +2212,7 @@ def test_confirmed_loss_fires_circuit_breaker_once_and_updates_trade_row() -> No
         pnl_pct=(278.0 - 280.0) / 280.0,
     )
     _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+    broker_now = datetime.now(timezone(timedelta(hours=9)))
     service.client.pending_orders = [
         {
             "odno": "9001",
@@ -2168,8 +2225,8 @@ def test_confirmed_loss_fires_circuit_breaker_once_and_updates_trade_row() -> No
             "ft_ccld_amt3": "556",
             "nccs_qty": "0",
             "rvse_cncl_dvsn": "00",
-            "dmst_ord_dt": "20260728",
-            "thco_ord_tmd": "230000",
+            "dmst_ord_dt": broker_now.strftime("%Y%m%d"),
+            "thco_ord_tmd": broker_now.strftime("%H%M%S"),
         }
     ]
 
@@ -2231,6 +2288,7 @@ def test_confirmed_gross_gain_below_cost_counts_as_circuit_breaker_loss() -> Non
         pnl_pct=(280.5 - 280.0) / 280.0,
     )
     _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+    broker_now = datetime.now(timezone(timedelta(hours=9)))
     service.client.pending_orders = [
         {
             "odno": "9001",
@@ -2243,8 +2301,8 @@ def test_confirmed_gross_gain_below_cost_counts_as_circuit_breaker_loss() -> Non
             "ft_ccld_amt3": "561",
             "nccs_qty": "0",
             "rvse_cncl_dvsn": "00",
-            "dmst_ord_dt": "20260728",
-            "thco_ord_tmd": "230000",
+            "dmst_ord_dt": broker_now.strftime("%Y%m%d"),
+            "thco_ord_tmd": broker_now.strftime("%H%M%S"),
         }
     ]
 
@@ -2263,6 +2321,111 @@ def test_confirmed_gross_gain_below_cost_counts_as_circuit_breaker_loss() -> Non
     assert row["net_pnl_krw"] < 0
     assert row["consecutive_losses"] == 1
     assert row["cb_active"] == 1
+
+
+def test_historical_confirmed_loss_does_not_pollute_current_risk_controls() -> None:
+    service = _build_sell_service()
+    service.config.risk = SimpleNamespace(
+        account_risk_day_rollover_hour_kst=7,
+        daily_loss_limit_pct=0.5,
+        max_consecutive_losses=5,
+        circuit_breaker_cooldown_minutes=30,
+        operating_capital_krw=50_000_000,
+    )
+    service._consecutive_losses = 1
+    service._consecutive_losses_by_market = {"domestic": 0, "overseas": 1}
+    service._session_realised_krw = 0.0
+    service._session_realised_krw_overseas = 0.0
+    service._daily_loss_date = date(2026, 7, 29)
+
+    _submit_and_reconcile_overseas_loss(
+        service,
+        domestic_order_date="20260729",
+        broker_order_time="060000",
+        reconciled_at=datetime(2026, 7, 28, 22, 40, tzinfo=timezone.utc),
+    )
+
+    row = service.repository.query_cycle_log(
+        action_bias="SELL_REAL",
+        limit=1,
+    )[0]
+    assert row["logged_at"] == "2026-07-28T21:00:00+00:00"
+    assert row["net_pnl_krw"] < 0
+    assert service._session_realised_krw == 0.0
+    assert service._session_realised_krw_overseas == 0.0
+    assert service._consecutive_losses_for_market("overseas") == 1
+    assert "overseas:TSLA" not in service._exit_cooldown
+
+    events = service.repository.list_event_log(
+        event_type="historical_execution_risk_not_replayed",
+        limit=5,
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["confirmation_delay_sec"] == 6000.0
+    assert detail["execution_risk_day"] == "2026-07-28"
+    assert detail["current_risk_day"] == "2026-07-29"
+    assert detail["current_risk_day_pnl_krw"] == 0
+
+    confirmed = service.repository.list_event_log(
+        event_type="execution_confirmed",
+        limit=1,
+    )
+    confirmed_detail = json.loads(confirmed[0]["detail"])
+    assert confirmed_detail["risk_controls_replayed"] is False
+    assert confirmed_detail["execution_time_source"] == "kis_order_timestamp"
+    assert "위험제어=과거귀속" in service._pending_trade_notifications[-1]
+
+
+def test_boundary_delayed_loss_replays_streak_and_anchors_cooldown_to_order_time() -> None:
+    service = _build_sell_service()
+    service.config.risk = SimpleNamespace(
+        account_risk_day_rollover_hour_kst=7,
+        daily_loss_limit_pct=0.5,
+        max_consecutive_losses=5,
+        circuit_breaker_cooldown_minutes=30,
+        operating_capital_krw=50_000_000,
+    )
+    service._consecutive_losses = 1
+    service._consecutive_losses_by_market = {"domestic": 0, "overseas": 1}
+    service._session_realised_krw = 0.0
+    service._session_realised_krw_overseas = 0.0
+    service._daily_loss_date = date(2026, 7, 29)
+
+    _submit_and_reconcile_overseas_loss(
+        service,
+        domestic_order_date="20260729",
+        broker_order_time="065500",
+        reconciled_at=datetime(2026, 7, 28, 22, 5, tzinfo=timezone.utc),
+    )
+
+    assert service._session_realised_krw == 0.0
+    assert service._session_realised_krw_overseas == 0.0
+    assert service._consecutive_losses_for_market("overseas") == 2
+    assert service._exit_cooldown["overseas:TSLA"] == datetime(
+        2026,
+        7,
+        28,
+        22,
+        20,
+        tzinfo=timezone.utc,
+    )
+    assert (
+        service.repository.list_event_log(
+            event_type="historical_execution_risk_not_replayed",
+            limit=5,
+        )
+        == []
+    )
+    confirmed = service.repository.list_event_log(
+        event_type="execution_confirmed",
+        limit=1,
+    )
+    detail = json.loads(confirmed[0]["detail"])
+    assert detail["confirmation_delay_sec"] == 600.0
+    assert detail["execution_risk_day"] == "2026-07-28"
+    assert detail["current_risk_day"] == "2026-07-29"
+    assert detail["risk_controls_replayed"] is True
 
 
 def test_overseas_partial_fill_and_replacement_finalize_once_as_one_trade() -> None:

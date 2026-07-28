@@ -1,5 +1,47 @@
 # WORKLOG
 
+## [2026-07-28] 지연 체결의 위험일·쿨다운 시간 귀속 교정
+
+### 발견과 근거
+- 체결 reconciler는 KIS 이력의 과거 시각으로 `SELL_REAL` 성과를 기록했지만,
+  위험관리에는 확인 시점 기준으로 `_on_realised()`를 호출했다. 따라서 전일
+  손실을 07:00 KST 위험일 전환 뒤 확인하면 오늘 손익과 연속손실에 더하고,
+  종목 재진입 쿨다운도 이미 지난 체결시각이 아니라 확인 시점부터 새로 시작하는
+  잠재 오류가 있었다.
+- KIS 공식 해외 샘플은 `thco_ord_tmd`를 `당사주문시각`, 국내 샘플은
+  `ord_tmd`를 `주문시각`으로 정의한다. 체결수량·체결가격은 제공하지만 별도
+  체결시각 필드는 없으므로 이 값을 “최선의 가용 실행시각”으로 사용하고 원시
+  응답을 보존한다.
+  [해외 주문체결내역 공식 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/inquire_ccnl/chk_inquire_ccnl.py),
+  [국내 일별주문체결 공식 샘플](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_ccld/chk_inquire_daily_ccld.py)
+- 위험일 복원 함수는 전략성과용 세션 소유 필터를 그대로 사용했다. 시작 전
+  보유분의 확정 청산은 성과 표본에서는 제외할 수 있어도 실제 계좌 손실한도에서는
+  빠지면 안 된다. 현재 운영 원장에서는 필터 전후가 국장 8청산
+  `-10,389.32원`, 미장 20청산 `-325,904.33원`으로 같아 기존 손익의 소급
+  변경은 없지만, 회귀 테스트로 누락 가능성을 재현했다.
+
+### 수정과 정책 판단
+- 확정 매도가 들어올 때마다 현재 07:00 KST 위험일의 모든 KIS 확정 청산을
+  다시 합산한다. 성과표의 세션 소유 필터는 유지하되 계좌 위험 집계만 시작 전
+  보유분까지 포함한다.
+- 주문시각과 확인시각의 위험일이 같으면 기존처럼 손익·연속손실을 적용한다.
+  위험일이 달라도 30분 이내 경계 지연이면 당일손익에서는 제외하면서 연속손실과
+  남은 쿨다운을 이어간다. 쿨다운 종료시각은 확인 시각이 아니라 KIS 주문시각에서
+  계산한다.
+- 위험일이 다르고 30분을 넘긴 과거 확인은 성과 원장만 교정한다. 현재 위험일
+  손익·연속손실·쿨다운을 시간 순서 밖에서 재생하지 않고
+  `historical_execution_risk_not_replayed`를 남긴다. 알림에는 확인지연과
+  `위험제어=과거귀속`, 이벤트에는 `execution_time_source=kis_order_timestamp`
+  를 기록한다.
+- 즉시 확인된 손실, 07:00 전 06:55 주문을 07:05에 확인한 경계 지연,
+  06:00 주문을 07:40에 확인한 과거 지연, 시작 전 보유분 확정 청산의 계좌
+  위험집계를 회귀 테스트로 고정했다. 관련 모듈 392개와 전체 **650개**,
+  `compileall`, `git diff --check`를 통과했다.
+- 배포 전 SQLite online backup은
+  `data/trading_backup_20260728_230734_pre_historical_execution_risk_attribution.db`,
+  `integrity_check=ok`, 외래키 위반 0, SHA-256
+  `212098b4ab7b311e30bd249b17ebf234b6d58bc7c5da6b5d2c0c6370bc4bd55c`이다.
+
 ## [2026-07-28] 양 시장 폐장 중 체결원장 반복조회 보류
 
 ### 운영 증거

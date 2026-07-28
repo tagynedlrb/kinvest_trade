@@ -187,8 +187,10 @@ class CircuitBreakerManager:
         market: str,
         realized_pnl_krw: float,
         pnl_pct: float | None = None,
+        include_session_pnl: bool = True,
     ) -> None:
-        self._maybe_reset_daily()
+        if include_session_pnl:
+            self._maybe_reset_daily()
         normalized_market = self._normalize_market(market)
         is_loss = pnl_pct < 0 if pnl_pct is not None else realized_pnl_krw < 0
         if is_loss:
@@ -198,9 +200,10 @@ class CircuitBreakerManager:
         else:
             self._consecutive_losses_by_market[normalized_market] = 0
         self._sync_aggregate_consecutive_losses()
-        self.session_realised_krw += float(realized_pnl_krw)
-        if normalized_market == "overseas":
-            self.session_realised_krw_overseas += float(realized_pnl_krw)
+        if include_session_pnl:
+            self.session_realised_krw += float(realized_pnl_krw)
+            if normalized_market == "overseas":
+                self.session_realised_krw_overseas += float(realized_pnl_krw)
 
     def reset(self, market: str | None = None) -> None:
         if market is not None:

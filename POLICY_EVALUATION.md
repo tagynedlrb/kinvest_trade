@@ -91,9 +91,22 @@ cannot train or score policy.
   daily-loss state, and order-rejection breaker state before any new order
   decision.
 - At service startup, reconstruct current risk-day PnL from broker-confirmed
-  sell rows after the 07:00 KST boundary. Persisted runtime state remains the
-  fallback if this query fails; a stale calendar date or restart-local subtotal
-  must not replace the confirmed ledger.
+  sell rows after the 07:00 KST boundary, including confirmed exits from
+  positions imported before the bot session. The session-ownership filter is
+  appropriate for strategy performance, not account-loss protection.
+  Reconstruct again after every newly confirmed sell so an out-of-order
+  historical row cannot contaminate the current risk day. Persisted runtime
+  state remains the fallback if this query fails; a stale calendar date or
+  restart-local subtotal must not replace the confirmed ledger.
+- KIS aggregate order-history rows expose filled quantity and price but only an
+  order timestamp, not a distinct fill timestamp. Treat that timestamp as the
+  best available effective time, name the source in the audit event, and retain
+  the full raw response. If confirmation crosses the 07:00 KST risk boundary,
+  replay consecutive-loss and re-entry cooldown controls only within the
+  declared 30-minute reconciliation grace. Anchor any remaining cooldown to the
+  effective order time. An older confirmation corrects historical performance
+  but must not create current-day PnL, reorder the live loss streak, or start a
+  fresh expired cooldown.
 - Runtime-state replacement must be atomic. A partial JSON write must leave the
   prior valid state available rather than silently resetting safeguards.
 - Session ownership is reconstructed from same-session broker-confirmed buys,

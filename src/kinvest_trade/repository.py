@@ -2951,6 +2951,7 @@ class SqliteRepository:
         session_id: str = "",
         include_virtual: bool = True,
         after_logged_at: str = "",
+        include_non_session_real: bool = False,
     ) -> dict:
         after_dt = parse_datetime(after_logged_at)
         with self._connect() as conn:
@@ -2964,7 +2965,10 @@ class SqliteRepository:
             cycle_log_columns = {
                 str(row[1]) for row in conn.execute("PRAGMA table_info(cycle_log)").fetchall()
             }
-            if "is_session_trade" in cycle_log_columns:
+            if (
+                "is_session_trade" in cycle_log_columns
+                and not include_non_session_real
+            ):
                 real_query += (
                     " AND (is_session_trade IS NULL OR is_session_trade = 1 "
                     f"OR {CONFIRMED_SESSION_OWNERSHIP_PREDICATE})"

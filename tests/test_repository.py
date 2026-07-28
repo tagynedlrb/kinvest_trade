@@ -817,9 +817,10 @@ def test_count_rows_rejects_unknown_table(tmp_path) -> None:
     assert repository.list_virtual_sell_pending() == []
 
 
-def test_get_session_pnl_summary_real_only(tmp_path) -> None:
+def test_get_session_pnl_summary_real_only(tmp_path, save_confirmed_sell) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:00:00+00:00",
         market="domestic",
         symbol="005930",
@@ -831,7 +832,8 @@ def test_get_session_pnl_summary_real_only(tmp_path) -> None:
         cycle_no=1,
         session_id="sess-real",
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:01:00+00:00",
         market="domestic",
         symbol="000660",
@@ -843,7 +845,8 @@ def test_get_session_pnl_summary_real_only(tmp_path) -> None:
         cycle_no=1,
         session_id="sess-real",
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:02:00+00:00",
         market="overseas",
         symbol="SOXL",
@@ -856,7 +859,8 @@ def test_get_session_pnl_summary_real_only(tmp_path) -> None:
         cycle_no=1,
         session_id="sess-real",
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:03:00+00:00",
         market="overseas",
         symbol="OLDPOS",
@@ -880,7 +884,70 @@ def test_get_session_pnl_summary_real_only(tmp_path) -> None:
     assert summary["real"]["overseas"]["total_pnl_usd"] == 12.5
 
 
-def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> None:
+def test_confirmed_performance_excludes_unverified_rows_and_uses_net_pnl(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "confirmed_only.db")
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="overseas",
+        symbol="NETLOSS",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="marginal_profit_exit",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=0.05,
+        entry_price=10.0,
+        qty_executed=1,
+        realized_pnl_usd=0.5,
+        realized_pnl_krw=675.0,
+        net_pnl_usd=-0.3,
+        net_pnl_krw=-405.0,
+        session_id="sess-confirmed",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:01:00+00:00",
+        market="overseas",
+        symbol="UNVERIFIED",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        pnl_pct=1.0,
+        entry_price=10.0,
+        qty_executed=100,
+        net_pnl_usd=1000.0,
+        net_pnl_krw=1_350_000.0,
+        session_id="sess-confirmed",
+    )
+
+    summary = repository.get_session_pnl_summary(
+        session_id="sess-confirmed",
+        include_virtual=False,
+    )
+    strategy_rows = repository.get_realized_strategy_performance(limit=10)
+
+    overseas = summary["real"]["overseas"]
+    assert overseas["trade_count"] == 1
+    assert overseas["win_count"] == 0
+    assert overseas["total_pnl_usd"] == -0.3
+    assert overseas["total_pnl_krw"] == -405.0
+    assert summary["real_by_symbol"]["NETLOSS"]["total_pnl_krw"] == -405.0
+    assert "UNVERIFIED" not in summary["real_by_symbol"]
+    assert len(strategy_rows) == 1
+    assert strategy_rows[0]["trade_count"] == 1
+    assert strategy_rows[0]["win_rate"] == 0.0
+    assert round(float(strategy_rows[0]["avg_pnl_pct"]), 6) == -0.03
+
+
+def test_get_realized_strategy_performance_excludes_signal_rows(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "strategy_performance.db")
     repository.save_cycle_log(
         logged_at="2026-07-01T00:00:00+00:00",
@@ -893,7 +960,8 @@ def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> Non
         entry_by="VWAP",
         pnl_pct=-0.10,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:01:00+00:00",
         market="overseas",
         symbol="SOXL",
@@ -907,7 +975,8 @@ def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> Non
         net_pnl_usd=-4.0,
         net_pnl_krw=-5400.0,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:01:30+00:00",
         market="overseas",
         symbol="SOXL",
@@ -921,7 +990,8 @@ def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> Non
         net_pnl_usd=5.0,
         net_pnl_krw=6750.0,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:02:00+00:00",
         market="domestic",
         symbol="005930",
@@ -951,9 +1021,13 @@ def test_get_realized_strategy_performance_excludes_signal_rows(tmp_path) -> Non
     assert by_key[("domestic", "RSI", "take_profit")]["win_rate"] == 1.0
 
 
-def test_get_sell_reason_counts_groups_recent_sell_real_only(tmp_path) -> None:
+def test_get_sell_reason_counts_groups_recent_sell_real_only(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "sell_reason_counts.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:00:00+00:00",
         market="overseas",
         symbol="OLD",
@@ -961,7 +1035,8 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(tmp_path) -> None:
         action_bias="SELL_REAL",
         action_reason="trend_filter_lost",
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-02T00:00:00+00:00",
         market="overseas",
         symbol="NEW1",
@@ -969,7 +1044,8 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(tmp_path) -> None:
         action_bias="SELL_REAL",
         action_reason="trend_filter_lost",
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-02T00:01:00+00:00",
         market="overseas",
         symbol="NEW2",
@@ -992,9 +1068,13 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(tmp_path) -> None:
     assert by_reason == {"trend_filter_lost": 1, "stop_loss": 1}
 
 
-def test_get_recent_strategy_guard_performance_groups_executed_sell_real(tmp_path) -> None:
+def test_get_recent_strategy_guard_performance_groups_executed_sell_real(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "strategy_guard.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:00:00+00:00",
         market="overseas",
         symbol="OLD",
@@ -1005,7 +1085,8 @@ def test_get_recent_strategy_guard_performance_groups_executed_sell_real(tmp_pat
         pnl_pct=-0.10,
         qty_executed=1,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-02T00:00:00+00:00",
         market="overseas",
         symbol="A",
@@ -1017,7 +1098,8 @@ def test_get_recent_strategy_guard_performance_groups_executed_sell_real(tmp_pat
         qty_executed=1,
         net_pnl_krw=-1000.0,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-02T00:01:00+00:00",
         market="overseas",
         symbol="B",
@@ -1057,9 +1139,13 @@ def test_get_recent_strategy_guard_performance_groups_executed_sell_real(tmp_pat
     assert row["total_net_pnl_krw"] == 1000.0
 
 
-def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(tmp_path) -> None:
+def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "strategy_guard_recorded_net.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-02T00:00:00+00:00",
         market="domestic",
         symbol="AAA",
@@ -1072,7 +1158,8 @@ def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(tmp_
         qty_executed=10,
         net_pnl_krw=-200.0,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-02T00:01:00+00:00",
         market="domestic",
         symbol="BBB",
@@ -1189,9 +1276,10 @@ def test_virtual_performance_summary_excludes_flagged_orders(tmp_path) -> None:
     assert session_summary["virtual"]["overseas_USD"]["total_pnl"] == 1.0
 
 
-def test_get_session_pnl_summary_after_filter(tmp_path) -> None:
+def test_get_session_pnl_summary_after_filter(tmp_path, save_confirmed_sell) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:00:00+00:00",
         market="overseas",
         symbol="SOXL",
@@ -1203,7 +1291,8 @@ def test_get_session_pnl_summary_after_filter(tmp_path) -> None:
         realized_pnl_krw=7000,
         cycle_no=1,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T01:00:00+00:00",
         market="overseas",
         symbol="SOXL",

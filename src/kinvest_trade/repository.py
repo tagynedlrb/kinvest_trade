@@ -10,6 +10,18 @@ from .market_sessions import KST, NEW_YORK
 from .time_utils import parse_datetime
 
 
+CONFIRMED_SELL_CYCLE_PREDICATE = """
+COALESCE(cycle_log.execution_group_id, '') != ''
+AND EXISTS (
+    SELECT 1
+    FROM broker_order_executions AS confirmed_execution
+    WHERE confirmed_execution.execution_group_id = cycle_log.execution_group_id
+      AND UPPER(confirmed_execution.side) = 'SELL'
+      AND confirmed_execution.filled_qty > 0
+)
+""".strip()
+
+
 class SqliteRepository:
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path)
@@ -2222,7 +2234,12 @@ class SqliteRepository:
     ) -> dict:
         after_dt = parse_datetime(after_logged_at)
         with self._connect() as conn:
-            real_query = "SELECT * FROM cycle_log WHERE action_bias = 'SELL_REAL'"
+            real_query = (
+                "SELECT * FROM cycle_log "
+                "WHERE action_bias = 'SELL_REAL' "
+                "AND COALESCE(qty_executed, 0) > 0 "
+                f"AND {CONFIRMED_SELL_CYCLE_PREDICATE}"
+            )
             real_params: list[object] = []
             cycle_log_columns = {
                 str(row[1]) for row in conn.execute("PRAGMA table_info(cycle_log)").fetchall()
@@ -2248,6 +2265,7 @@ class SqliteRepository:
                 ]
 
         real_summary: dict[str, dict[str, float | int | None]] = {}
+        real_by_symbol: dict[str, dict[str, float | int | str]] = {}
         for row in real_rows:
             logged_at_dt = parse_datetime(row.get("logged_at"))
             if after_dt is not None and logged_at_dt is not None and logged_at_dt < after_dt:
@@ -2266,15 +2284,61 @@ class SqliteRepository:
                     "total_pnl_krw": 0.0,
                 },
             )
-            pnl_pct = float(row.get("pnl_pct") or 0.0)
+            qty = int(row.get("qty_executed") or 0)
+            entry_price = float(row.get("entry_price") or 0.0)
+            net_pnl_usd = (
+                float(row["net_pnl_usd"])
+                if row.get("net_pnl_usd") is not None
+                else float(row.get("realized_pnl_usd") or 0.0)
+            )
+            net_pnl_krw = (
+                float(row["net_pnl_krw"])
+                if row.get("net_pnl_krw") is not None
+                else float(row.get("realized_pnl_krw") or 0.0)
+            )
+            if market.lower() == "overseas" and entry_price > 0 and qty > 0:
+                pnl_pct = net_pnl_usd / (entry_price * qty)
+                is_win = net_pnl_usd > 0
+            elif market.lower() == "domestic" and entry_price > 0 and qty > 0:
+                pnl_pct = net_pnl_krw / (entry_price * qty)
+                is_win = net_pnl_krw > 0
+            else:
+                pnl_pct = float(row.get("pnl_pct") or 0.0)
+                is_win = net_pnl_krw > 0 or (
+                    abs(net_pnl_krw) <= 1e-9 and net_pnl_usd > 0
+                )
             stats["trade_count"] = int(stats["trade_count"]) + 1
-            if pnl_pct > 0:
+            if is_win:
                 stats["win_count"] = int(stats["win_count"]) + 1
             else:
                 stats["loss_count"] = int(stats["loss_count"]) + 1
             stats["_sum_pnl_pct"] = float(stats["_sum_pnl_pct"]) + pnl_pct
-            stats["total_pnl_usd"] = float(stats["total_pnl_usd"]) + float(row.get("realized_pnl_usd") or 0.0)
-            stats["total_pnl_krw"] = float(stats["total_pnl_krw"]) + float(row.get("realized_pnl_krw") or 0.0)
+            stats["total_pnl_usd"] = float(stats["total_pnl_usd"]) + net_pnl_usd
+            stats["total_pnl_krw"] = float(stats["total_pnl_krw"]) + net_pnl_krw
+
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol:
+                symbol_stats = real_by_symbol.setdefault(
+                    symbol,
+                    {
+                        "symbol": symbol,
+                        "market": market,
+                        "trade_count": 0,
+                        "win_count": 0,
+                        "total_pnl_usd": 0.0,
+                        "total_pnl_krw": 0.0,
+                    },
+                )
+                symbol_stats["trade_count"] = int(symbol_stats["trade_count"]) + 1
+                symbol_stats["win_count"] = int(symbol_stats["win_count"]) + int(
+                    is_win
+                )
+                symbol_stats["total_pnl_usd"] = (
+                    float(symbol_stats["total_pnl_usd"]) + net_pnl_usd
+                )
+                symbol_stats["total_pnl_krw"] = (
+                    float(symbol_stats["total_pnl_krw"]) + net_pnl_krw
+                )
 
         for stats in real_summary.values():
             trade_count = int(stats["trade_count"])
@@ -2319,6 +2383,7 @@ class SqliteRepository:
 
         return {
             "real": real_summary,
+            "real_by_symbol": real_by_symbol,
             "virtual": virtual_summary,
         }
 
@@ -2333,6 +2398,7 @@ class SqliteRepository:
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
+            CONFIRMED_SELL_CYCLE_PREDICATE,
         ]
         if after_logged_at:
             where.append("logged_at >= ?")
@@ -2347,7 +2413,33 @@ class SqliteRepository:
                         COALESCE(NULLIF(strategy_flag, ''), '-') AS strategy_label,
                         COALESCE(NULLIF(entry_by, ''), '-') AS entry_label,
                         COALESCE(NULLIF(exit_by, ''), NULLIF(action_reason, ''), '-') AS exit_label,
-                        pnl_pct,
+                        CASE
+                            WHEN lower(market) = 'overseas'
+                              AND net_pnl_usd IS NOT NULL
+                              AND COALESCE(entry_price, 0) > 0
+                              AND COALESCE(qty_executed, 0) > 0
+                            THEN net_pnl_usd / (entry_price * qty_executed)
+                            WHEN lower(market) = 'domestic'
+                              AND net_pnl_krw IS NOT NULL
+                              AND COALESCE(entry_price, 0) > 0
+                              AND COALESCE(qty_executed, 0) > 0
+                            THEN net_pnl_krw / (entry_price * qty_executed)
+                            ELSE COALESCE(pnl_pct, 0)
+                        END AS pnl_pct,
+                        CASE
+                            WHEN lower(market) = 'overseas'
+                              AND net_pnl_usd IS NOT NULL
+                            THEN net_pnl_usd
+                            WHEN lower(market) = 'domestic'
+                              AND net_pnl_krw IS NOT NULL
+                            THEN net_pnl_krw
+                            ELSE COALESCE(
+                                realized_pnl_krw,
+                                realized_pnl_usd,
+                                pnl_pct,
+                                0
+                            )
+                        END AS net_result,
                         qty_executed,
                         net_pnl_usd,
                         realized_pnl_usd,
@@ -2363,8 +2455,8 @@ class SqliteRepository:
                     entry_label AS entry_by,
                     exit_label AS exit_by,
                     COUNT(*) AS trade_count,
-                    SUM(CASE WHEN COALESCE(pnl_pct, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
-                    SUM(CASE WHEN COALESCE(pnl_pct, 0) <= 0 THEN 1 ELSE 0 END) AS loss_count,
+                    SUM(CASE WHEN net_result > 0 THEN 1 ELSE 0 END) AS win_count,
+                    SUM(CASE WHEN net_result <= 0 THEN 1 ELSE 0 END) AS loss_count,
                     AVG(COALESCE(pnl_pct, 0)) AS avg_pnl_pct,
                     SUM(COALESCE(qty_executed, 0)) AS total_qty,
                     SUM(COALESCE(net_pnl_usd, realized_pnl_usd, 0)) AS total_net_pnl_usd,
@@ -2387,9 +2479,13 @@ class SqliteRepository:
         return result
 
     def get_sell_reason_counts(self, *, after_logged_at: str = "") -> list[dict]:
-        """Return recent SELL_REAL counts grouped by action_reason."""
+        """Return broker-confirmed sell counts grouped by action_reason."""
         params: list[object] = []
-        where = ["action_bias = 'SELL_REAL'"]
+        where = [
+            "action_bias = 'SELL_REAL'",
+            "COALESCE(qty_executed, 0) > 0",
+            CONFIRMED_SELL_CYCLE_PREDICATE,
+        ]
         if after_logged_at:
             where.append("logged_at >= ?")
             params.append(after_logged_at)
@@ -2418,6 +2514,7 @@ class SqliteRepository:
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
+            CONFIRMED_SELL_CYCLE_PREDICATE,
         ]
         if after_logged_at:
             where.append("logged_at >= ?")

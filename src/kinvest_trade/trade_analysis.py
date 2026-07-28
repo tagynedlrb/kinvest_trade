@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .repository import CONFIRMED_SELL_CYCLE_PREDICATE
+
 DEFAULT_COST_PCT = 0.005
 MIN_REGIME_TRADES = 5
 MIN_REGIME_DAYS = 3
@@ -147,6 +149,8 @@ def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
                         {net_expr} AS net_pnl_pct
                     FROM cycle_log
                     WHERE action_bias = 'SELL_REAL'
+                      AND COALESCE(qty_executed, 0) > 0
+                      AND {CONFIRMED_SELL_CYCLE_PREDICATE}
                       AND logged_at {operator} ?
                 )
                 SELECT
@@ -326,7 +330,11 @@ def summarize_market_regime_performance(
             )
 
         result.append("[시장 레짐별 KIS 체결확정 손익]")
-        where = ["action_bias = 'SELL_REAL'"]
+        where = [
+            "action_bias = 'SELL_REAL'",
+            "COALESCE(qty_executed, 0) > 0",
+            CONFIRMED_SELL_CYCLE_PREDICATE,
+        ]
         params: list[object] = []
         if days > 0:
             cutoff = (

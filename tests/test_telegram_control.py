@@ -83,6 +83,74 @@ def test_accumulate_session_performance_collects_realized_pnl_and_reasons() -> N
     assert perf.primary_targets["SOXL"] == 1
 
 
+def test_sync_confirmed_session_performance_uses_fill_ledger_net_pnl(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "session_sync.db")
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-01T00:00:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        entry_price=1000.0,
+        qty_executed=1,
+        pnl_pct=0.02,
+        net_pnl_krw=100.0,
+        session_id="sess-sync",
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-01T00:01:00+00:00",
+        market="overseas",
+        symbol="NETLOSS",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="marginal_profit_exit",
+        entry_price=10.0,
+        qty_executed=1,
+        pnl_pct=0.02,
+        net_pnl_usd=-0.2,
+        net_pnl_krw=-270.0,
+        session_id="sess-sync",
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-01T00:02:00+00:00",
+        market="overseas",
+        symbol="UNVERIFIED",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        qty_executed=1,
+        net_pnl_krw=99_999.0,
+        session_id="sess-sync",
+    )
+    controller = TelegramLiquidityLabController.__new__(
+        TelegramLiquidityLabController
+    )
+    controller.repository = repository
+    controller.active_session_id = "sess-sync"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+        symbol_stats={
+            "UNVERIFIED": {
+                "confirmed_realized_pnl_krw": 123,
+            }
+        },
+    )
+
+    controller._sync_confirmed_session_performance()
+
+    perf = controller.session_performance
+    assert perf.domestic_paper_realized_pnl_krw == -170
+    assert perf.symbol_stats["005930"]["confirmed_realized_pnl_krw"] == 100
+    assert perf.symbol_stats["NETLOSS"]["confirmed_realized_pnl_krw"] == -270
+    assert perf.symbol_stats["UNVERIFIED"]["confirmed_realized_pnl_krw"] == 0
+
+
 def test_format_watch_target_line_is_compact() -> None:
     line = TelegramLiquidityLabController._format_watch_target_line(
         {
@@ -1445,9 +1513,13 @@ def test_build_portfolio_message_uses_lab_symbol_state_price_for_real_position(t
     assert "해외 MSEX 수량=522 매입=$54.1040 현재=$54.8800 손익=+1.43%" in message
 
 
-def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
+def test_send_recent_trade_log_formats_latest_buy_and_sell(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "telegram_log.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:00:00+00:00",
         market="overseas",
         symbol="SOXL",
@@ -1569,9 +1641,10 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert rows[0]["elapsed_ms"] == 87
 
 
-def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
+def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:
     repository = SqliteRepository(tmp_path / "telegram_log_command.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-01T00:00:00+00:00",
         market="domestic",
         symbol="005930",
@@ -1616,7 +1689,10 @@ def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
     assert "환산손익=+3,900원" in message
 
 
-def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> None:
+def test_lab_performance_command_reports_realized_strategy_only(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "telegram_performance_command.db")
     logged_at = datetime.now(timezone.utc).isoformat()
     repository.save_cycle_log(
@@ -1630,7 +1706,8 @@ def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> Non
         entry_by="VWAP",
         pnl_pct=-0.02,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at=logged_at,
         market="overseas",
         symbol="SOXL",
@@ -1680,9 +1757,13 @@ def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> Non
     assert "손익=-$12.50/-16,875원" in message
 
 
-def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> None:
+def test_lab_report_compare_command_reports_before_after_strategy(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "telegram_report_command.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T14:30:00+00:00",
         market="overseas",
         symbol="SOXL",
@@ -1692,7 +1773,8 @@ def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> N
         strategy_flag="VWAP",
         pnl_pct=0.012,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T15:30:00+00:00",
         market="overseas",
         symbol="PLTR",
@@ -1781,11 +1863,15 @@ def test_lab_report_wait_command_reports_wait_bottlenecks(tmp_path) -> None:
     assert "volume_low" in message
 
 
-def test_lab_guard_command_reports_current_strategy_guard_state(tmp_path) -> None:
+def test_lab_guard_command_reports_current_strategy_guard_state(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "telegram_guard_command.db")
     logged_at = datetime.now(timezone.utc).isoformat()
     for idx in range(3):
-        repository.save_cycle_log(
+        save_confirmed_sell(
+            repository,
             logged_at=logged_at,
             market="overseas",
             symbol=f"BAD{idx}",
@@ -1799,7 +1885,8 @@ def test_lab_guard_command_reports_current_strategy_guard_state(tmp_path) -> Non
             net_pnl_usd=-10.0,
             net_pnl_krw=-13500.0,
         )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at=logged_at,
         market="domestic",
         symbol="005930",

@@ -42,6 +42,13 @@ Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
 not submitted-price or pre-cost PnL. A positive gross move that fails to clear
 round-trip costs is still a loss for risk control.
 
+An action label is not fill evidence. A `SELL_REAL` cycle row is eligible only
+when it has an execution-group ID and that group has a KIS-confirmed sell fill
+with positive filled quantity. This same boundary applies to session PnL,
+strategy performance, strategy guards, exit-reason warnings, before/after
+comparisons, and market-regime evaluation. Legacy rows remain available for
+audit but cannot train or score policy.
+
 ## Frequency decisions
 
 - Low order frequency is not itself a defect.
@@ -107,14 +114,20 @@ the current direction is wrong.
 
 ## Current decision checkpoint
 
-- Domestic: do not loosen entry thresholds from the 2026-07-28 sample. Blocked
-  candidates had materially negative forward returns and the day was an
-  unusually adverse KOSPI regime.
-- Overseas: do not loosen entry thresholds yet. Recent gross gains were largely
-  consumed by estimated round-trip costs, and blocked-signal forward returns
-  did not clear that cost hurdle.
+- Domestic: eight broker-confirmed exits produced two after-cost wins and
+  -2,380.92 KRW net. Do not loosen entry thresholds from this sample. Blocked
+  candidates had materially negative forward returns, and each observed regime
+  still covers only one final KOSPI session.
+- Overseas: eleven broker-confirmed exits produced four after-cost wins and
+  -156,081.30 KRW net. Do not loosen entry thresholds yet. The apparent
+  `VWAP+VOL` edge in a sideways/normal-activity/high-volatility NASDAQ regime is
+  five exits from one final session, while blocked-signal forward returns did
+  not clear the cost hurdle.
 - Both markets: inverse trading remains shadow-only. Current evidence justifies
-  testing a separate down-market formula, but not risking broker capital.
+  testing a separate down-market formula, but not risking broker capital. The
+  first deployment occurred after the observed KOSPI crash session had closed,
+  and NASDAQ had not crossed the -1% gate, so zero shadow exits is currently
+  "not observed", not evidence of failure or success.
 - Performance now uses the broker execution ledger. Submission rows, canceled
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.

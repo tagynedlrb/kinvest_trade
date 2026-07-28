@@ -793,6 +793,104 @@ def test_select_overseas_exit_targets_includes_virtual_only_stop_loss() -> None:
     assert signal_snapshot is None
 
 
+def test_select_overseas_exit_targets_applies_policy_exit_to_virtual_position() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = type(
+        "Config",
+        (),
+        {
+            "liquidity_lab": type(
+                "LiquidityCfg",
+                (),
+                {
+                    "overseas_take_profit_pct": 0.025,
+                    "overseas_stop_loss_pct": 0.015,
+                },
+            )()
+        },
+    )()
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    snapshot = _snapshot(
+        price=86.8,
+        volume_ratio=0.4,
+        intraday_momentum=-0.001,
+    )
+    service._signal_cache = {"WFC": snapshot}
+    service._should_exit_overseas_position = (  # type: ignore[method-assign]
+        lambda signal_snapshot, held: (
+            signal_snapshot is snapshot and held.is_virtual,
+            "marginal_profit_exit",
+        )
+    )
+    service.virtual_trades = type(
+        "VirtualTrades",
+        (),
+        {
+            "list_positions": lambda self, market=None: [
+                VirtualPosition(
+                    market="overseas",
+                    symbol="WFC",
+                    exchange_code="NYSE",
+                    qty=43,
+                    avg_price=85.2562,
+                    currency="USD",
+                )
+            ],
+            "get_position": lambda self, market, symbol: VirtualPosition(
+                market="overseas",
+                symbol="WFC",
+                exchange_code="NYSE",
+                qty=43,
+                avg_price=85.2562,
+                currency="USD",
+            ),
+        },
+    )()
+    ranked = [
+        OverseasScanResult(
+            symbol="WFC",
+            exchange_code="NYSE",
+            last_price=86.8,
+            bid=86.79,
+            ask=86.81,
+            spread_pct=0.0002,
+            change_rate_pct=0.2,
+            volume=900_000,
+            orderable_qty=0,
+            fx_rate_krw=1350.0,
+            activity_score=8.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="WFC",
+            exchange_code="NYSE",
+            quantity=43,
+            orderable_qty=43,
+            avg_price=85.2562,
+            current_price=86.8,
+            pnl_pct=(86.8 - 85.2562) / 85.2562,
+            is_virtual=True,
+        )
+    ]
+
+    results = asyncio.run(
+        service._select_overseas_exit_targets(
+            ranked,
+            held_positions,
+            max_exits=5,
+        )
+    )
+
+    assert len(results) == 1
+    candidate, held, reason, selected_snapshot = results[0]
+    assert candidate.symbol == "WFC"
+    assert held.is_virtual is True
+    assert held.quantity == 43
+    assert reason == "marginal_profit_exit"
+    assert selected_snapshot is snapshot
+
+
 def test_select_overseas_exit_targets_uses_held_qty_when_orderable_is_zero() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -4372,11 +4470,14 @@ def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:
     assert detail["threshold"] == 30.0
 
 
-def test_check_trend_filter_lost_ratio_saves_warning_event() -> None:
+def test_check_trend_filter_lost_ratio_saves_warning_event(
+    save_confirmed_sell,
+) -> None:
     service = _build_run_service()
     now = datetime.now(timezone.utc).isoformat()
     for idx in range(4):
-        service.repository.save_cycle_log(
+        save_confirmed_sell(
+            service.repository,
             logged_at=now,
             market="overseas",
             symbol=f"TFL{idx}",
@@ -4387,7 +4488,8 @@ def test_check_trend_filter_lost_ratio_saves_warning_event() -> None:
             qty_executed=1,
         )
     for idx in range(2):
-        service.repository.save_cycle_log(
+        save_confirmed_sell(
+            service.repository,
             logged_at=now,
             market="overseas",
             symbol=f"STP{idx}",
@@ -5653,7 +5755,9 @@ def test_select_overseas_buy_targets_excludes_standalone_vwap_when_blocked() -> 
     assert [item.symbol for item in selected] == ["AMD"]
 
 
-def test_select_overseas_buy_targets_excludes_recent_underperforming_standalone_strategy() -> None:
+def test_select_overseas_buy_targets_excludes_recent_underperforming_standalone_strategy(
+    save_confirmed_sell,
+) -> None:
     service = _build_run_service()
     service.config.liquidity_lab.strategy_guard_enabled = True
     service.config.liquidity_lab.strategy_guard_lookback_hours = 48
@@ -5663,7 +5767,8 @@ def test_select_overseas_buy_targets_excludes_recent_underperforming_standalone_
     service.config.liquidity_lab.strategy_guard_strategy_flags = ["RSI"]
     now = datetime.now(timezone.utc).isoformat()
     for idx in range(3):
-        service.repository.save_cycle_log(
+        save_confirmed_sell(
+            service.repository,
             logged_at=now,
             market="overseas",
             symbol=f"RSI{idx}",
@@ -7841,7 +7946,9 @@ def test_place_overseas_test_order_blocks_low_volume_combo_before_submission() -
     assert rows[0]["volume_ratio"] == 0.3
 
 
-def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before_submission() -> None:
+def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before_submission(
+    save_confirmed_sell,
+) -> None:
     class FailingOverseasClient:
         async def get_overseas_possible_order(self, **kwargs):
             raise AssertionError("possible-order API should not be called")
@@ -7859,7 +7966,8 @@ def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before
     service.client = FailingOverseasClient()
     now = datetime.now(timezone.utc).isoformat()
     for idx in range(3):
-        service.repository.save_cycle_log(
+        save_confirmed_sell(
+            service.repository,
             logged_at=now,
             market="overseas",
             symbol=f"BAD{idx}",

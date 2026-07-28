@@ -1283,20 +1283,60 @@ class WatchStateHelper:
                     exit_reason = "take_profit"
                     priority = (1, -pnl_pct)
 
+            if (
+                exit_reason is None
+                and is_virtual_only
+                and virtual_buy is not None
+                and signal_snapshot is not None
+            ):
+                virtual_held = OverseasHeldPosition(
+                    symbol=symbol,
+                    exchange_code=quote.exchange_code,
+                    quantity=virtual_buy.qty,
+                    orderable_qty=virtual_buy.qty,
+                    avg_price=avg_price,
+                    current_price=quote.last_price,
+                    pnl_pct=pnl_pct,
+                    is_virtual=True,
+                )
+                should_exit, policy_exit_reason = (
+                    service._should_exit_overseas_position(
+                        signal_snapshot,
+                        virtual_held,
+                    )
+                )
+                if should_exit:
+                    exit_reason = policy_exit_reason
+                    priority = (2, pnl_pct)
+
             if exit_reason is None or priority is None:
                 continue
 
             held_for_return = OverseasHeldPosition(
                 symbol=symbol,
                 exchange_code=real.exchange_code if real else quote.exchange_code,
-                quantity=real.quantity if real else 0,
+                quantity=(
+                    virtual_buy.qty
+                    if is_virtual_only and virtual_buy is not None
+                    else real.quantity
+                    if real is not None
+                    else 0
+                ),
                 orderable_qty=effective_orderable,
                 avg_price=avg_price,
                 current_price=quote.last_price,
                 pnl_pct=pnl_pct,
                 is_virtual=(real is None),
             )
-            results.append((priority, quote, held_for_return, exit_reason, None))
+            results.append(
+                (
+                    priority,
+                    quote,
+                    held_for_return,
+                    exit_reason,
+                    signal_snapshot,
+                )
+            )
 
         already_exiting = {item[2].symbol.upper() for item in results}
         for symbol, held in real_by_symbol.items():

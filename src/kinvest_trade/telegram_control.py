@@ -334,6 +334,7 @@ class TelegramLiquidityLabController:
         if not self.notifier.enabled:
             raise RuntimeError("Telegram bot token/chat id are required for telegram-control.")
         self._restore_runtime_state()
+        self._sync_confirmed_session_performance()
         self._prune_expired_operational_logs()
         self._write_runtime_state()
         try:
@@ -2347,6 +2348,39 @@ class TelegramLiquidityLabController:
         selection_reason = str(report.primary_selection_reason or "")
         if selection_reason:
             perf.skip_reasons[selection_reason] = perf.skip_reasons.get(selection_reason, 0) + 1
+        self._sync_confirmed_session_performance()
+
+    def _sync_confirmed_session_performance(self) -> None:
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return
+        perf = self.session_performance
+        started_at = perf.started_at.isoformat() if perf.started_at is not None else ""
+        try:
+            summary = repository.get_session_pnl_summary(
+                session_id=str(getattr(self, "active_session_id", "") or ""),
+                include_virtual=False,
+                after_logged_at=started_at,
+            )
+        except Exception:  # noqa: BLE001
+            _logger.exception("confirmed_session_performance_sync_failed")
+            return
+
+        for stats in (perf.symbol_stats or {}).values():
+            stats["confirmed_realized_pnl_krw"] = 0
+
+        total_net_pnl_krw = 0.0
+        for stats in (summary.get("real") or {}).values():
+            total_net_pnl_krw += float(stats.get("total_pnl_krw") or 0.0)
+        # Retain the legacy serialized field name while exposing confirmed
+        # broker-fill net PnL in user-facing status and session reports.
+        perf.domestic_paper_realized_pnl_krw = int(round(total_net_pnl_krw))
+
+        for symbol, confirmed in (summary.get("real_by_symbol") or {}).items():
+            stats = self._ensure_symbol_stats(str(symbol))
+            stats["confirmed_realized_pnl_krw"] = int(
+                round(float(confirmed.get("total_pnl_krw") or 0.0))
+            )
 
     def _accumulate_order_stats(self, order_result: dict | None, *, market: str) -> None:
         if not order_result:
@@ -2450,6 +2484,7 @@ class TelegramLiquidityLabController:
         return "; ".join(chunks)
 
     def _finalize_session_summary(self, *, command: str) -> list[str]:
+        self._sync_confirmed_session_performance()
         ended_at = datetime.now(timezone.utc)
         started_at_iso = (
             self.session_performance.started_at.isoformat()

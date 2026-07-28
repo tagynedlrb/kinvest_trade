@@ -12,9 +12,13 @@ from scripts.analyze_trades import (
 from kinvest_trade.repository import SqliteRepository
 
 
-def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
+def test_compare_before_after_splits_sell_real_by_kst_cutoff(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "analysis.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T14:30:00+00:00",
         market="overseas",
         symbol="AAA",
@@ -24,7 +28,8 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
         strategy_flag="VWAP",
         pnl_pct=0.010,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T15:30:00+00:00",
         market="overseas",
         symbol="BBB",
@@ -34,7 +39,8 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
         strategy_flag="RSI",
         pnl_pct=-0.020,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T16:00:00+00:00",
         market="domestic",
         symbol="005930",
@@ -68,9 +74,13 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(tmp_path) -> None:
     assert "signal_only" not in output
 
 
-def test_compare_before_after_accepts_kst_time_cutoff(tmp_path) -> None:
+def test_compare_before_after_accepts_kst_time_cutoff(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "analysis_time_cutoff.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T15:10:00+00:00",
         market="overseas",
         symbol="AAA",
@@ -80,7 +90,8 @@ def test_compare_before_after_accepts_kst_time_cutoff(tmp_path) -> None:
         strategy_flag="VWAP",
         pnl_pct=0.010,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T15:20:00+00:00",
         market="overseas",
         symbol="BBB",
@@ -103,9 +114,13 @@ def test_compare_before_after_accepts_kst_time_cutoff(tmp_path) -> None:
     assert "RSI" in after_section
 
 
-def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:
+def test_compare_before_after_prefers_recorded_net_pnl_pct(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "analysis_recorded_net.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T16:00:00+00:00",
         market="domestic",
         symbol="AAA",
@@ -118,7 +133,8 @@ def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:
         qty_executed=10,
         net_pnl_krw=-200.0,
     )
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-09T16:01:00+00:00",
         market="domestic",
         symbol="BBB",
@@ -139,7 +155,12 @@ def test_compare_before_after_prefers_recorded_net_pnl_pct(tmp_path) -> None:
     assert "승률=50%" in output
 
 
-def test_strategy_breakdown_prefers_action_reason_over_exit_by(tmp_path, monkeypatch, capsys) -> None:
+def test_strategy_breakdown_prefers_action_reason_over_exit_by(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    save_confirmed_sell,
+) -> None:
     # Regression test for a mislabeling bug found 2026-07-24: exit_by holds a
     # coarser label from the per-symbol strategy manager's own preview check
     # (often just "VWAP"/"RSI"), which is a DIFFERENT, less authoritative
@@ -149,7 +170,8 @@ def test_strategy_breakdown_prefers_action_reason_over_exit_by(tmp_path, monkeyp
     # exit gets silently reclassified as a generic "VWAP" exit, corrupting
     # the whole per-exit-reason performance breakdown.
     repository = SqliteRepository(tmp_path / "strategy_breakdown.db")
-    repository.save_cycle_log(
+    save_confirmed_sell(
+        repository,
         logged_at="2026-07-22T14:19:03+00:00",
         market="overseas",
         symbol="BANC",
@@ -258,6 +280,7 @@ def _save_final_domestic_regime(
 
 def test_market_regime_performance_requires_multiple_days_before_policy_evaluation(
     tmp_path,
+    save_confirmed_sell,
 ) -> None:
     repository = SqliteRepository(tmp_path / "regime_analysis.db")
     session_dates = ["2026-07-20", "2026-07-21", "2026-07-22"]
@@ -271,7 +294,8 @@ def test_market_regime_performance_requires_multiple_days_before_policy_evaluati
         "2026-07-22",
     ]
     for index, session_date in enumerate(trade_dates):
-        repository.save_cycle_log(
+        save_confirmed_sell(
+            repository,
             logged_at=f"{session_date}T01:0{index}:00+00:00",
             market="domestic",
             symbol=f"00{index}",
@@ -297,11 +321,15 @@ def test_market_regime_performance_requires_multiple_days_before_policy_evaluati
     assert "단일 장세 결과로 자동변경 금지" in output
 
 
-def test_market_regime_performance_marks_one_day_sample_insufficient(tmp_path) -> None:
+def test_market_regime_performance_marks_one_day_sample_insufficient(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
     repository = SqliteRepository(tmp_path / "regime_one_day.db")
     _save_final_domestic_regime(repository, "2026-07-20")
     for index in range(5):
-        repository.save_cycle_log(
+        save_confirmed_sell(
+            repository,
             logged_at=f"2026-07-20T01:0{index}:00+00:00",
             market="domestic",
             symbol=f"10{index}",

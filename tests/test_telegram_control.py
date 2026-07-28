@@ -10,6 +10,7 @@ import httpx
 import kinvest_trade.telegram_control as telegram_control_module
 import pytest
 from kinvest_trade.client import KisApiError
+from kinvest_trade.lab_risk import CircuitBreakerManager
 from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.telegram_control import (
@@ -149,6 +150,86 @@ def test_sync_confirmed_session_performance_uses_fill_ledger_net_pnl(
     assert perf.symbol_stats["005930"]["confirmed_realized_pnl_krw"] == 100
     assert perf.symbol_stats["NETLOSS"]["confirmed_realized_pnl_krw"] == -270
     assert perf.symbol_stats["UNVERIFIED"]["confirmed_realized_pnl_krw"] == 0
+
+
+def test_sync_confirmed_session_performance_recovers_restart_lost_ownership(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "session_sync_restart.db")
+    buy_at = "2026-07-28T16:54:46+00:00"
+    event_id = repository.save_broker_order_event(
+        created_at=buy_at,
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=417,
+        requested_price=14.593,
+        status="SUBMITTED",
+        broker_order_no="buy-arx",
+    )
+    buy_execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=buy_at,
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        side="BUY",
+        broker_order_no="buy-arx",
+        requested_qty=417,
+        requested_price=14.593,
+        session_id="sess-restart",
+        is_session_trade=1,
+    )
+    assert buy_execution is not None
+    repository.update_broker_order_execution(
+        int(buy_execution["id"]),
+        filled_qty=417,
+        filled_amount=14.593 * 417,
+        avg_fill_price=14.593,
+        remaining_qty=0,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="FILLED",
+        history={"test": True},
+        checked_at=buy_at,
+        fill_recorded_at=buy_at,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-28T17:13:12+00:00",
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        entry_price=14.593,
+        qty_executed=417,
+        net_pnl_usd=-60.916032,
+        net_pnl_krw=-82_236.64,
+        session_id="sess-restart",
+        is_session_trade=0,
+    )
+    controller = TelegramLiquidityLabController.__new__(
+        TelegramLiquidityLabController
+    )
+    controller.repository = repository
+    controller.active_session_id = "sess-restart"
+    controller.session_performance = SessionPerformance(
+        started_at=datetime(2026, 7, 28, 16, 0, tzinfo=timezone.utc),
+    )
+
+    controller._sync_confirmed_session_performance()
+
+    assert controller.session_performance.domestic_paper_realized_pnl_krw == -82_237
+    assert (
+        controller.session_performance.symbol_stats["ARX"][
+            "confirmed_realized_pnl_krw"
+        ]
+        == -82_237
+    )
 
 
 def test_format_watch_target_line_is_compact() -> None:
@@ -4087,6 +4168,96 @@ def test_write_runtime_state_persists_lab_runtime_state() -> None:
     assert set(lab_state["exit_cooldown"]) == {"overseas:SOXL"}
     assert set(lab_state["no_orderable_retry"]) == {"overseas:MSEX"}
     assert lab_state["no_orderable_counts"] == {"overseas:MSEX": 42}
+
+
+def test_write_and_restore_runtime_state_preserves_circuit_breaker(tmp_path) -> None:
+    controller = _build_async_controller()
+    controller.config.storage.runtime_state_path = tmp_path / "runtime_state.json"
+    controller.config.risk = SimpleNamespace(
+        max_consecutive_losses=3,
+        circuit_breaker_cooldown_minutes=30,
+        daily_loss_limit_pct=0.0,
+    )
+    manager = CircuitBreakerManager(controller.config)
+    halted_at = datetime.now(timezone.utc) - timedelta(minutes=3)
+    reject_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    manager.load_state(
+        consecutive_losses=3,
+        consecutive_losses_by_market={"domestic": 0, "overseas": 3},
+        session_realised_krw=-197_045.49,
+        session_realised_krw_overseas=-197_045.49,
+        daily_loss_date=datetime.now(timezone.utc).date(),
+        halted_at=halted_at,
+        halted_at_by_market={"overseas": halted_at},
+        daily_halted_at=None,
+        last_cb_released_at=None,
+        overseas_cb_active=False,
+        order_reject_history={"overseas:sell": [reject_at]},
+        order_reject_halted_at={"overseas:sell": reject_at},
+    )
+    controller.lab_service = SimpleNamespace(
+        cb=manager,
+        _exit_cooldown={},
+        _no_orderable_retry={},
+        _no_orderable_counts={},
+    )
+
+    controller._write_runtime_state()
+    payload = json.loads(
+        controller.config.storage.runtime_state_path.read_text(encoding="utf-8")
+    )
+    stored = payload["lab_runtime_state"]["circuit_breaker"]
+    assert stored["consecutive_losses_by_market"] == {"domestic": 0, "overseas": 3}
+    assert stored["session_realised_krw"] == -197_045.49
+    assert stored["halted_at_by_market"]["overseas"] == halted_at.isoformat()
+    assert stored["order_reject_halted_at"]["overseas:sell"] == reject_at.isoformat()
+
+    restored_controller = _build_async_controller()
+    restored_controller.config.storage.runtime_state_path = (
+        controller.config.storage.runtime_state_path
+    )
+    restored_controller.config.risk = controller.config.risk
+    restored_controller._restore_runtime_state()
+    restored_manager = CircuitBreakerManager(restored_controller.config)
+    restored_service = SimpleNamespace(
+        cb=restored_manager,
+        _exit_cooldown={},
+        _no_orderable_retry={},
+        _no_orderable_counts={},
+    )
+    restored_controller._apply_restored_lab_runtime_state(restored_service)
+
+    snapshot = restored_manager.snapshot()
+    assert snapshot["consecutive_losses_by_market"] == {
+        "domestic": 0,
+        "overseas": 3,
+    }
+    assert snapshot["session_realised_krw"] == -197_045.49
+    assert snapshot["halted_at_by_market"]["overseas"] == halted_at
+    assert snapshot["order_reject_halted_at"]["overseas:sell"] == reject_at
+    assert restored_manager.is_halted("overseas") is True
+
+
+def test_normalise_circuit_breaker_state_tolerates_malformed_values() -> None:
+    state = TelegramLiquidityLabController._normalise_circuit_breaker_state(
+        {
+            "consecutive_losses": "invalid",
+            "consecutive_losses_by_market": ["invalid"],
+            "session_realised_krw": {"invalid": True},
+            "session_realised_krw_overseas": "invalid",
+            "daily_loss_date": "not-a-date",
+            "halted_at": "not-a-datetime",
+            "order_reject_history": {"overseas:buy": "not-a-list"},
+        }
+    )
+
+    assert state["consecutive_losses"] == 0
+    assert state["consecutive_losses_by_market"] == {}
+    assert state["session_realised_krw"] == 0.0
+    assert state["session_realised_krw_overseas"] == 0.0
+    assert state["daily_loss_date"] == ""
+    assert state["halted_at"] is None
+    assert state["order_reject_history"] == {}
 
 
 def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:

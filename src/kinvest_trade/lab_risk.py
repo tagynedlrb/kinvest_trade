@@ -57,7 +57,10 @@ class CircuitBreakerManager:
         halted_at_by_market: dict[str, datetime] | None = None,
         daily_halted_at: datetime | None | object = _UNSET,
         last_cb_released_at: datetime | None | object = _UNSET,
+        last_cb_released_at_by_market: dict[str, datetime] | None = None,
         overseas_cb_active: bool | None = None,
+        order_reject_history: dict[str, list[datetime]] | None = None,
+        order_reject_halted_at: dict[str, datetime] | None = None,
     ) -> None:
         if consecutive_losses is not None:
             self.consecutive_losses = int(consecutive_losses)
@@ -86,8 +89,26 @@ class CircuitBreakerManager:
             self._daily_halted_at = daily_halted_at
         if last_cb_released_at is not _UNSET:
             self._last_cb_released_at = last_cb_released_at
+        if last_cb_released_at_by_market is not None:
+            self._last_cb_released_at_by_market = {
+                self._normalize_market(market): ensure_timezone(value)
+                for market, value in last_cb_released_at_by_market.items()
+                if str(market).strip() and value is not None
+            }
         if overseas_cb_active is not None:
             self._overseas_cb_active = bool(overseas_cb_active)
+        if order_reject_history is not None:
+            self._order_reject_history = {
+                str(key): [ensure_timezone(value) for value in values]
+                for key, values in order_reject_history.items()
+                if str(key).strip()
+            }
+        if order_reject_halted_at is not None:
+            self._order_reject_halted_at = {
+                str(key): ensure_timezone(value)
+                for key, value in order_reject_halted_at.items()
+                if str(key).strip() and value is not None
+            }
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -100,7 +121,15 @@ class CircuitBreakerManager:
             "halted_at_by_market": dict(self._halted_at_by_market),
             "daily_halted_at": self._daily_halted_at,
             "last_cb_released_at": self._last_cb_released_at,
+            "last_cb_released_at_by_market": dict(
+                self._last_cb_released_at_by_market
+            ),
             "overseas_cb_active": self._overseas_cb_active,
+            "order_reject_history": {
+                key: list(values)
+                for key, values in self._order_reject_history.items()
+            },
+            "order_reject_halted_at": dict(self._order_reject_halted_at),
         }
 
     @property

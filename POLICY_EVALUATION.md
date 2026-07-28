@@ -52,6 +52,21 @@ strategy performance, strategy guards, exit-reason warnings, before/after
 comparisons, and market-regime evaluation. Legacy rows remain available for
 audit but cannot train or score policy.
 
+## Restart safety
+
+- A process restart does not start a new risk session. Persist and restore
+  confirmed net PnL, market-specific consecutive losses, halt/release times,
+  daily-loss state, and order-rejection breaker state before any new order
+  decision.
+- Runtime-state replacement must be atomic. A partial JSON write must leave the
+  prior valid state available rather than silently resetting safeguards.
+- Session ownership is reconstructed from same-session broker-confirmed buys,
+  not symbol identity alone. This keeps restarted bot positions attributable
+  without claiming manually imported holdings.
+- A fill caused by a missing safety state still counts in account PnL and risk.
+  It is incident evidence, not evidence for loosening the entry formula; its
+  policy attribution must be called out in later regime reviews.
+
 ## Frequency decisions
 
 - Low order frequency is not itself a defect.
@@ -146,3 +161,8 @@ the current direction is wrong.
   execution group reached its full target within five minutes and its filled
   quantity covers the stale holding. Never apply this exception to a partial
   group fill.
+- The 2026-07-28 restart lost an active overseas breaker and allowed an ARX
+  481-share paper-account buy during the original 30-minute halt. The fill
+  remains part of account/risk PnL, but it must not be interpreted as evidence
+  that entry thresholds should be loosened. Breaker state is now durable and
+  same-session ownership reporting is reconstructed from confirmed buys.

@@ -11,7 +11,7 @@ import subprocess
 import traceback
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TypeAlias
 
 from .client import KisRestClient, parse_kis_number
@@ -1666,7 +1666,85 @@ class TelegramLiquidityLabController:
             payload["no_orderable_retry"] = no_orderable_retry
         if no_orderable_counts:
             payload["no_orderable_counts"] = no_orderable_counts
+        circuit_breaker = self._circuit_breaker_state_payload(service)
+        if circuit_breaker:
+            payload["circuit_breaker"] = circuit_breaker
         return payload
+
+    @staticmethod
+    def _circuit_breaker_state_payload(
+        service: LiquidityLabService,
+    ) -> dict[str, object]:
+        manager = getattr(service, "cb", None)
+        snapshotter = getattr(manager, "snapshot", None)
+        if not callable(snapshotter):
+            return {}
+        snapshot = snapshotter()
+
+        def _iso(value: object) -> str | None:
+            if isinstance(value, datetime):
+                return ensure_timezone(value).isoformat()
+            if isinstance(value, date):
+                return value.isoformat()
+            return None
+
+        def _datetime_map(value: object) -> dict[str, str]:
+            if not isinstance(value, dict):
+                return {}
+            return {
+                str(key): iso
+                for key, item in value.items()
+                if (iso := _iso(item)) is not None
+            }
+
+        order_history: dict[str, list[str]] = {}
+        raw_history = snapshot.get("order_reject_history")
+        if isinstance(raw_history, dict):
+            for key, values in raw_history.items():
+                if not isinstance(values, list):
+                    continue
+                parsed = [
+                    iso
+                    for item in values
+                    if (iso := _iso(item)) is not None
+                ]
+                if parsed:
+                    order_history[str(key)] = parsed
+
+        return {
+            "consecutive_losses": int(snapshot.get("consecutive_losses") or 0),
+            "consecutive_losses_by_market": {
+                str(key): max(0, int(value or 0))
+                for key, value in dict(
+                    snapshot.get("consecutive_losses_by_market") or {}
+                ).items()
+            },
+            "session_realised_krw": float(
+                snapshot.get("session_realised_krw") or 0.0
+            ),
+            "session_realised_krw_overseas": float(
+                snapshot.get("session_realised_krw_overseas") or 0.0
+            ),
+            "daily_loss_date": _iso(snapshot.get("daily_loss_date")),
+            "halted_at": _iso(snapshot.get("halted_at")),
+            "halted_at_by_market": _datetime_map(
+                snapshot.get("halted_at_by_market")
+            ),
+            "daily_halted_at": _iso(snapshot.get("daily_halted_at")),
+            "last_cb_released_at": _iso(
+                snapshot.get("last_cb_released_at")
+            ),
+            "last_cb_released_at_by_market": _datetime_map(
+                snapshot.get("last_cb_released_at_by_market")
+            ),
+            "overseas_cb_active": bool(
+                snapshot.get("overseas_cb_active", False)
+            ),
+            "order_reject_history": order_history,
+            "order_reject_halted_at": _datetime_map(
+                snapshot.get("order_reject_halted_at")
+            ),
+        }
 
     def _apply_restored_lab_runtime_state(self, service: LiquidityLabService) -> None:
         state = self._normalise_lab_runtime_state(self._restored_lab_runtime_state)
@@ -1688,6 +1766,14 @@ class TelegramLiquidityLabController:
                 existing = {}
                 service._no_orderable_counts = existing
             existing.update(counts)
+        circuit_breaker_state = state.get("circuit_breaker")
+        manager = getattr(service, "cb", None)
+        loader = getattr(manager, "load_state", None)
+        if isinstance(circuit_breaker_state, dict) and callable(loader):
+            loader(**self._parse_circuit_breaker_state(circuit_breaker_state))
+            sync = getattr(service, "_sync_circuit_breaker_legacy_state", None)
+            if callable(sync):
+                sync(manager)
         self._restored_lab_runtime_state = {}
 
     @classmethod
@@ -1710,7 +1796,182 @@ class TelegramLiquidityLabController:
             result["no_orderable_retry"] = no_orderable_retry
         if no_orderable_counts:
             result["no_orderable_counts"] = no_orderable_counts
+        circuit_breaker = cls._normalise_circuit_breaker_state(
+            state.get("circuit_breaker")
+        )
+        if circuit_breaker:
+            result["circuit_breaker"] = circuit_breaker
         return result
+
+    @classmethod
+    def _normalise_circuit_breaker_state(cls, raw: object) -> dict:
+        if not isinstance(raw, dict):
+            return {}
+
+        def _nonnegative_int(value: object) -> int:
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        def _count_map(value: object) -> dict[str, int]:
+            if not isinstance(value, dict):
+                return {}
+            return {
+                str(key): _nonnegative_int(item)
+                for key, item in value.items()
+                if str(key).strip()
+            }
+
+        def _datetime_text(value: object) -> str | None:
+            parsed = parse_datetime(str(value or ""))
+            return ensure_timezone(parsed).isoformat() if parsed is not None else None
+
+        def _datetime_map(value: object) -> dict[str, str]:
+            if not isinstance(value, dict):
+                return {}
+            return {
+                str(key): parsed
+                for key, item in value.items()
+                if (parsed := _datetime_text(item)) is not None
+            }
+
+        daily_loss_date = ""
+        try:
+            daily_loss_date = date.fromisoformat(
+                str(raw.get("daily_loss_date") or "")
+            ).isoformat()
+        except ValueError:
+            pass
+
+        order_history: dict[str, list[str]] = {}
+        raw_history = raw.get("order_reject_history")
+        if isinstance(raw_history, dict):
+            for key, values in raw_history.items():
+                if not isinstance(values, list):
+                    continue
+                parsed_values = [
+                    parsed
+                    for value in values
+                    if (parsed := _datetime_text(value)) is not None
+                ]
+                if parsed_values:
+                    order_history[str(key)] = parsed_values
+
+        try:
+            session_realised_krw = float(
+                raw.get("session_realised_krw") or 0.0
+            )
+        except (TypeError, ValueError):
+            session_realised_krw = 0.0
+        try:
+            session_realised_krw_overseas = float(
+                raw.get("session_realised_krw_overseas") or 0.0
+            )
+        except (TypeError, ValueError):
+            session_realised_krw_overseas = 0.0
+
+        result: dict[str, object] = {
+            "consecutive_losses": _nonnegative_int(
+                raw.get("consecutive_losses")
+            ),
+            "consecutive_losses_by_market": _count_map(
+                raw.get("consecutive_losses_by_market")
+            ),
+            "session_realised_krw": session_realised_krw,
+            "session_realised_krw_overseas": session_realised_krw_overseas,
+            "daily_loss_date": daily_loss_date,
+            "halted_at": _datetime_text(raw.get("halted_at")),
+            "halted_at_by_market": _datetime_map(
+                raw.get("halted_at_by_market")
+            ),
+            "daily_halted_at": _datetime_text(raw.get("daily_halted_at")),
+            "last_cb_released_at": _datetime_text(
+                raw.get("last_cb_released_at")
+            ),
+            "last_cb_released_at_by_market": _datetime_map(
+                raw.get("last_cb_released_at_by_market")
+            ),
+            "overseas_cb_active": bool(
+                raw.get("overseas_cb_active", False)
+            ),
+            "order_reject_history": order_history,
+            "order_reject_halted_at": _datetime_map(
+                raw.get("order_reject_halted_at")
+            ),
+        }
+        return result
+
+    @staticmethod
+    def _parse_circuit_breaker_state(raw: dict) -> dict:
+        raw = TelegramLiquidityLabController._normalise_circuit_breaker_state(raw)
+
+        def _datetime_value(value: object) -> datetime | None:
+            parsed = parse_datetime(str(value or ""))
+            return ensure_timezone(parsed) if parsed is not None else None
+
+        def _datetime_map(value: object) -> dict[str, datetime]:
+            if not isinstance(value, dict):
+                return {}
+            return {
+                str(key): parsed
+                for key, item in value.items()
+                if (parsed := _datetime_value(item)) is not None
+            }
+
+        daily_loss_date = None
+        try:
+            daily_loss_date = date.fromisoformat(
+                str(raw.get("daily_loss_date") or "")
+            )
+        except ValueError:
+            pass
+
+        order_history: dict[str, list[datetime]] = {}
+        raw_history = raw.get("order_reject_history")
+        if isinstance(raw_history, dict):
+            for key, values in raw_history.items():
+                if not isinstance(values, list):
+                    continue
+                parsed_values = [
+                    parsed
+                    for value in values
+                    if (parsed := _datetime_value(value)) is not None
+                ]
+                if parsed_values:
+                    order_history[str(key)] = parsed_values
+
+        return {
+            "consecutive_losses": int(raw.get("consecutive_losses") or 0),
+            "consecutive_losses_by_market": dict(
+                raw.get("consecutive_losses_by_market") or {}
+            ),
+            "session_realised_krw": float(
+                raw.get("session_realised_krw") or 0.0
+            ),
+            "session_realised_krw_overseas": float(
+                raw.get("session_realised_krw_overseas") or 0.0
+            ),
+            "daily_loss_date": daily_loss_date,
+            "halted_at": _datetime_value(raw.get("halted_at")),
+            "halted_at_by_market": _datetime_map(
+                raw.get("halted_at_by_market")
+            ),
+            "daily_halted_at": _datetime_value(raw.get("daily_halted_at")),
+            "last_cb_released_at": _datetime_value(
+                raw.get("last_cb_released_at")
+            ),
+            "last_cb_released_at_by_market": _datetime_map(
+                raw.get("last_cb_released_at_by_market")
+            ),
+            "overseas_cb_active": bool(
+                raw.get("overseas_cb_active", False)
+            ),
+            "order_reject_history": order_history,
+            "order_reject_halted_at": _datetime_map(
+                raw.get("order_reject_halted_at")
+            ),
+        }
 
     @staticmethod
     def _future_datetime_map(raw: object, *, now: datetime) -> dict[str, str]:
@@ -1780,7 +2041,16 @@ class TelegramLiquidityLabController:
             ],
             "telegram_control": self._snapshot().to_dict(),
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                temporary_path.unlink()
 
     def _restore_runtime_state(self) -> None:
         path = self.config.storage.runtime_state_path

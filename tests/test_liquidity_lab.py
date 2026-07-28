@@ -1412,6 +1412,57 @@ def _build_repository() -> SqliteRepository:
     return SqliteRepository(Path(tempfile.mkdtemp()) / "liquidity_lab_test.db")
 
 
+def _save_confirmed_session_buy(
+    repository: SqliteRepository,
+    *,
+    market: str,
+    symbol: str,
+    session_id: str,
+    created_at: str,
+    qty: int = 1,
+) -> dict:
+    event_id = repository.save_broker_order_event(
+        created_at=created_at,
+        market=market,
+        symbol=symbol,
+        exchange_code="NASD" if market == "overseas" else "KRX",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=qty,
+        requested_price=10.0,
+        status="SUBMITTED",
+        broker_order_no=f"buy-{symbol}",
+    )
+    execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at,
+        market=market,
+        symbol=symbol,
+        exchange_code="NASD" if market == "overseas" else "KRX",
+        side="BUY",
+        broker_order_no=f"buy-{symbol}",
+        requested_qty=qty,
+        requested_price=10.0,
+        session_id=session_id,
+        is_session_trade=1,
+    )
+    assert execution is not None
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=qty,
+        filled_amount=10.0 * qty,
+        avg_fill_price=10.0,
+        remaining_qty=0,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="FILLED",
+        history={"test": True},
+        checked_at=created_at,
+        fill_recorded_at=created_at,
+    )
+    return execution
+
+
 def _snapshot(**overrides) -> MovingAverageSnapshot:
     payload = dict(
         price=20.0,
@@ -1447,6 +1498,27 @@ def _snapshot(**overrides) -> MovingAverageSnapshot:
     )
     payload.update(overrides)
     return MovingAverageSnapshot(**payload)
+
+
+def test_session_owned_symbols_restore_from_confirmed_buy_ledger() -> None:
+    repository = _build_repository()
+    _save_confirmed_session_buy(
+        repository,
+        market="overseas",
+        symbol="ARX",
+        session_id="restored-session",
+        created_at="2026-07-28T16:54:46+00:00",
+        qty=417,
+    )
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.repository = repository
+    service._session_id = "restored-session"
+    service._session_owned_symbols = set()
+    service._session_owned_symbols_loaded_for_session = ""
+
+    assert service._is_session_owned("ARX") is True
+    assert service._is_session_owned("MANUAL") is False
+    assert service._session_owned_symbols == {"ARX"}
 
 
 class DummySellClient:

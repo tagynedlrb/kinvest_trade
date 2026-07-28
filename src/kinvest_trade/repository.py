@@ -21,6 +21,20 @@ AND EXISTS (
 )
 """.strip()
 
+CONFIRMED_SESSION_OWNERSHIP_PREDICATE = """
+EXISTS (
+    SELECT 1
+    FROM broker_order_executions AS session_buy
+    WHERE session_buy.session_id = cycle_log.session_id
+      AND session_buy.market = cycle_log.market
+      AND session_buy.symbol = cycle_log.symbol
+      AND UPPER(session_buy.side) = 'BUY'
+      AND session_buy.filled_qty > 0
+      AND session_buy.is_session_trade = 1
+      AND session_buy.created_at <= cycle_log.logged_at
+)
+""".strip()
+
 
 class SqliteRepository:
     def __init__(self, db_path: Path | str) -> None:
@@ -2062,6 +2076,33 @@ class SqliteRepository:
             if (decoded := self._decode_broker_execution_row(row)) is not None
         ]
 
+    def list_confirmed_session_buy_symbols(
+        self,
+        *,
+        session_id: str,
+    ) -> list[str]:
+        session_key = str(session_id).strip()
+        if not session_key:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT symbol
+                FROM broker_order_executions
+                WHERE session_id = ?
+                  AND UPPER(side) = 'BUY'
+                  AND filled_qty > 0
+                  AND is_session_trade = 1
+                ORDER BY symbol
+                """,
+                (session_key,),
+            ).fetchall()
+        return [
+            str(row["symbol"] or "").strip().upper()
+            for row in rows
+            if str(row["symbol"] or "").strip()
+        ]
+
     def get_recent_completed_sell_execution(
         self,
         *,
@@ -2405,7 +2446,10 @@ class SqliteRepository:
                 str(row[1]) for row in conn.execute("PRAGMA table_info(cycle_log)").fetchall()
             }
             if "is_session_trade" in cycle_log_columns:
-                real_query += " AND (is_session_trade IS NULL OR is_session_trade = 1)"
+                real_query += (
+                    " AND (is_session_trade IS NULL OR is_session_trade = 1 "
+                    f"OR {CONFIRMED_SESSION_OWNERSHIP_PREDICATE})"
+                )
             if session_id:
                 real_query += " AND session_id = ?"
                 real_params.append(session_id)

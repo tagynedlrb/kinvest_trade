@@ -269,6 +269,7 @@ class LiquidityLabService:
         self._tv_diagnostic_ran: bool = False
         self._last_holiday_notice_key: tuple[bool, bool, str] | None = None
         self._session_owned_symbols: set[str] = set()
+        self._session_owned_symbols_loaded_for_session: str = ""
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
         self._persisted_symbol_state: dict[tuple[str, str], dict] = {}
         self._domestic_fluctuation_rank_disabled: bool = (
@@ -2707,6 +2708,8 @@ class LiquidityLabService:
         orderable_qty = int(context.get("orderable_qty") or filled_qty)
         stock_name = str(context.get("stock_name") or symbol)
         is_session_trade = int(first.get("is_session_trade") or 0)
+        if side == "SELL" and not is_session_trade and self._is_session_owned(symbol):
+            is_session_trade = 1
         is_full_group_fill = filled_qty >= max(1, target_qty)
 
         common = {
@@ -5891,6 +5894,24 @@ class LiquidityLabService:
         if owned is None:
             owned = set()
             self._session_owned_symbols = owned
+        session_id = str(getattr(self, "_session_id", "") or "").strip()
+        loaded_for = str(
+            getattr(self, "_session_owned_symbols_loaded_for_session", "") or ""
+        )
+        if session_id and loaded_for != session_id:
+            loader = getattr(
+                getattr(self, "repository", None),
+                "list_confirmed_session_buy_symbols",
+                None,
+            )
+            restored = loader(session_id=session_id) if callable(loader) else []
+            owned = {
+                str(symbol).strip().upper()
+                for symbol in restored
+                if str(symbol).strip()
+            }
+            self._session_owned_symbols = owned
+            self._session_owned_symbols_loaded_for_session = session_id
         return owned
 
     def _mark_session_owned(self, symbol: str) -> None:

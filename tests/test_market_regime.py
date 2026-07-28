@@ -324,6 +324,20 @@ def test_collector_refreshes_outdated_regime_calculation_once(
         "calculation_version": "intraday_range_v1",
     }
     repository.upsert_market_regime(outdated)
+    legacy_history = build_regime_records(
+        "domestic",
+        [
+            _domestic_row("20260514", 98.0),
+            _domestic_row("20260515", 99.0),
+        ],
+        captured_at=captured_at,
+    )
+    repository.upsert_market_regime(
+        {
+            **legacy_history[-1],
+            "calculation_version": "intraday_range_v1",
+        }
+    )
     overseas_records = build_regime_records(
         "overseas",
         [_overseas_row("20260727", 200.0)],
@@ -354,3 +368,11 @@ def test_collector_refreshes_outdated_regime_calculation_once(
     latest = repository.get_market_regime("domestic", "2026-07-28")
     assert latest is not None
     assert latest["calculation_version"] == REGIME_CALCULATION_VERSION
+    older = repository.get_market_regime("domestic", "2026-05-15")
+    assert older is not None
+    assert older["calculation_version"] == REGIME_CALCULATION_VERSION
+    assert not repository.has_outdated_market_regime_calculation(
+        market="domestic",
+        calculation_version=REGIME_CALCULATION_VERSION,
+        start_date="2026-02-28",
+    )

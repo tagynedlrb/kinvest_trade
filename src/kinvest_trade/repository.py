@@ -919,6 +919,31 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def has_outdated_market_regime_calculation(
+        self,
+        *,
+        market: str,
+        calculation_version: str,
+        start_date: str,
+    ) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM market_regimes
+                WHERE market = ?
+                  AND session_date >= ?
+                  AND COALESCE(calculation_version, '') != ?
+                LIMIT 1
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(start_date),
+                    str(calculation_version),
+                ),
+            ).fetchone()
+        return row is not None
+
     def save_policy_evaluation(
         self,
         *,

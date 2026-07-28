@@ -332,6 +332,82 @@ class MarketRegimeCollector:
             != REGIME_CALCULATION_VERSION
         )
 
+    def _has_outdated_calculation(
+        self,
+        market: str,
+        *,
+        start_date: str,
+    ) -> bool:
+        checker = getattr(
+            self.repository,
+            "has_outdated_market_regime_calculation",
+            None,
+        )
+        if not callable(checker):
+            return False
+        try:
+            return bool(
+                checker(
+                    market=market,
+                    calculation_version=REGIME_CALCULATION_VERSION,
+                    start_date=start_date,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[REGIME][%s] version_lookup_failed error=%s",
+                market,
+                exc,
+            )
+            return False
+
+    def _merge_stored_raw_rows(
+        self,
+        market: str,
+        fetched_rows: list[dict[str, Any]],
+        *,
+        start_date: str,
+    ) -> list[dict[str, Any]]:
+        config = _MARKET_CONFIG[market]
+        merged: dict[str, dict[str, Any]] = {}
+
+        def add_row(raw: object) -> None:
+            if not isinstance(raw, dict):
+                return
+            raw_date = str(raw.get("stck_bsop_date") or "").strip()
+            if len(raw_date) != 8:
+                return
+            close_price = _as_float(raw.get(config["close_field"]))
+            if close_price is None or close_price <= 0:
+                return
+            merged[raw_date] = raw
+
+        lister = getattr(self.repository, "list_market_regimes", None)
+        if callable(lister):
+            try:
+                stored_rows = lister(
+                    market=market,
+                    start_date=start_date,
+                    limit=max(250, self.backfill_days * 2),
+                )
+                for stored in reversed(list(stored_rows or [])):
+                    raw = stored.get("raw_json")
+                    if isinstance(raw, str):
+                        try:
+                            raw = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                    add_row(raw)
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "[REGIME][%s] stored_raw_merge_failed error=%s",
+                    market,
+                    exc,
+                )
+        for raw in fetched_rows:
+            add_row(raw)
+        return list(merged.values())
+
     def _is_trading_day(self, market: str, session_date: date) -> bool:
         if session_date.weekday() >= 5:
             return False
@@ -364,7 +440,15 @@ class MarketRegimeCollector:
         latest = self.repository.get_market_regime(market)
         if latest is None:
             return True
-        if self._needs_calculation_refresh(today_record or latest):
+        backfill_start = (
+            local_now.date() - timedelta(days=self.backfill_days)
+        ).isoformat()
+        if self._needs_calculation_refresh(
+            today_record or latest
+        ) or self._has_outdated_calculation(
+            market,
+            start_date=backfill_start,
+        ):
             return True
         if not self._is_trading_day(market, local_now.date()):
             return False
@@ -405,27 +489,37 @@ class MarketRegimeCollector:
         if method is None:
             return {"status": "unsupported_client", "records": 0}
         local_date = now_utc.astimezone(config["timezone"]).date()
-        start_date = (local_date - timedelta(days=self.backfill_days)).strftime("%Y%m%d")
+        start_session_date = local_date - timedelta(days=self.backfill_days)
+        start_date = start_session_date.strftime("%Y%m%d")
         end_date = local_date.strftime("%Y%m%d")
         try:
-            rows = await method(
-                index_code=config["benchmark_code"],
-                start_date=start_date,
-                end_date=end_date,
-                period="D",
+            fetched_rows = list(
+                await method(
+                    index_code=config["benchmark_code"],
+                    start_date=start_date,
+                    end_date=end_date,
+                    period="D",
+                )
+                or []
+            )
+            rows = self._merge_stored_raw_rows(
+                market,
+                fetched_rows,
+                start_date=start_session_date.isoformat(),
             )
             records = build_regime_records(
                 market,
-                list(rows or []),
+                rows,
                 captured_at=now_utc,
             )
             for record in records:
                 self.repository.upsert_market_regime(record)
             final_count = sum(int(record["is_final"]) for record in records)
             _logger.info(
-                "[REGIME][%s] benchmark=%s records=%d final=%d",
+                "[REGIME][%s] benchmark=%s fetched=%d merged=%d final=%d",
                 market,
                 config["benchmark_name"],
+                len(fetched_rows),
                 len(records),
                 final_count,
             )

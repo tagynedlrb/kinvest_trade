@@ -25,7 +25,9 @@
   range and each absolute high/low distance from the prior close. This captures
   close-to-open gaps while normalizing domestic and overseas markets against
   their own trailing history. Persist the calculation version and refresh an
-  outdated backfill once before comparing regime buckets.
+  outdated backfill once before comparing regime buckets. Merge stored official
+  source rows with a capped API response so an older row cannot retain the
+  previous formula merely because it fell just outside the response limit.
 - A final overseas close with zero reported cumulative volume is incomplete
   activity data, not a quiet session. Retry the same official KIS benchmark
   source until positive volume arrives; do not substitute an unrelated proxy.

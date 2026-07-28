@@ -33,6 +33,20 @@
   `integrity_check=ok`, 외래키 위반 0, SHA-256
   `9dddbabdce04b001238ba7f2ec24207c051486c77efe408616302b75c1d370fc`이다.
 
+### 배포 검증
+- 커밋 `153bccc`을 `git_token.txt` 일회성 credential helper로 원격
+  `master`에 푸시하고 서비스를 재시작했다. PID `1277729`,
+  `NRestarts=0`, `active/running`이다.
+- 첫 폐장 주기에서 현재 위험일 `2026-07-29`는 확정 청산 0건·손익 0원으로
+  복원됐다. 배포 후 KIS 체결 API 호출은 0건이며 FSUN 157주·HUBB 11주는
+  체결 0, 전량 잔여, `PENDING`, 마지막 확인
+  `2026-07-28T22:43:51.787030+00:00`로 불변이다.
+- 운영 DB는 `integrity_check=ok`, 외래키 위반 0이다. 정책평가
+  `policy_evaluation_log.id=36`에는 기존 오프라인 분석기 교정만으로 남겨 둔
+  실시간 보고 경로의 오류를 전수 원장 대조로 찾아냈으므로 고맥락 추론의
+  비교가치를 `confirmed`로 기록했다.
+- 텔레그램 개선보고는 `telegram_message_log.id=1126`, 전송 성공이다.
+
 ## [2026-07-28] 지연 체결의 위험일·쿨다운 시간 귀속 교정
 
 ### 발견과 근거

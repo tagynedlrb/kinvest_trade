@@ -1,5 +1,47 @@
 # WORKLOG
 
+## [2026-07-28] NASDAQ 최종 거래량 지연 복구
+
+### 발견과 원인
+- 16:05 ET 직후 KIS `COMP` 일봉은 종가 `24,876.91`과 OHLC를 확정했지만
+  `acml_vol=0`을 반환했다. 수집기는 이 행을 최종으로 저장한 뒤 같은 거래일에는
+  다시 조회하지 않아 활동성만 `unknown`으로 고착됐다.
+- 16:32 ET에 같은 공식 API를 다시 호출하자 거래량 `8,534,905,400`이 반환됐다.
+  100거래일을 같은 응답으로 재계산한 20일 평균은 `8,247,166,770`, 거래량비는
+  `1.0349`, 일중범위비는 `1.1747`이다. 따라서 07-28 최종 레짐은
+  `sideways|normal|normal`이며, 다른 지수나 ETF 프록시가 필요했던 문제가 아니라
+  종가와 거래량의 정착시점 차이였다.
+- 공식 KIS 예제는 `FHKST03030100`을 해외 지수 일봉 원천으로 정의하고,
+  해외지수 분봉 출력 매핑도 `acml_vol`을 누적거래량으로 명시한다. 참고:
+  [KIS 해외 지수 일봉](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/inquire_daily_chartprice/inquire_daily_chartprice.py),
+  [KIS 해외 지수 필드](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/inquire_time_indexchartprice/chk_inquire_time_indexchartprice.py).
+
+### 수정과 시장 분리
+- 해외 레짐의 당일 최종행에서만 `volume<=0`을 불완전 활동성으로 판정하고 10분
+  간격으로 재조회한다. 양수 거래량이 들어오면 기존 최종행을 갱신하고 추가 호출을
+  멈춘다. 프로세스 재시작 뒤 메모리상 최근시도가 없어도 불완전행을 즉시 복구한다.
+- 국장 최종행, 이미 완전한 미장 최종행, 장중 임시 레짐, 전역 레짐 갱신주기는
+  바꾸지 않는다. 국장까지 같은 동작을 복제하거나 QQQ/SPY 거래량을 NASDAQ
+  Composite 활동성으로 대신하는 대안은 해당 시장·지표의 직접 증거가 없어 거부했다.
+- 10분 전에는 재조회하지 않고, 10분 뒤 공식 거래량으로 최종 레짐을 교정하며,
+  양수값 뒤에는 다시 조회하지 않는 테스트를 추가했다. 국내 거래량 0 행에는 이
+  해외 전용 예외가 적용되지 않는 것도 별도 테스트로 고정했다. 레짐 관련
+  **12개**, 전체 회귀 **626개**, `compileall`, `git diff --check`가 통과했다.
+- 운영 평가 `policy_evaluation_log.id=27`에 같은 공식 원천의 전후값, 대안,
+  반증조건을 배포 전 `unverified`로 기록했다. 온라인 백업
+  `data/trading_backup_20260728_204016_pre_nasdaq_volume_settlement_retry.db`의
+  원본/백업 `integrity_check=ok`, 외래키 위반 0을 확인했고, 백업 SHA-256은
+  `34067809cfb28a6fe02025e3858314846a8d914ee2a0195f44963247224f6df2`이다.
+
+### 정책 판단과 반증조건
+- 활동성은 `unknown`에서 `normal`로 교정되지만 07-28 미장 11청산/3승/순손익
+  `-98,792.54원`과 전략별 성과값 자체는 변하지 않는다. 한 최종 세션뿐이므로
+  `VWAP+RSI` 승격, `VWAP+VOL` 차단, 빈도 확대는 계속 보류한다. 국장 공식도
+  변경하지 않는다.
+- 배포 후 저장행이 공식 재조회값 `8,534,905,400`, 거래량비 `1.0349`,
+  `sideways|normal|normal`로 바뀌지 않거나, 양수값을 저장한 뒤에도 반복 호출하거나,
+  국내 갱신주기가 달라지면 구현을 실패로 판정한다.
+
 ## [2026-07-28] 모의투자 해외 체결내역 연속페이지 안정화
 
 ### 발견과 범위

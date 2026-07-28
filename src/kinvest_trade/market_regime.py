@@ -279,12 +279,28 @@ class MarketRegimeCollector:
         *,
         backfill_days: int = 150,
         refresh_minutes: int = 30,
+        incomplete_final_retry_minutes: int = 10,
     ) -> None:
         self.client = client
         self.repository = repository
         self.backfill_days = max(45, int(backfill_days))
         self.refresh_interval = timedelta(minutes=max(5, int(refresh_minutes)))
+        self.incomplete_final_retry_interval = timedelta(
+            minutes=max(5, int(incomplete_final_retry_minutes))
+        )
         self._last_attempt: dict[str, datetime] = {}
+
+    @staticmethod
+    def _needs_final_activity_refresh(
+        market: str,
+        record: dict[str, object] | None,
+    ) -> bool:
+        if market != "overseas" or record is None:
+            return False
+        return (
+            int(record.get("is_final") or 0) == 1
+            and int(record.get("volume") or 0) <= 0
+        )
 
     def _is_trading_day(self, market: str, session_date: date) -> bool:
         if session_date.weekday() >= 5:
@@ -296,20 +312,32 @@ class MarketRegimeCollector:
     def _is_due(self, market: str, now_utc: datetime, *, force: bool) -> bool:
         if force:
             return True
+        config = _MARKET_CONFIG[market]
+        local_now = now_utc.astimezone(config["timezone"])
+        today = local_now.date().isoformat()
+        today_record = self.repository.get_market_regime(market, today)
+        needs_final_refresh = self._needs_final_activity_refresh(
+            market,
+            today_record,
+        )
+        retry_interval = (
+            min(
+                self.refresh_interval,
+                self.incomplete_final_retry_interval,
+            )
+            if needs_final_refresh
+            else self.refresh_interval
+        )
         last_attempt = self._last_attempt.get(market)
-        if last_attempt is not None and now_utc - last_attempt < self.refresh_interval:
+        if last_attempt is not None and now_utc - last_attempt < retry_interval:
             return False
         latest = self.repository.get_market_regime(market)
         if latest is None:
             return True
-        config = _MARKET_CONFIG[market]
-        local_now = now_utc.astimezone(config["timezone"])
         if not self._is_trading_day(market, local_now.date()):
             return False
-        today = local_now.date().isoformat()
-        today_record = self.repository.get_market_regime(market, today)
         if today_record is not None and int(today_record.get("is_final") or 0) == 1:
-            return False
+            return needs_final_refresh
         return local_now.time() >= config["open_time"]
 
     async def refresh_if_due(

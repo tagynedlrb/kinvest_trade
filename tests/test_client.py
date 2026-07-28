@@ -622,6 +622,7 @@ def test_get_domestic_order_history_uses_modern_daily_ccld_endpoint(tmp_path: Pa
 
 def test_get_overseas_order_history_follows_kis_continuation_pages(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     credentials = KisCredentials(
         env="vps",
@@ -638,6 +639,7 @@ def test_get_overseas_order_history_follows_kis_continuation_pages(
     )
     client = KisRestClient(credentials)
     calls: list[dict] = []
+    continuation_delays: list[float] = []
     pages = iter(
         [
             {
@@ -659,6 +661,10 @@ def test_get_overseas_order_history_follows_kis_continuation_pages(
         calls.append(kwargs)
         return next(pages)
 
+    async def fake_sleep(delay: float) -> None:
+        continuation_delays.append(delay)
+
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", fake_sleep)
     client._request = fake_request  # type: ignore[method-assign]
     history = asyncio.run(
         client.get_overseas_order_history(
@@ -672,6 +678,37 @@ def test_get_overseas_order_history_follows_kis_continuation_pages(
     assert calls[0]["params"]["CTX_AREA_NK200"] == ""
     assert calls[1]["params"]["CTX_AREA_NK200"] == "NEXT"
     assert calls[1]["extra_headers"] == {"tr_cont": "N"}
+    assert continuation_delays == [1.0]
+
+
+def test_overseas_history_continuation_delay_is_not_applied_to_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="prod",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    continuation_delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        continuation_delays.append(delay)
+
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", fake_sleep)
+
+    asyncio.run(client._pace_overseas_history_continuation())
+
+    assert continuation_delays == []
 
 
 def test_get_domestic_order_history_follows_kis_continuation_pages(

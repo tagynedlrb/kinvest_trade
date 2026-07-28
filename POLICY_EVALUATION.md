@@ -92,6 +92,22 @@ cannot train or score policy.
   It is incident evidence, not evidence for loosening the entry formula; its
   policy attribution must be called out in later regime reviews.
 
+## Broker API reliability
+
+- Rate limiting is shared by every client and process using one active account
+  profile. Logical-request success and rejected attempts are reported
+  separately: a successful retry preserves functionality but does not erase
+  the rejected attempt as reliability evidence.
+- KIS's official overseas `inquire_ccnl` example waits before requesting a
+  continuation page. On the VPS profile, overseas order-history continuation
+  pages use an additional one-second post-response delay because every observed
+  one-second retry succeeded while request-start throttling alone still
+  produced `EGW00201`.
+- This delay is endpoint- and environment-specific. Do not slow production,
+  domestic history, or the global request floor without matching evidence.
+  Repeated continuation failures after deployment falsify the current delay
+  hypothesis and require a new timing/cursor audit.
+
 ## Frequency decisions
 
 - Low order frequency is not itself a defect.

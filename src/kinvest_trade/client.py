@@ -104,12 +104,21 @@ class KisRestClient:
     _rate_limit_lock: "asyncio.Lock | None" = None
     _min_request_interval_sec: float = 0.7
     _vps_min_request_interval_sec: float = 1.05
+    # KIS's official inquire_ccnl example pauses before each continuation page.
+    # Live VPS logs showed that the existing request-start throttle alone was
+    # insufficient, while every one-second rate-limit retry succeeded.
+    _vps_overseas_history_continuation_delay_sec: float = 1.0
     _RATE_LIMIT_MSG_CODES = frozenset({"EGW00201", "EGW00215"})
 
     def _request_interval_sec(self) -> float:
         if str(self.credentials.env).strip().lower() == "vps":
             return self._vps_min_request_interval_sec
         return self._min_request_interval_sec
+
+    async def _pace_overseas_history_continuation(self) -> None:
+        if str(self.credentials.env).strip().lower() != "vps":
+            return
+        await asyncio.sleep(self._vps_overseas_history_continuation_delay_sec)
 
     async def _throttle(self) -> None:
         if KisRestClient._rate_limit_lock is None:
@@ -1021,7 +1030,8 @@ class KisRestClient:
         current_nk = nk200
         seen_contexts: set[tuple[str, str]] = set()
         page_count = 0
-        for page_index in range(max(1, int(max_pages))):
+        page_limit = max(1, int(max_pages))
+        for page_index in range(page_limit):
             payload = await self._request(
                 "GET",
                 self.OVERSEAS_ORDER_HISTORY_PATH,
@@ -1062,6 +1072,8 @@ class KisRestClient:
                 break
             seen_contexts.add(context)
             current_fk, current_nk = next_fk, next_nk
+            if page_index + 1 < page_limit:
+                await self._pace_overseas_history_continuation()
         return {
             "orders": rows,
             "ctx_area_fk200": payload.get("ctx_area_fk200", ""),

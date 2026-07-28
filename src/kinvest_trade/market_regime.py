@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
+REGIME_CALCULATION_VERSION = "true_range_v2"
+
 _MARKET_CONFIG = {
     "domestic": {
         "benchmark_code": "0001",
@@ -98,6 +100,27 @@ def classify_volatility(range_ratio: float | None) -> str:
     return "extreme"
 
 
+def _true_range_pct(
+    previous_close: float | None,
+    high_price: float | None,
+    low_price: float | None,
+) -> float | None:
+    if (
+        previous_close is None
+        or previous_close <= 0
+        or high_price is None
+        or low_price is None
+        or high_price < low_price
+    ):
+        return None
+    true_range = max(
+        high_price - low_price,
+        abs(high_price - previous_close),
+        abs(low_price - previous_close),
+    )
+    return true_range / previous_close * 100.0
+
+
 def is_session_final(
     market: str,
     session_date: date,
@@ -166,15 +189,11 @@ def build_regime_records(
         )
         high_price = item["high_price"]
         low_price = item["low_price"]
-        range_pct = None
-        if (
-            previous_close
-            and previous_close > 0
-            and high_price is not None
-            and low_price is not None
-            and high_price >= low_price
-        ):
-            range_pct = (float(high_price) - float(low_price)) / previous_close * 100.0
+        range_pct = _true_range_pct(
+            previous_close,
+            None if high_price is None else float(high_price),
+            None if low_price is None else float(low_price),
+        )
         ranges.append(range_pct)
 
     records: list[dict[str, Any]] = []
@@ -259,6 +278,7 @@ def build_regime_records(
                     len(previous_volumes),
                     len(previous_ranges),
                 ),
+                "calculation_version": REGIME_CALCULATION_VERSION,
                 "raw_json": json.dumps(
                     item["raw"],
                     ensure_ascii=False,
@@ -302,6 +322,16 @@ class MarketRegimeCollector:
             and int(record.get("volume") or 0) <= 0
         )
 
+    @staticmethod
+    def _needs_calculation_refresh(
+        record: dict[str, object] | None,
+    ) -> bool:
+        return (
+            record is not None
+            and str(record.get("calculation_version") or "")
+            != REGIME_CALCULATION_VERSION
+        )
+
     def _is_trading_day(self, market: str, session_date: date) -> bool:
         if session_date.weekday() >= 5:
             return False
@@ -333,6 +363,8 @@ class MarketRegimeCollector:
             return False
         latest = self.repository.get_market_regime(market)
         if latest is None:
+            return True
+        if self._needs_calculation_refresh(today_record or latest):
             return True
         if not self._is_trading_day(market, local_now.date()):
             return False

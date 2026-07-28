@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from kinvest_trade.market_regime import (
+    REGIME_CALCULATION_VERSION,
     MarketRegimeCollector,
     build_regime_records,
     classify_activity,
@@ -108,7 +109,47 @@ def test_build_regime_records_uses_prior_history_and_marks_final() -> None:
     assert latest["activity_regime"] == "very_active"
     assert latest["volatility_regime"] == "extreme"
     assert latest["regime_key"] == "strong_down|very_active|extreme"
+    assert latest["calculation_version"] == REGIME_CALCULATION_VERSION
     assert latest["is_final"] == 1
+
+
+def test_build_regime_records_true_range_captures_close_to_open_gap() -> None:
+    dates = [
+        "20260720",
+        "20260721",
+        "20260722",
+        "20260723",
+        "20260724",
+        "20260727",
+        "20260728",
+    ]
+    rows = [
+        _domestic_row(
+            session_date,
+            100.0,
+            high=101.0,
+            low=99.0,
+        )
+        for session_date in dates[:-1]
+    ]
+    rows.append(
+        _domestic_row(
+            dates[-1],
+            90.0,
+            high=91.0,
+            low=89.0,
+        )
+    )
+
+    latest = build_regime_records(
+        "domestic",
+        rows,
+        captured_at=datetime(2026, 7, 28, 7, 0, tzinfo=timezone.utc),
+    )[-1]
+
+    assert latest["range_pct"] == pytest.approx(11.0)
+    assert latest["range_ratio_20"] == pytest.approx(5.5)
+    assert latest["volatility_regime"] == "extreme"
 
 
 def test_build_regime_records_excludes_open_us_day_from_final_status() -> None:
@@ -262,3 +303,54 @@ def test_collector_does_not_retry_zero_volume_final_domestic_regime(
         captured_at + timedelta(minutes=30),
         force=False,
     )
+
+
+def test_collector_refreshes_outdated_regime_calculation_once(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "regime.db")
+    captured_at = datetime(2026, 7, 28, 7, 0, tzinfo=timezone.utc)
+    domestic_rows = [
+        _domestic_row("20260727", 100.0),
+        _domestic_row("20260728", 101.0),
+    ]
+    domestic_records = build_regime_records(
+        "domestic",
+        domestic_rows,
+        captured_at=captured_at,
+    )
+    outdated = {
+        **domestic_records[-1],
+        "calculation_version": "intraday_range_v1",
+    }
+    repository.upsert_market_regime(outdated)
+    overseas_records = build_regime_records(
+        "overseas",
+        [_overseas_row("20260727", 200.0)],
+        captured_at=captured_at,
+    )
+    repository.upsert_market_regime(overseas_records[-1])
+
+    class FakeClient:
+        domestic_calls = 0
+
+        async def get_domestic_index_daily_prices(self, **_kwargs):
+            self.domestic_calls += 1
+            return domestic_rows
+
+    client = FakeClient()
+    collector = MarketRegimeCollector(client, repository)
+
+    assert collector._is_due("domestic", captured_at, force=False)
+
+    first = asyncio.run(collector.refresh_if_due(captured_at))
+    second = asyncio.run(
+        collector.refresh_if_due(captured_at + timedelta(minutes=31))
+    )
+
+    assert first["domestic"]["status"] == "updated"
+    assert second["domestic"]["status"] == "not_due"
+    assert client.domestic_calls == 1
+    latest = repository.get_market_regime("domestic", "2026-07-28")
+    assert latest is not None
+    assert latest["calculation_version"] == REGIME_CALCULATION_VERSION

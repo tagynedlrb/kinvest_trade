@@ -21,6 +21,11 @@
 - Overseas performance is joined to the final NASDAQ Composite session regime.
 - Provisional benchmark rows are stored for monitoring but excluded from policy
   evaluation until the market close is final.
+- Volatility uses percentage True Range: the maximum of the session high-low
+  range and each absolute high/low distance from the prior close. This captures
+  close-to-open gaps while normalizing domestic and overseas markets against
+  their own trailing history. Persist the calculation version and refresh an
+  outdated backfill once before comparing regime buckets.
 - A final overseas close with zero reported cumulative volume is incomplete
   activity data, not a quiet session. Retry the same official KIS benchmark
   source until positive volume arrives; do not substitute an unrelated proxy.
@@ -184,13 +189,21 @@ the current direction is wrong.
 - Domestic: eight broker-confirmed exits produced two after-cost wins and
   -2,380.92 KRW net. Do not loosen entry thresholds from this sample. Blocked
   candidates had materially negative forward returns, and each observed regime
-  still covers only one final KOSPI session.
+  still covers only one final KOSPI session. On 2026-07-28, KOSPI closed
+  -10.84% at 6,023.66 while two same-day exits lost 2,931.74 KRW net. This is
+  not evidence for increasing long-entry frequency.
 - Overseas: twenty broker-confirmed exits produced six after-cost wins and
   -325,904.33 KRW net. The final 2026-07-28 NASDAQ session was
   sideways/normal-activity/normal-volatility; its eleven exits produced three
   wins and -98,792.54 KRW net. `VWAP+RSI` was positive in four same-day exits,
   while `VWAP+VOL` was negative in six. Neither is eligible for a policy change
   because each bucket still spans fewer than three final sessions.
+- Do not extend the aggregate standalone-strategy guard to combination labels
+  from the current 48-hour average alone. Under True Range, the eleven
+  `VWAP+VOL` exits belong to the same sideways/normal-activity/normal-volatility
+  bucket but span only two final sessions; the minimum is three. Re-evaluate
+  after the declared regime sample matures instead of converting one crash
+  episode into a permanent entry block.
 - Frequency: the seven-day confirmed ledger contains eight domestic and
   twenty-seven overseas entries, followed by eight and twenty exits. This is
   not evidence of a system frequency ceiling. Do not loosen entry gates while

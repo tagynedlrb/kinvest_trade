@@ -562,6 +562,7 @@ class SqliteRepository:
                     volatility_regime TEXT NOT NULL DEFAULT 'unknown',
                     regime_key TEXT NOT NULL DEFAULT 'unknown|unknown|unknown',
                     sample_days INTEGER NOT NULL DEFAULT 0,
+                    calculation_version TEXT NOT NULL DEFAULT 'intraday_range_v1',
                     raw_json TEXT NOT NULL DEFAULT '{}',
                     PRIMARY KEY (market, session_date)
                 );
@@ -598,6 +599,12 @@ class SqliteRepository:
                 CREATE INDEX IF NOT EXISTS idx_policy_evaluation_subject
                     ON policy_evaluation_log(market, subject, created_at);
                 """
+            )
+            self._ensure_column(
+                conn,
+                "market_regimes",
+                "calculation_version",
+                "TEXT NOT NULL DEFAULT 'intraday_range_v1'",
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_krw", "REAL NOT NULL DEFAULT 0")
@@ -823,11 +830,14 @@ class SqliteRepository:
             "volatility_regime",
             "regime_key",
             "sample_days",
+            "calculation_version",
             "raw_json",
         )
         values = []
         for column in columns:
             value = regime.get(column)
+            if column == "calculation_version":
+                value = str(value or "intraday_range_v1")
             if column == "raw_json" and not isinstance(value, str):
                 value = json.dumps(value or {}, ensure_ascii=False, default=str)
             values.append(value)

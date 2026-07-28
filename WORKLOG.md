@@ -1,5 +1,57 @@
 # WORKLOG
 
+## [2026-07-28] 지수 갭을 누락한 시장 변동성 레짐 교정
+
+### 발견
+- KIS 확정 KOSPI는 07-28 종가 `6,023.66`, 전일비 `-10.8365%`였지만 저장 레짐은
+  `strong_down|normal|normal`이었다. 방향은 급락으로 잡았으나 변동성은 당일
+  `고가-저가`만 전일 종가로 나눈 값과 그 20일 평균을 비교해, 전일 종가
+  `6,755.75`에서 당일 고가 `6,413.57` 아래로 생긴 갭을 완전히 버렸다.
+- 기존 일중범위는 `6.2267%`, 20일비 `1.0504`여서 `normal`이었다. 저장된 KIS
+  원자료로 갭을 포함한 True Range를 계산하면 `11.2917%`, 20일비 `1.6804`로
+  `high`다. 같은 방식의 NASDAQ 07-28 값은 20일비 `1.0050`, `normal`로 유지된다.
+
+### 공식 근거와 수정
+- Fidelity의 ATR 설명은 True Range를 `고가-저가`, `|고가-전일종가|`,
+  `|저가-전일종가|` 중 최댓값으로 정의하며, 가격 갭을 변동성에 포함한다고 명시한다.
+  참고:
+  [Fidelity Average True Range](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/atr).
+- `build_regime_records()`가 양 시장 공통으로 표준 True Range 백분율을 계산하되,
+  각 시장 자체의 직전 20거래일 True Range 평균에 비례해 변동성 레짐을 정한다.
+  따라서 공식은 같아도 KOSPI와 NASDAQ의 변동성 수준은 서로 섞이지 않는다.
+- `market_regimes.calculation_version=true_range_v2`를 추가한다. 기존 행은
+  `intraday_range_v1`으로 명시하고, 수집기가 오래된 최신행을 발견하면 정규장
+  여부와 무관하게 150일 KIS 원자료를 한 번 재수집한다. 갱신 뒤에는 기존 주기대로
+  돌아가 반복 호출하지 않는다.
+
+### 성과·빈도 판단
+- 07-28 국장은 KOSPI `-10.84%` 급락에서 확정 청산 2건, 순손익
+  `-2,931.74원`이었다. 지수 급락 대비 노출을 제한한 날이므로 국장 장기준입
+  빈도를 늘리지 않는다.
+- 미장 `VWAP+VOL`은 기존 48시간 11건 평균 Net `-0.3080%`로 독립 전략가드
+  기준 `-0.3000%`를 근소하게 밑돈다. 그러나 조합전략을 단독전략 전용 가드에
+  넣는 것은 원래 설계가 아니며, True Range 교정 뒤 같은 레짐 표본도 2거래일뿐이다.
+  선언된 최소 3거래일 전이므로 즉시 차단 확대를 거부한다. 한국투자증권 공식
+  미국 온라인 수수료 0.25%와 매도 SEC fee가 현재 비용식과 일치하므로 비용을
+  낮춰 빈도를 늘리는 것도 거부한다. 참고:
+  [한국투자증권 해외주식 매매수수료](https://securities.koreainvestment.com/main/bond/research/_static/TF03ca050000.jsp).
+- 반증조건은 True Range 재수집 뒤 KOSPI 07-28 레짐이
+  `strong_down|normal|high`와 다르거나, NASDAQ 레짐이 근거 없이 바뀌거나,
+  계산버전 갱신 뒤에도 지수 API가 반복 호출되는 경우다.
+
+### 검증
+- 갭 하락이 일중 고저폭보다 큰 테스트와 구버전 계산행의 1회 갱신 테스트를 추가했다.
+  시장레짐·저장소 집중 **46개**, 전체 회귀 **630개**, `compileall`,
+  `git diff --check`가 통과했고, 저장된 운영 KIS 원자료를 새 코드로 읽기 전용
+  재계산해 위 국장·미장 값을 확인했다.
+- 운영 평가 `policy_evaluation_log.id=30`에는 조합전략 가드 확대 보류와
+  3거래일 재평가 조건을, `id=31`에는 True Range 공식·대안·배포 반증조건을
+  각각 `unverified`로 기록했다.
+- 스키마 변경 전 온라인 백업
+  `data/trading_backup_20260728_212239_pre_true_range_regime_v2.db`의
+  `integrity_check=ok`, 외래키 위반 0을 확인했다. 백업 SHA-256은
+  `b7a3b7d05406ff5822a886c778ef3c5ecf71a4dadf809487f410efb17dc53b46`이다.
+
 ## [2026-07-28] 체결확정 전 stale 잔고 중복매도 차단
 
 ### 재현과 기존 방어의 한계

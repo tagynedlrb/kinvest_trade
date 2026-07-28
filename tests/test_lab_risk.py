@@ -2,8 +2,8 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import kinvest_trade.lab_risk as lab_risk_module
 from kinvest_trade.lab_risk import CircuitBreakerManager
-from kinvest_trade.market_sessions import KST
 
 
 def _build_config():
@@ -13,6 +13,7 @@ def _build_config():
             max_consecutive_losses=3,
             circuit_breaker_cooldown_minutes=30,
             operating_capital_krw=50_000_000,
+            account_risk_day_rollover_hour_kst=7,
             order_reject_threshold=3,
             order_reject_window_minutes=15,
             order_reject_cooldown_minutes=30,
@@ -56,7 +57,7 @@ def test_consecutive_loss_breakers_are_independent_by_market() -> None:
         event_hook=lambda event_type, detail: events.append((event_type, detail)),
     )
     manager.load_state(
-        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+        daily_loss_date=manager.current_risk_day(),
     )
 
     for _ in range(2):
@@ -82,7 +83,7 @@ def test_daily_loss_limit_remains_shared_across_markets() -> None:
     manager = CircuitBreakerManager(_build_config())
     manager.load_state(
         session_realised_krw=-600_000.0,
-        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+        daily_loss_date=manager.current_risk_day(),
     )
 
     assert manager.is_halted("domestic") is True
@@ -101,7 +102,7 @@ def test_daily_circuit_breaker_fallback_matches_configured_default_capital() -> 
     manager = CircuitBreakerManager(config)
     manager.load_state(
         session_realised_krw=-400_000.0,
-        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+        daily_loss_date=manager.current_risk_day(),
     )
 
     assert manager.is_halted() is False
@@ -132,7 +133,7 @@ def test_circuit_breaker_daily_limit_keeps_block_after_consecutive_release() -> 
     manager.load_state(
         consecutive_losses=3,
         session_realised_krw=-600_000.0,
-        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+        daily_loss_date=manager.current_risk_day(),
         halted_at=datetime.now(timezone.utc) - timedelta(minutes=31),
     )
 
@@ -146,7 +147,7 @@ def test_circuit_breaker_blocks_on_daily_loss_limit() -> None:
     manager = CircuitBreakerManager(_build_config(), event_hook=lambda event_type, detail: events.append((event_type, detail)))
     manager.load_state(
         session_realised_krw=-600_000.0,
-        daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
+        daily_loss_date=manager.current_risk_day(),
     )
 
     assert manager.is_halted() is True
@@ -158,32 +159,93 @@ def test_circuit_breaker_blocks_on_daily_loss_limit() -> None:
                 "daily_loss_limit_pct": 0.01,
                 "session_realised_krw": -600000.0,
                 "type": "daily_limit",
+                "risk_day": manager.current_risk_day().isoformat(),
+                "rollover_hour_kst": 7,
             },
         )
     ]
 
 
-def test_circuit_breaker_daily_limit_auto_releases_after_cooldown() -> None:
+def test_circuit_breaker_daily_limit_remains_until_risk_day_rollover() -> None:
     async def run_case() -> None:
         messages: list[str] = []
         manager = CircuitBreakerManager(_build_config(), notify_hook=lambda message: messages.append(message))
+        halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
         manager.load_state(
             session_realised_krw=-600_000.0,
-            daily_loss_date=datetime.now(timezone.utc).astimezone(KST).date(),
-            daily_halted_at=datetime.now(timezone.utc) - timedelta(minutes=31),
+            daily_loss_date=manager.current_risk_day(),
+            daily_halted_at=halted_at,
         )
 
-        assert manager.is_halted() is False
-        assert manager.session_realised_krw == 0.0
-        assert manager.daily_halted_at is None
-        assert messages == [
-            "✅ 일일손실한도 CB 자동 해제\n쿨다운 30분 완료 → 매수 재개"
-        ]
+        assert manager.is_halted() is True
+        assert manager.session_realised_krw == -600_000.0
+        assert manager.daily_halted_at == halted_at
+        assert messages == []
 
     asyncio.run(run_case())
 
 
-def test_circuit_breaker_resets_daily_state_on_new_kst_day() -> None:
+def test_circuit_breaker_daily_limit_remains_after_pnl_recovers() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    halted_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    manager.load_state(
+        session_realised_krw=100_000.0,
+        daily_loss_date=manager.current_risk_day(),
+        daily_halted_at=halted_at,
+    )
+
+    assert manager.is_daily_halted() is True
+    assert manager.daily_halted_at == halted_at
+
+
+def test_risk_day_rolls_at_0700_kst_instead_of_midnight() -> None:
+    manager = CircuitBreakerManager(_build_config())
+
+    assert manager.current_risk_day(
+        datetime(2026, 7, 28, 14, 59, tzinfo=timezone.utc)
+    ) == date(2026, 7, 28)
+    assert manager.current_risk_day(
+        datetime(2026, 7, 28, 15, 1, tzinfo=timezone.utc)
+    ) == date(2026, 7, 28)
+    assert manager.current_risk_day(
+        datetime(2026, 7, 28, 21, 59, tzinfo=timezone.utc)
+    ) == date(2026, 7, 28)
+    assert manager.current_risk_day(
+        datetime(2026, 7, 28, 22, 0, tzinfo=timezone.utc)
+    ) == date(2026, 7, 29)
+    assert manager.current_risk_day_start(
+        datetime(2026, 7, 28, 19, 0, tzinfo=timezone.utc)
+    ) == datetime(2026, 7, 27, 22, 0, tzinfo=timezone.utc)
+
+
+def test_circuit_breaker_preserves_daily_state_at_kst_midnight() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    manager.load_state(
+        session_realised_krw=-100_000.0,
+        session_realised_krw_overseas=-50_000.0,
+        daily_loss_date=date(2026, 7, 28),
+        daily_halted_at=None,
+    )
+    original_datetime = lab_risk_module.datetime
+
+    class _FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 7, 28, 15, 5, tzinfo=timezone.utc)
+            return base if tz is None else base.astimezone(tz)
+
+    lab_risk_module.datetime = _FakeDateTime
+    try:
+        assert manager.is_halted() is False
+    finally:
+        lab_risk_module.datetime = original_datetime
+
+    assert manager.daily_loss_date == date(2026, 7, 28)
+    assert manager.session_realised_krw == -100_000.0
+    assert manager.session_realised_krw_overseas == -50_000.0
+
+
+def test_circuit_breaker_resets_daily_state_on_new_risk_day() -> None:
     manager = CircuitBreakerManager(_build_config())
     manager.load_state(
         session_realised_krw=-100_000.0,
@@ -192,13 +254,60 @@ def test_circuit_breaker_resets_daily_state_on_new_kst_day() -> None:
         daily_halted_at=datetime.now(timezone.utc),
         overseas_cb_active=True,
     )
+    original_datetime = lab_risk_module.datetime
 
-    assert manager.is_halted() is False
-    assert manager.daily_loss_date != date(2026, 7, 9)
+    class _FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 7, 10, 22, 5, tzinfo=timezone.utc)
+            return base if tz is None else base.astimezone(tz)
+
+    lab_risk_module.datetime = _FakeDateTime
+    try:
+        assert manager.is_halted() is False
+    finally:
+        lab_risk_module.datetime = original_datetime
+
+    assert manager.daily_loss_date == date(2026, 7, 11)
     assert manager.session_realised_krw == 0.0
     assert manager.session_realised_krw_overseas == 0.0
     assert manager.daily_halted_at is None
     assert manager.overseas_cb_active is False
+
+
+def test_first_realised_trade_after_rollover_is_not_discarded() -> None:
+    manager = CircuitBreakerManager(_build_config())
+    manager.load_state(
+        session_realised_krw=-100_000.0,
+        session_realised_krw_overseas=-100_000.0,
+        daily_loss_date=date(2026, 7, 10),
+        daily_halted_at=datetime(2026, 7, 10, 20, 0, tzinfo=timezone.utc),
+    )
+    original_datetime = lab_risk_module.datetime
+
+    class _FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 7, 10, 22, 0, 1, tzinfo=timezone.utc)
+            return base if tz is None else base.astimezone(tz)
+
+    lab_risk_module.datetime = _FakeDateTime
+    try:
+        manager.on_realised(
+            market="overseas",
+            realized_pnl_krw=-12_345.0,
+            pnl_pct=-0.01,
+        )
+    finally:
+        lab_risk_module.datetime = original_datetime
+
+    assert manager.daily_loss_date == date(2026, 7, 11)
+    assert manager.session_realised_krw == -12_345.0
+    assert manager.session_realised_krw_overseas == -12_345.0
+    assert manager.daily_halted_at is None
+    assert manager.snapshot()["consecutive_losses_by_market"] == {
+        "overseas": 1,
+    }
 
 
 def test_order_reject_breaker_trips_after_threshold_within_window() -> None:

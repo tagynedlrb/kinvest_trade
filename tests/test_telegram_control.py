@@ -3895,10 +3895,14 @@ def test_handle_start_like_command_reports_open_order_lookup_failure() -> None:
 
 def test_run_cycle_does_not_stop_on_market_closed() -> None:
     controller = _build_async_controller()
+    reconciled: list[bool] = []
 
     class FakeLiquidityLabService:
         def __init__(self, config, client, repository, notifier) -> None:
             pass
+
+        def _reconcile_confirmed_risk_day_pnl(self):
+            reconciled.append(True)
 
         async def run(self):
             return DummyReport("no_supported_market_open")
@@ -3914,6 +3918,7 @@ def test_run_cycle_does_not_stop_on_market_closed() -> None:
         telegram_control_module.LiquidityLabService = original_service
 
     assert controller.mode == "running"
+    assert reconciled == [True]
     assert controller.last_report_summary is not None
     assert controller.last_report_summary["market_closed"] is True
 
@@ -3923,6 +3928,9 @@ def test_run_cycle_increments_consecutive_errors_on_exception() -> None:
 
     class FailingLiquidityLabService:
         def __init__(self, config, client, repository, notifier) -> None:
+            pass
+
+        def _reconcile_confirmed_risk_day_pnl(self):
             pass
 
         async def run(self):
@@ -3949,6 +3957,9 @@ def test_run_cycle_cancellation_is_not_persisted_as_error() -> None:
 
     class CancelledLiquidityLabService:
         def __init__(self, config, client, repository, notifier) -> None:
+            pass
+
+        def _reconcile_confirmed_risk_day_pnl(self):
             pass
 
         async def run(self):
@@ -3978,6 +3989,9 @@ def test_run_cycle_resets_consecutive_errors_on_success() -> None:
         def __init__(self, config, client, repository, notifier) -> None:
             pass
 
+        def _reconcile_confirmed_risk_day_pnl(self):
+            pass
+
         async def run(self):
             return DummyReport("watchlist_wait")
 
@@ -4003,6 +4017,9 @@ def test_run_cycle_applies_restored_active_session_id_to_lab_service() -> None:
     class SessionAwareLiquidityLabService:
         def __init__(self, config, client, repository, notifier) -> None:
             self._session_id = ""
+
+        def _reconcile_confirmed_risk_day_pnl(self):
+            pass
 
         async def run(self):
             seen_session_ids.append(self._session_id)
@@ -4292,6 +4309,9 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
             self._exit_cooldown = {}
             self._no_orderable_retry = {}
             self._no_orderable_counts = {}
+
+        def _reconcile_confirmed_risk_day_pnl(self):
+            pass
 
         async def run(self):
             seen.append(

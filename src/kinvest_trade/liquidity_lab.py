@@ -262,6 +262,7 @@ class LiquidityLabService:
             "overseas": 0,
         }
         self._session_realised_krw: float = 0.0
+        self._session_realised_krw_overseas: float = 0.0
         self._daily_loss_date: date | None = None
         self._halted_at: datetime | None = None
         self._halted_at_by_market: dict[str, datetime] = {}
@@ -354,6 +355,9 @@ class LiquidityLabService:
                 dict(losses_by_market) if isinstance(losses_by_market, dict) else None
             ),
             session_realised_krw=float(getattr(self, "_session_realised_krw", 0.0) or 0.0),
+            session_realised_krw_overseas=float(
+                getattr(self, "_session_realised_krw_overseas", 0.0) or 0.0
+            ),
             daily_loss_date=getattr(self, "_daily_loss_date", None),
             halted_at=getattr(self, "_halted_at", None),
             halted_at_by_market=(
@@ -375,12 +379,98 @@ class LiquidityLabService:
             snapshot["consecutive_losses_by_market"]  # type: ignore[arg-type]
         )
         self._session_realised_krw = float(snapshot["session_realised_krw"])
+        self._session_realised_krw_overseas = float(
+            snapshot["session_realised_krw_overseas"]
+        )
         self._daily_loss_date = snapshot["daily_loss_date"]
         self._halted_at = snapshot["halted_at"]
         self._halted_at_by_market = dict(
             snapshot["halted_at_by_market"]  # type: ignore[arg-type]
         )
         self._daily_halted_at = snapshot["daily_halted_at"]
+
+    def _reconcile_confirmed_risk_day_pnl(
+        self,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        """Rebuild the shared risk-day PnL from broker-confirmed sell fills."""
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        cb = self._get_circuit_breaker()
+        risk_day = cb.current_risk_day(current)
+        risk_day_start = cb.current_risk_day_start(current)
+        previous = cb.snapshot()
+        try:
+            summary = self.repository.get_session_pnl_summary(
+                include_virtual=False,
+                after_logged_at=risk_day_start.isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.exception("confirmed_risk_day_pnl_reconcile_failed")
+            result = {
+                "reconciled": False,
+                "risk_day": risk_day.isoformat(),
+                "risk_day_start": risk_day_start.isoformat(),
+                "error": str(exc)[:200],
+            }
+            self._save_event(
+                event_type="risk_day_pnl_reconcile_failed",
+                detail=result,
+            )
+            return result
+
+        real = summary.get("real") or {}
+        by_market = {
+            str(market): float(stats.get("total_pnl_krw") or 0.0)
+            for market, stats in real.items()
+            if isinstance(stats, dict)
+        }
+        total_pnl_krw = sum(by_market.values())
+        overseas_pnl_krw = float(by_market.get("overseas", 0.0))
+        previous_risk_day = previous.get("daily_loss_date")
+        day_changed = previous_risk_day != risk_day
+        cb.load_state(
+            session_realised_krw=total_pnl_krw,
+            session_realised_krw_overseas=overseas_pnl_krw,
+            daily_loss_date=risk_day,
+            daily_halted_at=(
+                None if day_changed else previous.get("daily_halted_at")
+            ),
+            overseas_cb_active=(
+                False
+                if day_changed
+                else bool(previous.get("overseas_cb_active", False))
+            ),
+        )
+        daily_limit_halted = cb.is_daily_halted(current)
+        self._sync_circuit_breaker_legacy_state(cb)
+        trade_count = sum(
+            int(stats.get("trade_count") or 0)
+            for stats in real.values()
+            if isinstance(stats, dict)
+        )
+        result = {
+            "reconciled": True,
+            "risk_day": risk_day.isoformat(),
+            "risk_day_start": risk_day_start.isoformat(),
+            "previous_risk_day": (
+                previous_risk_day.isoformat()
+                if isinstance(previous_risk_day, date)
+                else str(previous_risk_day or "")
+            ),
+            "trade_count": trade_count,
+            "total_pnl_krw": round(total_pnl_krw, 2),
+            "overseas_pnl_krw": round(overseas_pnl_krw, 2),
+            "daily_limit_halted": daily_limit_halted,
+            "by_market": {
+                market: round(value, 2)
+                for market, value in sorted(by_market.items())
+            },
+        }
+        self._save_event(
+            event_type="risk_day_pnl_reconciled",
+            detail=result,
+        )
+        return result
 
     async def _send_circuit_breaker_notification(self, message: str) -> None:
         notifier = getattr(self, "notifier", None)
@@ -2925,6 +3015,8 @@ class LiquidityLabService:
         if not inserted:
             return False
         was_halted = bool(common["cb_active"])
+        cb = self._get_circuit_breaker()
+        daily_was_halted = cb.daily_halted_at is not None
         entry_notional_krw = entry_price * filled_qty
         if market == "overseas":
             entry_notional_krw *= fx_rate
@@ -2939,13 +3031,42 @@ class LiquidityLabService:
             net_pnl_pct=net_pnl_pct,
         )
         is_halted = self._is_trading_halted(market)
+        daily_is_halted = cb.daily_halted_at is not None
         consecutive_losses = self._consecutive_losses_for_market(market)
         self.repository.update_cycle_log_execution_risk(
             execution_group_id,
             consecutive_losses=consecutive_losses,
             cb_active=int(is_halted),
         )
-        if is_halted and not was_halted:
+        if daily_is_halted and not daily_was_halted:
+            daily_limit_pct = (
+                float(
+                    getattr(self.config.risk, "daily_loss_limit_pct", 0.0)
+                    or 0.0
+                )
+                * 100.0
+            )
+            risk_day = cb.current_risk_day().isoformat()
+            _logger.warning(
+                "[CB] confirmed-fill daily limit fired "
+                "risk_day=%s session_pnl=%.0f",
+                risk_day,
+                self._session_realised_krw,
+            )
+            await self._send_circuit_breaker_notification(
+                "\n".join(
+                    [
+                        "일일손실한도 발동",
+                        (
+                            f"리스크일={risk_day} | "
+                            f"확정순손익 {self._session_realised_krw:+,.0f}원 | "
+                            f"한도 {daily_limit_pct:.2f}%"
+                        ),
+                        "국장·미장 신규 매수를 07:00 KST 전환까지 중단합니다.",
+                    ]
+                )
+            )
+        elif is_halted and not was_halted:
             _logger.warning(
                 "[CB] %s confirmed-fill breaker fired consecutive=%d session_pnl=%.0f",
                 market,

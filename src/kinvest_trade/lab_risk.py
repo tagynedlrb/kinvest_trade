@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 
 from .config import AppConfig
@@ -169,6 +169,11 @@ class CircuitBreakerManager:
             return True
         return self._check_daily(risk)
 
+    def is_daily_halted(self, now: datetime | None = None) -> bool:
+        self._maybe_reset_daily(now)
+        risk = getattr(self._config, "risk", None)
+        return False if risk is None else self._check_daily(risk, now=now)
+
     def overseas_allowed(self) -> bool:
         released_at = self._last_cb_released_at
         if released_at is None:
@@ -183,6 +188,7 @@ class CircuitBreakerManager:
         realized_pnl_krw: float,
         pnl_pct: float | None = None,
     ) -> None:
+        self._maybe_reset_daily()
         normalized_market = self._normalize_market(market)
         is_loss = pnl_pct < 0 if pnl_pct is not None else realized_pnl_krw < 0
         if is_loss:
@@ -322,16 +328,44 @@ class CircuitBreakerManager:
             else None
         )
 
-    def _maybe_reset_daily(self) -> None:
-        today = datetime.now(timezone.utc).astimezone(KST).date()
-        if self.daily_loss_date == today:
+    def _risk_day_rollover_hour_kst(self) -> int:
+        risk = getattr(self._config, "risk", None)
+        configured = int(
+            getattr(risk, "account_risk_day_rollover_hour_kst", 7) or 0
+        )
+        return min(23, max(0, configured))
+
+    def current_risk_day(self, now: datetime | None = None) -> date:
+        current = ensure_timezone(now or datetime.now(timezone.utc)).astimezone(KST)
+        rollover_hour = self._risk_day_rollover_hour_kst()
+        if current.time() < time(hour=rollover_hour):
+            return current.date() - timedelta(days=1)
+        return current.date()
+
+    def current_risk_day_start(self, now: datetime | None = None) -> datetime:
+        risk_day = self.current_risk_day(now)
+        rollover_hour = self._risk_day_rollover_hour_kst()
+        return datetime.combine(
+            risk_day,
+            time(hour=rollover_hour),
+            tzinfo=KST,
+        ).astimezone(timezone.utc)
+
+    def _maybe_reset_daily(self, now: datetime | None = None) -> None:
+        risk_day = self.current_risk_day(now)
+        if self.daily_loss_date == risk_day:
             return
-        self.daily_loss_date = today
+        self.daily_loss_date = risk_day
         self.session_realised_krw = 0.0
         self.session_realised_krw_overseas = 0.0
         self._daily_halted_at = None
         self._overseas_cb_active = False
-        _logger.info("[CB] KST 날짜 전환 → daily_loss 초기화 (date=%s)", today)
+        _logger.info(
+            "[CB] 통합 리스크 날짜 전환 → daily_loss 초기화 "
+            "(risk_day=%s rollover=%02d:00 KST)",
+            risk_day,
+            self._risk_day_rollover_hour_kst(),
+        )
 
     def _check_consecutive(
         self,
@@ -419,7 +453,14 @@ class CircuitBreakerManager:
         )
         return False
 
-    def _check_daily(self, risk: object) -> bool:
+    def _check_daily(
+        self,
+        risk: object,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        if self._daily_halted_at is not None:
+            return True
         daily_limit = float(getattr(risk, "daily_loss_limit_pct", 0.0) or 0.0)
         session_realised_krw = float(self.session_realised_krw or 0.0)
         if daily_limit <= 0 or session_realised_krw >= 0:
@@ -428,48 +469,26 @@ class CircuitBreakerManager:
         operating_capital = float(
             getattr(self._config.risk, "operating_capital_krw", 0) or 50_000_000
         )
-        if operating_capital <= 0 or abs(session_realised_krw) / operating_capital <= daily_limit:
+        if (
+            operating_capital <= 0
+            or abs(session_realised_krw) / operating_capital <= daily_limit
+        ):
             return False
 
-        cooldown_minutes = int(getattr(risk, "circuit_breaker_cooldown_minutes", 0) or 0)
-        if cooldown_minutes <= 0:
-            return True
-
-        now = datetime.now(timezone.utc)
+        current = ensure_timezone(now or datetime.now(timezone.utc))
         if self._daily_halted_at is None:
-            self._daily_halted_at = now
+            self._daily_halted_at = current
             self._emit_event(
                 "cb_fired",
                 {
                     "daily_loss_limit_pct": daily_limit,
                     "session_realised_krw": round(session_realised_krw, 2),
                     "type": "daily_limit",
+                    "risk_day": self.current_risk_day(current).isoformat(),
+                    "rollover_hour_kst": self._risk_day_rollover_hour_kst(),
                 },
             )
-            return True
-
-        elapsed_minutes = (now - ensure_timezone(self._daily_halted_at)).total_seconds() / 60
-        if elapsed_minutes < cooldown_minutes:
-            return True
-
-        _logger.info("[CB] daily_limit 자동 해제 (%.0f분 경과)", elapsed_minutes)
-        self.session_realised_krw = 0.0
-        self.session_realised_krw_overseas = 0.0
-        self._daily_halted_at = None
-        self._last_cb_released_at = now
-        self._emit_event(
-            "cb_released",
-            {
-                "elapsed_min": round(elapsed_minutes, 1),
-                "trigger": "auto_cooldown",
-                "type": "daily_limit",
-            },
-        )
-        self._schedule_notification(
-            f"✅ 일일손실한도 CB 자동 해제\n"
-            f"쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
-        )
-        return False
+        return True
 
     def _emit_event(self, event_type: str, detail: dict) -> None:
         if self._event_hook is None:

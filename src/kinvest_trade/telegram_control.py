@@ -1564,6 +1564,7 @@ class TelegramLiquidityLabController:
                 if service is None:
                     service = LiquidityLabService(self.config, client, self.repository, self.notifier)
                     self._apply_restored_lab_runtime_state(service)
+                    service._reconcile_confirmed_risk_day_pnl()
                     self.lab_service = service
                 else:
                     service.config = self.config

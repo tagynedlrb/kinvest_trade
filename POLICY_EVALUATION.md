@@ -45,6 +45,13 @@ Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
 not submitted-price or pre-cost PnL. A positive gross move that fails to clear
 round-trip costs is still a loss for risk control.
 
+The account-wide risk day rolls at 07:00 KST, after the US regular close in
+both daylight-saving and standard time and before the KRX regular open. It
+combines the local KRX session and the corresponding US session into one
+account-loss interval. Market formulas and consecutive-loss breakers remain
+separate, but an account daily-loss breach blocks new entries in both markets
+until the next risk-day rollover. A cooldown must never erase daily PnL.
+
 An action label is not fill evidence. A `BUY_REAL` or `SELL_REAL` cycle row is
 eligible only when it has an execution-group ID and that group has a
 KIS-confirmed fill in the matching direction with positive filled quantity.
@@ -59,6 +66,10 @@ cannot train or score policy.
   confirmed net PnL, market-specific consecutive losses, halt/release times,
   daily-loss state, and order-rejection breaker state before any new order
   decision.
+- At service startup, reconstruct current risk-day PnL from broker-confirmed
+  sell rows after the 07:00 KST boundary. Persisted runtime state remains the
+  fallback if this query fails; a stale calendar date or restart-local subtotal
+  must not replace the confirmed ledger.
 - Runtime-state replacement must be atomic. A partial JSON write must leave the
   prior valid state available rather than silently resetting safeguards.
 - Session ownership is reconstructed from same-session broker-confirmed buys,
@@ -155,16 +166,21 @@ the current direction is wrong.
   -2,380.92 KRW net. Do not loosen entry thresholds from this sample. Blocked
   candidates had materially negative forward returns, and each observed regime
   still covers only one final KOSPI session.
-- Overseas: fourteen broker-confirmed exits produced four after-cost wins and
-  -353,126.79 KRW net. Do not loosen entry thresholds yet. The apparent
-  `VWAP+VOL` edge in a sideways/normal-activity/high-volatility NASDAQ regime is
-  five exits from one final session, while blocked-signal forward returns did
-  not clear the cost hurdle.
+- Overseas: twenty broker-confirmed exits produced six after-cost wins and
+  -325,904.33 KRW net. The final 2026-07-28 NASDAQ session was
+  sideways/unknown-activity/normal-volatility; its eleven exits produced three
+  wins and -98,792.54 KRW net. `VWAP+RSI` was positive in four same-day exits,
+  while `VWAP+VOL` was negative in six. Neither is eligible for a policy change
+  because each bucket still spans fewer than three final sessions.
+- Frequency: the seven-day confirmed ledger contains eight domestic and
+  twenty-seven overseas entries, followed by eight and twenty exits. This is
+  not evidence of a system frequency ceiling. Do not loosen entry gates while
+  after-cost expectancy remains negative and regime coverage is this narrow.
 - Both markets: inverse trading remains shadow-only. Current evidence justifies
   testing a separate down-market formula, but not risking broker capital. The
   first deployment occurred after the observed KOSPI crash session had closed,
-  and the current provisional NASDAQ return is above the -1% gate, so zero
-  shadow exits is currently "not observed", not evidence of failure or success.
+  and the final NASDAQ return of -0.22% was above the -1% gate, so zero shadow
+  exits is currently "not observed", not evidence of failure or success.
   Durable regime and product-stage observations now make each zero-sample
   reason auditable.
 - Performance now uses the broker execution ledger. Submission rows, canceled

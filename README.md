@@ -289,7 +289,10 @@ DRY_RUN=false python3 main.py overseas-order-test sell <종목코드> --exchange
 
 연속손실 카운터와 쿨다운은 시장별로 동작하므로 국장 연속손실이 미장 신규 진입을 멈추지 않는다.
 반면 계좌 단위 안전장치인 `daily_loss_limit_pct`와 `max_concurrent_total_positions`는 두 시장에
-공통 적용된다. 정책 파일을 생략한 이전 설정은 `auto_trade`를 시장별로 복제해 호환된다.
+공통 적용된다. 계좌 일일손익은 KST 자정이 아니라 `account_risk_day_rollover_hour_kst`
+(기본 07:00)에 전환한다. 따라서 한 위험일은 당일 국장과 이어지는 당일 미장 정규세션을
+함께 포함하며, 재시작할 때 해당 경계 이후 KIS 확정 매도 원장에서 국장·미장 순손익을 다시
+합산한다. 정책 파일을 생략한 이전 설정은 `auto_trade`를 시장별로 복제해 호환된다.
 
 ## 운용 모드 비교: auto-run vs liquidity-lab
 이 프로젝트는 같은 모멘텀 엔진(`momentum_policy.py`)을 시장별 정책 객체를 통해 사용하는 두
@@ -393,7 +396,7 @@ python3 main.py liquidity-lab
 - 보호성 청산 주문은 국내는 시장가(`ORD_DVSN=01`, 제출가 0), 해외 실계좌는 시장가, 해외 모의투자는 KIS 안정성을 위해 기준 호가의 공격지정가(`ORD_DVSN=00`)로 제출한다.
 - 손익 계산과 텔레그램 표시는 실제 제출가 0이 아니라 청산 판단 당시의 기준 호가(`reference_price`)를 사용한다. 내부 broker audit에는 `order_kind`, `order_division`, `requested_price`, `reference_price`를 함께 기록한다.
 - **주문거부 서킷브레이커**: 매도 주문거부는 시장별로 개별 종목 쿨다운(국내 10분/해외 20분)을 걸지만, 매수 주문거부에는 원래 아무 백오프가 없어 같은 오류가 나는 동안 사이클마다 계속 재시도했다. 이제 시장×방향(`domestic:buy`, `overseas:sell` 등) 기준으로 최근 `order_reject_window_minutes`(기본 15분) 안에 `order_reject_threshold`(기본 5)회 이상 주문거부가 쌓이면 그 시장/방향의 신규 주문을 `order_reject_cooldown_minutes`(기본 30분) 동안 중단하고, KIS가 반환한 실제 오류 메시지를 담아 텔레그램으로 즉시 알린다. `/lab_guard`에 `주문거부차단=` 줄로 현재 차단 대상과 누적 건수를 보여주고, `/lab_cb_reset`으로 즉시 해제할 수 있다. `order_reject_threshold=0`이면 기능을 끈다.
-- **연속손실 서킷브레이커**: `max_consecutive_losses`와 `circuit_breaker_cooldown_minutes`는 각 시장 정책 파일에서 별도로 관리한다. 국장 발동 시 국장 신규 매수만, 미장 발동 시 미장 신규 매수만 중단하며 보유 포지션 청산 감시는 계속한다. 계좌 합산 일일손실 한도는 어느 시장에서 발생했든 두 시장 신규 진입을 함께 중단한다.
+- **연속손실·일일손실 서킷브레이커**: `max_consecutive_losses`와 `circuit_breaker_cooldown_minutes`는 각 시장 정책 파일에서 별도로 관리한다. 국장 발동 시 국장 신규 매수만, 미장 발동 시 미장 신규 매수만 중단하며 보유 포지션 청산 감시는 계속한다. 계좌 합산 일일손실 한도는 어느 시장에서 발생했든 두 시장 신규 진입을 함께 중단한다. 연속손실 차단만 쿨다운 뒤 자동 해제하며, 일일손실 차단은 손익을 0으로 지우지 않고 다음 07:00 KST 위험일 전환까지 유지한다.
 - **미체결 청산주문 정체 방지**: 손절/ATR하드스탑 등 보호성 청산은 45초 이상 미체결이면 즉시 취소 후 재주문한다. 반면 `take_profit` 같은 비보호성 청산은 이 조건이 없어, 목표가에 닿지 않으면 해당 주문이 무기한 미체결로 남아 다음 매도 시도를 계속 막았다(예: 2026-07-13 MSEX 익절 주문이 1시간 가까이 정체). 이제 비보호성 청산도 `stale_exit_replace_minutes`(기본 15분)를 넘기면 동일하게 취소 후 현재 호가로 재주문한다. 취소 자체가 실패하면(`pending_exit_cancel_failed`) 위 주문거부 서킷브레이커에도 함께 등록되어, 반복 실패 시 해당 시장/방향이 자동 차단되고 텔레그램 알림이 온다(과거에는 이 경로가 서킷브레이커에 전혀 연결되어 있지 않아 조용히 무한 재시도했다).
 과거 CRAN 중복매수 사건, `time_exit_profit` 수수료 미고려 버그, 전수감사로 찾은 로직 버그 9건, TV 스캐너 버그 등 이미 고쳐진 사건의 원인 분석은 [부록: 주요 인시던트 히스토리](#부록-주요-인시던트-히스토리)로 옮겼다. 여기 남긴 항목은 현재도 살아있는 동작 규칙만이다.
 
@@ -459,7 +462,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_reset_confirm`: `/lab_reset`이 제시한 초기화 실행(메뉴에는 숨김)
 - `/lab_reset_all`: **전체** 거래이력·성과 초기화(테스트 환경을 처음부터 다시 구성할 때 사용). 아래 별도 설명 참조
 - `/lab_reset_all_confirm`: `/lab_reset_all`이 제시한 초기화 실행(메뉴에는 숨김)
-- `/lab_cb_reset`: 연속손절 서킷브레이커 및 주문거부 서킷브레이커 강제 해제(**일일손실 한도 정지는 해제하지 않는다** — 그 상태는 KST 날짜가 바뀌거나 `/lab_reset_all_confirm`으로만 풀린다. 2026-07-14 감사에서 README가 이 범위를 과대 서술하고 있던 것을 발견해 정정)
+- `/lab_cb_reset`: 연속손절 서킷브레이커 및 주문거부 서킷브레이커 강제 해제(**일일손실 한도 정지는 해제하지 않는다** — 그 상태는 다음 07:00 KST 위험일 전환 또는 `/lab_reset_all_confirm`으로만 풀린다)
 
 **👀 감시종목 설정**
 - `/lab_relist`: 해외 감시 풀을 수동 종목 목록으로 교체(TV 스캔 대신 특정 종목만 보고 싶을 때)

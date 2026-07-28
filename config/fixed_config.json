@@ -144,6 +144,7 @@
         "max_consecutive_losses": 3,
         "circuit_breaker_cooldown_minutes": 30,
         "operating_capital_krw": 50000000,
+        "account_risk_day_rollover_hour_kst": 7,
         "order_reject_threshold": 5,
         "order_reject_window_minutes": 15,
         "order_reject_cooldown_minutes": 30,

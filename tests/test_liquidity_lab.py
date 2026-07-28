@@ -4345,6 +4345,7 @@ def _build_run_service() -> LiquidityLabService:
             max_consecutive_losses=3,
             circuit_breaker_cooldown_minutes=30,
             operating_capital_krw=50_000_000,
+            account_risk_day_rollover_hour_kst=7,
         ),
         liquidity_lab=SimpleNamespace(
             unified_watch_top_n=3,
@@ -4398,6 +4399,8 @@ def _build_run_service() -> LiquidityLabService:
     service._tv_available = False
     service._consecutive_losses = 0
     service._session_realised_krw = 0.0
+    service._session_realised_krw_overseas = 0.0
+    service._daily_loss_date = None
     service._daily_halted_at = None
     service._tv_diagnostic_ran = True
     service._last_holiday_notice_key = None
@@ -4412,6 +4415,112 @@ def _build_run_service() -> LiquidityLabService:
     service._last_low_trade_frequency_alert_cycle = 0
     service._last_trend_filter_alert_cycle = 0
     return service
+
+
+def test_reconcile_confirmed_risk_day_pnl_rebuilds_shared_account_loss(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    now = datetime(2026, 7, 28, 19, 0, tzinfo=timezone.utc)
+    service._daily_loss_date = date(2026, 7, 29)
+    service._session_realised_krw = -999_999.0
+    service._session_realised_krw_overseas = -999_999.0
+    service._daily_halted_at = datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc)
+
+    save_confirmed_sell(
+        service.repository,
+        logged_at="2026-07-27T21:59:59+00:00",
+        market="domestic",
+        symbol="OLD",
+        exchange_code="KRX",
+        action_reason="pre_risk_day",
+        entry_price=10_000.0,
+        price=9_900.0,
+        qty_executed=1,
+        net_pnl_krw=-100.0,
+    )
+    save_confirmed_sell(
+        service.repository,
+        logged_at="2026-07-28T05:30:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_reason="stop_loss",
+        entry_price=80_000.0,
+        price=79_500.0,
+        qty_executed=2,
+        net_pnl_krw=-1_250.0,
+    )
+    save_confirmed_sell(
+        service.repository,
+        logged_at="2026-07-28T16:30:00+00:00",
+        market="overseas",
+        symbol="LOSS",
+        exchange_code="NASD",
+        action_reason="stop_loss",
+        entry_price=100.0,
+        price=99.0,
+        qty_executed=10,
+        net_pnl_usd=-10.0,
+        net_pnl_krw=-13_800.0,
+    )
+
+    result = service._reconcile_confirmed_risk_day_pnl(now)
+
+    assert result == {
+        "reconciled": True,
+        "risk_day": "2026-07-28",
+        "risk_day_start": "2026-07-27T22:00:00+00:00",
+        "previous_risk_day": "2026-07-29",
+        "trade_count": 2,
+        "total_pnl_krw": -15050.0,
+        "overseas_pnl_krw": -13800.0,
+        "daily_limit_halted": False,
+        "by_market": {
+            "domestic": -1250.0,
+            "overseas": -13800.0,
+        },
+    }
+    assert service._daily_loss_date == date(2026, 7, 28)
+    assert service._session_realised_krw == -15_050.0
+    assert service._session_realised_krw_overseas == -13_800.0
+    assert service._daily_halted_at is None
+    events = service.repository.list_event_log(
+        event_type="risk_day_pnl_reconciled",
+    )
+    assert len(events) == 1
+    assert json.loads(events[0]["detail"]) == result
+
+
+def test_reconcile_confirmed_risk_day_pnl_rearms_daily_limit(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    now = datetime(2026, 7, 28, 19, 0, tzinfo=timezone.utc)
+    service._daily_loss_date = date(2026, 7, 29)
+    service._daily_halted_at = datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc)
+    save_confirmed_sell(
+        service.repository,
+        logged_at="2026-07-28T16:30:00+00:00",
+        market="overseas",
+        symbol="LIMIT",
+        exchange_code="NASD",
+        action_reason="stop_loss",
+        entry_price=100.0,
+        price=90.0,
+        qty_executed=100,
+        net_pnl_usd=-1_000.0,
+        net_pnl_krw=-600_000.0,
+    )
+
+    result = service._reconcile_confirmed_risk_day_pnl(now)
+
+    assert result["daily_limit_halted"] is True
+    assert result["total_pnl_krw"] == -600_000.0
+    assert service._daily_halted_at == now
+    events = service.repository.list_event_log(event_type="cb_fired")
+    assert len(events) == 1
+    assert json.loads(events[0]["detail"])["type"] == "daily_limit"
 
 
 def _save_test_regime(
@@ -4919,7 +5028,7 @@ def test_is_trading_halted_still_blocks_when_daily_loss_remains_after_consecutiv
     service.notifier = DummyNotifier()
     service._consecutive_losses = 3
     service._halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
-    service._daily_loss_date = datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).date()
+    service._daily_loss_date = service._get_circuit_breaker().current_risk_day()
     service._session_realised_krw = -600_000.0
     service.config.risk.circuit_breaker_cooldown_minutes = 30
 
@@ -4931,26 +5040,28 @@ def test_is_trading_halted_still_blocks_when_daily_loss_remains_after_consecutiv
 
 def test_is_trading_halted_when_daily_loss_limit_exceeded() -> None:
     service = _build_run_service()
-    service._daily_loss_date = datetime.now(timezone.utc).astimezone(liquidity_lab_module.KST).date()
+    service._daily_loss_date = service._get_circuit_breaker().current_risk_day()
     service._session_realised_krw = -600_000.0
 
     assert service._is_trading_halted() is True
     assert service._daily_halted_at is not None
 
 
-def test_is_trading_halted_daily_limit_auto_releases_after_cooldown() -> None:
+def test_is_trading_halted_daily_limit_persists_after_cooldown() -> None:
     service = _build_run_service()
     service.notifier = DummyNotifier()
+    service._daily_loss_date = service._get_circuit_breaker().current_risk_day()
     service._session_realised_krw = -600_000.0
-    service._daily_halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    halted_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    service._daily_halted_at = halted_at
     service.config.risk.circuit_breaker_cooldown_minutes = 30
 
-    assert service._is_trading_halted() is False
-    assert service._session_realised_krw == 0.0
-    assert service._daily_halted_at is None
+    assert service._is_trading_halted() is True
+    assert service._session_realised_krw == -600_000.0
+    assert service._daily_halted_at == halted_at
 
 
-def test_is_trading_halted_resets_daily_loss_on_new_kst_day() -> None:
+def test_is_trading_halted_resets_daily_loss_on_new_risk_day() -> None:
     service = _build_run_service()
     service._daily_loss_date = date(2026, 7, 9)
     service._session_realised_krw = -600_000.0
@@ -4962,7 +5073,7 @@ def test_is_trading_halted_resets_daily_loss_on_new_kst_day() -> None:
     class _FakeDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
-            base = datetime(2026, 7, 10, 0, 5, tzinfo=timezone.utc)
+            base = datetime(2026, 7, 10, 22, 5, tzinfo=timezone.utc)
             return base if tz is None else base.astimezone(tz)
 
     liquidity_lab_module.datetime = _FakeDateTime
@@ -4973,7 +5084,7 @@ def test_is_trading_halted_resets_daily_loss_on_new_kst_day() -> None:
         liquidity_lab_module.datetime = original_datetime
         lab_risk_module.datetime = original_risk_datetime
 
-    assert service._daily_loss_date == date(2026, 7, 10)
+    assert service._daily_loss_date == date(2026, 7, 11)
     assert service._session_realised_krw == 0.0
     assert service._daily_halted_at is None
 

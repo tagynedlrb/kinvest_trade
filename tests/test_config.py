@@ -103,6 +103,7 @@ def test_load_app_config_includes_circuit_breaker_cooldown(monkeypatch) -> None:
 
     assert config.risk.circuit_breaker_cooldown_minutes == 30
     assert config.risk.operating_capital_krw == 50_000_000
+    assert config.risk.account_risk_day_rollover_hour_kst == 7
 
 
 def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> None:
@@ -152,6 +153,7 @@ def test_fixed_config_risk_section_contains_only_live_keys() -> None:
         "max_consecutive_losses",
         "circuit_breaker_cooldown_minutes",
         "operating_capital_krw",
+        "account_risk_day_rollover_hour_kst",
         "order_reject_threshold",
         "order_reject_window_minutes",
         "order_reject_cooldown_minutes",

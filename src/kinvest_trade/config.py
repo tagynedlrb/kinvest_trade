@@ -208,6 +208,7 @@ class RiskConfig:
     max_consecutive_losses: int
     circuit_breaker_cooldown_minutes: int = 30
     operating_capital_krw: int = 50_000_000
+    account_risk_day_rollover_hour_kst: int = 7
     order_reject_threshold: int = 5
     order_reject_window_minutes: int = 15
     order_reject_cooldown_minutes: int = 30
@@ -942,6 +943,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 risk_raw.get("circuit_breaker_cooldown_minutes", 30)
             ),
             operating_capital_krw=int(risk_raw.get("operating_capital_krw", 50_000_000)),
+            account_risk_day_rollover_hour_kst=int(
+                risk_raw.get("account_risk_day_rollover_hour_kst", 7)
+            ),
             order_reject_threshold=int(risk_raw.get("order_reject_threshold", 5)),
             order_reject_window_minutes=int(risk_raw.get("order_reject_window_minutes", 15)),
             order_reject_cooldown_minutes=int(risk_raw.get("order_reject_cooldown_minutes", 30)),

@@ -1237,6 +1237,12 @@ class WatchStateHelper:
                 and real is not None
                 and real.quantity > already_pending_qty
             ):
+                if service._suppress_recent_pending_sell_stale_balance(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=real.quantity,
+                ):
+                    continue
                 if service._suppress_recent_full_sell_stale_balance(
                     market="overseas",
                     symbol=symbol,
@@ -1409,6 +1415,12 @@ class WatchStateHelper:
                 continue
             effective_orderable = remaining_real_orderable
             if effective_orderable <= 0 and held.quantity > already_pending_qty:
+                if service._suppress_recent_pending_sell_stale_balance(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=held.quantity,
+                ):
+                    continue
                 if service._suppress_recent_full_sell_stale_balance(
                     market="overseas",
                     symbol=symbol,

@@ -2152,6 +2152,44 @@ class SqliteRepository:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def get_recent_unfinalized_sell_execution(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        after_created_at: str,
+    ) -> dict | None:
+        """Return the latest accepted sell group still awaiting broker finality."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    execution_group_id,
+                    MAX(group_target_qty) AS target_qty,
+                    SUM(COALESCE(requested_qty, 0)) AS pending_requested_qty,
+                    SUM(COALESCE(filled_qty, 0)) AS filled_qty,
+                    MAX(created_at) AS latest_created_at,
+                    MAX(updated_at) AS latest_updated_at
+                FROM broker_order_executions
+                WHERE market = ?
+                  AND symbol = ?
+                  AND side = 'SELL'
+                  AND created_at >= ?
+                  AND finalized_at IS NULL
+                  AND status IN ('PENDING', 'PARTIAL')
+                GROUP BY execution_group_id
+                HAVING MAX(group_target_qty) > 0
+                ORDER BY latest_created_at DESC
+                LIMIT 1
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
+                    str(after_created_at),
+                ),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def list_submitted_order_audit_rows(
         self,
         *,

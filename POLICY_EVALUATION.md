@@ -206,10 +206,11 @@ the current direction is wrong.
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.
 - A temporary KIS balance row may remain after a complete sell fill. When
-  `holding > 0` and `orderable = 0`, suppress another sell only if a broker
-  execution group reached its full target within five minutes and its filled
-  quantity covers the stale holding. Never apply this exception to a partial
-  group fill.
+  `holding > 0` and `orderable = 0`, defer another sell when an accepted,
+  unfinalized sell from the last eight minutes covers the stale holding, or
+  when a broker execution group reached its full target within five minutes.
+  Never apply the accepted-order exception to a terminal canceled/rejected
+  group or when its requested quantity is smaller than the holding.
 - FSUN and HUBB limit buys accepted near the 2026-07-28 US close remain
   broker-reported as unfilled. Do not infer cancellation from the clock or
   block late-session entries from these two rows. Keep them out of performance,

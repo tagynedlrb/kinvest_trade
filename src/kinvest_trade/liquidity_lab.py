@@ -330,6 +330,7 @@ class LiquidityLabService:
             tuple[str, str, str, str, str]
         ] = set()
         self._post_fill_balance_notice_keys: set[str] = set()
+        self._post_submit_balance_notice_keys: set[str] = set()
 
     def _get_circuit_breaker(self) -> CircuitBreakerManager:
         cb = getattr(self, "cb", None)
@@ -6428,6 +6429,87 @@ class LiquidityLabService:
                     "filled_qty": filled_qty,
                     "stale_holding_qty": int(holding_qty),
                     "execution_updated_at": execution.get("latest_updated_at"),
+                    "window_sec": max(1, int(window_sec)),
+                },
+            )
+        self._defer_no_orderable_position(
+            market=market,
+            symbol=symbol,
+            holding_qty=int(holding_qty),
+            orderable_qty=0,
+        )
+        return True
+
+    def _suppress_recent_pending_sell_stale_balance(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        holding_qty: int,
+        now: datetime | None = None,
+        window_sec: int = 480,
+    ) -> bool:
+        """Defer a duplicate sell while an accepted sell awaits final history."""
+        if holding_qty <= 0:
+            return False
+        repository = getattr(self, "repository", None)
+        getter = getattr(
+            repository,
+            "get_recent_unfinalized_sell_execution",
+            None,
+        )
+        if not callable(getter):
+            return False
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        cutoff = current.astimezone(timezone.utc) - timedelta(
+            seconds=max(1, int(window_sec))
+        )
+        try:
+            execution = getter(
+                market=market,
+                symbol=symbol,
+                after_created_at=cutoff.isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[EXECUTION] recent_pending_sell_lookup_failed "
+                "market=%s symbol=%s error=%s",
+                market,
+                symbol,
+                exc,
+            )
+            return False
+        if execution is None:
+            return False
+        pending_requested_qty = int(
+            execution.get("pending_requested_qty") or 0
+        )
+        if pending_requested_qty < int(holding_qty):
+            return False
+
+        execution_group_id = str(execution.get("execution_group_id") or "")
+        notice_keys = getattr(self, "_post_submit_balance_notice_keys", None)
+        if notice_keys is None:
+            notice_keys = set()
+            self._post_submit_balance_notice_keys = notice_keys
+        if execution_group_id not in notice_keys:
+            notice_keys.add(execution_group_id)
+            self._save_event(
+                event_type="post_submit_stale_balance_suppressed",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "reason": "recent_sell_awaiting_broker_confirmation",
+                    "execution_group_id": execution_group_id,
+                    "target_qty": int(execution.get("target_qty") or 0),
+                    "pending_requested_qty": pending_requested_qty,
+                    "filled_qty": int(execution.get("filled_qty") or 0),
+                    "stale_holding_qty": int(holding_qty),
+                    "execution_created_at": execution.get(
+                        "latest_created_at"
+                    ),
                     "window_sec": max(1, int(window_sec)),
                 },
             )

@@ -1055,6 +1055,173 @@ def test_select_overseas_exit_targets_suppresses_stale_balance_after_full_fill()
     assert detail["filled_qty"] == 417
 
 
+def test_select_overseas_exit_targets_defers_stale_balance_after_sell_submit() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        liquidity_lab=SimpleNamespace(
+            overseas_take_profit_pct=0.025,
+            overseas_stop_loss_pct=0.015,
+            loop_interval_sec=25,
+        )
+    )
+    service.repository = _build_repository()
+    service.notifier = DummyNotifier()
+    service._session_id = "post-submit-test"
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    now = datetime.now(timezone.utc)
+    event_id = service.repository.save_broker_order_event(
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=417,
+        requested_price=15.0,
+        status="SUBMITTED",
+        broker_order_no="pending-sell-1",
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        side="SELL",
+        broker_order_no="pending-sell-1",
+        requested_qty=417,
+        requested_price=15.0,
+    )
+    assert execution is not None
+    assert not service._suppress_recent_pending_sell_stale_balance(
+        market="overseas",
+        symbol="ARX",
+        holding_qty=418,
+        now=now,
+    )
+    assert not service._suppress_recent_pending_sell_stale_balance(
+        market="overseas",
+        symbol="ARX",
+        holding_qty=417,
+        now=now + timedelta(minutes=9),
+    )
+    ranked = [
+        OverseasScanResult(
+            symbol="ARX",
+            exchange_code="NYSE",
+            last_price=14.9,
+            bid=14.89,
+            ask=14.91,
+            spread_pct=0.001,
+            change_rate_pct=-3.0,
+            volume=600_000,
+            orderable_qty=0,
+            fx_rate_krw=1350.0,
+            activity_score=8.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="ARX",
+            exchange_code="NYSE",
+            quantity=417,
+            orderable_qty=0,
+            avg_price=15.5,
+            current_price=14.9,
+            pnl_pct=-0.038,
+        )
+    ]
+
+    first = asyncio.run(
+        service._select_overseas_exit_targets(
+            ranked,
+            held_positions,
+            max_exits=5,
+        )
+    )
+    second = asyncio.run(
+        service._select_overseas_exit_targets(
+            ranked,
+            held_positions,
+            max_exits=5,
+        )
+    )
+
+    assert first == []
+    assert second == []
+    events = service.repository.list_event_log(
+        event_type="post_submit_stale_balance_suppressed",
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["execution_group_id"] == execution["execution_group_id"]
+    assert detail["pending_requested_qty"] == 417
+    assert detail["stale_holding_qty"] == 417
+
+
+def test_recent_unfinalized_sell_excludes_terminal_canceled_group() -> None:
+    repository = _build_repository()
+    now = datetime.now(timezone.utc)
+    event_id = repository.save_broker_order_event(
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="CXL",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=100,
+        requested_price=10.0,
+        status="SUBMITTED",
+        broker_order_no="pending-cancel-1",
+    )
+    execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="CXL",
+        exchange_code="NASD",
+        side="SELL",
+        broker_order_no="pending-cancel-1",
+        requested_qty=100,
+        requested_price=10.0,
+    )
+    assert execution is not None
+
+    pending = repository.get_recent_unfinalized_sell_execution(
+        market="overseas",
+        symbol="CXL",
+        after_created_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+    assert pending is not None
+    assert pending["pending_requested_qty"] == 100
+
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=0,
+        filled_amount=0.0,
+        avg_fill_price=None,
+        remaining_qty=0,
+        canceled_qty=100,
+        rejected_qty=0,
+        status="CANCELED",
+        history={"test": True},
+        checked_at=now.isoformat(),
+    )
+    repository.finalize_broker_execution_group_without_fill(
+        str(execution["execution_group_id"]),
+        finalized_at=now.isoformat(),
+    )
+
+    terminal = repository.get_recent_unfinalized_sell_execution(
+        market="overseas",
+        symbol="CXL",
+        after_created_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+    assert terminal is None
+
+
 def test_recent_completed_sell_requires_full_execution_group_fill() -> None:
     repository = _build_repository()
     now = datetime.now(timezone.utc)

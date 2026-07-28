@@ -45,6 +45,17 @@
   `integrity_check=ok`, 외래키 위반 0, SHA-256
   `499eeea20705d1f05d8a7b92a3c24eb55c33bfdc1aac2a2fa7063dfc560a6b2b`이다.
 
+### 배포 검증
+- 커밋 `16273d8`을 `git_token.txt` credential helper로 원격 `master`에
+  푸시하고 서비스를 재시작했다. 최종 PID `1265711`, `NRestarts=0`,
+  `active/running`이며 운영 DB도 `integrity_check=ok`, 외래키 위반 0이다.
+- 재시작 뒤 새 위험일 `2026-07-29` 확정손익 0원으로 정상 복원됐고,
+  폐장 상태에서 새 브로커 주문·가상 주문은 0건이다. 시작 시 해외 체결원장
+  연속페이지 3회 조회는 모두 성공했다.
+- 정책평가 `id=33`은 고맥락 추론의 직접 운영근거·대안·반증조건을 기록하고
+  다음 미국 세션 경계 실증 전까지 `unverified`로 유지했다. 텔레그램 개선보고는
+  `telegram_message_log.id=1117`, 전송 성공이다.
+
 ## [2026-07-28] 국내 일반주식 매도세 누락과 ETF 면세 분리
 
 ### 운영 원장 재현

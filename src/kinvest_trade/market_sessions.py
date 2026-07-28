@@ -136,6 +136,58 @@ def _is_krx_regular_trading_day(now_utc: datetime) -> bool:
     return not is_krx_holiday(now_utc.astimezone(KST).date())
 
 
+def is_krx_execution_reconcile_window(
+    now_utc: datetime,
+    *,
+    post_close_grace_minutes: int = 30,
+) -> bool:
+    """Return whether KRX fills can still change or be reported late."""
+
+    if _is_krx_regular_trading_day(now_utc):
+        return True
+
+    current = now_utc.astimezone(KST)
+    if current.weekday() >= 5:
+        return False
+    from .market_calendar import is_krx_holiday
+
+    if is_krx_holiday(current.date()):
+        return False
+    session_end = datetime.combine(current.date(), time(15, 30), tzinfo=KST)
+    grace_end = session_end + timedelta(minutes=max(0, post_close_grace_minutes))
+    return session_end < current <= grace_end
+
+
+def is_us_execution_reconcile_window(
+    now_utc: datetime,
+    env: str,
+    *,
+    post_close_grace_minutes: int = 30,
+) -> bool:
+    """Return whether US fills can still change for the active profile."""
+
+    if _is_us_orderable_trading_day(now_utc, env):
+        return True
+
+    current = now_utc.astimezone(KST)
+    if not 1 <= current.weekday() <= 5:
+        return False
+    if env == "prod":
+        session_end_time = time(7, 0)
+    else:
+        session_end_time = (
+            time(5, 0) if _is_new_york_dst(now_utc) else time(6, 0)
+        )
+    session_end = datetime.combine(current.date(), session_end_time, tzinfo=KST)
+    grace_end = session_end + timedelta(minutes=max(0, post_close_grace_minutes))
+    if not session_end < current <= grace_end:
+        return False
+
+    from .market_calendar import is_nyse_holiday
+
+    return not is_nyse_holiday(now_utc.astimezone(NEW_YORK).date())
+
+
 def minutes_until_next_tradeable_session(
     now_utc: datetime,
     env: str = "prod",

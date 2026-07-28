@@ -131,6 +131,12 @@ cannot train or score policy.
   domestic history, or the global request floor without matching evidence.
   Repeated continuation failures after deployment falsify the current delay
   hypothesis and require a new timing/cursor audit.
+- Unfinalized execution rows remain immutable while their market cannot fill.
+  Poll KIS execution history during the active profile's orderable session and
+  for 30 minutes after that session closes to catch delayed reports. Outside
+  that window, defer API reconciliation until the next eligible session; do
+  not infer a cancel, rejection, or no-fill from elapsed wall time. Explicit
+  forced audits may bypass this scheduling guard.
 
 ## Session boundary safety
 

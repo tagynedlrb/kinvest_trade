@@ -24,7 +24,9 @@ from .market_sessions import (
     KST,
     NEW_YORK,
     get_us_trading_session,
+    is_krx_execution_reconcile_window,
     is_krx_regular_session,
+    is_us_execution_reconcile_window,
     is_us_orderable_session_for_env,
     is_us_regular_session,
     seconds_until_us_session_transition,
@@ -67,6 +69,7 @@ from .tv_scanner import check_connectivity, scan_top_volume_surge
 _logger = logging.getLogger(__name__)
 _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _MIN_VPS_US_FULL_SCAN_WINDOW_SEC = 120
+_EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN = 30
 
 
 def _fallback_runtime_config() -> SimpleNamespace:
@@ -262,6 +265,7 @@ class LiquidityLabService:
             getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
         )
         self._last_us_transition_guard_key: tuple[str, str] | None = None
+        self._last_execution_reconcile_defer_key: tuple[object, ...] | None = None
         self._last_relist_kst: tuple[int, int] | None = None
         self._tv_available: bool = False
         self._last_tv_scan_used_fallback: bool = False
@@ -2731,12 +2735,89 @@ class LiquidityLabService:
         repository = getattr(self, "repository", None)
         if repository is None:
             return {}
-        if not repository.list_unfinalized_broker_executions(limit=1):
+        pending_executions = repository.list_unfinalized_broker_executions(limit=1000)
+        if not pending_executions:
             return {}
+        pending_markets = {
+            str(row.get("market") or "").strip().lower()
+            for row in pending_executions
+            if str(row.get("market") or "").strip()
+        }
+        eligible_markets = set(pending_markets)
+        if not force:
+            grace_minutes = _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN
+            eligible_markets = {
+                market
+                for market in pending_markets
+                if (
+                    market == "domestic"
+                    and is_krx_execution_reconcile_window(
+                        now,
+                        post_close_grace_minutes=grace_minutes,
+                    )
+                )
+                or (
+                    market == "overseas"
+                    and is_us_execution_reconcile_window(
+                        now,
+                        self.config.credentials.env,
+                        post_close_grace_minutes=grace_minutes,
+                    )
+                )
+            }
+            deferred_markets = pending_markets - eligible_markets
+            if deferred_markets:
+                pending_by_market = {
+                    market: sum(
+                        1
+                        for row in pending_executions
+                        if str(row.get("market") or "").strip().lower() == market
+                    )
+                    for market in sorted(deferred_markets)
+                }
+                defer_key = (
+                    now.astimezone(KST).date().isoformat(),
+                    get_us_trading_session(now),
+                    tuple(sorted(deferred_markets)),
+                    tuple(
+                        sorted(
+                            int(row.get("id") or 0)
+                            for row in pending_executions
+                            if str(row.get("market") or "").strip().lower()
+                            in deferred_markets
+                        )
+                    ),
+                )
+                if defer_key != getattr(
+                    self,
+                    "_last_execution_reconcile_defer_key",
+                    None,
+                ):
+                    self._last_execution_reconcile_defer_key = defer_key
+                    self._save_event(
+                        event_type="execution_reconcile_deferred",
+                        detail={
+                            "deferred_markets": sorted(deferred_markets),
+                            "pending_by_market": pending_by_market,
+                            "us_session": get_us_trading_session(now),
+                            "profile": self.config.credentials.env,
+                            "post_close_grace_minutes": grace_minutes,
+                        },
+                    )
+            if not eligible_markets:
+                return {
+                    "pending": len(pending_executions),
+                    "matched": 0,
+                    "missing": 0,
+                    "finalized": 0,
+                    "no_fill": 0,
+                    "failed_markets": 0,
+                }
         self._last_execution_reconcile_at = now
         return await self._get_execution_reconciler().reconcile(
             now=now,
             force=force,
+            markets=eligible_markets,
         )
 
     @staticmethod
@@ -3185,6 +3266,7 @@ class LiquidityLabService:
                 },
             )
         await self._refresh_market_regimes(now)
+        now = datetime.now(timezone.utc)
         await self._reconcile_broker_executions(now)
         await self._ensure_tv_diagnostics()
         now = datetime.now(timezone.utc)

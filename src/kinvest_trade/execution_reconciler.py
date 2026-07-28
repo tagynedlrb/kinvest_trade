@@ -40,12 +40,19 @@ class BrokerExecutionReconciler:
         *,
         now: datetime | None = None,
         force: bool = False,
+        markets: set[str] | None = None,
     ) -> dict[str, int]:
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
         repository = self.service.repository
         executions = repository.list_unfinalized_broker_executions(limit=1000)
+        if markets is not None:
+            executions = [
+                row
+                for row in executions
+                if str(row.get("market") or "").strip().lower() in markets
+            ]
         stats = {
             "pending": len(executions),
             "matched": 0,
@@ -111,6 +118,12 @@ class BrokerExecutionReconciler:
                 stats["matched"] += 1
 
         refreshed = repository.list_unfinalized_broker_executions(limit=1000)
+        if markets is not None:
+            refreshed = [
+                row
+                for row in refreshed
+                if str(row.get("market") or "").strip().lower() in markets
+            ]
         groups: dict[str, list[dict]] = defaultdict(list)
         for execution in refreshed:
             groups[str(execution["execution_group_id"])].append(execution)

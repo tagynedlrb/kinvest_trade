@@ -1975,6 +1975,156 @@ def test_place_overseas_sell_order_records_realized_pnl_only_after_fill() -> Non
     assert abs(rows[0]["realized_pnl_krw"] - 5244.0) < 1e-6
 
 
+def test_execution_reconcile_defers_closed_market_until_post_close_grace() -> None:
+    service = _build_sell_service()
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=282.0,
+        bid=281.9,
+        ask=282.1,
+        spread_pct=0.0007,
+        change_rate_pct=1.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=282.0,
+        pnl_pct=0.0071,
+    )
+    _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "orgn_odno": "0",
+            "pdno": "TSLA",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "2",
+            "ft_ccld_unpr3": "281.9",
+            "ft_ccld_amt3": "563.8",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230000",
+        }
+    ]
+    history_calls = []
+    original_history = service.client.get_overseas_order_history
+
+    async def tracking_history(**kwargs):
+        history_calls.append(kwargs)
+        return await original_history(**kwargs)
+
+    service.client.get_overseas_order_history = tracking_history
+    closed_now = datetime(2026, 7, 28, 22, 30, tzinfo=timezone.utc)
+
+    first = asyncio.run(service._reconcile_broker_executions(closed_now))
+    second = asyncio.run(service._reconcile_broker_executions(closed_now))
+
+    assert first["pending"] == 1
+    assert second["pending"] == 1
+    assert history_calls == []
+    assert len(service.repository.list_unfinalized_broker_executions()) == 1
+    events = service.repository.list_event_log(
+        event_type="execution_reconcile_deferred",
+        limit=10,
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["deferred_markets"] == ["overseas"]
+    assert detail["pending_by_market"] == {"overseas": 1}
+    assert detail["us_session"] == "closed"
+    assert detail["post_close_grace_minutes"] == 30
+
+    grace_now = datetime(2026, 7, 28, 20, 10, tzinfo=timezone.utc)
+    reconciled = asyncio.run(service._reconcile_broker_executions(grace_now))
+
+    assert reconciled["finalized"] == 1
+    assert len(history_calls) == 1
+    assert service.repository.list_unfinalized_broker_executions() == []
+
+
+def test_execution_reconciler_queries_only_selected_market() -> None:
+    class MixedPendingRepository:
+        def __init__(self) -> None:
+            self.rows = [
+                {
+                    "id": 1,
+                    "market": "domestic",
+                    "order_date": "2026-07-28",
+                    "broker_order_no": "1001",
+                    "execution_group_id": "domestic-group",
+                    "filled_qty": 0,
+                    "filled_amount": 0.0,
+                    "group_target_qty": 1,
+                    "status": "PENDING",
+                },
+                {
+                    "id": 2,
+                    "market": "overseas",
+                    "order_date": "2026-07-28",
+                    "broker_order_no": "2001",
+                    "execution_group_id": "overseas-group",
+                    "filled_qty": 0,
+                    "filled_amount": 0.0,
+                    "group_target_qty": 1,
+                    "status": "PENDING",
+                },
+            ]
+            self.checked_ids = []
+
+        def list_unfinalized_broker_executions(self, limit=1000):
+            return self.rows[:limit]
+
+        @staticmethod
+        def normalize_broker_order_no(value):
+            return str(value or "").lstrip("0")
+
+        def mark_broker_execution_checked(self, execution_id, *, checked_at):
+            del checked_at
+            self.checked_ids.append(execution_id)
+
+    class OverseasOnlyHistoryClient:
+        def __init__(self) -> None:
+            self.overseas_calls = 0
+
+        async def get_overseas_order_history(self, **_kwargs):
+            self.overseas_calls += 1
+            return {"orders": []}
+
+        async def get_domestic_order_history(self, **_kwargs):
+            raise AssertionError("deferred domestic market must not be queried")
+
+    repository = MixedPendingRepository()
+    client = OverseasOnlyHistoryClient()
+    service = SimpleNamespace(
+        repository=repository,
+        client=client,
+        _save_event=lambda **_kwargs: None,
+    )
+    reconciler = BrokerExecutionReconciler(service)
+
+    stats = asyncio.run(
+        reconciler.reconcile(
+            now=datetime(2026, 7, 28, 19, 30, tzinfo=timezone.utc),
+            markets={"overseas"},
+        )
+    )
+
+    assert stats["pending"] == 1
+    assert stats["missing"] == 1
+    assert client.overseas_calls == 1
+    assert repository.checked_ids == [2]
+
+
 def test_confirmed_loss_fires_circuit_breaker_once_and_updates_trade_row() -> None:
     service = _build_sell_service()
     service.config.risk = SimpleNamespace(

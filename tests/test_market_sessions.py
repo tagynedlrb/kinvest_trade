@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from kinvest_trade.market_sessions import (
     determine_loop_interval_sec,
     get_us_trading_session,
+    is_krx_execution_reconcile_window,
     is_krx_regular_session,
+    is_us_execution_reconcile_window,
     is_us_orderable_session_for_env,
     is_us_regular_session,
     minutes_until_next_tradeable_session,
@@ -81,6 +83,49 @@ def test_seconds_until_us_session_transition_returns_none_when_closed() -> None:
     now = datetime(2026, 7, 28, 22, 0, 0, tzinfo=timezone.utc)
 
     assert seconds_until_us_session_transition(now) is None
+
+
+def test_krx_execution_reconcile_window_includes_post_close_grace() -> None:
+    during_grace = datetime(2026, 7, 28, 6, 40, 0, tzinfo=timezone.utc)
+    after_grace = datetime(2026, 7, 28, 7, 1, 0, tzinfo=timezone.utc)
+
+    assert is_krx_execution_reconcile_window(during_grace)
+    assert not is_krx_execution_reconcile_window(after_grace)
+
+
+def test_us_vps_execution_reconcile_window_uses_regular_close_grace() -> None:
+    during_regular = datetime(2026, 7, 28, 19, 30, 0, tzinfo=timezone.utc)
+    during_grace = datetime(2026, 7, 28, 20, 20, 0, tzinfo=timezone.utc)
+    after_grace = datetime(2026, 7, 28, 20, 31, 0, tzinfo=timezone.utc)
+
+    assert is_us_execution_reconcile_window(during_regular, "vps")
+    assert is_us_execution_reconcile_window(during_grace, "vps")
+    assert not is_us_execution_reconcile_window(after_grace, "vps")
+
+
+def test_us_prod_execution_reconcile_window_uses_aftermarket_close_grace() -> None:
+    during_aftermarket = datetime(2026, 7, 28, 21, 30, 0, tzinfo=timezone.utc)
+    during_grace = datetime(2026, 7, 28, 22, 20, 0, tzinfo=timezone.utc)
+    after_grace = datetime(2026, 7, 28, 22, 31, 0, tzinfo=timezone.utc)
+
+    assert is_us_execution_reconcile_window(during_aftermarket, "prod")
+    assert is_us_execution_reconcile_window(during_grace, "prod")
+    assert not is_us_execution_reconcile_window(after_grace, "prod")
+
+
+def test_us_vps_execution_reconcile_window_tracks_standard_time_close() -> None:
+    during_grace = datetime(2026, 12, 1, 21, 20, 0, tzinfo=timezone.utc)
+    after_grace = datetime(2026, 12, 1, 21, 31, 0, tzinfo=timezone.utc)
+
+    assert is_us_execution_reconcile_window(during_grace, "vps")
+    assert not is_us_execution_reconcile_window(after_grace, "vps")
+
+
+def test_us_vps_execution_reconcile_window_excludes_extended_session() -> None:
+    daytime = datetime(2026, 7, 29, 2, 0, 0, tzinfo=timezone.utc)
+
+    assert not is_us_execution_reconcile_window(daytime, "vps")
+    assert is_us_execution_reconcile_window(daytime, "prod")
 
 
 def test_minutes_until_next_session_returns_zero_during_krx() -> None:

@@ -43,6 +43,21 @@
   `integrity_check=ok`, 외래키 위반 0, SHA-256
   `a8b16fc37b7855ca66a04b2b1343681b5bbec0c9a4434843ef648f6b2a01d72f`이다.
 
+### 배포 검증
+- 커밋 `0402133`을 `git_token.txt` credential helper로 원격 `master`에
+  푸시하고 서비스를 재시작했다. PID `1268420`, `NRestarts=0`,
+  `active/running`이다.
+- 재시작 뒤 두 차례 폐장 주기를 관찰한 결과 KIS API 호출은 0건이고,
+  `execution_reconcile_deferred`는 중복 억제되어 1건만 기록됐다. FSUN 157주와
+  HUBB 11주는 `PENDING`, 체결 0, 전량 잔여 상태이며 `last_checked_at`도
+  재시작 전 `22:43:51 UTC`에서 변하지 않았다. 운영 DB는
+  `integrity_check=ok`, 외래키 위반 0이다.
+- 정책평가 `policy_evaluation_log.id=34`에 가설·대안·30분 유예의 근거와
+  반증조건을 기록했다. 다음 모의계정 미국 정규장에서 자동 조회가 재개되어
+  미확정 상태가 브로커 증거로 갱신되는지 확인하기 전까지 고맥락 추론의
+  비교가치는 `unverified`다.
+- 텔레그램 개선보고는 `telegram_message_log.id=1120`, 전송 성공이다.
+
 ## [2026-07-28] 미국장 장시간 스캔의 세션 경계 교정
 
 ### 운영 로그 재현

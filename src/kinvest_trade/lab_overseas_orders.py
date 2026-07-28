@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from .client import KisApiError
-from .market_sessions import get_us_trading_session, is_us_orderable_session_for_env
+from .market_calendar import is_nyse_holiday
+from .market_sessions import (
+    get_us_trading_session,
+    is_us_orderable_session_for_env,
+    us_holiday_date_for_kis_session,
+)
 from .message_format import format_market_korean, format_pct, format_usd
 from .time_utils import format_kst, format_kst_korean
 
@@ -27,6 +32,57 @@ class OverseasOrderHelper:
 
     def __init__(self, service: "LiquidityLabService") -> None:
         self.service = service
+
+    def _virtual_market_snapshot(
+        self,
+        candidate: "OverseasScanResult",
+        *,
+        side: str,
+        signal_snapshot: "MovingAverageSnapshot | None",
+        strategy_flag: str,
+        entry_by: str,
+        exit_by: str = "",
+        held: "OverseasHeldPosition | None" = None,
+    ) -> tuple[datetime, str, dict | None]:
+        now = datetime.now(timezone.utc)
+        session = get_us_trading_session(now)
+        if (
+            is_us_orderable_session_for_env(now, "prod")
+            and not is_nyse_holiday(us_holiday_date_for_kis_session(now))
+        ):
+            return now, session, None
+
+        service = self.service
+        service._record_trade_skip(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            reason="market_closed_during_cycle",
+            side=side,
+            price=candidate.last_price,
+            signal_snapshot=signal_snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            stock_name=candidate.symbol,
+            activity_score=candidate.activity_score,
+            orderable_qty=(
+                candidate.orderable_qty if held is None else held.orderable_qty
+            ),
+            holding_qty=0 if held is None else held.quantity,
+        )
+        result = {
+            "skipped": True,
+            "market": "overseas",
+            "side": side,
+            "candidate": asdict(candidate),
+            "reason": "market_closed_during_cycle",
+            "session": session,
+        }
+        if held is not None:
+            result["held_position"] = asdict(held)
+            result["virtual"] = True
+        return now, session, result
 
     async def place_test_order(
         self,
@@ -1509,6 +1565,15 @@ class OverseasOrderHelper:
                 "candidate": asdict(candidate),
                 "reason": liquidity_block_reason,
             }
+        _, _, closed_result = self._virtual_market_snapshot(
+            candidate,
+            side="buy",
+            signal_snapshot=snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+        )
+        if closed_result is not None:
+            return closed_result
         if config.use_slot_sizing:
             try:
                 available_usd = await service._get_overseas_available_usd(
@@ -1592,8 +1657,15 @@ class OverseasOrderHelper:
                 "reason": "overseas_test_order_qty_zero",
             }
 
-        now = datetime.now(timezone.utc)
-        session = get_us_trading_session(now)
+        now, session, closed_result = self._virtual_market_snapshot(
+            candidate,
+            side="buy",
+            signal_snapshot=snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+        )
+        if closed_result is not None:
+            return closed_result
         created_at = format_kst(now) or now.isoformat()
         position = service.virtual_trades.record_buy(
             market="overseas",
@@ -1726,8 +1798,17 @@ class OverseasOrderHelper:
                 "virtual": True,
             }
 
-        now = datetime.now(timezone.utc)
-        session = get_us_trading_session(now)
+        now, session, closed_result = self._virtual_market_snapshot(
+            candidate,
+            side="sell",
+            signal_snapshot=signal_snapshot,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            held=held,
+        )
+        if closed_result is not None:
+            return closed_result
         created_at = format_kst(now) or now.isoformat()
         sell_result = (
             tracker.apply_sell(

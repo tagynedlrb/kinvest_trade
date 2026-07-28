@@ -79,6 +79,38 @@ def is_us_orderable_session_for_env(now_utc: datetime | None, env: str) -> bool:
     return session == "regular"
 
 
+def seconds_until_us_session_transition(now_utc: datetime) -> int | None:
+    """Return whole seconds until the current open KIS US session changes."""
+
+    current = now_utc.astimezone(KST)
+    current_time = current.time()
+    session = get_us_trading_session(now_utc)
+    if session == "closed":
+        return None
+
+    is_dst = _is_new_york_dst(now_utc)
+    daytime_end = time(17, 0) if is_dst else time(18, 0)
+    premarket_end = time(22, 30) if is_dst else time(23, 30)
+    regular_end = time(5, 0) if is_dst else time(6, 0)
+
+    boundary_date = current.date()
+    if session == "daytime":
+        boundary_time = daytime_end
+    elif session == "premarket":
+        boundary_time = premarket_end
+    elif session == "regular":
+        if current_time >= premarket_end:
+            boundary_date += timedelta(days=1)
+        boundary_time = regular_end
+    elif session == "aftermarket":
+        boundary_time = time(7, 0)
+    else:
+        return None
+
+    boundary = datetime.combine(boundary_date, boundary_time, tzinfo=KST)
+    return max(0, int((boundary - current).total_seconds()))
+
+
 def us_holiday_date_for_kis_session(now_utc: datetime) -> date:
     """Return the US holiday date that matches KIS's KST-based US session."""
 

@@ -27,6 +27,7 @@ from .market_sessions import (
     is_krx_regular_session,
     is_us_orderable_session_for_env,
     is_us_regular_session,
+    seconds_until_us_session_transition,
     us_holiday_date_for_kis_session,
 )
 from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
@@ -65,6 +66,7 @@ from .tv_scanner import check_connectivity, scan_top_volume_surge
 
 _logger = logging.getLogger(__name__)
 _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
+_MIN_VPS_US_FULL_SCAN_WINDOW_SEC = 120
 
 
 def _fallback_runtime_config() -> SimpleNamespace:
@@ -259,6 +261,7 @@ class LiquidityLabService:
         self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
             getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
         )
+        self._last_us_transition_guard_key: tuple[str, str] | None = None
         self._last_relist_kst: tuple[int, int] | None = None
         self._tv_available: bool = False
         self._last_tv_scan_used_fallback: bool = False
@@ -3184,6 +3187,7 @@ class LiquidityLabService:
         await self._refresh_market_regimes(now)
         await self._reconcile_broker_executions(now)
         await self._ensure_tv_diagnostics()
+        now = datetime.now(timezone.utc)
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
         await self._maybe_send_overseas_relist_alert(now, nyse_holiday=nyse_holiday)
         krx_open = is_krx_regular_session(now) and not krx_holiday
@@ -3203,6 +3207,36 @@ class LiquidityLabService:
             market_open=us_open,
             now=now,
         )
+
+        cycle_start_krx_open = krx_open
+        cycle_start_us_open = us_open
+        cycle_start_us_session = us_session
+        cycle_start_us_orderable = us_orderable_in_profile
+        krx_cycle_open = krx_open
+        us_cycle_open = us_open
+        us_transition_guard_active = False
+        us_transition_remaining_sec = seconds_until_us_session_transition(now)
+        if (
+            self.config.credentials.env != "prod"
+            and us_cycle_open
+            and us_transition_remaining_sec is not None
+            and us_transition_remaining_sec <= _MIN_VPS_US_FULL_SCAN_WINDOW_SEC
+        ):
+            us_cycle_open = False
+            us_transition_guard_active = True
+            guard_key = (now.astimezone(KST).date().isoformat(), us_session)
+            if guard_key != getattr(self, "_last_us_transition_guard_key", None):
+                self._last_us_transition_guard_key = guard_key
+                self._save_event(
+                    event_type="market_session_transition_guard",
+                    market="overseas",
+                    detail={
+                        "session": us_session,
+                        "remaining_seconds": us_transition_remaining_sec,
+                        "minimum_scan_window_seconds": _MIN_VPS_US_FULL_SCAN_WINDOW_SEC,
+                        "profile": self.config.credentials.env,
+                    },
+                )
 
         if not krx_open and not us_open:
             return LiquidityLabReport(
@@ -3226,30 +3260,54 @@ class LiquidityLabService:
                 overseas_order={"skipped": True, "reason": "market_closed"},
             )
 
+        if not krx_cycle_open and not us_cycle_open:
+            return LiquidityLabReport(
+                scanned_at=format_kst(now) or "",
+                krx_market_open=krx_open,
+                us_market_open=us_open,
+                us_market_session=us_session,
+                us_orderable_in_profile=us_orderable_in_profile,
+                primary_market="none",
+                primary_target=None,
+                primary_selection_reason="us_session_transition_guard",
+                domestic_ranked=[],
+                overseas_ranked=[],
+                domestic_excluded=[],
+                overseas_excluded=[],
+                domestic_positions=[],
+                overseas_positions=[],
+                watch_targets=[],
+                estimated_api_calls_per_cycle=0,
+                domestic_order={"skipped": True, "reason": "market_closed"},
+                overseas_order={
+                    "skipped": True,
+                    "reason": "us_session_transition_guard",
+                    "remaining_seconds": us_transition_remaining_sec,
+                },
+            )
+
         refreshed_position_markets: set[str] = set()
-        domestic_ranked = await self.scan_domestic() if krx_open else []
+        domestic_scan_started = krx_cycle_open
+        overseas_scan_started = us_cycle_open
+        domestic_ranked = await self.scan_domestic() if domestic_scan_started else []
         domestic_positions = (
             await self._load_domestic_positions(domestic_ranked)
-            if krx_open
+            if domestic_scan_started
             else []
         )
         domestic_balance_cache = getattr(self, "_domestic_balance_cache", {})
         if (
-            krx_open
+            domestic_scan_started
             and domestic_balance_cache.get("cycle") == getattr(self, "_cycle_count", 0)
             and domestic_balance_cache.get("data")
         ):
             refreshed_position_markets.add("domestic")
-        if us_open:
+        if overseas_scan_started:
             overseas_ranked, held_symbols_cache = await self.scan_overseas()
             overseas_positions = await self._load_overseas_positions(
                 overseas_ranked,
                 held_symbols_cache=held_symbols_cache,
             )
-            if us_orderable_in_profile:
-                await self._reconcile_pending_virtual_sells(
-                    overseas_positions=overseas_positions,
-                )
             virtual_overseas_positions = self._load_virtual_overseas_positions(overseas_ranked)
             monitored_overseas_positions = [
                 *overseas_positions,
@@ -3267,6 +3325,60 @@ class LiquidityLabService:
             overseas_positions = []
             monitored_overseas_positions = []
             self._cycle_exit_reference_prices = {}
+
+        decision_now = datetime.now(timezone.utc)
+        fresh_krx_open = is_krx_regular_session(decision_now) and not krx_holiday
+        fresh_us_open = is_us_regular_session(decision_now) and not nyse_holiday
+        fresh_us_session = get_us_trading_session(decision_now)
+        fresh_us_orderable = is_us_orderable_session_for_env(
+            decision_now,
+            self.config.credentials.env,
+        ) and not nyse_holiday
+        session_changed_markets: set[str] = set()
+        if fresh_krx_open != cycle_start_krx_open:
+            krx_cycle_open = False
+            session_changed_markets.add("domestic")
+            self._save_event(
+                event_type="market_session_changed_during_cycle",
+                market="domestic",
+                detail={
+                    "cycle_started_at": format_kst(now),
+                    "rechecked_at": format_kst(decision_now),
+                    "from_open": cycle_start_krx_open,
+                    "to_open": fresh_krx_open,
+                },
+            )
+        if (
+            fresh_us_open != cycle_start_us_open
+            or fresh_us_session != cycle_start_us_session
+            or fresh_us_orderable != cycle_start_us_orderable
+        ):
+            us_cycle_open = False
+            session_changed_markets.add("overseas")
+            self._save_event(
+                event_type="market_session_changed_during_cycle",
+                market="overseas",
+                detail={
+                    "cycle_started_at": format_kst(now),
+                    "rechecked_at": format_kst(decision_now),
+                    "from_open": cycle_start_us_open,
+                    "to_open": fresh_us_open,
+                    "from_session": cycle_start_us_session,
+                    "to_session": fresh_us_session,
+                    "from_orderable": cycle_start_us_orderable,
+                    "to_orderable": fresh_us_orderable,
+                },
+            )
+        krx_open = fresh_krx_open
+        us_open = fresh_us_open
+        us_session = fresh_us_session
+        us_orderable_in_profile = fresh_us_orderable
+
+        if us_cycle_open and us_orderable_in_profile:
+            await self._reconcile_pending_virtual_sells(
+                overseas_positions=overseas_positions,
+            )
+
         self._clear_stale_lab_position_states(
             domestic_positions=domestic_positions,
             overseas_positions=monitored_overseas_positions,
@@ -3281,8 +3393,8 @@ class LiquidityLabService:
             overseas_ranked=overseas_ranked,
             domestic_positions=domestic_positions,
             overseas_positions=monitored_overseas_positions,
-            krx_open=krx_open,
-            us_open=us_open,
+            krx_open=krx_cycle_open,
+            us_open=us_cycle_open,
         )
         domestic_watch_targets = [
             watch_target for watch_target in watch_targets if watch_target.market == "domestic"
@@ -3298,7 +3410,7 @@ class LiquidityLabService:
                 monitored_overseas_positions,
                 max_exits=5,
             )
-            if us_open
+            if us_cycle_open
             else []
         )
         overseas_exit_target = overseas_exit_targets[0] if overseas_exit_targets else None
@@ -3308,7 +3420,7 @@ class LiquidityLabService:
                 domestic_watch_targets,
                 domestic_positions,
             )
-            if krx_open
+            if krx_cycle_open
             else None
         )
         overseas_entry_block_reason = ""
@@ -3348,7 +3460,7 @@ class LiquidityLabService:
             market="domestic",
             side="buy",
         )
-        if domestic_reject_halted or domestic_cb_halted:
+        if domestic_reject_halted or domestic_cb_halted or not krx_cycle_open:
             domestic_budget = 0
         domestic_buy_targets = self._select_domestic_buy_targets(
             domestic_ranked,
@@ -3368,6 +3480,8 @@ class LiquidityLabService:
         )
         if overseas_reject_halted or overseas_cb_halted:
             remaining_overseas_slots = 0
+        if not us_cycle_open:
+            remaining_overseas_slots = 0
         total_cap_binds_overseas = False
         if remaining_total_slots is not None:
             overseas_total_budget = max(
@@ -3379,7 +3493,11 @@ class LiquidityLabService:
                 total_cap_binds_overseas = True
         if remaining_overseas_slots <= 0:
             overseas_entry_block_reason = (
-                "overseas_circuit_breaker_halted"
+                "market_session_changed_during_cycle"
+                if "overseas" in session_changed_markets
+                else "us_session_transition_guard"
+                if us_transition_guard_active
+                else "overseas_circuit_breaker_halted"
                 if overseas_cb_halted
                 else "overseas_order_reject_halted"
                 if overseas_reject_halted
@@ -3409,7 +3527,9 @@ class LiquidityLabService:
         domestic_order: dict = {
             "skipped": True,
             "reason": (
-                "domestic_circuit_breaker_halted"
+                "market_session_changed_during_cycle"
+                if "domestic" in session_changed_markets
+                else "domestic_circuit_breaker_halted"
                 if domestic_cb_halted
                 else "domestic_order_reject_halted"
                 if domestic_reject_halted
@@ -3429,7 +3549,7 @@ class LiquidityLabService:
                 exit_signal,
             )
             domestic_orders = [domestic_order]
-        elif domestic_buy_targets and krx_open:
+        elif domestic_buy_targets and krx_cycle_open:
             for buy_candidate in domestic_buy_targets:
                 domestic_orders.append(
                     await self._place_domestic_test_order(
@@ -3451,7 +3571,7 @@ class LiquidityLabService:
                 )
                 overseas_orders.append(_order)
             overseas_order = overseas_orders[0]
-        elif overseas_buy_targets and us_orderable_in_profile:
+        elif overseas_buy_targets and us_cycle_open and us_orderable_in_profile:
             for buy_candidate in overseas_buy_targets:
                 overseas_orders.append(
                     await self._manage_overseas_position(
@@ -3461,7 +3581,7 @@ class LiquidityLabService:
                     )
                 )
             overseas_order = overseas_orders[0]
-        elif overseas_buy_targets and us_open and not us_orderable_in_profile:
+        elif overseas_buy_targets and us_cycle_open and not us_orderable_in_profile:
             for buy_candidate in overseas_buy_targets:
                 overseas_orders.append(
                     await self._record_virtual_overseas_buy(
@@ -3472,8 +3592,12 @@ class LiquidityLabService:
             overseas_order = overseas_orders[0]
         else:
             overseas_skip_reason = (
-                "us_open_but_mock_session_not_supported"
-                if us_open and not us_orderable_in_profile
+                "market_session_changed_during_cycle"
+                if "overseas" in session_changed_markets
+                else "us_session_transition_guard"
+                if us_transition_guard_active
+                else "us_open_but_mock_session_not_supported"
+                if us_cycle_open and not us_orderable_in_profile
                 else overseas_entry_block_reason or "no_overseas_candidate"
             )
             overseas_order = {
@@ -3495,8 +3619,11 @@ class LiquidityLabService:
             eligible_markets={
                 market
                 for market, eligible in (
-                    ("domestic", krx_open),
-                    ("overseas", us_orderable_in_profile),
+                    ("domestic", krx_cycle_open),
+                    (
+                        "overseas",
+                        us_cycle_open and us_orderable_in_profile,
+                    ),
                 )
                 if eligible
             },
@@ -3543,27 +3670,35 @@ class LiquidityLabService:
             else:
                 primary_target = overseas_watch_targets[0].code if overseas_watch_targets else None
                 primary_reason = "overseas_active"
-        elif krx_open and us_open and watch_targets:
+        elif krx_cycle_open and us_cycle_open and watch_targets:
             primary_market = "both"
             primary_target = None
             primary_reason = "both_waiting"
-        elif krx_open and domestic_watch_targets:
+        elif krx_cycle_open and domestic_watch_targets:
             primary_market = "domestic"
             primary_target = domestic_watch_targets[0].code
             primary_reason = "watchlist_wait"
-        elif us_open and overseas_watch_targets:
+        elif us_cycle_open and overseas_watch_targets:
             primary_market = "overseas"
             primary_target = overseas_watch_targets[0].code
             primary_reason = "watchlist_wait"
-        elif us_open and not us_orderable_in_profile:
+        elif session_changed_markets:
+            primary_market = "none"
+            primary_target = None
+            primary_reason = "market_session_changed_during_cycle"
+        elif us_transition_guard_active:
+            primary_market = "none"
+            primary_target = None
+            primary_reason = "us_session_transition_guard"
+        elif us_cycle_open and not us_orderable_in_profile:
             primary_market = "none"
             primary_target = None
             primary_reason = "us_open_but_mock_session_not_supported"
-        elif krx_open:
+        elif krx_cycle_open:
             primary_market = "domestic"
             primary_target = None
             primary_reason = "krx_open_but_no_candidate"
-        elif us_open:
+        elif us_cycle_open:
             primary_market = "overseas" if us_orderable_in_profile else "none"
             primary_target = None
             primary_reason = (
@@ -3593,8 +3728,8 @@ class LiquidityLabService:
             overseas_positions=overseas_positions,
             watch_targets=watch_targets,
             estimated_api_calls_per_cycle=self._estimate_api_calls_per_cycle(
-                krx_open=krx_open,
-                us_open=us_open,
+                krx_open=domestic_scan_started,
+                us_open=overseas_scan_started,
                 include_domestic_order=bool(domestic_exit_target or domestic_buy_target),
                 include_overseas_order=bool(overseas_exit_target or overseas_buy_target),
             ),
@@ -5832,6 +5967,9 @@ class LiquidityLabService:
             "krx_open_but_no_candidate",
             "us_open_but_no_candidate",
             "us_open_but_mock_session_not_supported",
+            "us_session_transition_guard",
+            "market_session_changed_during_cycle",
+            "market_closed_during_cycle",
             # Reaching a configured concurrency cap is the risk limit working as
             # designed, not a broker rejection -- don't badge it "주문거부".
             "overseas_position_cap_reached",

@@ -1806,6 +1806,19 @@ def _force_overseas_orderable_session():
         lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper
 
 
+@contextmanager
+def _force_overseas_closed_session():
+    original_orderable = lab_overseas_orders_module.is_us_orderable_session_for_env
+    original_session = lab_overseas_orders_module.get_us_trading_session
+    lab_overseas_orders_module.is_us_orderable_session_for_env = lambda *_args: False
+    lab_overseas_orders_module.get_us_trading_session = lambda *_args: "closed"
+    try:
+        yield
+    finally:
+        lab_overseas_orders_module.is_us_orderable_session_for_env = original_orderable
+        lab_overseas_orders_module.get_us_trading_session = original_session
+
+
 def _run_orderable_overseas_sell(
     service: LiquidityLabService,
     candidate: OverseasScanResult,
@@ -7072,10 +7085,14 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    original_helper_orderable = lab_overseas_orders_module.is_us_orderable_session_for_env
     liquidity_lab_module.is_krx_regular_session = lambda now: False
     liquidity_lab_module.is_us_regular_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
+    lab_overseas_orders_module.is_us_orderable_session_for_env = (
+        lambda _now, env: env == "prod"
+    )
     try:
         report = asyncio.run(service.run())
     finally:
@@ -7083,6 +7100,7 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
         liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+        lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper_orderable
 
     assert report.primary_market == "overseas"
     assert report.primary_selection_reason == "watchlist_buy_signal"
@@ -8081,6 +8099,139 @@ def test_overseas_buy_stays_skipped_when_market_closed() -> None:
     assert service.virtual_trades.list_positions("overseas") == []
 
 
+def test_run_skips_full_vps_scan_near_us_session_transition() -> None:
+    service = _build_run_service()
+    scan_calls = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def forbidden_scan():
+        scan_calls.append("overseas")
+        raise AssertionError("full overseas scan must not start near session transition")
+
+    service._refresh_market_regimes = noop  # type: ignore[method-assign]
+    service._reconcile_broker_executions = noop  # type: ignore[method-assign]
+    service._ensure_tv_diagnostics = noop  # type: ignore[method-assign]
+    service._observe_inverse_regime = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    service.scan_overseas = forbidden_scan  # type: ignore[method-assign]
+
+    original_krx = liquidity_lab_module.is_krx_regular_session
+    original_us = liquidity_lab_module.is_us_regular_session
+    original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
+    original_session = liquidity_lab_module.get_us_trading_session
+    original_transition = liquidity_lab_module.seconds_until_us_session_transition
+    liquidity_lab_module.is_krx_regular_session = lambda _now: False
+    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda _now, _env: False
+    liquidity_lab_module.get_us_trading_session = lambda _now: "aftermarket"
+    liquidity_lab_module.seconds_until_us_session_transition = lambda _now: 12
+    try:
+        report = asyncio.run(service.run())
+        repeated_report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_krx
+        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_orderable_session_for_env = original_orderable
+        liquidity_lab_module.get_us_trading_session = original_session
+        liquidity_lab_module.seconds_until_us_session_transition = original_transition
+
+    assert scan_calls == []
+    assert report.us_market_open is True
+    assert report.us_market_session == "aftermarket"
+    assert report.primary_selection_reason == "us_session_transition_guard"
+    assert report.overseas_order["reason"] == "us_session_transition_guard"
+    assert repeated_report.primary_selection_reason == "us_session_transition_guard"
+    events = service.repository.list_event_log(
+        event_type="market_session_transition_guard",
+        limit=1,
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["remaining_seconds"] == 12
+    assert detail["minimum_scan_window_seconds"] == 120
+
+
+def test_run_discards_us_decisions_when_session_changes_during_scan() -> None:
+    service = _build_run_service()
+    service.config.credentials.env = "prod"
+    candidate = OverseasScanResult(
+        symbol="AMD",
+        exchange_code="NASD",
+        last_price=155.0,
+        bid=154.9,
+        ask=155.1,
+        spread_pct=0.0012,
+        change_rate_pct=1.5,
+        volume=800_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=17.0,
+    )
+    seen_watch_flags = []
+    reconcile_calls = []
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def fake_reconcile_pending_virtual_sells(**_kwargs):
+        reconcile_calls.append("called")
+
+    async def fake_scan_overseas():
+        return [candidate], set()
+
+    async def fake_load_overseas_positions(_ranked, held_symbols_cache=None):
+        del held_symbols_cache
+        return []
+
+    async def fake_build_watch_targets(**kwargs):
+        seen_watch_flags.append(kwargs["us_open"])
+        return []
+
+    service._refresh_market_regimes = noop  # type: ignore[method-assign]
+    service._reconcile_broker_executions = noop  # type: ignore[method-assign]
+    service._ensure_tv_diagnostics = noop  # type: ignore[method-assign]
+    service._reconcile_pending_virtual_sells = fake_reconcile_pending_virtual_sells  # type: ignore[method-assign]
+    service._observe_inverse_regime = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_watch_targets  # type: ignore[method-assign]
+
+    sessions = iter(["regular", "aftermarket"])
+    original_krx = liquidity_lab_module.is_krx_regular_session
+    original_us = liquidity_lab_module.is_us_regular_session
+    original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
+    original_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda _now: False
+    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = lambda _now, _env: True
+    liquidity_lab_module.get_us_trading_session = lambda _now: next(sessions)
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_krx
+        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_orderable_session_for_env = original_orderable
+        liquidity_lab_module.get_us_trading_session = original_session
+
+    assert seen_watch_flags == [False]
+    assert reconcile_calls == []
+    assert report.us_market_open is True
+    assert report.us_market_session == "aftermarket"
+    assert report.primary_selection_reason == "market_session_changed_during_cycle"
+    assert report.overseas_order["reason"] == "market_session_changed_during_cycle"
+    assert service.repository.list_broker_order_events(limit=10) == []
+    assert service.repository.list_virtual_orders(limit=10) == []
+    events = service.repository.list_event_log(
+        event_type="market_session_changed_during_cycle",
+        limit=1,
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["from_session"] == "regular"
+    assert detail["to_session"] == "aftermarket"
+
+
 def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
     service = _build_run_service()
     service.config.skip_holiday_overseas = True
@@ -8195,7 +8346,8 @@ def test_virtual_overseas_sell_uses_existing_virtual_position() -> None:
         is_virtual=True,
     )
 
-    result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
+    with _force_overseas_orderable_session():
+        result = asyncio.run(service._place_overseas_sell_order(candidate, held, "take_profit"))
 
     assert result["submitted"] is True
     assert result["virtual"] is True
@@ -8224,11 +8376,101 @@ def test_virtual_buy_does_not_touch_real_broker_balance() -> None:
         activity_score=15.0,
     )
 
-    result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+    with _force_overseas_orderable_session():
+        result = asyncio.run(service._record_virtual_overseas_buy(candidate))
 
     assert result["submitted"] is True
     assert result["virtual"] is True
     assert service.virtual_trades.get_position("overseas", "SOXL") is not None
+
+
+def test_virtual_overseas_buy_refuses_closed_market_after_cycle() -> None:
+    class BudgetLookupForbiddenClient:
+        async def get_overseas_possible_order(self, **_kwargs):
+            raise AssertionError("closed-market guard must run before budget lookup")
+
+    service = _build_run_service()
+    service.config.liquidity_lab.use_slot_sizing = True
+    service.client = BudgetLookupForbiddenClient()
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=20.0,
+        bid=19.99,
+        ask=20.01,
+        spread_pct=0.001,
+        change_rate_pct=1.2,
+        volume=2_000_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=15.0,
+    )
+
+    with _force_overseas_closed_session():
+        result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "market_closed_during_cycle"
+    assert result["session"] == "closed"
+    assert service.virtual_trades.get_position("overseas", "SOXL") is None
+    assert service.repository.list_virtual_orders(limit=10) == []
+    assert service.repository.list_broker_order_events(limit=10) == []
+
+
+def test_virtual_overseas_sell_refuses_closed_market_after_cycle() -> None:
+    service = _build_run_service()
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="aftermarket",
+        reason="seed",
+        created_at="2026-07-29 06:59:00 KST",
+    )
+    candidate = OverseasScanResult(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        last_price=21.0,
+        bid=20.99,
+        ask=21.01,
+        spread_pct=0.001,
+        change_rate_pct=1.0,
+        volume=2_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=15.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="SOXL",
+        exchange_code="AMEX",
+        quantity=1,
+        orderable_qty=1,
+        avg_price=20.0,
+        current_price=21.0,
+        pnl_pct=0.05,
+        is_virtual=True,
+    )
+
+    with _force_overseas_closed_session():
+        result = asyncio.run(
+            service._record_virtual_overseas_sell(
+                candidate,
+                held,
+                "take_profit",
+            )
+        )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "market_closed_during_cycle"
+    assert result["session"] == "closed"
+    assert service.virtual_trades.get_position("overseas", "SOXL") is not None
+    assert [row["side"] for row in service.repository.list_virtual_orders(limit=10)] == [
+        "buy"
+    ]
+    assert service.repository.list_broker_order_events(limit=10) == []
 
 
 def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
@@ -8723,7 +8965,8 @@ def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> No
         activity_score=16.0,
     )
 
-    result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+    with _force_overseas_orderable_session():
+        result = asyncio.run(service._record_virtual_overseas_buy(candidate))
 
     assert result["submitted"] is True
     assert result["qty"] == 4
@@ -8861,7 +9104,8 @@ def test_virtual_overseas_buy_respects_total_virtual_exposure_limit() -> None:
         activity_score=16.0,
     )
 
-    result = asyncio.run(service._record_virtual_overseas_buy(candidate))
+    with _force_overseas_orderable_session():
+        result = asyncio.run(service._record_virtual_overseas_buy(candidate))
 
     assert result["skipped"] is True
     assert result["reason"] == "virtual_exposure_limit"

@@ -7,6 +7,7 @@ from kinvest_trade.market_sessions import (
     is_us_orderable_session_for_env,
     is_us_regular_session,
     minutes_until_next_tradeable_session,
+    seconds_until_us_session_transition,
     us_holiday_date_for_kis_session,
 )
 
@@ -56,6 +57,30 @@ def test_us_regular_session_false_before_kis_day_session() -> None:
 
 def test_us_regular_session_false_on_sunday_kst_morning() -> None:
     assert not is_us_regular_session(datetime(2026, 6, 28, 21, 0, tzinfo=timezone.utc))
+
+
+def test_seconds_until_us_session_transition_near_aftermarket_close() -> None:
+    now = datetime(2026, 7, 28, 21, 59, 48, tzinfo=timezone.utc)
+
+    assert seconds_until_us_session_transition(now) == 12
+
+
+def test_seconds_until_us_session_transition_near_premarket_end() -> None:
+    now = datetime(2026, 7, 28, 13, 29, 0, tzinfo=timezone.utc)
+
+    assert seconds_until_us_session_transition(now) == 60
+
+
+def test_seconds_until_us_session_transition_regular_crosses_kst_midnight() -> None:
+    now = datetime(2026, 7, 28, 13, 30, 0, tzinfo=timezone.utc)
+
+    assert seconds_until_us_session_transition(now) == 23_400
+
+
+def test_seconds_until_us_session_transition_returns_none_when_closed() -> None:
+    now = datetime(2026, 7, 28, 22, 0, 0, tzinfo=timezone.utc)
+
+    assert seconds_until_us_session_transition(now) is None
 
 
 def test_minutes_until_next_session_returns_zero_during_krx() -> None:

@@ -132,6 +132,24 @@ cannot train or score policy.
   Repeated continuation failures after deployment falsify the current delay
   hypothesis and require a new timing/cursor audit.
 
+## Session boundary safety
+
+- A market-open flag is a short-lived observation, not permission for the
+  entire cycle. Recompute KRX open state and US session/profile orderability
+  after any full scan and before deriving executable targets.
+- If the market or US session changes during a scan, discard that market's
+  decisions for the cycle. A fresh cycle may act on fresh quotes; stale
+  pre-transition quotes may not be carried across daytime, premarket, regular,
+  aftermarket, or closed boundaries.
+- The paper profile does not start a full US scan with 120 seconds or less
+  remaining in the current open session. This threshold is an operational
+  guard based on the observed 93-call, 99-second scan, not an entry-policy
+  parameter and not evidence for changing trade frequency.
+- Real-order helpers retain their final broker-session checks. Virtual buys and
+  sells must independently verify that the real US market is still open before
+  writing performance rows. A closed-session signal is diagnostic evidence,
+  never a virtual fill.
+
 ## Frequency decisions
 
 - Low order frequency is not itself a defect.

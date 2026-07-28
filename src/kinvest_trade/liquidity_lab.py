@@ -2819,6 +2819,23 @@ class LiquidityLabService:
                 )
                 price_label = format_usd(fill_price)
             if inserted:
+                triggered = self._decode_strategy_ids(strategy_flag, entry_by)
+                confirmed_entry_time = parse_datetime(logged_at)
+                if triggered and confirmed_entry_time is not None:
+                    manager = self._get_strategy_manager(symbol, market)
+                    prior_peak = (
+                        float(manager.position.peak_price)
+                        if manager.position is not None
+                        else fill_price
+                    )
+                    manager.open_position(
+                        symbol=symbol,
+                        entry_price=fill_price,
+                        triggered_by=triggered,
+                        entry_time=ensure_timezone(confirmed_entry_time),
+                    )
+                    if manager.position is not None:
+                        manager.position.peak_price = max(prior_peak, fill_price)
                 self._mark_session_owned(symbol)
                 self._queue_trade_notification(
                     " ".join(
@@ -6339,9 +6356,12 @@ class LiquidityLabService:
                         entry_price = float(raw_entry_price)
                     except (TypeError, ValueError):
                         entry_price = None
-                parsed = parse_datetime(str(persisted.get("updated_at", "") or ""))
-                if parsed is not None:
-                    entry_dt = ensure_timezone(parsed)
+                entry_dt = self._get_watch_state_helper().resolve_position_entry_time(
+                    market,
+                    symbol,
+                    persisted,
+                )
+                if entry_dt is not None:
                     entry_time_iso = entry_dt.isoformat()
                     hold_duration_min = round(
                         max(

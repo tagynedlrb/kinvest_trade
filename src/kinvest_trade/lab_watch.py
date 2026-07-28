@@ -58,6 +58,25 @@ class WatchStateHelper:
             self.remember_persisted_symbol_state(state)
         return state
 
+    def resolve_position_entry_time(
+        self,
+        market: str,
+        symbol: str,
+        state: dict | None,
+    ) -> datetime | None:
+        persisted = state or {}
+        entry_time = parse_datetime(str(persisted.get("entry_time", "") or ""))
+        if entry_time is not None:
+            return ensure_timezone(entry_time)
+        repository = getattr(self.service, "repository", None)
+        if repository is not None:
+            confirmed_time = repository.get_latest_position_entry_time(market, symbol)
+            entry_time = parse_datetime(str(confirmed_time or ""))
+            if entry_time is not None:
+                return ensure_timezone(entry_time)
+        fallback = parse_datetime(str(persisted.get("updated_at", "") or ""))
+        return ensure_timezone(fallback) if fallback is not None else None
+
     def prime_cycle_exit_reference_prices(
         self,
         overseas_positions: list["OverseasHeldPosition"],
@@ -207,11 +226,21 @@ class WatchStateHelper:
         manager_key = service._strategy_manager_key(watch_target.market, symbol)
         manager = getattr(service, "_strategy_managers", {}).get(manager_key)
         entry_price = None
+        entry_time = None
         peak_price = None
         if manager is not None and manager.position is not None:
             entry_price = float(manager.position.entry_price)
+            entry_time = ensure_timezone(manager.position.entry_time).isoformat()
             peak_price = float(manager.position.peak_price)
         state = self.get_persisted_symbol_state(watch_target.market, symbol) or {}
+        if entry_time is None and watch_target.holding_qty > 0:
+            resolved_entry_time = self.resolve_position_entry_time(
+                watch_target.market,
+                symbol,
+                state,
+            )
+            if resolved_entry_time is not None:
+                entry_time = resolved_entry_time.isoformat()
         strategy_flag = watch_target.strategy_flag or str(state.get("strategy_flag", "") or "")
         entry_by_value = watch_target.entry_by or str(state.get("entry_by", "") or "")
         signal_state = watch_target.signal_state or str(state.get("signal_state", "") or "")
@@ -267,6 +296,7 @@ class WatchStateHelper:
             last_price=persisted_price,
             pnl_pct=persisted_pnl_pct,
             entry_price=entry_price,
+            entry_time=entry_time,
             peak_price=peak_price,
             has_position=has_position,
             snapshot_json=snapshot_payload,
@@ -287,6 +317,7 @@ class WatchStateHelper:
                 "last_price": persisted_price,
                 "pnl_pct": persisted_pnl_pct,
                 "entry_price": entry_price,
+                "entry_time": entry_time,
                 "peak_price": peak_price,
                 "has_position": has_position,
                 "snapshot_json": snapshot_payload,
@@ -320,13 +351,24 @@ class WatchStateHelper:
             service._strategy_manager_key(market, symbol)
         )
         entry_price = None
+        entry_time = None
         peak_price = None
         if manager is not None and manager.position is not None:
             entry_price = float(manager.position.entry_price)
+            entry_time = ensure_timezone(manager.position.entry_time).isoformat()
             peak_price = float(manager.position.peak_price)
         elif last_price is not None and has_position:
             entry_price = float(last_price)
             peak_price = float(last_price)
+        if entry_time is None and has_position:
+            state = self.get_persisted_symbol_state(market, symbol) or {}
+            resolved_entry_time = self.resolve_position_entry_time(
+                market,
+                symbol,
+                state,
+            )
+            if resolved_entry_time is not None:
+                entry_time = resolved_entry_time.isoformat()
         payload = asdict(signal_snapshot) if signal_snapshot is not None else None
         repository.upsert_lab_symbol_state(
             market=market,
@@ -342,6 +384,7 @@ class WatchStateHelper:
             last_price=last_price,
             pnl_pct=pnl_pct,
             entry_price=entry_price,
+            entry_time=entry_time,
             peak_price=peak_price,
             has_position=1 if has_position else 0,
             snapshot_json=payload,
@@ -457,7 +500,7 @@ class WatchStateHelper:
         entry_price = float(state.get("entry_price") or avg_price or current_price or 0.0)
         if entry_price <= 0:
             entry_price = max(float(avg_price or 0.0), float(current_price or 0.0))
-        entry_time = parse_datetime(str(state.get("updated_at", "") or ""))
+        entry_time = self.resolve_position_entry_time(market, symbol, state)
         manager.open_position(
             symbol=symbol.strip().upper(),
             entry_price=entry_price,

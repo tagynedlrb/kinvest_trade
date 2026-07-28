@@ -393,6 +393,7 @@ class SqliteRepository:
                     last_price REAL,
                     pnl_pct REAL,
                     entry_price REAL,
+                    entry_time TEXT,
                     peak_price REAL,
                     has_position INTEGER NOT NULL DEFAULT 0,
                     snapshot_json TEXT,
@@ -661,6 +662,7 @@ class SqliteRepository:
                 """
             )
             self._ensure_column(conn, "lab_symbol_state", "entry_price", "REAL")
+            self._ensure_column(conn, "lab_symbol_state", "entry_time", "TEXT")
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "lab_symbol_state", "snapshot_json", "TEXT")
@@ -2237,6 +2239,7 @@ class SqliteRepository:
         last_price: float | None = None,
         pnl_pct: float | None = None,
         entry_price: float | None = None,
+        entry_time: str | None = None,
         peak_price: float | None = None,
         has_position: int = 0,
         snapshot_json: dict | None = None,
@@ -2254,8 +2257,9 @@ class SqliteRepository:
                 INSERT INTO lab_symbol_state (
                     market, symbol, exchange_code, action_bias, signal_state, note,
                     strategy_flag, entry_by, exit_by, holding_qty, last_price, pnl_pct,
-                    entry_price, peak_price, has_position, snapshot_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    entry_price, entry_time, peak_price, has_position, snapshot_json,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(market, symbol) DO UPDATE SET
                     exchange_code = excluded.exchange_code,
                     action_bias = excluded.action_bias,
@@ -2268,6 +2272,7 @@ class SqliteRepository:
                     last_price = excluded.last_price,
                     pnl_pct = excluded.pnl_pct,
                     entry_price = COALESCE(excluded.entry_price, lab_symbol_state.entry_price),
+                    entry_time = COALESCE(excluded.entry_time, lab_symbol_state.entry_time),
                     peak_price = COALESCE(excluded.peak_price, lab_symbol_state.peak_price),
                     has_position = excluded.has_position,
                     snapshot_json = COALESCE(excluded.snapshot_json, lab_symbol_state.snapshot_json),
@@ -2287,6 +2292,7 @@ class SqliteRepository:
                     last_price,
                     pnl_pct,
                     entry_price,
+                    entry_time,
                     peak_price,
                     has_position,
                     None
@@ -2317,6 +2323,98 @@ class SqliteRepository:
             except json.JSONDecodeError:
                 result["snapshot_json"] = None
         return result
+
+    def get_latest_position_entry_time(self, market: str, symbol: str) -> str | None:
+        """Recover the active entry time from immutable fill/position ledgers."""
+        market_key = str(market).strip().lower()
+        symbol_key = str(symbol).strip().upper()
+        with self._connect() as conn:
+            confirmed = conn.execute(
+                """
+                WITH buy_groups AS (
+                    SELECT
+                        execution_group_id,
+                        MIN(
+                            COALESCE(fill_recorded_at, updated_at, created_at)
+                        ) AS entry_time,
+                        MAX(
+                            COALESCE(fill_recorded_at, updated_at, created_at)
+                        ) AS latest_fill_at
+                    FROM broker_order_executions
+                    WHERE market = ?
+                      AND symbol = ?
+                      AND UPPER(side) = 'BUY'
+                      AND filled_qty > 0
+                    GROUP BY execution_group_id
+                )
+                SELECT entry_time
+                FROM buy_groups
+                ORDER BY latest_fill_at DESC
+                LIMIT 1
+                """,
+                (market_key, symbol_key),
+            ).fetchone()
+            latest_sell = conn.execute(
+                """
+                WITH sell_groups AS (
+                    SELECT
+                        execution_group_id,
+                        MAX(group_target_qty) AS target_qty,
+                        SUM(filled_qty) AS filled_qty,
+                        MAX(
+                            COALESCE(fill_recorded_at, updated_at, created_at)
+                        ) AS latest_fill_at
+                    FROM broker_order_executions
+                    WHERE market = ?
+                      AND symbol = ?
+                      AND UPPER(side) = 'SELL'
+                    GROUP BY execution_group_id
+                )
+                SELECT MAX(latest_fill_at) AS latest_fill_at
+                FROM sell_groups
+                WHERE target_qty > 0
+                  AND filled_qty >= target_qty
+                """,
+                (market_key, symbol_key),
+            ).fetchone()
+            virtual = conn.execute(
+                """
+                SELECT opened_at
+                FROM virtual_positions
+                WHERE market = ?
+                  AND symbol = ?
+                  AND qty > 0
+                LIMIT 1
+                """,
+                (market_key, symbol_key),
+            ).fetchone()
+
+        candidates: list[tuple[datetime, str]] = []
+        confirmed_text = (
+            "" if confirmed is None else str(confirmed["entry_time"] or "").strip()
+        )
+        confirmed_time = parse_datetime(confirmed_text)
+        latest_sell_time = parse_datetime(
+            "" if latest_sell is None else str(latest_sell["latest_fill_at"] or "")
+        )
+        if (
+            confirmed_time is not None
+            and (
+                latest_sell_time is None
+                or confirmed_time > latest_sell_time
+            )
+        ):
+            candidates.append((confirmed_time, confirmed_text))
+
+        virtual_text = (
+            "" if virtual is None else str(virtual["opened_at"] or "").strip()
+        )
+        virtual_time = parse_datetime(virtual_text)
+        if virtual_time is not None:
+            candidates.append((virtual_time, virtual_text))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[0])[1]
 
     def list_lab_symbol_states(
         self,
@@ -2418,6 +2516,7 @@ class SqliteRepository:
                        price AS last_price,
                        pnl_pct,
                        NULL AS entry_price,
+                       entry_time,
                        NULL AS peak_price,
                        CASE WHEN holding_qty > 0 THEN 1 ELSE 0 END AS has_position,
                        NULL AS snapshot_json,

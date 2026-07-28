@@ -334,6 +334,30 @@ def test_cycle_log_strategy_columns_exist(tmp_path) -> None:
     assert "pool_size" in columns
 
 
+def test_lab_symbol_state_entry_time_column_migrates_existing_db(tmp_path) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE lab_symbol_state (
+                market TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (market, symbol)
+            )
+            """
+        )
+
+    SqliteRepository(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(lab_symbol_state)")
+        }
+
+    assert "entry_time" in columns
+
+
 def test_event_log_can_be_saved_and_queried(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
 
@@ -574,6 +598,7 @@ def test_submitted_order_audit_rows_excludes_canceled_and_keeps_cancel_rejected(
 def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     snapshot = {"price": 170.0, "volume_ratio": 2.1}
+    entry_time = "2026-07-06T07:15:00+00:00"
 
     repository.upsert_lab_symbol_state(
         market="overseas",
@@ -588,6 +613,7 @@ def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:
         last_price=170.0,
         pnl_pct=0.028,
         entry_price=165.03,
+        entry_time=entry_time,
         peak_price=171.5,
         has_position=1,
         snapshot_json=snapshot,
@@ -600,7 +626,114 @@ def test_lab_symbol_state_can_be_upserted_and_loaded(tmp_path) -> None:
     assert state["strategy_flag"] == "VWAP+VOL"
     assert state["entry_by"] == "VWAP"
     assert state["has_position"] == 1
+    assert state["entry_time"] == entry_time
     assert state["snapshot_json"]["price"] == 170.0
+
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="next_cycle",
+        holding_qty=57,
+        last_price=171.0,
+        has_position=1,
+        updated_at="2026-07-06T09:05:00+00:00",
+    )
+
+    assert repository.get_lab_symbol_state("overseas", "COIN")["entry_time"] == entry_time
+
+
+def test_latest_position_entry_time_uses_confirmed_buy_fill(
+    tmp_path,
+    save_confirmed_buy,
+) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    fill_time = "2026-07-06T07:15:00+00:00"
+    save_confirmed_buy(
+        repository,
+        logged_at=fill_time,
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="BUY_REAL",
+        action_reason="strategy_buy_signal",
+        price=165.03,
+        holding_qty=57,
+        qty_executed=57,
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        entry_price=165.03,
+    )
+
+    assert repository.get_latest_position_entry_time("overseas", "COIN") == fill_time
+
+    sell_time = "2026-07-06T08:15:00+00:00"
+    event_id = repository.save_broker_order_event(
+        created_at=sell_time,
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=57,
+        requested_price=170.0,
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        exit_by="VWAP",
+        status="SUBMITTED",
+        reason="take_profit",
+        broker_order_no="test-sell-coin",
+    )
+    execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=sell_time,
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        side="SELL",
+        broker_order_no="test-sell-coin",
+        requested_qty=57,
+        requested_price=170.0,
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        exit_by="VWAP",
+        reason="take_profit",
+        entry_price=165.03,
+    )
+    assert execution is not None
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=4,
+        filled_amount=680.0,
+        avg_fill_price=170.0,
+        remaining_qty=53,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="PARTIAL",
+        history={},
+        checked_at=sell_time,
+        fill_recorded_at=sell_time,
+    )
+
+    assert repository.get_latest_position_entry_time("overseas", "COIN") == fill_time
+
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=57,
+        filled_amount=9690.0,
+        avg_fill_price=170.0,
+        remaining_qty=0,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="FILLED",
+        history={},
+        checked_at=sell_time,
+        fill_recorded_at=sell_time,
+    )
+
+    assert repository.get_latest_position_entry_time("overseas", "COIN") is None
 
 
 def test_get_lab_symbol_state_falls_back_to_cycle_log(tmp_path) -> None:

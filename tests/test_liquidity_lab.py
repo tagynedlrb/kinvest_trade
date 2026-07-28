@@ -5360,6 +5360,7 @@ def test_build_watch_target_status_allows_overseas_vwap_combo() -> None:
 
 def test_restore_strategy_contexts_recovers_held_position_after_restart() -> None:
     service = _build_run_service()
+    entry_time = "2026-07-06T06:15:00+00:00"
     service.repository.upsert_lab_symbol_state(
         market="overseas",
         symbol="COIN",
@@ -5367,6 +5368,64 @@ def test_restore_strategy_contexts_recovers_held_position_after_restart() -> Non
         action_bias="HOLD",
         signal_state="HOLD",
         note="vr=3.9x mom=+0.42%",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        holding_qty=57,
+        last_price=170.29,
+        pnl_pct=0.028,
+        entry_price=165.03,
+        entry_time=entry_time,
+        peak_price=171.0,
+        has_position=1,
+        updated_at="2026-07-06T07:00:36+00:00",
+    )
+    held = OverseasHeldPosition(
+        symbol="COIN",
+        exchange_code="NASD",
+        quantity=57,
+        orderable_qty=57,
+        avg_price=165.03,
+        current_price=170.29,
+        pnl_pct=0.028,
+    )
+
+    service._restore_strategy_contexts(domestic_positions=[], overseas_positions=[held])
+
+    manager = service._get_strategy_manager("COIN")
+    assert manager.position is not None
+    assert manager.position.flag == "VWAP+VOL"
+    assert manager.position.entry_by == "VWAP"
+    assert manager.position.entry_price == 165.03
+    assert manager.position.entry_time.isoformat() == entry_time
+
+
+def test_restore_strategy_context_uses_confirmed_fill_not_state_update_time(
+    save_confirmed_buy,
+) -> None:
+    service = _build_run_service()
+    fill_time = "2026-07-06T06:15:00+00:00"
+    save_confirmed_buy(
+        service.repository,
+        logged_at=fill_time,
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="BUY_REAL",
+        action_reason="strategy_buy_signal",
+        price=165.03,
+        holding_qty=57,
+        qty_executed=57,
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        entry_price=165.03,
+    )
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="COIN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="recent_cycle",
         strategy_flag="VWAP+VOL",
         entry_by="VWAP",
         holding_qty=57,
@@ -5391,9 +5450,7 @@ def test_restore_strategy_contexts_recovers_held_position_after_restart() -> Non
 
     manager = service._get_strategy_manager("COIN")
     assert manager.position is not None
-    assert manager.position.flag == "VWAP+VOL"
-    assert manager.position.entry_by == "VWAP"
-    assert manager.position.entry_price == 165.03
+    assert manager.position.entry_time.isoformat() == fill_time
 
 
 def test_strategy_managers_are_isolated_by_market_for_same_symbol() -> None:
@@ -8120,6 +8177,10 @@ def test_overseas_buy_saves_buy_real_only_after_fill() -> None:
     assert rows[0]["macd_signal"] is not None
     assert rows[0]["spread_pct"] is not None
     assert rows[0]["consecutive_losses"] == 0
+    manager = service._get_strategy_manager("SOXL", "overseas")
+    assert manager.position is not None
+    assert manager.position.entry_price == 25.0
+    assert manager.position.entry_time.isoformat() == rows[0]["logged_at"]
 
 
 def test_place_overseas_test_order_blocks_standalone_vwap_before_submission() -> None:

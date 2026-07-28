@@ -64,6 +64,9 @@ cannot train or score policy.
 - Session ownership is reconstructed from same-session broker-confirmed buys,
   not symbol identity alone. This keeps restarted bot positions attributable
   without claiming manually imported holdings.
+- Position entry time is immutable execution state and must not be reconstructed
+  from a watch cache's mutable update time. Persist it separately, fall back to
+  a broker-confirmed buy for legacy state, and retain it across partial exits.
 - A fill caused by a missing safety state still counts in account PnL and risk.
   It is incident evidence, not evidence for loosening the entry formula; its
   policy attribution must be called out in later regime reviews.

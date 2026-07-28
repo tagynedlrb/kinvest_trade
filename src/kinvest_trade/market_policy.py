@@ -82,6 +82,7 @@ class MomentumMarketPolicy:
         snapshot: MovingAverageSnapshot,
         *,
         symbol: str,
+        inverse_regime_eligible: bool | None = None,
     ) -> EntrySetup:
         if self.auto_trade is None:
             raise RuntimeError(f"{self.market} market policy requires auto_trade configuration")
@@ -91,6 +92,7 @@ class MomentumMarketPolicy:
             symbol=symbol,
             inverse_etf_symbols=self.auto_trade.inverse_etf_symbols,
             leveraged_etf_symbols=self.auto_trade.leveraged_etf_symbols,
+            inverse_regime_eligible=inverse_regime_eligible,
         )
 
     def derive_watch_state(
@@ -98,6 +100,7 @@ class MomentumMarketPolicy:
         snapshot: MovingAverageSnapshot,
         *,
         symbol: str,
+        inverse_regime_eligible: bool | None = None,
     ) -> tuple[str, str]:
         if self.auto_trade is None:
             raise RuntimeError(f"{self.market} market policy requires auto_trade configuration")
@@ -107,6 +110,7 @@ class MomentumMarketPolicy:
             symbol=symbol,
             inverse_etf_symbols=self.auto_trade.inverse_etf_symbols,
             leveraged_etf_symbols=self.auto_trade.leveraged_etf_symbols,
+            inverse_regime_eligible=inverse_regime_eligible,
         )
 
     def evaluate_exit(

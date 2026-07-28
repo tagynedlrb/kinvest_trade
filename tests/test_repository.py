@@ -382,6 +382,61 @@ def test_broker_order_events_table_and_save(tmp_path) -> None:
     assert rows[0]["payload_json"]["output"]["ODNO"] == "12345678"
 
 
+def test_broker_execution_order_date_uses_each_market_trading_date(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "execution_dates.db")
+    created_at = "2026-07-27T15:24:13+00:00"
+
+    domestic_event_id = repository.save_broker_order_event(
+        created_at=created_at,
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        side="BUY",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=100.0,
+        status="SUBMITTED",
+        broker_order_no="1001",
+    )
+    overseas_event_id = repository.save_broker_order_event(
+        created_at=created_at,
+        market="overseas",
+        symbol="LXFR",
+        exchange_code="NYSE",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=10.0,
+        status="SUBMITTED",
+        broker_order_no="1002",
+    )
+    domestic = repository.save_broker_order_execution(
+        broker_event_id=domestic_event_id,
+        created_at=created_at,
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        side="BUY",
+        broker_order_no="1001",
+        requested_qty=1,
+        requested_price=100.0,
+    )
+    overseas = repository.save_broker_order_execution(
+        broker_event_id=overseas_event_id,
+        created_at=created_at,
+        market="overseas",
+        symbol="LXFR",
+        exchange_code="NYSE",
+        side="BUY",
+        broker_order_no="1002",
+        requested_qty=1,
+        requested_price=10.0,
+    )
+
+    assert domestic["order_date"] == "2026-07-28"
+    assert overseas["order_date"] == "2026-07-27"
+
+
 def test_telegram_message_log_can_be_saved_and_listed(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_telegram_message(

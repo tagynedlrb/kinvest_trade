@@ -1476,7 +1476,7 @@ class ReportHelper:
                 [
                     "[KIS][전략리포트]",
                     f"시각={format_kst_korean(now)}",
-                    "기준=실주문접수 SELL_REAL",
+                    "기준=KIS 체결확정 SELL_REAL",
                     "주의=net은 기록 수수료 우선, 미기록 건은 0.5% 비용 추정",
                     comparison,
                     summarize_market_regime_performance(
@@ -1579,7 +1579,7 @@ class ReportHelper:
                 f"{format_pct(max_avg_net)} 이하"
             ),
             f"감시대상={','.join(sorted(guard_markets))}:{','.join(sorted(guard_flags))}",
-            "주의=실주문접수 SELL_REAL 기준, 체결확정은 /lab_orders 확인",
+            "기준=KIS 체결확정 SELL_REAL, 미체결 확인=/lab_orders",
         ]
         hard_blocks: list[str] = []
         if bool(getattr(config, "overseas_block_standalone_vwap", False)):
@@ -1687,34 +1687,48 @@ class ReportHelper:
             after_logged_at=after_logged_at,
             limit=200,
         )
+        shadow_rows = controller.repository.get_inverse_shadow_performance(
+            after_opened_at=after_logged_at,
+        )
         lines = [
             "[KIS][전략성과]",
             f"시각={format_kst_korean(now)}",
             f"범위=최근 {hours}시간",
-            "기준=실주문접수 SELL_REAL만 집계",
+            "기준=KIS 체결확정 SELL_REAL만 집계",
             "제외=감시 신호 BUY/SELL/HOLD",
-            "주의=체결확정은 MTS/잔고 기준 확인",
+            "검증=주문번호별 체결원장, 확인=/lab_orders",
         ]
         if not rows:
             lines.append("성과=없음")
-            return "\n".join(lines)
-
-        total_trades = sum(int(row.get("trade_count") or 0) for row in rows)
-        total_wins = sum(int(row.get("win_count") or 0) for row in rows)
-        total_usd = sum(float(row.get("total_net_pnl_usd") or 0.0) for row in rows)
-        total_krw = sum(float(row.get("total_net_pnl_krw") or 0.0) for row in rows)
-        total_win_rate = (total_wins / total_trades) if total_trades else 0.0
-        lines.append(
-            "전체="
-            f"{total_trades}건 승률={total_win_rate * 100:.0f}% "
-            f"손익={controller._format_mixed_pnl(usd=total_usd, krw=total_krw)}"
-        )
-        best_rows = rows[:5]
-        worst_rows = sorted(rows, key=controller._performance_row_score)[:5]
-        lines.append("─── 상위 전략 ───")
-        for row in best_rows:
-            lines.append(controller._format_performance_row(row))
-        lines.append("─── 하위 전략 ───")
-        for row in worst_rows:
-            lines.append(controller._format_performance_row(row))
+        else:
+            total_trades = sum(int(row.get("trade_count") or 0) for row in rows)
+            total_wins = sum(int(row.get("win_count") or 0) for row in rows)
+            total_usd = sum(float(row.get("total_net_pnl_usd") or 0.0) for row in rows)
+            total_krw = sum(float(row.get("total_net_pnl_krw") or 0.0) for row in rows)
+            total_win_rate = (total_wins / total_trades) if total_trades else 0.0
+            lines.append(
+                "전체="
+                f"{total_trades}건 승률={total_win_rate * 100:.0f}% "
+                f"손익={controller._format_mixed_pnl(usd=total_usd, krw=total_krw)}"
+            )
+            best_rows = rows[:5]
+            worst_rows = sorted(rows, key=controller._performance_row_score)[:5]
+            lines.append("─── 상위 전략 ───")
+            for row in best_rows:
+                lines.append(controller._format_performance_row(row))
+            lines.append("─── 하위 전략 ───")
+            for row in worst_rows:
+                lines.append(controller._format_performance_row(row))
+        if shadow_rows:
+            lines.append("─── 역방향 shadow ───")
+            for row in shadow_rows:
+                closed_count = int(row.get("closed_count") or 0)
+                win_count = int(row.get("win_count") or 0)
+                win_rate = win_count / closed_count if closed_count else 0.0
+                lines.append(
+                    f"{format_market_korean(str(row.get('market') or ''))} "
+                    f"종료={closed_count} 진행={int(row.get('open_count') or 0)} "
+                    f"승률={win_rate * 100:.0f}% "
+                    f"평균순수익={format_pct(float(row.get('avg_net_pnl_pct') or 0.0))}"
+                )
         return "\n".join(lines)

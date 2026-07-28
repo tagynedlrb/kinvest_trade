@@ -119,8 +119,12 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert domestic.policy_id == "domestic_momentum_v1"
     assert overseas.policy_id == "overseas_momentum_v1"
     assert domestic.engine == overseas.engine == "momentum_v1"
-    assert domestic.auto_trade == config.auto_trade
-    assert overseas.auto_trade == config.auto_trade
+    assert domestic.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
+    assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
+    assert domestic.auto_trade.inverse_etf_symbols == ["114800", "252670"]
+    assert overseas.auto_trade.inverse_etf_symbols == ["SQQQ", "SOXS", "SPXU"]
+    assert domestic.auto_trade.inverse_execution_mode == "shadow"
+    assert overseas.auto_trade.inverse_execution_mode == "shadow"
     assert domestic.auto_trade is not overseas.auto_trade
     assert domestic.auto_trade.inverse_etf_symbols is not overseas.auto_trade.inverse_etf_symbols
 

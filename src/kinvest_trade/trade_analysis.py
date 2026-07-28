@@ -287,7 +287,7 @@ def summarize_market_regime_performance(
     days: int = 0,
     limit: int = 12,
 ) -> str:
-    """Join final daily benchmark regimes to SELL_REAL order-submission estimates."""
+    """Join final daily benchmark regimes to broker-confirmed SELL_REAL fills."""
     conn = sqlite3.connect(Path(db_path))
     conn.row_factory = sqlite3.Row
     try:
@@ -325,7 +325,7 @@ def summarize_market_regime_performance(
                 f"레짐={_regime_label(latest)}"
             )
 
-        result.append("[시장 레짐별 실주문접수 손익]")
+        result.append("[시장 레짐별 KIS 체결확정 손익]")
         where = ["action_bias = 'SELL_REAL'"]
         params: list[object] = []
         if days > 0:

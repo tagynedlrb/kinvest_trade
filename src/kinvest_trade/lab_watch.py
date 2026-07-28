@@ -6,7 +6,6 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from .momentum_policy import detect_market_regime
 from .technical_signals import MovingAverageSnapshot
 from .time_utils import ensure_timezone, parse_datetime
 
@@ -541,6 +540,12 @@ class WatchStateHelper:
         holding_qty: int = 0,
     ) -> "WatchTargetStatus":
         service = self.service
+        service._update_inverse_shadow_trade(
+            market=market,
+            symbol=code,
+            price=price,
+            signal_snapshot=signal_snapshot,
+        )
         if signal_snapshot is None:
             persisted = self.get_persisted_symbol_state(market, code)
             fallback_snapshot = self.state_snapshot_with_live_price(
@@ -606,6 +611,32 @@ class WatchStateHelper:
                     code,
                     market,
                 )
+                inverse_block_reason = service._inverse_entry_block_reason(
+                    market,
+                    code,
+                )
+                if inverse_block_reason and (
+                    strategy_result.signal == "BUY" or signal_state == "BUY"
+                ):
+                    return service._make_watch_target_status(
+                        market=market,
+                        code=code,
+                        exchange_code=exchange_code,
+                        price=price,
+                        activity_score=activity_score,
+                        signal_score=0.0,
+                        action_bias="WAIT",
+                        signal_state="WAIT",
+                        ma_summary=service._ma_relation_summary(
+                            fallback_snapshot,
+                            market,
+                        ),
+                        note=f"[{strategy_result.flag or '-'}] {inverse_block_reason}|stale_signal_cache",
+                        holding_qty=holding_qty,
+                        signal_snapshot=fallback_snapshot,
+                        strategy_flag=strategy_result.flag,
+                        entry_by=strategy_result.entry_by,
+                    )
                 block_reason = service._entry_strategy_block_reason(
                     market=market,
                     strategy_flag=strategy_result.flag,
@@ -829,6 +860,41 @@ class WatchStateHelper:
                     strategy_flag="",
                     entry_by="",
                 )
+            inverse_block_reason = service._inverse_entry_block_reason(
+                market,
+                code,
+            )
+            if inverse_block_reason:
+                if inverse_block_reason == "inverse_shadow_mode":
+                    service._record_inverse_shadow_entry(
+                        market=market,
+                        symbol=code,
+                        exchange_code=exchange_code,
+                        price=price,
+                        signal_snapshot=signal_snapshot,
+                        strategy_flag=strategy_result.flag,
+                        entry_by=strategy_result.entry_by,
+                        entry_reason=entry_setup.reason,
+                    )
+                return service._make_watch_target_status(
+                    market=market,
+                    code=code,
+                    exchange_code=exchange_code,
+                    price=price,
+                    activity_score=activity_score,
+                    signal_score=entry_setup.score,
+                    action_bias="WAIT",
+                    signal_state="WAIT",
+                    ma_summary=service._ma_relation_summary(
+                        signal_snapshot,
+                        market,
+                    ),
+                    note=f"[{strategy_result.flag or '-'}] {inverse_block_reason}",
+                    holding_qty=holding_qty,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_result.flag,
+                    entry_by=strategy_result.entry_by,
+                )
             combined_score = (
                 service._get_strategy_manager(code, market).buy_score(signal_snapshot)
                 + entry_setup.score
@@ -1015,14 +1081,16 @@ class WatchStateHelper:
             return []
         inverse_set = {
             symbol.upper()
-            for symbol in getattr(service.config.liquidity_lab, "inverse_etf_symbols", [])
+            for symbol in service._get_market_policy(
+                "overseas"
+            ).auto_trade.inverse_etf_symbols
         }
+        inverse_decision = service._inverse_regime_decision("overseas")
 
         def sort_key(item: "WatchTargetStatus") -> tuple[int, float, float]:
-            snapshot = item.signal_snapshot
             prefer_inverse = bool(
-                snapshot is not None
-                and detect_market_regime(snapshot) == "bear"
+                inverse_decision is not None
+                and inverse_decision.eligible
                 and item.code.upper() in inverse_set
             )
             return (0 if prefer_inverse else 1, -item.signal_score, -item.activity_score)

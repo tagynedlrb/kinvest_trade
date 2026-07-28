@@ -26,7 +26,7 @@
 
 Policy changes should use all of the following:
 
-1. Prior order-submission performance, with broker fills checked separately.
+1. Broker-confirmed fill performance from the execution ledger.
 2. Net performance after recorded costs, or a clearly labeled cost estimate.
 3. The session's trend, volume activity, and volatility regime.
 4. Multiple independent trading days, not repeated orders from one episode.
@@ -38,6 +38,10 @@ eligible exits across three distinct final sessions. Passing this minimum does
 not force a change; it only permits evaluation. Higher-risk changes require a
 larger sample.
 
+Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
+not submitted-price or pre-cost PnL. A positive gross move that fails to clear
+round-trip costs is still a loss for risk control.
+
 ## Frequency decisions
 
 - Low order frequency is not itself a defect.
@@ -45,9 +49,41 @@ larger sample.
   expectancy after realistic costs and the result persists across regimes.
 - Reject a frequency increase when the apparent gross edge is below costs,
   comes from one market day, or is concentrated in a hostile regime.
-- Report frequency by market and only during sessions orderable by the active
-  broker profile. Label it as order-submission frequency until fill
-  reconciliation exists.
+- Report both submission and confirmed-fill frequency by market, and only
+  during sessions orderable by the active broker profile.
+
+## Down-market inverse policy
+
+- Domestic inverse symbols and US inverse symbols are separately configured;
+  evidence from one market never activates the other.
+- A candidate is eligible only when the same local session's benchmark is down
+  at least 1%, its benchmark trend is down, and the inverse product itself has
+  a rising intraday trend, positive current momentum, and market-specific
+  volume confirmation.
+- Eligibility does not authorize a broker order. The current execution mode is
+  `shadow`; defensive order checks reject inverse products unless that market's
+  policy is explicitly changed to `live`.
+- The shadow ledger charges both sides' commissions and half-spread on entry
+  and exit. It closes on take-profit, stop, hard stop, time limit, benchmark
+  recovery, or session rollover. Daily-reset inverse products are never carried
+  into the next session by this policy.
+- Consider a small live pilot only after broker-quality shadow observations
+  include at least five exits across three final benchmark sessions, net
+  expectancy after costs is positive, and drawdown/tracking behavior remains
+  within the predeclared risk limit. This is an evaluation floor, not automatic
+  approval.
+- Reject live activation when product/benchmark tracking diverges materially,
+  gains are concentrated in one shock session, or net expectancy is nonpositive.
+  Daily leverage, compounding, volatility drag, and sharp bear-market rallies
+  are first-class risks, not implementation noise.
+
+Official product/risk references:
+
+- [ProShares SQQQ](https://www.proshares.com/our-etfs/leveraged-and-inverse/sqqq?gad=1)
+- [Direxion SOXS](https://www.direxion.com/product/daily-semiconductor-bull-bear-3x-etfs)
+- [FINRA leveraged/inverse ETP guidance](https://www.finra.org/investors/insights/lowdown-leveraged-and-inverse-exchange-traded-products)
+- [KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)
+- [KODEX Inverse](https://www.samsungfund.com/etf/product/view.do?id=2ETF20)
 
 ## Reasoning value audit
 
@@ -77,6 +113,8 @@ the current direction is wrong.
 - Overseas: do not loosen entry thresholds yet. Recent gross gains were largely
   consumed by estimated round-trip costs, and blocked-signal forward returns
   did not clear that cost hurdle.
-- Correct accounting and monitoring defects before judging either policy:
-  stale exit replacements are not new realized trades, and virtual US holdings
-  retain their recorded exchange.
+- Both markets: inverse trading remains shadow-only. Current evidence justifies
+  testing a separate down-market formula, but not risking broker capital.
+- Performance now uses the broker execution ledger. Submission rows, canceled
+  orders, and replacement attempts are excluded; partial/replacement fills in
+  one execution group produce one confirmed trade.

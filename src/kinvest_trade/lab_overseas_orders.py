@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -75,6 +74,33 @@ class OverseasOrderHelper:
                 signal_snapshot,
                 "overseas",
             )
+        inverse_block_reason = service._inverse_entry_block_reason(
+            "overseas",
+            candidate.symbol,
+        )
+        if inverse_block_reason:
+            service._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason=inverse_block_reason,
+                side="buy",
+                price=candidate.last_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+            )
+            return {
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+                "reason": inverse_block_reason,
+            }
         block_reason = service._entry_strategy_block_reason(
             market="overseas",
             strategy_flag=strategy_flag,
@@ -183,6 +209,12 @@ class OverseasOrderHelper:
                     "reason": "slot_budget_insufficient",
                     "available_usd": available_usd,
                 }
+        size_multiplier = service._inverse_entry_size_multiplier(
+            "overseas",
+            candidate.symbol,
+        )
+        if 0 < size_multiplier < 1 and qty > 0:
+            qty = max(1, int(qty * size_multiplier))
         if qty <= 0:
             return {"skipped": True, "reason": "overseas_test_order_qty_zero"}
         if service.config.credentials.dry_run:
@@ -275,6 +307,7 @@ class OverseasOrderHelper:
                     reference_price=buy_price,
                 ),
             )
+        replacement_for_order_no = ""
         pending_buy_order = await service._find_open_overseas_order(
             symbol=candidate.symbol,
             side="BUY",
@@ -357,6 +390,9 @@ class OverseasOrderHelper:
                     reference_price=buy_price,
                 ),
             )
+            replacement_for_order_no = str(
+                pending_buy_order.get("order_no") or ""
+            )
         order_division = "00"
         order_kind = "limit"
         submit_price = f"{buy_price:.4f}"
@@ -426,25 +462,20 @@ class OverseasOrderHelper:
                 "reference_price": buy_price,
             }
         repository = getattr(service, "repository", None)
+        now_iso = datetime.now(timezone.utc).isoformat()
         if repository is not None:
-            commission_usd = round(
-                buy_price * qty * service._overseas_commission_rate(),
-                6,
-            )
-            commission_krw = round(commission_usd * float(candidate.fx_rate_krw or 0.0), 2)
-            now_iso = datetime.now(timezone.utc).isoformat()
             repository.save_cycle_log(
                 logged_at=now_iso,
                 market="overseas",
                 symbol=candidate.symbol,
                 exchange_code=candidate.exchange_code,
-                action_bias="BUY_REAL",
+                action_bias="BUY_SUBMITTED",
                 action_reason=buy_reason,
                 price=buy_price,
-                pnl_pct=0.0,
-                realized_pnl_usd=0.0,
-                realized_pnl_krw=0.0,
-                holding_qty=qty,
+                pnl_pct=None,
+                realized_pnl_usd=None,
+                realized_pnl_krw=None,
+                holding_qty=0,
                 rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
                 volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
                 intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
@@ -468,12 +499,12 @@ class OverseasOrderHelper:
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 consecutive_losses=service._consecutive_losses_for_market("overseas"),
-                entry_price=buy_price,
-                qty_executed=qty,
-                net_pnl_usd=0.0,
-                net_pnl_krw=0.0,
-                commission_usd=commission_usd,
-                commission_krw=commission_krw,
+                entry_price=None,
+                qty_executed=0,
+                net_pnl_usd=None,
+                net_pnl_krw=None,
+                commission_usd=None,
+                commission_krw=None,
                 is_virtual=0,
                 orderable_qty=candidate.orderable_qty,
                 stock_name=candidate.symbol,
@@ -483,6 +514,18 @@ class OverseasOrderHelper:
                 cb_active=service._cb_active_flag("overseas"),
                 pool_size=service._pool_size_for_market("overseas"),
             )
+        execution_context = {
+            "reference_price": buy_price,
+            "signal_snapshot": asdict(signal_snapshot),
+            "activity_score": candidate.activity_score,
+            "orderable_qty": candidate.orderable_qty,
+            "stock_name": candidate.symbol,
+            "fx_rate": candidate.fx_rate_krw,
+            "session_id": getattr(service, "_session_id", ""),
+            "cycle_no": getattr(service, "_cycle_count", 0),
+            "is_session_trade": 1,
+            "pool_size": service._pool_size_for_market("overseas"),
+        }
         service._record_broker_order_event(
             market="overseas",
             symbol=candidate.symbol,
@@ -500,6 +543,8 @@ class OverseasOrderHelper:
                 "order_division": order_division,
                 "reference_price": buy_price,
             },
+            execution_context=execution_context,
+            replacement_for_order_no=replacement_for_order_no,
         )
         service._queue_trade_notification(
             " ".join(
@@ -528,18 +573,17 @@ class OverseasOrderHelper:
             market="overseas",
             symbol=candidate.symbol,
             exchange_code=candidate.exchange_code,
-            action_bias="BUY_REAL",
-            signal_state="BUY",
-            note=buy_reason,
-            holding_qty=qty,
+            action_bias="BUY_SUBMITTED",
+            signal_state="BUY_PENDING",
+            note=f"{buy_reason}|submitted",
+            holding_qty=0,
             last_price=buy_price,
             pnl_pct=0.0,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             signal_snapshot=signal_snapshot,
-            has_position=True,
+            has_position=False,
         )
-        service._mark_session_owned(candidate.symbol)
         return {
             "submitted": True,
             "already_notified": True,
@@ -1170,13 +1214,49 @@ class OverseasOrderHelper:
         if virtual_closed_qty > 0:
             lines.append(f"참고=가상매수 {virtual_closed_qty}주 우선 차감")
         if held.avg_price > 0:
-            gross_pnl = (sell_price - held.avg_price) * int(
-                sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty
-            )
             pnl_pct = (sell_price - held.avg_price) / held.avg_price
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
             lines.append("수익률=알수없음")
+        entry_price, entry_time_iso, hold_duration_min = service._get_entry_context(
+            "overseas",
+            candidate.symbol,
+            fallback_price=held.avg_price,
+        )
+        auto_trade_cfg = service._get_market_policy("overseas").auto_trade
+        fx_rate = float(
+            candidate.fx_rate_krw
+            or getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
+            or 1380.0
+        )
+        replacement_for_order_no = (
+            str(pending_sell_order.get("order_no") or "")
+            if is_exit_replacement and pending_sell_order is not None
+            else ""
+        )
+        execution_context = {
+            "reference_price": sell_price,
+            "signal_snapshot": (
+                None if signal_snapshot is None else asdict(signal_snapshot)
+            ),
+            "activity_score": candidate.activity_score,
+            "orderable_qty": held.orderable_qty,
+            "stock_name": candidate.symbol,
+            "fx_rate": fx_rate,
+            "session_id": getattr(service, "_session_id", ""),
+            "cycle_no": getattr(service, "_cycle_count", 0),
+            "is_session_trade": (
+                1 if service._is_session_owned(candidate.symbol) else 0
+            ),
+            "entry_price": entry_price,
+            "entry_time": entry_time_iso,
+            "hold_duration_min": hold_duration_min,
+            "hold_cycles": service._estimate_hold_cycles(
+                candidate.symbol,
+                "overseas",
+            ),
+            "pool_size": service._pool_size_for_market("overseas"),
+        }
         service._record_broker_order_event(
             market="overseas",
             symbol=candidate.symbol,
@@ -1197,6 +1277,8 @@ class OverseasOrderHelper:
                 "order_division": order_division,
                 "reference_price": sell_price,
             },
+            execution_context=execution_context,
+            replacement_for_order_no=replacement_for_order_no,
         )
         queue_parts = [
             format_market_korean("overseas"),
@@ -1213,156 +1295,53 @@ class OverseasOrderHelper:
             queue_parts.append(f"주문={order_label}")
         service._queue_trade_notification(" ".join(queue_parts))
         await service._flush_trade_notifications(force=service._trade_notification_force_immediate())
-        entry_price, entry_time_iso, hold_duration_min = service._get_entry_context(
-            "overseas",
-            candidate.symbol,
-            fallback_price=held.avg_price,
+        service.repository.save_cycle_log(
+            logged_at=datetime.now(timezone.utc).isoformat(),
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            action_bias=(
+                "SELL_REPLACED" if is_exit_replacement else "SELL_SUBMITTED"
+            ),
+            action_reason=exit_reason,
+            price=sell_price,
+            holding_qty=held.quantity,
+            cycle_no=getattr(service, "_cycle_count", 0),
+            session_id=getattr(service, "_session_id", ""),
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            is_session_trade=0,
+            entry_price=entry_price,
+            qty_executed=0,
+            is_virtual=0,
+            orderable_qty=held.orderable_qty,
+            stock_name=candidate.symbol,
+            hold_duration_min=hold_duration_min,
+            entry_time=entry_time_iso,
+            activity_score=candidate.activity_score,
         )
-        if not is_exit_replacement:
-            service._reset_strategy_position(candidate.symbol, "overseas")
-            service._register_exit_cooldown(
-                "overseas",
-                candidate.symbol,
-                exit_reason,
-                pnl_pct=pnl_pct if held.avg_price > 0 else None,
-            )
-        if held.avg_price > 0 and not is_exit_replacement:
-            real_qty_sold = int(sell_result.get("qty_from_real", real_sell_qty) or real_sell_qty)
-            auto_trade_cfg = service._get_market_policy("overseas").auto_trade
-            fx_rate = getattr(auto_trade_cfg, "usd_krw_fallback_rate", 1380.0)
-            gross_pnl_usd = (sell_price - held.avg_price) * real_qty_sold
-            gross_pnl_krw = gross_pnl_usd * fx_rate
-            service._on_realised(
-                market="overseas",
-                gross_pnl_krw=float(gross_pnl_krw),
-                pnl_pct=float(pnl_pct),
-            )
-            if service._is_trading_halted("overseas"):
-                overseas_losses = int(
-                    getattr(service, "_consecutive_losses_by_market", {}).get(
-                        "overseas",
-                        service._consecutive_losses,
-                    )
-                )
-                _logger.warning(
-                    "[CB] 미장 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
-                    overseas_losses,
-                    service._session_realised_krw,
-                )
-                notifier = getattr(service, "notifier", None)
-                if notifier is not None and getattr(notifier, "enabled", True):
-                    asyncio.create_task(
-                        notifier.send(
-                            f"⛔ 서킷브레이커 발동\n"
-                            f"시장=미장 | 연속손절 {overseas_losses}회 | "
-                            f"세션손익 {service._session_realised_krw:+,.0f}원\n"
-                            f"미장 신규 매수만 중단합니다."
-                        )
-                    )
-            if entry_price is None:
-                entry_price = float(held.avg_price or 0.0)
-            net_pnl_usd, net_pnl_krw, sell_commission_usd, sell_commission_krw = (
-                service._estimate_overseas_net_pnl(
-                    entry_price=float(entry_price or 0.0),
-                    exit_price=sell_price,
-                    qty=real_qty_sold,
-                    fx_rate=fx_rate,
-                )
-            )
-            service.repository.save_cycle_log(
-                logged_at=datetime.now(timezone.utc).isoformat(),
-                market="overseas",
-                symbol=candidate.symbol,
-                exchange_code=candidate.exchange_code,
-                action_bias="SELL_REAL",
-                action_reason=exit_reason,
-                price=sell_price,
-                pnl_pct=pnl_pct,
-                realized_pnl_usd=gross_pnl_usd,
-                realized_pnl_krw=gross_pnl_krw,
-                holding_qty=real_qty_sold,
-                rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
-                volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
-                intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
-                intraday_bar_return=signal_snapshot.intraday_bar_return if signal_snapshot else None,
-                minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
-                minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
-                vwap=signal_snapshot.vwap if signal_snapshot else None,
-                macd_line=signal_snapshot.macd_line if signal_snapshot else None,
-                macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
-                macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
-                breakout_distance_pct=(
-                    signal_snapshot.breakout_distance_pct if signal_snapshot else None
-                ),
-                atr=signal_snapshot.atr if signal_snapshot else None,
-                spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
-                cycle_no=getattr(service, "_cycle_count", 0),
-                session_id=getattr(service, "_session_id", ""),
-                strategy_flag=strategy_flag,
-                entry_by=entry_by,
-                exit_by=exit_by,
-                is_session_trade=1 if service._is_session_owned(candidate.symbol) else 0,
-                consecutive_losses=service._consecutive_losses_for_market("overseas"),
-                hold_cycles=service._estimate_hold_cycles(candidate.symbol, "overseas"),
-                entry_price=entry_price,
-                qty_executed=real_qty_sold,
-                net_pnl_usd=net_pnl_usd,
-                net_pnl_krw=net_pnl_krw,
-                commission_usd=sell_commission_usd,
-                commission_krw=round(sell_commission_usd * fx_rate, 2),
-                is_virtual=0,
-                orderable_qty=held.orderable_qty,
-                stock_name=candidate.symbol,
-                hold_duration_min=hold_duration_min,
-                entry_time=entry_time_iso,
-                cb_active=service._cb_active_flag("overseas"),
-                pool_size=service._pool_size_for_market("overseas"),
-                activity_score=candidate.activity_score,
-            )
-        elif held.avg_price > 0:
-            service.repository.save_cycle_log(
-                logged_at=datetime.now(timezone.utc).isoformat(),
-                market="overseas",
-                symbol=candidate.symbol,
-                exchange_code=candidate.exchange_code,
-                action_bias="SELL_REPLACED",
-                action_reason=exit_reason,
-                price=sell_price,
-                holding_qty=real_sell_qty,
-                cycle_no=getattr(service, "_cycle_count", 0),
-                session_id=getattr(service, "_session_id", ""),
-                strategy_flag=strategy_flag,
-                entry_by=entry_by,
-                exit_by=exit_by,
-                is_session_trade=0,
-                entry_price=entry_price,
-                qty_executed=real_sell_qty,
-                is_virtual=0,
-                orderable_qty=held.orderable_qty,
-                stock_name=candidate.symbol,
-                hold_duration_min=hold_duration_min,
-                entry_time=entry_time_iso,
-                activity_score=candidate.activity_score,
-            )
         service._persist_trade_state(
             market="overseas",
             symbol=candidate.symbol,
             exchange_code=candidate.exchange_code,
-            action_bias="SELL_REPLACED" if is_exit_replacement else "SELL_REAL",
-            signal_state="SELL_READY",
+            action_bias=(
+                "SELL_REPLACED" if is_exit_replacement else "SELL_SUBMITTED"
+            ),
+            signal_state="SELL_PENDING",
             note=(
                 f"stale_exit_replace:{exit_reason}"
                 if is_exit_replacement
                 else exit_reason
             ),
-            holding_qty=0,
+            holding_qty=held.quantity,
             last_price=sell_price,
             pnl_pct=pnl_pct if held.avg_price > 0 else None,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             exit_by=exit_by,
             signal_snapshot=signal_snapshot,
-            has_position=False,
+            has_position=True,
         )
 
         return {

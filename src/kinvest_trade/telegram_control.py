@@ -87,7 +87,7 @@ MENU_CATEGORIES: list[tuple[str, str, list[tuple[str, str]]]] = [
         "📜 로그 및 성과",
         [
             ("/lab_log", "최근 매매 내역 조회"),
-            ("/lab_performance [시간]", "최근 실주문접수 전략 성과"),
+            ("/lab_performance [시간]", "최근 KIS 체결확정 전략 성과"),
             ("/lab_report compare <YYYY-MM-DD>", "기준일 전후 전략 성과 비교"),
             ("/lab_report wait [시간]", "최근 WAIT 병목 요약"),
             ("/lab_orders", "최근 주문 접수/취소 기록"),
@@ -145,7 +145,7 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_status", "description": "현재 상태 조회"},
     {"command": "lab_watchlist", "description": "감시 종목 요약"},
     {"command": "lab_log", "description": "최근 매매 내역"},
-    {"command": "lab_performance", "description": "최근 실주문접수 전략 성과"},
+    {"command": "lab_performance", "description": "최근 KIS 체결확정 전략 성과"},
     {"command": "lab_report", "description": "기준일 전후 전략 성과 비교"},
     {"command": "lab_guard", "description": "전략 차단 상태"},
     {"command": "lab_orders", "description": "최근 주문 접수/취소 기록"},
@@ -2297,21 +2297,21 @@ class TelegramLiquidityLabController:
         total_pnl_usd = sum(float(item.get("total_pnl_usd") or 0.0) for item in real.values())
         if total_real_trades > 0:
             win_rate = (total_real_wins / total_real_trades) * 100.0
-            lines.append("─── 실주문접수 기준 ───")
+            lines.append("─── KIS 체결확정 기준 ───")
             lines.append(f"거래={total_real_trades}건 (승률 {win_rate:.0f}%)")
             if abs(total_pnl_usd) > 1e-9:
                 usd_sign = "+" if total_pnl_usd >= 0 else ""
                 lines.append(f"해외손익={usd_sign}${total_pnl_usd:,.2f}")
             krw_sign = "+" if total_pnl_krw >= 0 else ""
             lines.append(f"환산손익={krw_sign}{int(round(total_pnl_krw)):,}원")
-            lines.append("주의=체결확정은 MTS/잔고 기준 확인")
+            lines.append("검증=주문번호별 체결원장")
             for market, stats in sorted(real.items()):
                 trade_count = int(stats.get("trade_count", 0) or 0)
                 win_count = int(stats.get("win_count", 0) or 0)
                 market_win_rate = (win_count / trade_count * 100.0) if trade_count else 0.0
                 lines.append(f"{market}: {trade_count}건 승률{market_win_rate:.0f}%")
         else:
-            lines.append("실주문접수 내역 없음")
+            lines.append("실체결 내역 없음")
 
         if include_virtual:
             virtual = summary.get("virtual", {})

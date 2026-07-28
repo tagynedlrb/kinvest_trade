@@ -26,9 +26,15 @@ def _reset_client_rate_limit_state():
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload: dict) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        payload: dict,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self) -> dict:
         return self._payload
@@ -474,6 +480,115 @@ def test_get_domestic_order_history_uses_modern_daily_ccld_endpoint(tmp_path: Pa
     assert history["tr_id"] == "VTTC0081R"
     assert history["orders"] == [{"pdno": "073240", "rmn_qty": "126"}]
     assert history["summary"] == {"tot_ord_qty": "126"}
+
+
+def test_get_overseas_order_history_follows_kis_continuation_pages(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    calls: list[dict] = []
+    pages = iter(
+        [
+            {
+                "output": [{"odno": "100", "pdno": "PDI"}],
+                "ctx_area_fk200": " ",
+                "ctx_area_nk200": "NEXT",
+                "_response_headers": {"tr_cont": "F"},
+            },
+            {
+                "output": [{"odno": "101", "pdno": "PDI"}],
+                "ctx_area_fk200": "",
+                "ctx_area_nk200": "",
+                "_response_headers": {"tr_cont": "D"},
+            },
+        ]
+    )
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        calls.append(kwargs)
+        return next(pages)
+
+    client._request = fake_request  # type: ignore[method-assign]
+    history = asyncio.run(
+        client.get_overseas_order_history(
+            start_date="20260727",
+            end_date="20260728",
+        )
+    )
+
+    assert [row["odno"] for row in history["orders"]] == ["100", "101"]
+    assert history["page_count"] == 2
+    assert calls[0]["params"]["CTX_AREA_NK200"] == ""
+    assert calls[1]["params"]["CTX_AREA_NK200"] == "NEXT"
+    assert calls[1]["extra_headers"] == {"tr_cont": "N"}
+
+
+def test_get_domestic_order_history_follows_kis_continuation_pages(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    calls: list[dict] = []
+    pages = iter(
+        [
+            {
+                "output1": [{"odno": "200", "pdno": "005930"}],
+                "output2": {"tot_ord_qty": "2"},
+                "ctx_area_fk100": " ",
+                "ctx_area_nk100": "NEXT",
+                "_response_headers": {"tr_cont": "M"},
+            },
+            {
+                "output1": [{"odno": "201", "pdno": "005930"}],
+                "output2": {"tot_ord_qty": "2"},
+                "ctx_area_fk100": "",
+                "ctx_area_nk100": "",
+                "_response_headers": {"tr_cont": "D"},
+            },
+        ]
+    )
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        calls.append(kwargs)
+        return next(pages)
+
+    client._request = fake_request  # type: ignore[method-assign]
+    history = asyncio.run(
+        client.get_domestic_order_history(
+            start_date="20260728",
+            end_date="20260728",
+        )
+    )
+
+    assert [row["odno"] for row in history["orders"]] == ["200", "201"]
+    assert history["page_count"] == 2
+    assert calls[1]["params"]["CTX_AREA_NK100"] == "NEXT"
+    assert calls[1]["extra_headers"] == {"tr_cont": "N"}
 
 
 def test_revise_or_cancel_domestic_order_uses_full_cancel_body(tmp_path: Path) -> None:

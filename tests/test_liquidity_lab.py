@@ -2,7 +2,7 @@ import asyncio
 import json
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +25,7 @@ from kinvest_trade.liquidity_lab import (
     WatchTargetStatus,
 )
 from kinvest_trade.client import KisApiError
+from kinvest_trade.execution_reconciler import BrokerExecutionReconciler
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.technical_signals import MovingAverageSnapshot
 
@@ -1227,7 +1228,10 @@ class DummySellClient:
             "order_division": order_division,
         }
         self.order_calls.append(payload)
-        return payload
+        return {
+            **payload,
+            "output": {"ODNO": f"{9000 + len(self.order_calls):010d}"},
+        }
 
     async def place_cash_order(
         self,
@@ -1248,7 +1252,10 @@ class DummySellClient:
             "order_division": order_division,
         }
         self.order_calls.append(payload)
-        return payload
+        return {
+            **payload,
+            "output": {"ODNO": f"{9100 + len(self.order_calls):010d}"},
+        }
 
     async def get_overseas_order_history(self, **kwargs):
         del kwargs
@@ -1396,7 +1403,7 @@ def test_place_overseas_protective_sell_uses_market_order_in_prod() -> None:
     assert broker_rows[0]["payload_json"]["reference_price"] == 281.9
 
 
-def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
+def test_place_overseas_sell_order_records_realized_pnl_only_after_fill() -> None:
     service = _build_sell_service()
     candidate = OverseasScanResult(
         symbol="TSLA",
@@ -1422,6 +1429,36 @@ def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
     )
 
     _run_orderable_overseas_sell(service, candidate, held, "atr_hard_stop")
+    assert service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5) == []
+    assert len(
+        service.repository.query_cycle_log(
+            action_bias="SELL_SUBMITTED",
+            limit=5,
+        )
+    ) == 1
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "orgn_odno": "0",
+            "pdno": "TSLA",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "2",
+            "ft_ccld_unpr3": "281.9",
+            "ft_ccld_amt3": "563.8",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230000",
+        }
+    ]
+
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
     rows = service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5)
 
     assert len(rows) == 1
@@ -1430,6 +1467,279 @@ def test_place_overseas_sell_order_saves_realized_pnl_cycle_log() -> None:
     assert rows[0]["exit_by"] == "atr_hard_stop"
     assert abs(rows[0]["realized_pnl_usd"] - 3.8) < 1e-9
     assert abs(rows[0]["realized_pnl_krw"] - 5244.0) < 1e-6
+
+
+def test_confirmed_loss_fires_circuit_breaker_once_and_updates_trade_row() -> None:
+    service = _build_sell_service()
+    service.config.risk = SimpleNamespace(
+        daily_loss_limit_pct=0.5,
+        max_consecutive_losses=1,
+        circuit_breaker_cooldown_minutes=30,
+        operating_capital_krw=50_000_000,
+    )
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=278.0,
+        bid=278.0,
+        ask=278.1,
+        spread_pct=0.0004,
+        change_rate_pct=-1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=278.0,
+        pnl_pct=(278.0 - 280.0) / 280.0,
+    )
+    _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "orgn_odno": "0",
+            "pdno": "TSLA",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "2",
+            "ft_ccld_unpr3": "278",
+            "ft_ccld_amt3": "556",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230000",
+        }
+    ]
+
+    for _ in range(2):
+        asyncio.run(
+            service._reconcile_broker_executions(
+                datetime.now(timezone.utc),
+                force=True,
+            )
+        )
+
+    row = service.repository.query_cycle_log(
+        action_bias="SELL_REAL",
+        limit=1,
+    )[0]
+    cb_messages = [
+        message
+        for message in service.notifier.messages
+        if "서킷브레이커 발동" in message
+    ]
+    assert row["consecutive_losses"] == 1
+    assert row["cb_active"] == 1
+    assert len(cb_messages) == 1
+    assert "시장=해외" in cb_messages[0]
+    assert (
+        f"세션손익 {float(row['net_pnl_krw']):+,.0f}원"
+        in cb_messages[0]
+    )
+
+
+def test_confirmed_gross_gain_below_cost_counts_as_circuit_breaker_loss() -> None:
+    service = _build_sell_service()
+    service.config.risk = SimpleNamespace(
+        daily_loss_limit_pct=0.5,
+        max_consecutive_losses=1,
+        circuit_breaker_cooldown_minutes=30,
+        operating_capital_krw=50_000_000,
+    )
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=280.5,
+        bid=280.5,
+        ask=280.6,
+        spread_pct=0.0004,
+        change_rate_pct=0.2,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=280.5,
+        pnl_pct=(280.5 - 280.0) / 280.0,
+    )
+    _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "orgn_odno": "0",
+            "pdno": "TSLA",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "2",
+            "ft_ccld_unpr3": "280.5",
+            "ft_ccld_amt3": "561",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230000",
+        }
+    ]
+
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
+
+    row = service.repository.query_cycle_log(
+        action_bias="SELL_REAL",
+        limit=1,
+    )[0]
+    assert row["realized_pnl_krw"] > 0
+    assert row["net_pnl_krw"] < 0
+    assert row["consecutive_losses"] == 1
+    assert row["cb_active"] == 1
+
+
+def test_overseas_partial_fill_and_replacement_finalize_once_as_one_trade() -> None:
+    service = _build_sell_service()
+    candidate = OverseasScanResult(
+        symbol="PDI",
+        exchange_code="NASD",
+        last_price=281.9,
+        bid=281.9,
+        ask=282.0,
+        spread_pct=0.0004,
+        change_rate_pct=-1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1380.0,
+        activity_score=10.0,
+    )
+    original_held = OverseasHeldPosition(
+        symbol="PDI",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=280.0,
+        current_price=281.9,
+        pnl_pct=(281.9 - 280.0) / 280.0,
+    )
+
+    _run_orderable_overseas_sell(
+        service,
+        candidate,
+        original_held,
+        "trend_filter_lost",
+    )
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "pdno": "PDI",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "1",
+            "ft_ccld_unpr3": "281.9",
+            "ft_ccld_amt3": "281.9",
+            "nccs_qty": "1",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20000101",
+            "thco_ord_tmd": "000000",
+        }
+    ]
+    replacement_held = replace(
+        original_held,
+        quantity=1,
+        orderable_qty=1,
+        current_price=281.0,
+    )
+    replacement_candidate = replace(
+        candidate,
+        last_price=281.0,
+        bid=281.0,
+        ask=281.1,
+    )
+    _run_orderable_overseas_sell(
+        service,
+        replacement_candidate,
+        replacement_held,
+        "trend_filter_lost",
+    )
+
+    executions = service.repository.list_unfinalized_broker_executions()
+    assert len(executions) == 2
+    assert len({row["execution_group_id"] for row in executions}) == 1
+    service.client.pending_orders = [
+        {
+            "odno": "9001",
+            "orgn_odno": "0",
+            "pdno": "PDI",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "1",
+            "ft_ccld_unpr3": "281.9",
+            "ft_ccld_amt3": "281.9",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230000",
+        },
+        {
+            "odno": "9999",
+            "orgn_odno": "9001",
+            "pdno": "PDI",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "1",
+            "ft_ccld_qty": "0",
+            "ft_ccld_unpr3": "0",
+            "ft_ccld_amt3": "0",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "02",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230100",
+        },
+        {
+            "odno": "9002",
+            "orgn_odno": "0",
+            "pdno": "PDI",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "1",
+            "ft_ccld_qty": "1",
+            "ft_ccld_unpr3": "281.0",
+            "ft_ccld_amt3": "281.0",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230101",
+        },
+    ]
+
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
+
+    rows = service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5)
+    assert len(rows) == 1
+    assert rows[0]["qty_executed"] == 2
+    assert abs(rows[0]["price"] - 281.45) < 1e-9
+    assert service.repository.list_unfinalized_broker_executions() == []
 
 
 def test_real_sell_clears_virtual_sell_pending() -> None:
@@ -2493,7 +2803,10 @@ class DummyDomesticSellClient:
             "order_division": order_division,
         }
         self.order_calls.append(payload)
-        return payload
+        return {
+            **payload,
+            "output": {"ODNO": f"{9200 + len(self.order_calls):010d}"},
+        }
 
     async def get_domestic_order_history(self, **kwargs):
         del kwargs
@@ -2835,7 +3148,7 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     assert service.client.order_calls[0]["order_division"] == "01"
 
 
-def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
+def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> None:
     service = _build_domestic_sell_service()
     candidate = DomesticScanResult(
         stock_code="005930",
@@ -2858,6 +3171,37 @@ def test_place_domestic_sell_order_saves_realized_pnl_cycle_log() -> None:
     )
 
     asyncio.run(service._place_domestic_sell_order(candidate, held, "stop_loss"))
+    assert service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5) == []
+    assert len(
+        service.repository.query_cycle_log(
+            action_bias="SELL_SUBMITTED",
+            limit=5,
+        )
+    ) == 1
+    service.client.pending_orders = [
+        {
+            "odno": "9201",
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "01",
+            "ord_qty": "2",
+            "tot_ccld_qty": "2",
+            "tot_ccld_amt": "163900",
+            "avg_prvs": "81950",
+            "rmn_qty": "0",
+            "cncl_cfrm_qty": "0",
+            "rjct_qty": "0",
+            "cncl_yn": "N",
+            "ord_dt": "20260728",
+            "ord_tmd": "103000",
+        }
+    ]
+
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
     rows = service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5)
 
     assert len(rows) == 1
@@ -3386,7 +3730,7 @@ def test_domestic_buy_uses_slot_sizing_when_balance_is_available() -> None:
     assert result["qty"] == 3
 
 
-def test_domestic_buy_saves_buy_real_cycle_log() -> None:
+def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
     class DummyDomesticSlotClient(DummyDomesticSellClient):
         async def get_balance(self):
             return {"summary": {"ord_psbl_cash": "2500000"}}
@@ -3418,6 +3762,30 @@ def test_domestic_buy_saves_buy_real_cycle_log() -> None:
     )
 
     result = asyncio.run(service._place_domestic_test_order(candidate))
+    assert service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5) == []
+    service.client.pending_orders = [
+        {
+            "odno": "9201",
+            "pdno": "005930",
+            "sll_buy_dvsn_cd": "02",
+            "ord_qty": "3",
+            "tot_ccld_qty": "3",
+            "tot_ccld_amt": "239850",
+            "avg_prvs": "79950",
+            "rmn_qty": "0",
+            "cncl_cfrm_qty": "0",
+            "rjct_qty": "0",
+            "cncl_yn": "N",
+            "ord_dt": "20260728",
+            "ord_tmd": "100000",
+        }
+    ]
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
     rows = service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5)
     broker_rows = service.repository.list_broker_order_events(limit=5)
 
@@ -3435,6 +3803,33 @@ def test_domestic_buy_saves_buy_real_cycle_log() -> None:
     assert broker_rows[0]["requested_price"] == 80000.0
     assert broker_rows[0]["payload_json"]["order_division"] == "00"
     assert broker_rows[0]["payload_json"]["reference_price"] == 80000.0
+
+
+def test_domestic_execution_treats_confirmed_cancel_qty_as_terminal() -> None:
+    repository = _build_repository()
+    reconciler = BrokerExecutionReconciler(
+        SimpleNamespace(repository=repository)
+    )
+
+    snapshot = reconciler._execution_snapshot(
+        "domestic",
+        {"requested_qty": 66},
+        {
+            "ord_qty": "66",
+            "tot_ccld_qty": "0",
+            "tot_ccld_amt": "0",
+            "avg_prvs": "0",
+            "rmn_qty": "0",
+            "cncl_cfrm_qty": "66",
+            "rjct_qty": "0",
+            "cncl_yn": "N",
+        },
+        canceled=False,
+    )
+
+    assert snapshot["status"] == "CANCELED"
+    assert snapshot["canceled_qty"] == 66
+    assert snapshot["remaining_qty"] == 0
 
 
 def test_domestic_buy_submits_integer_price_not_float() -> None:
@@ -3691,6 +4086,181 @@ def _build_run_service() -> LiquidityLabService:
     service._last_low_trade_frequency_alert_cycle = 0
     service._last_trend_filter_alert_cycle = 0
     return service
+
+
+def _save_test_regime(
+    service: LiquidityLabService,
+    *,
+    market: str,
+    session_date: str,
+    return_pct: float,
+    trend_regime: str,
+) -> None:
+    service.repository.upsert_market_regime(
+        {
+            "market": market,
+            "session_date": session_date,
+            "benchmark_code": "0001" if market == "domestic" else "COMP",
+            "benchmark_name": "KOSPI" if market == "domestic" else "NASDAQ Composite",
+            "source": "test",
+            "captured_at": f"{session_date}T05:00:00+00:00",
+            "is_final": 0,
+            "return_pct": return_pct,
+            "trend_regime": trend_regime,
+            "activity_regime": "active",
+            "volatility_regime": "high",
+            "regime_key": f"{trend_regime}|active|high",
+            "sample_days": 20,
+            "raw_json": {},
+        }
+    )
+
+
+def test_inverse_candidates_are_market_scoped_and_shadow_orders_are_blocked() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+
+    assert service._active_inverse_symbols("domestic", now=now) == [
+        "114800",
+        "252670",
+    ]
+    assert service._is_inverse_symbol("domestic", "SQQQ") is False
+    assert service._is_inverse_symbol("overseas", "252670") is False
+    assert (
+        service._inverse_entry_block_reason("domestic", "252670", now=now)
+        == "inverse_shadow_mode"
+    )
+
+
+def test_inverse_candidates_reject_stale_benchmark_regime() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date="2026-07-27",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+
+    assert service._active_inverse_symbols("domestic", now=now) == []
+    assert (
+        service._inverse_regime_decision("domestic", "252670", now=now).reason
+        == "inverse_benchmark_regime_stale"
+    )
+
+
+def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+    snapshot = _snapshot(
+        price=100.0,
+        spread_pct=0.002,
+        minute_ma_fast=100.2,
+        minute_ma_slow=99.8,
+        intraday_momentum=0.003,
+        intraday_bar_return=0.002,
+        volume_ratio=2.0,
+    )
+
+    assert service._record_inverse_shadow_entry(
+        market="domestic",
+        symbol="252670",
+        exchange_code="KRX",
+        price=100.0,
+        signal_snapshot=snapshot,
+        strategy_flag="VOL",
+        entry_by="VOL",
+        entry_reason="volume_momentum_fast_entry",
+        now=now,
+    )
+    assert not service._record_inverse_shadow_entry(
+        market="domestic",
+        symbol="252670",
+        exchange_code="KRX",
+        price=100.0,
+        signal_snapshot=snapshot,
+        strategy_flag="VOL",
+        entry_by="VOL",
+        entry_reason="volume_momentum_fast_entry",
+        now=now,
+    )
+    open_trade = service.repository.get_open_inverse_shadow_trade(
+        "domestic",
+        "252670",
+    )
+    assert abs(open_trade["entry_price"] - 100.1) < 1e-9
+
+    exit_reason = service._update_inverse_shadow_trade(
+        market="domestic",
+        symbol="252670",
+        price=103.0,
+        signal_snapshot=None,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert exit_reason == "inverse_take_profit"
+    assert (
+        service.repository.get_open_inverse_shadow_trade(
+            "domestic",
+            "252670",
+        )
+        is None
+    )
+    performance = service.repository.get_inverse_shadow_performance()
+    assert performance[0]["closed_count"] == 1
+    assert performance[0]["win_count"] == 1
+    assert performance[0]["avg_net_pnl_pct"] > 0.025
+
+
+def test_market_regime_collector_rebinds_to_each_cycle_client() -> None:
+    class DummyCollector:
+        def __init__(self) -> None:
+            self.client = object()
+            self.repository = object()
+            self.calls = []
+
+        async def refresh_if_due(self, now):
+            self.calls.append(now)
+
+    service = _build_run_service()
+    current_client = object()
+    collector = DummyCollector()
+    service.client = current_client
+    service.market_regime_collector = collector
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+
+    asyncio.run(service._refresh_market_regimes(now))
+
+    assert collector.client is current_client
+    assert collector.repository is service.repository
+    assert collector.calls == [now]
 
 
 def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
@@ -6992,8 +7562,11 @@ def test_get_overseas_available_usd_caps_large_theoretical_amount_by_orderable_q
     assert abs(service._last_overseas_available_usd - expected) < 0.000001
 
 
-def test_overseas_buy_saves_buy_real_cycle_log() -> None:
+def test_overseas_buy_saves_buy_real_only_after_fill() -> None:
     class DummyOverseasSlotClient:
+        def __init__(self) -> None:
+            self.history_rows: list[dict] = []
+
         async def get_overseas_possible_order(self, *, symbol: str, exchange_code: str, price: str):
             return {
                 "cash_available": "1000",
@@ -7019,7 +7592,12 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
                 "qty": qty,
                 "price": price,
                 "order_division": order_division,
+                "output": {"ODNO": "0000009301"},
             }
+
+        async def get_overseas_order_history(self, **kwargs):
+            del kwargs
+            return {"orders": list(self.history_rows)}
 
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = SimpleNamespace(
@@ -7062,6 +7640,29 @@ def test_overseas_buy_saves_buy_real_cycle_log() -> None:
     )
 
     result = asyncio.run(service._place_overseas_test_order(candidate))
+    assert service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5) == []
+    service.client.history_rows = [
+        {
+            "odno": "9301",
+            "orgn_odno": "0",
+            "pdno": "SOXL",
+            "sll_buy_dvsn_cd": "02",
+            "ft_ord_qty": "3",
+            "ft_ccld_qty": "3",
+            "ft_ccld_unpr3": "25.0",
+            "ft_ccld_amt3": "75.0",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260728",
+            "thco_ord_tmd": "230000",
+        }
+    ]
+    asyncio.run(
+        service._reconcile_broker_executions(
+            datetime.now(timezone.utc),
+            force=True,
+        )
+    )
     rows = service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5)
     broker_rows = service.repository.list_broker_order_events(limit=5)
 

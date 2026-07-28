@@ -60,8 +60,8 @@ def test_consecutive_loss_breakers_are_independent_by_market() -> None:
     )
 
     for _ in range(2):
-        manager.on_realised(market="domestic", gross_pnl_krw=-1_000, pnl_pct=-0.01)
-        manager.on_realised(market="overseas", gross_pnl_krw=-1_000, pnl_pct=-0.01)
+        manager.on_realised(market="domestic", realized_pnl_krw=-1_000, pnl_pct=-0.01)
+        manager.on_realised(market="overseas", realized_pnl_krw=-1_000, pnl_pct=-0.01)
 
     assert manager.is_halted("domestic") is True
     assert manager.is_halted("overseas") is False
@@ -72,7 +72,7 @@ def test_consecutive_loss_breakers_are_independent_by_market() -> None:
     assert events[-1][1]["market"] == "domestic"
 
     for _ in range(2):
-        manager.on_realised(market="overseas", gross_pnl_krw=-1_000, pnl_pct=-0.01)
+        manager.on_realised(market="overseas", realized_pnl_krw=-1_000, pnl_pct=-0.01)
 
     assert manager.is_halted("overseas") is True
     assert events[-1][1]["market"] == "overseas"

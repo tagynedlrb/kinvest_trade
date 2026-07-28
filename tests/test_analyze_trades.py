@@ -290,7 +290,7 @@ def test_market_regime_performance_requires_multiple_days_before_policy_evaluati
     assert "[최근 시장 환경]" in output
     assert "KOSPI=98.00" in output
     assert "레짐=급락/매우활발/극단변동" in output
-    assert "[시장 레짐별 실주문접수 손익]" in output
+    assert "[시장 레짐별 KIS 체결확정 손익]" in output
     assert "5건/3일" in output
     assert "Net=+1.000%" in output
     assert "평가가능" in output

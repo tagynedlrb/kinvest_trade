@@ -30,6 +30,7 @@ def evaluate_entry_setup(
     symbol: str = "",
     inverse_etf_symbols: list[str] | None = None,
     leveraged_etf_symbols: list[str] | None = None,
+    inverse_regime_eligible: bool | None = None,
 ) -> EntrySetup:
     if snapshot.spread_pct > config.max_spread_pct:
         return EntrySetup(False, "spread_too_wide", "SKIP", "spread")
@@ -41,6 +42,54 @@ def evaluate_entry_setup(
     is_inverse = symbol_upper in {value.upper() for value in inverse_symbols}
     is_leveraged = symbol_upper in {value.upper() for value in leveraged_symbols}
     effective_rsi_max = config.max_entry_rsi14
+    if is_inverse:
+        if inverse_regime_eligible is not True:
+            return EntrySetup(
+                False,
+                "inverse_benchmark_regime_unconfirmed",
+                "WAIT",
+                _note(snapshot),
+            )
+        if (
+            bool(getattr(config, "inverse_require_product_intraday_up", True))
+            and not (
+                snapshot.intraday_trend_up
+                and (
+                    snapshot.intraday_momentum > 0
+                    or snapshot.intraday_bar_return > 0
+                )
+            )
+        ):
+            return EntrySetup(
+                False,
+                "inverse_product_intraday_not_up",
+                "WAIT",
+                _note(snapshot),
+            )
+        configured_min_volume = getattr(
+            config,
+            "inverse_min_product_volume_ratio",
+            1.2,
+        )
+        inverse_min_volume = max(
+            0.0,
+            1.2 if configured_min_volume is None else float(configured_min_volume),
+        )
+        if snapshot.volume_ratio < inverse_min_volume:
+            return EntrySetup(
+                False,
+                "inverse_product_volume_low",
+                "WAIT",
+                _note(snapshot),
+            )
+    if is_leveraged and not snapshot.daily_trend_up:
+        return EntrySetup(
+            False,
+            "leveraged_product_trend_down",
+            "WAIT",
+            _note(snapshot),
+        )
+
     if is_inverse or is_leveraged:
         effective_rsi_max = min(config.max_entry_rsi14 + 15.0, 90.0)
     if snapshot.rsi14 is not None and snapshot.rsi14 > effective_rsi_max:
@@ -324,6 +373,7 @@ def derive_watch_state(
     symbol: str = "",
     inverse_etf_symbols: list[str] | None = None,
     leveraged_etf_symbols: list[str] | None = None,
+    inverse_regime_eligible: bool | None = None,
 ) -> tuple[str, str]:
     entry = evaluate_entry_setup(
         config,
@@ -331,6 +381,7 @@ def derive_watch_state(
         symbol=symbol,
         inverse_etf_symbols=inverse_etf_symbols,
         leveraged_etf_symbols=leveraged_etf_symbols,
+        inverse_regime_eligible=inverse_regime_eligible,
     )
     return entry.state, entry.reason
 

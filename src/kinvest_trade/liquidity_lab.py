@@ -13,8 +13,11 @@ import httpx
 
 from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
+from .execution_reconciler import BrokerExecutionReconciler
+from .inverse_policy import InverseRegimeDecision, evaluate_inverse_regime
 from .market_sessions import (
     KST,
+    NEW_YORK,
     get_us_trading_session,
     is_krx_regular_session,
     is_us_orderable_session_for_env,
@@ -317,6 +320,10 @@ class LiquidityLabService:
             self.client,
             self.repository,
         )
+        self.execution_reconciler = BrokerExecutionReconciler(self)
+        self._last_execution_reconcile_at: datetime | None = None
+        self._execution_reconcile_interval_sec = 20
+        self._inverse_regime_notice_keys: set[tuple[str, str, str]] = set()
 
     def _get_circuit_breaker(self) -> CircuitBreakerManager:
         cb = getattr(self, "cb", None)
@@ -380,14 +387,14 @@ class LiquidityLabService:
         self,
         *,
         market: str,
-        gross_pnl_krw: float,
-        pnl_pct: float,
+        net_pnl_krw: float,
+        net_pnl_pct: float,
     ) -> None:
         cb = self._get_circuit_breaker()
         cb.on_realised(
             market=market,
-            gross_pnl_krw=gross_pnl_krw,
-            pnl_pct=pnl_pct,
+            realized_pnl_krw=net_pnl_krw,
+            pnl_pct=net_pnl_pct,
         )
         self._sync_circuit_breaker_legacy_state(cb)
 
@@ -571,12 +578,18 @@ class LiquidityLabService:
         policy = self._get_market_policy(market)
         if policy.auto_trade is None:
             raise RuntimeError(f"{market} market policy requires auto_trade configuration")
+        inverse_decision = self._inverse_regime_decision(market, code)
         return evaluate_entry_setup(
             policy.auto_trade,
             signal_snapshot,
             symbol=code,
             inverse_etf_symbols=policy.auto_trade.inverse_etf_symbols,
             leveraged_etf_symbols=policy.auto_trade.leveraged_etf_symbols,
+            inverse_regime_eligible=(
+                inverse_decision.eligible
+                if inverse_decision is not None
+                else None
+            ),
         )
 
     def _derive_watch_state(
@@ -588,13 +601,356 @@ class LiquidityLabService:
         policy = self._get_market_policy(market)
         if policy.auto_trade is None:
             raise RuntimeError(f"{market} market policy requires auto_trade configuration")
+        inverse_decision = self._inverse_regime_decision(market, code)
         return derive_watch_state(
             policy.auto_trade,
             signal_snapshot,
             symbol=code,
             inverse_etf_symbols=policy.auto_trade.inverse_etf_symbols,
             leveraged_etf_symbols=policy.auto_trade.leveraged_etf_symbols,
+            inverse_regime_eligible=(
+                inverse_decision.eligible
+                if inverse_decision is not None
+                else None
+            ),
         )
+
+    def _is_inverse_symbol(self, market: str, symbol: str) -> bool:
+        policy = self._get_market_policy(market)
+        if policy.auto_trade is None:
+            return False
+        inverse_symbols = {
+            str(value).strip().upper()
+            for value in policy.auto_trade.inverse_etf_symbols
+            if str(value).strip()
+        }
+        return str(symbol).strip().upper() in inverse_symbols
+
+    @staticmethod
+    def _market_session_date(market: str, now: datetime | None = None) -> str:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        timezone_for_market = KST if normalize_market_name(market) == "domestic" else NEW_YORK
+        return current.astimezone(timezone_for_market).date().isoformat()
+
+    def _inverse_regime_decision(
+        self,
+        market: str,
+        symbol: str = "",
+        *,
+        now: datetime | None = None,
+    ) -> InverseRegimeDecision | None:
+        market_key = normalize_market_name(market)
+        if symbol and not self._is_inverse_symbol(market_key, symbol):
+            return None
+        policy = self._get_market_policy(market_key)
+        if policy.auto_trade is None:
+            return None
+        repository = getattr(self, "repository", None)
+        regime = (
+            repository.get_market_regime(market_key)
+            if repository is not None
+            else None
+        )
+        return evaluate_inverse_regime(
+            policy.auto_trade,
+            regime,
+            expected_session_date=self._market_session_date(market_key, now),
+        )
+
+    def _inverse_entry_block_reason(
+        self,
+        market: str,
+        symbol: str,
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        decision = self._inverse_regime_decision(market, symbol, now=now)
+        if decision is None:
+            return ""
+        if not decision.eligible:
+            return decision.reason
+        if decision.execution_mode != "live":
+            return "inverse_shadow_mode"
+        return ""
+
+    def _inverse_entry_size_multiplier(
+        self,
+        market: str,
+        symbol: str,
+    ) -> float:
+        if not self._is_inverse_symbol(market, symbol):
+            return 1.0
+        policy = self._get_market_policy(market)
+        configured_multiplier = getattr(
+            policy.auto_trade,
+            "inverse_slot_multiplier",
+            0.25,
+        )
+        return min(
+            1.0,
+            max(
+                0.0,
+                0.25
+                if configured_multiplier is None
+                else float(configured_multiplier),
+            ),
+        )
+
+    def _record_inverse_shadow_entry(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        price: float,
+        signal_snapshot: MovingAverageSnapshot,
+        strategy_flag: str,
+        entry_by: str,
+        entry_reason: str,
+        now: datetime | None = None,
+    ) -> bool:
+        market_key = normalize_market_name(market)
+        decision = self._inverse_regime_decision(
+            market_key,
+            symbol,
+            now=now,
+        )
+        if (
+            decision is None
+            or not decision.eligible
+            or decision.execution_mode != "shadow"
+            or price <= 0
+        ):
+            return False
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        policy = self._get_market_policy(market_key)
+        spread_pct = max(0.0, float(signal_snapshot.spread_pct or 0.0))
+        entry_price = float(price) * (1.0 + min(spread_pct, 0.05) / 2.0)
+        commission_rate = (
+            self._domestic_commission_rate()
+            if market_key == "domestic"
+            else self._overseas_commission_rate()
+        )
+        inserted = self.repository.open_inverse_shadow_trade(
+            opened_at=current.astimezone(timezone.utc).isoformat(),
+            market=market_key,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            entry_session_date=decision.session_date,
+            policy_id=policy.policy_id,
+            entry_price=entry_price,
+            entry_spread_pct=spread_pct,
+            commission_rate=commission_rate,
+            benchmark_name=decision.benchmark_name,
+            benchmark_return_pct=decision.benchmark_return_pct,
+            benchmark_regime_key=decision.regime_key,
+            entry_reason=entry_reason,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            context={
+                "signal_snapshot": asdict(signal_snapshot),
+                "reference_price": float(price),
+                "execution_mode": "shadow",
+            },
+        )
+        if inserted:
+            self._save_event(
+                event_type="inverse_shadow_opened",
+                market=market_key,
+                symbol=symbol,
+                detail={
+                    "policy_id": policy.policy_id,
+                    "entry_price": round(entry_price, 8),
+                    "benchmark": decision.benchmark_name,
+                    "benchmark_return_pct": decision.benchmark_return_pct,
+                    "entry_reason": entry_reason,
+                },
+            )
+        return inserted
+
+    def _update_inverse_shadow_trade(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        price: float,
+        signal_snapshot: MovingAverageSnapshot | None,
+        now: datetime | None = None,
+    ) -> str:
+        market_key = normalize_market_name(market)
+        if not self._is_inverse_symbol(market_key, symbol) or price <= 0:
+            return ""
+        trade = self.repository.get_open_inverse_shadow_trade(
+            market_key,
+            symbol,
+        )
+        if trade is None:
+            return ""
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        policy = self._get_market_policy(market_key).auto_trade
+        spread_pct = (
+            max(0.0, float(signal_snapshot.spread_pct or 0.0))
+            if signal_snapshot is not None
+            else max(0.0, float(trade.get("entry_spread_pct") or 0.0))
+        )
+        exit_price = float(price) * (1.0 - min(spread_pct, 0.05) / 2.0)
+        entry_price = float(trade.get("entry_price") or 0.0)
+        if entry_price <= 0 or exit_price <= 0:
+            return ""
+        commission_rate = max(
+            0.0,
+            float(trade.get("commission_rate") or 0.0),
+        )
+        gross_pnl_pct = (exit_price - entry_price) / entry_price
+        entry_cost = entry_price * (1.0 + commission_rate)
+        exit_proceeds = exit_price * (1.0 - commission_rate)
+        net_pnl_pct = (
+            (exit_proceeds - entry_cost) / entry_cost
+            if entry_cost > 0
+            else gross_pnl_pct
+        )
+        hold_cycles = int(trade.get("hold_cycles") or 0) + 1
+        peak_price = max(float(trade.get("peak_price") or entry_price), exit_price)
+        trough_price = min(
+            float(trade.get("trough_price") or entry_price),
+            exit_price,
+        )
+        take_profit = max(
+            0.0,
+            float(getattr(policy, "inverse_take_profit_pct", 0.025) or 0.025),
+        )
+        stop_loss = max(
+            0.0,
+            float(getattr(policy, "inverse_stop_loss_pct", 0.008) or 0.008),
+        )
+        hard_stop = max(
+            stop_loss,
+            float(
+                getattr(policy, "inverse_hard_stop_loss_pct", 0.012)
+                or 0.012
+            ),
+        )
+        max_hold_cycles = max(
+            1,
+            int(getattr(policy, "inverse_max_hold_cycles", 48) or 48),
+        )
+        exit_reason = ""
+        if net_pnl_pct <= -hard_stop:
+            exit_reason = "inverse_hard_stop"
+        elif net_pnl_pct <= -stop_loss:
+            exit_reason = "inverse_stop_loss"
+        elif net_pnl_pct >= take_profit:
+            exit_reason = "inverse_take_profit"
+        elif (
+            self._market_session_date(market_key, current)
+            != str(trade.get("entry_session_date") or "")
+        ):
+            exit_reason = "inverse_session_rollover"
+        elif hold_cycles >= max_hold_cycles:
+            exit_reason = "inverse_time_exit"
+        else:
+            decision = self._inverse_regime_decision(
+                market_key,
+                symbol,
+                now=current,
+            )
+            if (
+                decision is not None
+                and decision.session_date
+                == str(trade.get("entry_session_date") or "")
+                and decision.benchmark_return_pct is not None
+                and decision.benchmark_return_pct > -0.3
+            ):
+                exit_reason = "inverse_benchmark_recovered"
+
+        now_iso = current.astimezone(timezone.utc).isoformat()
+        updated = self.repository.update_inverse_shadow_trade(
+            int(trade["id"]),
+            updated_at=now_iso,
+            hold_cycles=hold_cycles,
+            peak_price=peak_price,
+            trough_price=trough_price,
+            last_price=exit_price,
+            closed_at=now_iso if exit_reason else None,
+            exit_price=exit_price if exit_reason else None,
+            gross_pnl_pct=gross_pnl_pct if exit_reason else None,
+            net_pnl_pct=net_pnl_pct if exit_reason else None,
+            exit_reason=exit_reason,
+        )
+        if updated and exit_reason:
+            self._save_event(
+                event_type="inverse_shadow_closed",
+                market=market_key,
+                symbol=symbol,
+                detail={
+                    "exit_reason": exit_reason,
+                    "entry_price": round(entry_price, 8),
+                    "exit_price": round(exit_price, 8),
+                    "gross_pnl_pct": round(gross_pnl_pct, 8),
+                    "net_pnl_pct": round(net_pnl_pct, 8),
+                    "hold_cycles": hold_cycles,
+                },
+            )
+        return exit_reason
+
+    def _active_inverse_symbols(
+        self,
+        market: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[str]:
+        market_key = normalize_market_name(market)
+        list_open = getattr(
+            getattr(self, "repository", None),
+            "list_open_inverse_shadow_trades",
+            None,
+        )
+        open_rows = list_open(market=market_key) if callable(list_open) else []
+        open_symbols = [
+            str(row.get("symbol") or "").strip().upper()
+            for row in open_rows
+            if str(row.get("symbol") or "").strip()
+        ]
+        decision = self._inverse_regime_decision(market_key, now=now)
+        if decision is None or not decision.eligible:
+            return open_symbols
+        policy = self._get_market_policy(market_key)
+        symbols = [
+            str(value).strip().upper()
+            for value in policy.auto_trade.inverse_etf_symbols
+            if str(value).strip()
+        ]
+        symbols = list(dict.fromkeys([*symbols, *open_symbols]))
+        notice_key = (
+            market_key,
+            decision.session_date,
+            decision.execution_mode,
+        )
+        notice_keys = getattr(self, "_inverse_regime_notice_keys", None)
+        if notice_keys is None:
+            notice_keys = set()
+            self._inverse_regime_notice_keys = notice_keys
+        if notice_key not in notice_keys:
+            notice_keys.add(notice_key)
+            self._save_event(
+                event_type="inverse_regime_active",
+                market=market_key,
+                detail={
+                    "mode": decision.execution_mode,
+                    "benchmark": decision.benchmark_name,
+                    "benchmark_return_pct": decision.benchmark_return_pct,
+                    "regime_key": decision.regime_key,
+                    "symbols": symbols,
+                    "live_orders_enabled": decision.execution_mode == "live",
+                },
+            )
+        return symbols
 
     def _get_market_policy_registry(self) -> MarketPolicyRegistry:
         registry = getattr(self, "market_policy_registry", None)
@@ -962,13 +1318,21 @@ class LiquidityLabService:
         reason: str = "",
         is_virtual: bool = False,
         payload: dict | None = None,
-    ) -> None:
+        execution_context: dict | None = None,
+        replacement_for_order_no: str = "",
+    ) -> dict | None:
         repository = getattr(self, "repository", None)
         if repository is None:
-            return
+            return None
         broker_order_no = self._extract_broker_order_no(payload)
-        repository.save_broker_order_event(
-            created_at=datetime.now(timezone.utc).isoformat(),
+        created_at = datetime.now(timezone.utc).isoformat()
+        event_payload = dict(payload or {})
+        if execution_context is not None:
+            event_payload["execution_context"] = execution_context
+        if replacement_for_order_no:
+            event_payload["replacement_for_order_no"] = replacement_for_order_no
+        broker_event_id = repository.save_broker_order_event(
+            created_at=created_at,
             market=market,
             symbol=symbol,
             exchange_code=exchange_code,
@@ -983,7 +1347,48 @@ class LiquidityLabService:
             reason=reason,
             broker_order_no=broker_order_no or None,
             is_virtual=1 if is_virtual else 0,
-            payload=payload,
+            payload=event_payload,
+        )
+        if (
+            str(status).strip().upper() != "SUBMITTED"
+            or is_virtual
+            or str(order_kind).strip().lower() == "cancel"
+            or not broker_order_no
+        ):
+            return None
+        context = execution_context or {}
+        return repository.save_broker_order_execution(
+            broker_event_id=broker_event_id,
+            created_at=created_at,
+            market=market,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            side=side,
+            broker_order_no=broker_order_no,
+            requested_qty=requested_qty,
+            requested_price=requested_price,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            reason=reason,
+            session_id=str(
+                context.get("session_id")
+                or getattr(self, "_session_id", "")
+                or ""
+            ),
+            cycle_no=int(
+                context.get("cycle_no")
+                or getattr(self, "_cycle_count", 0)
+                or 0
+            ),
+            is_session_trade=int(context.get("is_session_trade") or 0),
+            entry_price=self._parse_optional_float(context.get("entry_price")),
+            entry_time=str(context.get("entry_time") or "") or None,
+            hold_duration_min=self._parse_optional_float(
+                context.get("hold_duration_min")
+            ),
+            context=context,
+            replacement_for_order_no=replacement_for_order_no,
         )
 
     def _queue_trade_notification(self, line: str) -> None:
@@ -2006,17 +2411,438 @@ class LiquidityLabService:
 
     async def _refresh_market_regimes(self, now: datetime) -> None:
         collector = getattr(self, "market_regime_collector", None)
+        client = getattr(self, "client", None)
+        repository = getattr(self, "repository", None)
         if collector is None:
-            client = getattr(self, "client", None)
-            repository = getattr(self, "repository", None)
             if client is None or repository is None:
                 return
             collector = MarketRegimeCollector(client, repository)
             self.market_regime_collector = collector
+        else:
+            # Telegram control opens a fresh KIS client for every cycle. Keep
+            # the long-lived collector attached to that current client.
+            if client is not None:
+                collector.client = client
+            if repository is not None:
+                collector.repository = repository
         try:
             await collector.refresh_if_due(now)
         except Exception as exc:  # noqa: BLE001
             _logger.warning("[REGIME] collector_failed error=%s", exc)
+
+    def _get_execution_reconciler(self) -> BrokerExecutionReconciler:
+        reconciler = getattr(self, "execution_reconciler", None)
+        if reconciler is None:
+            reconciler = BrokerExecutionReconciler(self)
+            self.execution_reconciler = reconciler
+        return reconciler
+
+    async def _reconcile_broker_executions(
+        self,
+        now: datetime,
+        *,
+        force: bool = False,
+    ) -> dict[str, int]:
+        last_attempt = getattr(self, "_last_execution_reconcile_at", None)
+        interval_sec = max(
+            5,
+            int(getattr(self, "_execution_reconcile_interval_sec", 20) or 20),
+        )
+        if (
+            not force
+            and last_attempt is not None
+            and (now - last_attempt).total_seconds() < interval_sec
+        ):
+            return {
+                "pending": 0,
+                "matched": 0,
+                "missing": 0,
+                "finalized": 0,
+                "no_fill": 0,
+                "failed_markets": 0,
+            }
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return {}
+        if not repository.list_unfinalized_broker_executions(limit=1):
+            return {}
+        self._last_execution_reconcile_at = now
+        return await self._get_execution_reconciler().reconcile(
+            now=now,
+            force=force,
+        )
+
+    @staticmethod
+    def _execution_signal_value(
+        context: dict,
+        key: str,
+    ) -> float | None:
+        snapshot = context.get("signal_snapshot")
+        if not isinstance(snapshot, dict):
+            return None
+        value = snapshot.get(key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    async def _apply_confirmed_execution_group(
+        self,
+        executions: list[dict],
+        *,
+        filled_qty: int,
+        filled_amount: float,
+        target_qty: int,
+    ) -> bool:
+        rows = sorted(
+            executions,
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        )
+        if not rows or filled_qty <= 0:
+            return False
+        first = rows[0]
+        context = (
+            first.get("context_json")
+            if isinstance(first.get("context_json"), dict)
+            else {}
+        )
+        market = str(first.get("market") or "").strip().lower()
+        symbol = str(first.get("symbol") or "").strip().upper()
+        side = str(first.get("side") or "").strip().upper()
+        execution_group_id = str(first.get("execution_group_id") or "")
+        fill_price = (
+            float(filled_amount) / int(filled_qty)
+            if filled_amount > 0 and filled_qty > 0
+            else sum(
+                float(row.get("avg_fill_price") or 0.0)
+                * int(row.get("filled_qty") or 0)
+                for row in rows
+            )
+            / max(1, filled_qty)
+        )
+        if fill_price <= 0:
+            return False
+        fill_times = [
+            str(row.get("fill_recorded_at") or "")
+            for row in rows
+            if str(row.get("fill_recorded_at") or "")
+        ]
+        logged_at = max(fill_times) if fill_times else datetime.now(timezone.utc).isoformat()
+        strategy_flag = str(first.get("strategy_flag") or "")
+        entry_by = str(first.get("entry_by") or "")
+        exit_by = str(first.get("exit_by") or "")
+        reason = str(first.get("reason") or "")
+        entry_price = self._parse_optional_float(first.get("entry_price"))
+        entry_time = str(first.get("entry_time") or "") or None
+        hold_duration_min = self._parse_optional_float(first.get("hold_duration_min"))
+        activity_score = self._parse_optional_float(context.get("activity_score"))
+        orderable_qty = int(context.get("orderable_qty") or filled_qty)
+        stock_name = str(context.get("stock_name") or symbol)
+        is_session_trade = int(first.get("is_session_trade") or 0)
+        is_full_group_fill = filled_qty >= max(1, target_qty)
+
+        common = {
+            "logged_at": logged_at,
+            "market": market,
+            "symbol": symbol,
+            "exchange_code": first.get("exchange_code"),
+            "action_reason": reason,
+            "price": fill_price,
+            "holding_qty": filled_qty,
+            "rsi14": self._execution_signal_value(context, "rsi14"),
+            "volume_ratio": self._execution_signal_value(context, "volume_ratio"),
+            "intraday_momentum": self._execution_signal_value(
+                context,
+                "intraday_momentum",
+            ),
+            "intraday_bar_return": self._execution_signal_value(
+                context,
+                "intraday_bar_return",
+            ),
+            "minute_ma_fast": self._execution_signal_value(
+                context,
+                "minute_ma_fast",
+            ),
+            "minute_ma_slow": self._execution_signal_value(
+                context,
+                "minute_ma_slow",
+            ),
+            "activity_score": activity_score,
+            "cycle_no": int(first.get("cycle_no") or 0),
+            "session_id": str(first.get("session_id") or ""),
+            "strategy_flag": strategy_flag,
+            "entry_by": entry_by,
+            "exit_by": exit_by,
+            "is_session_trade": is_session_trade,
+            "vwap": self._execution_signal_value(context, "vwap"),
+            "macd_line": self._execution_signal_value(context, "macd_line"),
+            "macd_signal": self._execution_signal_value(context, "macd_signal"),
+            "macd_golden": (
+                int(self._execution_signal_value(context, "macd_golden") or 0)
+                if self._execution_signal_value(context, "macd_golden") is not None
+                else None
+            ),
+            "breakout_distance_pct": self._execution_signal_value(
+                context,
+                "breakout_distance_pct",
+            ),
+            "atr": self._execution_signal_value(context, "atr"),
+            "spread_pct": self._execution_signal_value(context, "spread_pct"),
+            "consecutive_losses": self._consecutive_losses_for_market(market),
+            "hold_cycles": int(context.get("hold_cycles") or 0),
+            "entry_price": fill_price if side == "BUY" else entry_price,
+            "qty_executed": filled_qty,
+            "is_virtual": 0,
+            "orderable_qty": orderable_qty,
+            "stock_name": stock_name,
+            "hold_duration_min": 0.0 if side == "BUY" else hold_duration_min,
+            "entry_time": logged_at if side == "BUY" else entry_time,
+            "exit_cooldown_remaining": 0.0,
+            "cb_active": self._cb_active_flag(market),
+            "pool_size": int(context.get("pool_size") or 0),
+            "execution_group_id": execution_group_id,
+        }
+
+        if side == "BUY":
+            if market == "domestic":
+                commission_krw = round(
+                    fill_price * filled_qty * self._domestic_commission_rate(),
+                    2,
+                )
+                inserted = self.repository.save_cycle_log(
+                    **common,
+                    action_bias="BUY_REAL",
+                    pnl_pct=0.0,
+                    realized_pnl_usd=None,
+                    realized_pnl_krw=0.0,
+                    net_pnl_usd=None,
+                    net_pnl_krw=0.0,
+                    commission_usd=None,
+                    commission_krw=commission_krw,
+                )
+                price_label = f"{fill_price:,.0f}원"
+            else:
+                fx_rate = float(
+                    context.get("fx_rate")
+                    or getattr(
+                        self._get_market_policy("overseas").auto_trade,
+                        "usd_krw_fallback_rate",
+                        1380.0,
+                    )
+                    or 1380.0
+                )
+                commission_usd = round(
+                    fill_price * filled_qty * self._overseas_commission_rate(),
+                    6,
+                )
+                inserted = self.repository.save_cycle_log(
+                    **common,
+                    action_bias="BUY_REAL",
+                    pnl_pct=0.0,
+                    realized_pnl_usd=0.0,
+                    realized_pnl_krw=0.0,
+                    net_pnl_usd=0.0,
+                    net_pnl_krw=0.0,
+                    commission_usd=commission_usd,
+                    commission_krw=round(commission_usd * fx_rate, 2),
+                )
+                price_label = format_usd(fill_price)
+            if inserted:
+                self._mark_session_owned(symbol)
+                self._queue_trade_notification(
+                    " ".join(
+                        [
+                            format_market_korean(market),
+                            self._format_trade_symbol_label(market, symbol),
+                            "매수체결",
+                            price_label,
+                            f"x{filled_qty}",
+                            f"전략={strategy_flag or '-'}",
+                            f"주도={entry_by or '-'}",
+                        ]
+                    )
+                )
+            return inserted
+
+        if entry_price is None or entry_price <= 0:
+            self._save_event(
+                event_type="execution_reconcile_failed",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "reason": "confirmed_sell_missing_entry_price",
+                    "execution_group_id": execution_group_id,
+                    "fill_price": fill_price,
+                    "filled_qty": filled_qty,
+                },
+            )
+            return False
+
+        pnl_pct = (fill_price - entry_price) / entry_price
+        if market == "domestic":
+            gross_pnl = (fill_price - entry_price) * filled_qty
+            net_pnl_krw, sell_commission_krw = self._estimate_domestic_net_pnl_krw(
+                entry_price=entry_price,
+                exit_price=fill_price,
+                qty=filled_qty,
+            )
+            inserted = self.repository.save_cycle_log(
+                **common,
+                action_bias="SELL_REAL",
+                pnl_pct=pnl_pct,
+                realized_pnl_usd=None,
+                realized_pnl_krw=gross_pnl,
+                net_pnl_usd=None,
+                net_pnl_krw=net_pnl_krw,
+                commission_usd=None,
+                commission_krw=sell_commission_krw,
+            )
+            gross_pnl_krw = gross_pnl
+            pnl_label = f"{net_pnl_krw:+,.0f}원"
+            price_label = f"{fill_price:,.0f}원"
+        else:
+            fx_rate = float(
+                context.get("fx_rate")
+                or getattr(
+                    self._get_market_policy("overseas").auto_trade,
+                    "usd_krw_fallback_rate",
+                    1380.0,
+                )
+                or 1380.0
+            )
+            gross_pnl_usd = (fill_price - entry_price) * filled_qty
+            gross_pnl_krw = gross_pnl_usd * fx_rate
+            net_pnl_usd, net_pnl_krw, sell_fee_usd, sell_fee_krw = (
+                self._estimate_overseas_net_pnl(
+                    entry_price=entry_price,
+                    exit_price=fill_price,
+                    qty=filled_qty,
+                    fx_rate=fx_rate,
+                )
+            )
+            inserted = self.repository.save_cycle_log(
+                **common,
+                action_bias="SELL_REAL",
+                pnl_pct=pnl_pct,
+                realized_pnl_usd=gross_pnl_usd,
+                realized_pnl_krw=gross_pnl_krw,
+                net_pnl_usd=net_pnl_usd,
+                net_pnl_krw=net_pnl_krw,
+                commission_usd=sell_fee_usd,
+                commission_krw=sell_fee_krw,
+            )
+            pnl_label = format_usd(net_pnl_usd)
+            price_label = format_usd(fill_price)
+
+        if not inserted:
+            return False
+        was_halted = bool(common["cb_active"])
+        entry_notional_krw = entry_price * filled_qty
+        if market == "overseas":
+            entry_notional_krw *= fx_rate
+        net_pnl_pct = (
+            float(net_pnl_krw) / entry_notional_krw
+            if entry_notional_krw > 0
+            else float(pnl_pct)
+        )
+        self._on_realised(
+            market=market,
+            net_pnl_krw=float(net_pnl_krw),
+            net_pnl_pct=net_pnl_pct,
+        )
+        is_halted = self._is_trading_halted(market)
+        consecutive_losses = self._consecutive_losses_for_market(market)
+        self.repository.update_cycle_log_execution_risk(
+            execution_group_id,
+            consecutive_losses=consecutive_losses,
+            cb_active=int(is_halted),
+        )
+        if is_halted and not was_halted:
+            _logger.warning(
+                "[CB] %s confirmed-fill breaker fired consecutive=%d session_pnl=%.0f",
+                market,
+                consecutive_losses,
+                self._session_realised_krw,
+            )
+            await self._send_circuit_breaker_notification(
+                "\n".join(
+                    [
+                        "서킷브레이커 발동",
+                        (
+                            f"시장={format_market_korean(market)} | "
+                            f"연속손절 {consecutive_losses}회 | "
+                            f"세션손익 {self._session_realised_krw:+,.0f}원"
+                        ),
+                        (
+                            f"{format_market_korean(market)} 신규 매수만 "
+                            "중단합니다."
+                        ),
+                    ]
+                )
+            )
+        self._register_exit_cooldown(
+            market,
+            symbol,
+            reason,
+            pnl_pct=pnl_pct,
+        )
+        if is_full_group_fill:
+            self._reset_strategy_position(symbol, market)
+        self._queue_trade_notification(
+            " ".join(
+                [
+                    format_market_korean(market),
+                    self._format_trade_symbol_label(market, symbol),
+                    "매도체결",
+                    price_label,
+                    f"x{filled_qty}",
+                    f"수익률={format_pct(pnl_pct)}",
+                    f"순손익={pnl_label}",
+                    f"청산={format_reason_korean(exit_by or reason)}",
+                ]
+            )
+        )
+        self._save_event(
+            event_type="execution_confirmed",
+            market=market,
+            symbol=symbol,
+            detail={
+                "execution_group_id": execution_group_id,
+                "side": side,
+                "filled_qty": filled_qty,
+                "target_qty": target_qty,
+                "avg_fill_price": round(fill_price, 8),
+                "pnl_pct": round(pnl_pct, 8),
+            },
+        )
+        return True
+
+    async def _handle_no_fill_execution_group(
+        self,
+        executions: list[dict],
+    ) -> None:
+        if not executions:
+            return
+        first = executions[0]
+        market = str(first.get("market") or "")
+        symbol = str(first.get("symbol") or "")
+        side = str(first.get("side") or "").upper()
+        if side == "BUY":
+            self._reset_strategy_position(symbol, market)
+        self._save_event(
+            event_type="execution_no_fill",
+            market=market,
+            symbol=symbol,
+            detail={
+                "execution_group_id": first.get("execution_group_id"),
+                "side": side,
+                "statuses": sorted(
+                    {str(row.get("status") or "") for row in executions}
+                ),
+            },
+        )
 
     async def _run_cycle(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
@@ -2034,6 +2860,7 @@ class LiquidityLabService:
                 },
             )
         await self._refresh_market_regimes(now)
+        await self._reconcile_broker_executions(now)
         await self._ensure_tv_diagnostics()
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
         await self._maybe_send_overseas_relist_alert(now, nyse_holiday=nyse_holiday)
@@ -2476,6 +3303,9 @@ class LiquidityLabService:
             if getattr(self, "_dynamic_domestic_codes", None)
             else list(config.domestic_candidates)
         )
+        for inverse_symbol in self._active_inverse_symbols("domestic"):
+            if inverse_symbol not in active_codes:
+                active_codes.append(inverse_symbol)
         held_codes = self._held_domestic_codes()
         quote_results: list[DomesticScanResult] = []
         excluded: list[ExcludedCandidate] = []
@@ -2614,6 +3444,28 @@ class LiquidityLabService:
             held_symbol_map=held_symbol_map,
             held_symbols=set(held_symbol_map.keys()) | virtual_symbols,
         )
+        active_overseas_symbols = {
+            candidate.symbol.strip().upper()
+            for candidate in active_overseas_pool
+        }
+        inverse_exchange_codes = {
+            "SQQQ": "NASD",
+            "SOXS": "AMEX",
+            "SPXU": "AMEX",
+        }
+        for inverse_symbol in self._active_inverse_symbols("overseas"):
+            if inverse_symbol in active_overseas_symbols:
+                continue
+            active_overseas_pool.append(
+                OverseasCandidateConfig(
+                    symbol=inverse_symbol,
+                    exchange_code=inverse_exchange_codes.get(
+                        inverse_symbol,
+                        "NASD",
+                    ),
+                )
+            )
+            active_overseas_symbols.add(inverse_symbol)
         held_symbols = set(held_symbol_map.keys()) | virtual_symbols
         for candidate in active_overseas_pool:
             symbol = candidate.symbol.strip().upper()
@@ -4974,8 +5826,9 @@ class LiquidityLabService:
 
     def _cb_active_flag(self, market: str | None = None) -> int:
         cb = self._get_circuit_breaker()
+        halted = cb.is_halted(market)
         self._sync_circuit_breaker_legacy_state(cb)
-        return int(cb.is_halted(market))
+        return int(halted)
 
     def _consecutive_losses_for_market(self, market: str) -> int:
         losses = getattr(self, "_consecutive_losses_by_market", None)
@@ -5108,8 +5961,13 @@ class LiquidityLabService:
         entry_price: float | None = None
         entry_time_iso: str | None = None
         hold_duration_min: float | None = None
+        if fallback_price is not None and fallback_price > 0:
+            # The broker balance average is execution-derived. Strategy state
+            # may still carry the submitted quote, which is not a fill price.
+            entry_price = float(fallback_price)
         if manager is not None and manager.position is not None:
-            entry_price = float(manager.position.entry_price)
+            if entry_price is None:
+                entry_price = float(manager.position.entry_price)
             entry_dt = ensure_timezone(manager.position.entry_time)
             entry_time_iso = entry_dt.isoformat()
             hold_duration_min = round(
@@ -5123,7 +5981,7 @@ class LiquidityLabService:
             persisted = self._get_persisted_symbol_state(market, symbol)
             if persisted is not None:
                 raw_entry_price = persisted.get("entry_price")
-                if raw_entry_price is not None:
+                if entry_price is None and raw_entry_price is not None:
                     try:
                         entry_price = float(raw_entry_price)
                     except (TypeError, ValueError):
@@ -5139,8 +5997,6 @@ class LiquidityLabService:
                         ),
                         2,
                     )
-        if entry_price is None and fallback_price is not None and fallback_price > 0:
-            entry_price = float(fallback_price)
         return entry_price, entry_time_iso, hold_duration_min
 
     def _defer_no_orderable_position(
@@ -5401,6 +6257,18 @@ class LiquidityLabService:
             return 0.0
         return float(text)
 
+    @staticmethod
+    def _parse_optional_float(value: object) -> float | None:
+        if value is None:
+            return None
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
     def _build_exit_setup(
         self,
         snapshot: MovingAverageSnapshot,
@@ -5412,12 +6280,45 @@ class LiquidityLabService:
         take_profit_override: float | None = None,
     ):
         policy = self._get_market_policy(market)
+        policy_config = policy.auto_trade
+        if self._is_inverse_symbol(market, symbol):
+            policy_config = replace(
+                policy_config,
+                take_profit_pct=float(
+                    getattr(policy_config, "inverse_take_profit_pct", 0.02)
+                    or 0.02
+                ),
+                stop_loss_pct=float(
+                    getattr(policy_config, "inverse_stop_loss_pct", 0.0075)
+                    or 0.0075
+                ),
+                hard_stop_loss_pct=float(
+                    getattr(
+                        policy_config,
+                        "inverse_hard_stop_loss_pct",
+                        0.012,
+                    )
+                    or 0.012
+                ),
+                max_hold_cycles=max(
+                    1,
+                    int(
+                        getattr(
+                            policy_config,
+                            "inverse_max_hold_cycles",
+                            24,
+                        )
+                        or 24
+                    ),
+                ),
+            )
+        elif take_profit_override is not None:
+            policy_config = replace(
+                policy_config,
+                take_profit_pct=take_profit_override,
+            )
         return evaluate_exit_setup(
-            (
-                policy.auto_trade
-                if take_profit_override is None
-                else replace(policy.auto_trade, take_profit_pct=take_profit_override)
-            ),
+            policy_config,
             snapshot,
             pnl_pct,
             market=market,

@@ -833,7 +833,7 @@ def test_evaluate_entry_uses_prefilter_factor() -> None:
     assert result.reason != "volume_low"
 
 
-def test_inverse_etf_enters_when_daily_trend_down() -> None:
+def test_inverse_etf_requires_benchmark_regime_confirmation() -> None:
     config = _build_config()
     result = evaluate_entry_setup(
         config,
@@ -850,6 +850,64 @@ def test_inverse_etf_enters_when_daily_trend_down() -> None:
         symbol="SQQQ",
         inverse_etf_symbols=["SQQQ", "SOXS", "UVXY", "SPXU"],
         leveraged_etf_symbols=["TQQQ", "SOXL"],
+    )
+
+    assert result.ready is False
+    assert result.reason == "inverse_benchmark_regime_unconfirmed"
+
+
+def test_inverse_etf_requires_its_own_uptrend_after_benchmark_decline() -> None:
+    config = replace(
+        _build_config(),
+        inverse_require_product_intraday_up=True,
+        inverse_min_product_volume_ratio=1.2,
+    )
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            daily_ma_fast=98.0,
+            daily_ma_slow=100.0,
+            minute_ma_fast=99.0,
+            minute_ma_slow=100.0,
+            price=99.2,
+            rsi14=54.0,
+            intraday_momentum=-0.001,
+            intraday_bar_return=-0.0012,
+            volume_ratio=1.3,
+        ),
+        symbol="SQQQ",
+        inverse_etf_symbols=["SQQQ"],
+        leveraged_etf_symbols=["TQQQ"],
+        inverse_regime_eligible=True,
+    )
+
+    assert result.ready is False
+    assert result.reason == "inverse_product_intraday_not_up"
+
+
+def test_inverse_etf_can_enter_when_benchmark_and_product_confirm() -> None:
+    config = replace(
+        _build_config(),
+        inverse_require_product_intraday_up=True,
+        inverse_min_product_volume_ratio=1.2,
+    )
+    result = evaluate_entry_setup(
+        config,
+        _snapshot(
+            daily_ma_fast=98.0,
+            daily_ma_slow=100.0,
+            minute_ma_fast=100.0,
+            minute_ma_slow=99.0,
+            price=100.8,
+            rsi14=54.0,
+            intraday_momentum=0.001,
+            intraday_bar_return=0.0012,
+            volume_ratio=1.3,
+        ),
+        symbol="SQQQ",
+        inverse_etf_symbols=["SQQQ"],
+        leveraged_etf_symbols=["TQQQ"],
+        inverse_regime_eligible=True,
     )
 
     assert result.ready is True

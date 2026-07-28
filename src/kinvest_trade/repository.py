@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .market_sessions import KST, NEW_YORK
 from .time_utils import parse_datetime
 
 
@@ -42,6 +44,8 @@ class SqliteRepository:
         "cycle_log",
         "event_log",
         "broker_order_events",
+        "broker_order_executions",
+        "inverse_shadow_trades",
         "virtual_positions",
         "virtual_orders",
         "virtual_sell_pending",
@@ -384,6 +388,90 @@ class SqliteRepository:
                     ON broker_order_events(created_at);
                 CREATE INDEX IF NOT EXISTS idx_broker_order_events_symbol
                     ON broker_order_events(symbol);
+                CREATE TABLE IF NOT EXISTS broker_order_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    broker_event_id INTEGER NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    order_date TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    side TEXT NOT NULL,
+                    broker_order_no TEXT NOT NULL,
+                    normalized_order_no TEXT NOT NULL,
+                    execution_group_id TEXT NOT NULL,
+                    group_target_qty INTEGER NOT NULL,
+                    requested_qty INTEGER NOT NULL,
+                    requested_price REAL,
+                    filled_qty INTEGER NOT NULL DEFAULT 0,
+                    filled_amount REAL NOT NULL DEFAULT 0,
+                    avg_fill_price REAL,
+                    remaining_qty INTEGER NOT NULL DEFAULT 0,
+                    canceled_qty INTEGER NOT NULL DEFAULT 0,
+                    rejected_qty INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    exit_by TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    session_id TEXT NOT NULL DEFAULT '',
+                    cycle_no INTEGER NOT NULL DEFAULT 0,
+                    is_session_trade INTEGER NOT NULL DEFAULT 0,
+                    entry_price REAL,
+                    entry_time TEXT,
+                    hold_duration_min REAL,
+                    context_json TEXT NOT NULL DEFAULT '{}',
+                    history_json TEXT NOT NULL DEFAULT '{}',
+                    last_checked_at TEXT,
+                    fill_recorded_at TEXT,
+                    finalized_at TEXT,
+                    cycle_log_id INTEGER
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_broker_execution_order
+                    ON broker_order_executions(
+                        market, order_date, normalized_order_no
+                    );
+                CREATE INDEX IF NOT EXISTS idx_broker_execution_pending
+                    ON broker_order_executions(finalized_at, market, order_date);
+                CREATE INDEX IF NOT EXISTS idx_broker_execution_group
+                    ON broker_order_executions(execution_group_id);
+                CREATE TABLE IF NOT EXISTS inverse_shadow_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    opened_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    entry_session_date TEXT NOT NULL,
+                    policy_id TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    entry_spread_pct REAL NOT NULL DEFAULT 0,
+                    commission_rate REAL NOT NULL DEFAULT 0,
+                    benchmark_name TEXT NOT NULL DEFAULT '',
+                    benchmark_return_pct REAL,
+                    benchmark_regime_key TEXT NOT NULL DEFAULT '',
+                    entry_reason TEXT NOT NULL DEFAULT '',
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    hold_cycles INTEGER NOT NULL DEFAULT 0,
+                    peak_price REAL NOT NULL,
+                    trough_price REAL NOT NULL,
+                    last_price REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'OPEN',
+                    closed_at TEXT,
+                    exit_price REAL,
+                    gross_pnl_pct REAL,
+                    net_pnl_pct REAL,
+                    exit_reason TEXT NOT NULL DEFAULT '',
+                    context_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_inverse_shadow_session
+                    ON inverse_shadow_trades(
+                        market, symbol, entry_session_date
+                    );
+                CREATE INDEX IF NOT EXISTS idx_inverse_shadow_open
+                    ON inverse_shadow_trades(status, market, symbol);
                 CREATE TABLE IF NOT EXISTS telegram_message_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -522,6 +610,19 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "exit_cooldown_remaining", "REAL")
             self._ensure_column(conn, "cycle_log", "cb_active", "INTEGER")
             self._ensure_column(conn, "cycle_log", "pool_size", "INTEGER")
+            self._ensure_column(
+                conn,
+                "cycle_log",
+                "execution_group_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_cycle_log_execution_group
+                ON cycle_log(execution_group_id)
+                WHERE execution_group_id != ''
+                """
+            )
             self._ensure_column(conn, "lab_symbol_state", "entry_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
@@ -960,7 +1061,8 @@ class SqliteRepository:
         exit_cooldown_remaining: float | None = None,
         cb_active: int | None = None,
         pool_size: int | None = None,
-    ) -> None:
+        execution_group_id: str = "",
+    ) -> bool:
         with self._connect() as conn:
             columns = [
                 "logged_at",
@@ -1010,6 +1112,7 @@ class SqliteRepository:
                 "exit_cooldown_remaining",
                 "cb_active",
                 "pool_size",
+                "execution_group_id",
             ]
             values = (
                 logged_at,
@@ -1059,14 +1162,44 @@ class SqliteRepository:
                 exit_cooldown_remaining,
                 cb_active,
                 pool_size,
+                execution_group_id,
             )
-            conn.execute(
+            insert_clause = "INSERT OR IGNORE" if execution_group_id else "INSERT"
+            cursor = conn.execute(
                 f"""
-                INSERT INTO cycle_log ({', '.join(columns)})
+                {insert_clause} INTO cycle_log ({', '.join(columns)})
                 VALUES ({', '.join(['?'] * len(columns))})
                 """,
                 values,
             )
+            inserted = int(cursor.rowcount or 0) > 0
+            if execution_group_id:
+                row = conn.execute(
+                    """
+                    SELECT id
+                    FROM cycle_log
+                    WHERE execution_group_id = ?
+                    LIMIT 1
+                    """,
+                    (execution_group_id,),
+                ).fetchone()
+                cycle_log_id = int(row["id"]) if row is not None else None
+                conn.execute(
+                    """
+                    UPDATE broker_order_executions
+                    SET finalized_at = COALESCE(finalized_at, ?),
+                        cycle_log_id = COALESCE(cycle_log_id, ?),
+                        updated_at = ?
+                    WHERE execution_group_id = ?
+                    """,
+                    (
+                        logged_at,
+                        cycle_log_id,
+                        logged_at,
+                        execution_group_id,
+                    ),
+                )
+            return inserted
 
     def save_event(
         self,
@@ -1163,9 +1296,9 @@ class SqliteRepository:
         broker_order_no: str | None = None,
         is_virtual: int = 0,
         payload: dict | None = None,
-    ) -> None:
+    ) -> int:
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO broker_order_events (
                     created_at, market, symbol, exchange_code, side, order_kind,
@@ -1192,6 +1325,492 @@ class SqliteRepository:
                     json.dumps(payload or {}, ensure_ascii=False, default=str),
                 ),
             )
+            return int(cursor.lastrowid)
+
+    @staticmethod
+    def normalize_broker_order_no(order_no: object) -> str:
+        text = str(order_no or "").strip()
+        if not text:
+            return ""
+        if text.isdigit():
+            return text.lstrip("0") or "0"
+        return text.upper()
+
+    @staticmethod
+    def _broker_order_date(created_at: str, market: str) -> str:
+        parsed = parse_datetime(created_at)
+        if parsed is None:
+            parsed = datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        market_key = str(market).strip().lower()
+        market_timezone = NEW_YORK if market_key == "overseas" else KST
+        return parsed.astimezone(market_timezone).date().isoformat()
+
+    def save_broker_order_execution(
+        self,
+        *,
+        broker_event_id: int,
+        created_at: str,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        side: str,
+        broker_order_no: str,
+        requested_qty: int,
+        requested_price: float | None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        exit_by: str = "",
+        reason: str = "",
+        session_id: str = "",
+        cycle_no: int = 0,
+        is_session_trade: int = 0,
+        entry_price: float | None = None,
+        entry_time: str | None = None,
+        hold_duration_min: float | None = None,
+        context: dict | None = None,
+        replacement_for_order_no: str = "",
+    ) -> dict | None:
+        normalized_order_no = self.normalize_broker_order_no(broker_order_no)
+        if not normalized_order_no or requested_qty <= 0:
+            return None
+        market_key = str(market).strip().lower()
+        order_date = self._broker_order_date(created_at, market_key)
+        symbol_key = str(symbol).strip().upper()
+        replacement_normalized = self.normalize_broker_order_no(
+            replacement_for_order_no
+        )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        execution_group_id = uuid.uuid4().hex
+        group_target_qty = int(requested_qty)
+
+        with self._connect() as conn:
+            if replacement_normalized:
+                replacement = conn.execute(
+                    """
+                    SELECT execution_group_id, group_target_qty
+                    FROM broker_order_executions
+                    WHERE market = ?
+                      AND symbol = ?
+                      AND normalized_order_no = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (market_key, symbol_key, replacement_normalized),
+                ).fetchone()
+                if replacement is not None:
+                    execution_group_id = str(replacement["execution_group_id"])
+                    group_target_qty = int(replacement["group_target_qty"])
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO broker_order_executions (
+                    broker_event_id, created_at, order_date, updated_at,
+                    market, symbol, exchange_code, side, broker_order_no,
+                    normalized_order_no, execution_group_id, group_target_qty,
+                    requested_qty, requested_price, strategy_flag, entry_by,
+                    exit_by, reason, session_id, cycle_no, is_session_trade,
+                    entry_price, entry_time, hold_duration_min, context_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    int(broker_event_id),
+                    created_at,
+                    order_date,
+                    now_iso,
+                    market_key,
+                    symbol_key,
+                    exchange_code,
+                    str(side).strip().upper(),
+                    str(broker_order_no).strip(),
+                    normalized_order_no,
+                    execution_group_id,
+                    group_target_qty,
+                    int(requested_qty),
+                    requested_price,
+                    strategy_flag,
+                    entry_by,
+                    exit_by,
+                    reason,
+                    session_id,
+                    int(cycle_no),
+                    int(is_session_trade),
+                    entry_price,
+                    entry_time,
+                    hold_duration_min,
+                    json.dumps(context or {}, ensure_ascii=False, default=str),
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM broker_order_executions
+                WHERE broker_event_id = ?
+                LIMIT 1
+                """,
+                (int(broker_event_id),),
+            ).fetchone()
+        return self._decode_broker_execution_row(row)
+
+    @staticmethod
+    def _decode_broker_execution_row(
+        row: sqlite3.Row | None,
+    ) -> dict | None:
+        if row is None:
+            return None
+        item = dict(row)
+        for key in ("context_json", "history_json"):
+            try:
+                item[key] = json.loads(str(item.get(key) or "{}"))
+            except json.JSONDecodeError:
+                item[key] = {}
+        return item
+
+    def list_unfinalized_broker_executions(
+        self,
+        *,
+        market: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        where = ["finalized_at IS NULL"]
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM broker_order_executions
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            decoded
+            for row in rows
+            if (decoded := self._decode_broker_execution_row(row)) is not None
+        ]
+
+    def update_broker_order_execution(
+        self,
+        execution_id: int,
+        *,
+        filled_qty: int,
+        filled_amount: float,
+        avg_fill_price: float | None,
+        remaining_qty: int,
+        canceled_qty: int,
+        rejected_qty: int,
+        status: str,
+        history: dict,
+        checked_at: str,
+        fill_recorded_at: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE broker_order_executions
+                SET filled_qty = ?,
+                    filled_amount = ?,
+                    avg_fill_price = ?,
+                    remaining_qty = ?,
+                    canceled_qty = ?,
+                    rejected_qty = ?,
+                    status = ?,
+                    history_json = ?,
+                    last_checked_at = ?,
+                    fill_recorded_at = COALESCE(?, fill_recorded_at),
+                    updated_at = ?
+                WHERE id = ?
+                  AND finalized_at IS NULL
+                """,
+                (
+                    max(0, int(filled_qty)),
+                    max(0.0, float(filled_amount)),
+                    avg_fill_price,
+                    max(0, int(remaining_qty)),
+                    max(0, int(canceled_qty)),
+                    max(0, int(rejected_qty)),
+                    str(status).strip().upper(),
+                    json.dumps(history, ensure_ascii=False, default=str),
+                    checked_at,
+                    fill_recorded_at,
+                    checked_at,
+                    int(execution_id),
+                ),
+            )
+
+    def mark_broker_execution_checked(
+        self,
+        execution_id: int,
+        *,
+        checked_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE broker_order_executions
+                SET last_checked_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND finalized_at IS NULL
+                """,
+                (checked_at, checked_at, int(execution_id)),
+            )
+
+    def finalize_broker_execution_group_without_fill(
+        self,
+        execution_group_id: str,
+        *,
+        finalized_at: str,
+    ) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE broker_order_executions
+                SET finalized_at = ?,
+                    updated_at = ?
+                WHERE execution_group_id = ?
+                  AND finalized_at IS NULL
+                """,
+                (finalized_at, finalized_at, execution_group_id),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+    def update_cycle_log_execution_risk(
+        self,
+        execution_group_id: str,
+        *,
+        consecutive_losses: int,
+        cb_active: int,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE cycle_log
+                SET consecutive_losses = ?,
+                    cb_active = ?
+                WHERE execution_group_id = ?
+                """,
+                (
+                    max(0, int(consecutive_losses)),
+                    1 if cb_active else 0,
+                    str(execution_group_id),
+                ),
+            )
+
+    def open_inverse_shadow_trade(
+        self,
+        *,
+        opened_at: str,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        entry_session_date: str,
+        policy_id: str,
+        entry_price: float,
+        entry_spread_pct: float,
+        commission_rate: float,
+        benchmark_name: str,
+        benchmark_return_pct: float | None,
+        benchmark_regime_key: str,
+        entry_reason: str,
+        strategy_flag: str,
+        entry_by: str,
+        context: dict | None = None,
+    ) -> bool:
+        if entry_price <= 0:
+            return False
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO inverse_shadow_trades (
+                    opened_at, updated_at, market, symbol, exchange_code,
+                    entry_session_date, policy_id, entry_price,
+                    entry_spread_pct, commission_rate, benchmark_name,
+                    benchmark_return_pct, benchmark_regime_key, entry_reason,
+                    strategy_flag, entry_by, peak_price, trough_price,
+                    last_price, context_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?
+                )
+                """,
+                (
+                    opened_at,
+                    opened_at,
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
+                    exchange_code,
+                    str(entry_session_date),
+                    str(policy_id),
+                    float(entry_price),
+                    max(0.0, float(entry_spread_pct)),
+                    max(0.0, float(commission_rate)),
+                    str(benchmark_name),
+                    benchmark_return_pct,
+                    str(benchmark_regime_key),
+                    str(entry_reason),
+                    str(strategy_flag),
+                    str(entry_by),
+                    float(entry_price),
+                    float(entry_price),
+                    float(entry_price),
+                    json.dumps(context or {}, ensure_ascii=False, default=str),
+                ),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+    def get_open_inverse_shadow_trade(
+        self,
+        market: str,
+        symbol: str,
+    ) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM inverse_shadow_trades
+                WHERE market = ?
+                  AND symbol = ?
+                  AND status = 'OPEN'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["context_json"] = json.loads(str(item.get("context_json") or "{}"))
+        except json.JSONDecodeError:
+            item["context_json"] = {}
+        return item
+
+    def list_open_inverse_shadow_trades(
+        self,
+        *,
+        market: str | None = None,
+    ) -> list[dict]:
+        where = ["status = 'OPEN'"]
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM inverse_shadow_trades
+                WHERE {' AND '.join(where)}
+                ORDER BY opened_at ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_inverse_shadow_trade(
+        self,
+        trade_id: int,
+        *,
+        updated_at: str,
+        hold_cycles: int,
+        peak_price: float,
+        trough_price: float,
+        last_price: float,
+        closed_at: str | None = None,
+        exit_price: float | None = None,
+        gross_pnl_pct: float | None = None,
+        net_pnl_pct: float | None = None,
+        exit_reason: str = "",
+    ) -> bool:
+        status = "CLOSED" if closed_at else "OPEN"
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE inverse_shadow_trades
+                SET updated_at = ?,
+                    hold_cycles = ?,
+                    peak_price = ?,
+                    trough_price = ?,
+                    last_price = ?,
+                    status = ?,
+                    closed_at = ?,
+                    exit_price = ?,
+                    gross_pnl_pct = ?,
+                    net_pnl_pct = ?,
+                    exit_reason = ?
+                WHERE id = ?
+                  AND status = 'OPEN'
+                """,
+                (
+                    updated_at,
+                    max(0, int(hold_cycles)),
+                    float(peak_price),
+                    float(trough_price),
+                    float(last_price),
+                    status,
+                    closed_at,
+                    exit_price,
+                    gross_pnl_pct,
+                    net_pnl_pct,
+                    str(exit_reason),
+                    int(trade_id),
+                ),
+            )
+            return int(cursor.rowcount or 0) > 0
+
+    def get_inverse_shadow_performance(
+        self,
+        *,
+        after_opened_at: str | None = None,
+    ) -> list[dict]:
+        where = ["1 = 1"]
+        params: list[object] = []
+        if after_opened_at:
+            where.append("opened_at >= ?")
+            params.append(str(after_opened_at))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    market,
+                    SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END)
+                        AS open_count,
+                    SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END)
+                        AS closed_count,
+                    SUM(
+                        CASE
+                            WHEN status = 'CLOSED' AND net_pnl_pct > 0 THEN 1
+                            ELSE 0
+                        END
+                    ) AS win_count,
+                    AVG(
+                        CASE WHEN status = 'CLOSED' THEN net_pnl_pct END
+                    ) AS avg_net_pnl_pct,
+                    SUM(
+                        CASE WHEN status = 'CLOSED' THEN net_pnl_pct ELSE 0 END
+                    ) AS total_net_pnl_pct
+                FROM inverse_shadow_trades
+                WHERE {' AND '.join(where)}
+                GROUP BY market
+                ORDER BY market
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def save_telegram_message(
         self,
@@ -1290,6 +1909,23 @@ class SqliteRepository:
             result.append(item)
         return result
 
+    def list_broker_order_executions(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM broker_order_executions
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [
+            decoded
+            for row in rows
+            if (decoded := self._decode_broker_execution_row(row)) is not None
+        ]
+
     def list_submitted_order_audit_rows(
         self,
         *,
@@ -1299,11 +1935,14 @@ class SqliteRepository:
     ) -> list[dict]:
         """Return real SUBMITTED orders that still need external fill confirmation.
 
-        The broker_order_events table records order submission/cancel attempts, not
-        broker fill events.  This helper keeps the distinction explicit for
-        operator-facing audits.
+        New orders are resolved from broker_order_executions. Legacy submissions
+        without an execution row remain visible as externally unverified.
         """
         rows = self.list_broker_order_events(limit=source_limit)
+        executions_by_event_id = {
+            int(row["broker_event_id"]): row
+            for row in self.list_broker_order_executions(limit=source_limit)
+        }
         followups_by_original_order_no: dict[str, dict] = {}
         terminal_cancel_statuses = {"CANCELED", "CANCELLED"}
 
@@ -1334,6 +1973,15 @@ class SqliteRepository:
                 continue
 
             item = dict(row)
+            execution = executions_by_event_id.get(int(item.get("id") or 0))
+            if execution is not None:
+                if execution.get("finalized_at"):
+                    continue
+                item["fill_status"] = str(execution.get("status") or "")
+                item["filled_qty"] = int(execution.get("filled_qty") or 0)
+                item["remaining_qty"] = int(execution.get("remaining_qty") or 0)
+                item["avg_fill_price"] = execution.get("avg_fill_price")
+                item["last_fill_checked_at"] = execution.get("last_checked_at")
             broker_order_no = str(item.get("broker_order_no") or "").strip()
             followup = followups_by_original_order_no.get(broker_order_no)
             if followup is not None:
@@ -1680,7 +2328,7 @@ class SqliteRepository:
         after_logged_at: str = "",
         limit: int = 12,
     ) -> list[dict]:
-        """Summarize SELL_REAL order-submission rows, excluding watch/signal rows."""
+        """Summarize broker-confirmed SELL_REAL fills, excluding signal rows."""
         params: list[object] = []
         where = [
             "action_bias = 'SELL_REAL'",

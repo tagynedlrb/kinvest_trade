@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -38,6 +37,31 @@ class DomesticOrderHelper:
         entry_by = "" if watch_target is None else watch_target.entry_by
         signal_snapshot = None if watch_target is None else watch_target.signal_snapshot
         buy_price = float(candidate.best_ask or candidate.current_price)
+        inverse_block_reason = service._inverse_entry_block_reason(
+            "domestic",
+            candidate.stock_code,
+        )
+        if inverse_block_reason:
+            service._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason=inverse_block_reason,
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+            )
+            return {
+                "skipped": True,
+                "market": "domestic",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": inverse_block_reason,
+            }
         config = service.config.liquidity_lab
         qty = config.domestic_test_order_qty
         if config.use_slot_sizing:
@@ -74,6 +98,12 @@ class DomesticOrderHelper:
                     "reason": "slot_budget_insufficient",
                     "available_krw": available_krw,
                 }
+        size_multiplier = service._inverse_entry_size_multiplier(
+            "domestic",
+            candidate.stock_code,
+        )
+        if 0 < size_multiplier < 1 and qty > 0:
+            qty = max(1, int(qty * size_multiplier))
         if qty <= 0:
             return {"skipped": True, "reason": "domestic_test_order_qty_zero"}
         if service.config.credentials.dry_run:
@@ -87,6 +117,7 @@ class DomesticOrderHelper:
         # nothing to stop the next cycle from resubmitting the same buy (the
         # in-memory strategy-manager guard doesn't survive a restart, and an
         # unfilled order doesn't show up in the live balance either).
+        replacement_for_order_no = ""
         pending_buy_order = await service._find_open_domestic_order(
             symbol=candidate.stock_code,
             side="BUY",
@@ -168,6 +199,9 @@ class DomesticOrderHelper:
                     reference_price=buy_price,
                 ),
             )
+            replacement_for_order_no = str(
+                pending_buy_order.get("order_no") or ""
+            )
         order_division = "00"
         order_kind = "limit"
         # KRX won prices have no fractional subunit, and KIS's domestic
@@ -228,6 +262,20 @@ class DomesticOrderHelper:
                 "reason": "order_rejected",
                 "error": error_text,
             }
+        now_iso = datetime.now(timezone.utc).isoformat()
+        execution_context = {
+            "reference_price": buy_price,
+            "signal_snapshot": (
+                None if signal_snapshot is None else asdict(signal_snapshot)
+            ),
+            "activity_score": candidate.activity_score,
+            "orderable_qty": qty,
+            "stock_name": candidate.stock_name,
+            "session_id": getattr(service, "_session_id", ""),
+            "cycle_no": getattr(service, "_cycle_count", 0),
+            "is_session_trade": 1,
+            "pool_size": service._pool_size_for_market("domestic"),
+        }
         service._record_broker_order_event(
             market="domestic",
             symbol=candidate.stock_code,
@@ -245,6 +293,8 @@ class DomesticOrderHelper:
                 "order_division": order_division,
                 "reference_price": buy_price,
             },
+            execution_context=execution_context,
+            replacement_for_order_no=replacement_for_order_no,
         )
         service._queue_trade_notification(
             " ".join(
@@ -269,23 +319,20 @@ class DomesticOrderHelper:
             entry_by=entry_by,
             market="domestic",
         )
-        service._mark_session_owned(candidate.stock_code)
         repository = getattr(service, "repository", None)
         if repository is not None:
-            commission_krw = round(buy_price * qty * service._domestic_commission_rate(), 2)
-            now_iso = datetime.now(timezone.utc).isoformat()
             repository.save_cycle_log(
                 logged_at=now_iso,
                 market="domestic",
                 symbol=candidate.stock_code,
                 exchange_code=None,
-                action_bias="BUY_REAL",
+                action_bias="BUY_SUBMITTED",
                 action_reason="domestic_buy",
                 price=buy_price,
-                pnl_pct=0.0,
+                pnl_pct=None,
                 realized_pnl_usd=None,
-                realized_pnl_krw=0.0,
-                holding_qty=qty,
+                realized_pnl_krw=None,
+                holding_qty=0,
                 rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
                 volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
                 intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
@@ -309,12 +356,12 @@ class DomesticOrderHelper:
                 strategy_flag=strategy_flag,
                 entry_by=entry_by,
                 consecutive_losses=service._consecutive_losses_for_market("domestic"),
-                entry_price=buy_price,
-                qty_executed=qty,
+                entry_price=None,
+                qty_executed=0,
                 net_pnl_usd=None,
-                net_pnl_krw=0.0,
+                net_pnl_krw=None,
                 commission_usd=None,
-                commission_krw=commission_krw,
+                commission_krw=None,
                 is_virtual=0,
                 orderable_qty=qty,
                 stock_name=candidate.stock_name,
@@ -328,16 +375,16 @@ class DomesticOrderHelper:
             market="domestic",
             symbol=candidate.stock_code,
             exchange_code=None,
-            action_bias="BUY_REAL",
-            signal_state="BUY",
-            note="domestic_buy",
-            holding_qty=qty,
+            action_bias="BUY_SUBMITTED",
+            signal_state="BUY_PENDING",
+            note="domestic_buy_submitted",
+            holding_qty=0,
             last_price=float(candidate.current_price),
             pnl_pct=0.0,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             signal_snapshot=signal_snapshot,
-            has_position=True,
+            has_position=False,
         )
         return {
             "submitted": True,
@@ -668,11 +715,42 @@ class DomesticOrderHelper:
         if replacement_note:
             lines.append(f"참고={replacement_note}")
         if held.avg_price > 0:
-            gross_pnl = (sell_price - held.avg_price) * sell_qty
             pnl_pct = (sell_price - held.avg_price) / held.avg_price
             lines.append(f"수익률={format_pct(pnl_pct)}")
         else:
             lines.append("수익률=알수없음")
+        entry_price, entry_time_iso, hold_duration_min = service._get_entry_context(
+            "domestic",
+            candidate.stock_code,
+            fallback_price=held.avg_price,
+        )
+        replacement_for_order_no = (
+            str(pending_sell_order.get("order_no") or "")
+            if is_exit_replacement and pending_sell_order is not None
+            else ""
+        )
+        execution_context = {
+            "reference_price": sell_price,
+            "signal_snapshot": (
+                None if signal_snapshot is None else asdict(signal_snapshot)
+            ),
+            "activity_score": candidate.activity_score,
+            "orderable_qty": held.orderable_qty,
+            "stock_name": candidate.stock_name,
+            "session_id": getattr(service, "_session_id", ""),
+            "cycle_no": getattr(service, "_cycle_count", 0),
+            "is_session_trade": (
+                1 if service._is_session_owned(candidate.stock_code) else 0
+            ),
+            "entry_price": entry_price,
+            "entry_time": entry_time_iso,
+            "hold_duration_min": hold_duration_min,
+            "hold_cycles": service._estimate_hold_cycles(
+                candidate.stock_code,
+                "domestic",
+            ),
+            "pool_size": service._pool_size_for_market("domestic"),
+        }
         service._record_broker_order_event(
             market="domestic",
             symbol=candidate.stock_code,
@@ -691,6 +769,8 @@ class DomesticOrderHelper:
                 "order_division": order_division,
                 "reference_price": sell_price,
             },
+            execution_context=execution_context,
+            replacement_for_order_no=replacement_for_order_no,
         )
         queue_parts = [
             format_market_korean("domestic"),
@@ -708,150 +788,53 @@ class DomesticOrderHelper:
             queue_parts.append(f"참고={replacement_note}")
         service._queue_trade_notification(" ".join(queue_parts))
         await service._flush_trade_notifications(force=service._trade_notification_force_immediate())
-        entry_price, entry_time_iso, hold_duration_min = service._get_entry_context(
-            "domestic",
-            candidate.stock_code,
-            fallback_price=held.avg_price,
+        service.repository.save_cycle_log(
+            logged_at=datetime.now(timezone.utc).isoformat(),
+            market="domestic",
+            symbol=candidate.stock_code,
+            exchange_code=None,
+            action_bias=(
+                "SELL_REPLACED" if is_exit_replacement else "SELL_SUBMITTED"
+            ),
+            action_reason=exit_reason,
+            price=sell_price,
+            holding_qty=held.quantity,
+            cycle_no=getattr(service, "_cycle_count", 0),
+            session_id=getattr(service, "_session_id", ""),
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            is_session_trade=0,
+            entry_price=entry_price,
+            qty_executed=0,
+            is_virtual=0,
+            orderable_qty=held.orderable_qty,
+            stock_name=candidate.stock_name,
+            hold_duration_min=hold_duration_min,
+            entry_time=entry_time_iso,
+            activity_score=candidate.activity_score,
         )
-        if not is_exit_replacement:
-            service._reset_strategy_position(candidate.stock_code, "domestic")
-            service._register_exit_cooldown(
-                "domestic",
-                candidate.stock_code,
-                exit_reason,
-                pnl_pct=pnl_pct if held.avg_price > 0 else None,
-            )
-        if held.avg_price > 0 and not is_exit_replacement:
-            service._on_realised(
-                market="domestic",
-                gross_pnl_krw=float(gross_pnl),
-                pnl_pct=float(pnl_pct),
-            )
-            if service._is_trading_halted("domestic"):
-                domestic_losses = int(
-                    getattr(service, "_consecutive_losses_by_market", {}).get(
-                        "domestic",
-                        service._consecutive_losses,
-                    )
-                )
-                _logger.warning(
-                    "[CB] 국장 서킷브레이커 발동 consecutive=%d session_pnl=%.0f",
-                    domestic_losses,
-                    service._session_realised_krw,
-                )
-                notifier = getattr(service, "notifier", None)
-                if notifier is not None and getattr(notifier, "enabled", True):
-                    asyncio.create_task(
-                        notifier.send(
-                            f"⛔ 서킷브레이커 발동\n"
-                            f"시장=국장 | 연속손절 {domestic_losses}회 | "
-                            f"세션손익 {service._session_realised_krw:+,.0f}원\n"
-                            f"국장 신규 매수만 중단합니다."
-                        )
-                    )
-            if entry_price is None:
-                entry_price = float(held.avg_price or 0.0)
-            net_pnl_krw, sell_commission_krw = service._estimate_domestic_net_pnl_krw(
-                entry_price=float(entry_price or 0.0),
-                exit_price=sell_price,
-                qty=sell_qty,
-            )
-            service.repository.save_cycle_log(
-                logged_at=datetime.now(timezone.utc).isoformat(),
-                market="domestic",
-                symbol=candidate.stock_code,
-                exchange_code=None,
-                action_bias="SELL_REAL",
-                action_reason=exit_reason,
-                price=sell_price,
-                pnl_pct=pnl_pct,
-                realized_pnl_usd=None,
-                realized_pnl_krw=float(gross_pnl),
-                holding_qty=sell_qty,
-                rsi14=signal_snapshot.rsi14 if signal_snapshot else None,
-                volume_ratio=signal_snapshot.volume_ratio if signal_snapshot else None,
-                intraday_momentum=signal_snapshot.intraday_momentum if signal_snapshot else None,
-                intraday_bar_return=(
-                    signal_snapshot.intraday_bar_return if signal_snapshot else None
-                ),
-                minute_ma_fast=signal_snapshot.minute_ma_fast if signal_snapshot else None,
-                minute_ma_slow=signal_snapshot.minute_ma_slow if signal_snapshot else None,
-                vwap=signal_snapshot.vwap if signal_snapshot else None,
-                macd_line=signal_snapshot.macd_line if signal_snapshot else None,
-                macd_signal=signal_snapshot.macd_signal if signal_snapshot else None,
-                macd_golden=int(signal_snapshot.macd_golden) if signal_snapshot else None,
-                breakout_distance_pct=(
-                    signal_snapshot.breakout_distance_pct if signal_snapshot else None
-                ),
-                atr=signal_snapshot.atr if signal_snapshot else None,
-                spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
-                cycle_no=getattr(service, "_cycle_count", 0),
-                session_id=getattr(service, "_session_id", ""),
-                strategy_flag=strategy_flag,
-                entry_by=entry_by,
-                exit_by=exit_by,
-                is_session_trade=1 if service._is_session_owned(candidate.stock_code) else 0,
-                consecutive_losses=service._consecutive_losses_for_market("domestic"),
-                hold_cycles=service._estimate_hold_cycles(candidate.stock_code, "domestic"),
-                entry_price=entry_price,
-                qty_executed=sell_qty,
-                net_pnl_usd=None,
-                net_pnl_krw=net_pnl_krw,
-                commission_usd=None,
-                commission_krw=sell_commission_krw,
-                is_virtual=0,
-                orderable_qty=held.orderable_qty,
-                stock_name=candidate.stock_name,
-                hold_duration_min=hold_duration_min,
-                entry_time=entry_time_iso,
-                cb_active=service._cb_active_flag("domestic"),
-                pool_size=service._pool_size_for_market("domestic"),
-                activity_score=candidate.activity_score,
-            )
-        elif held.avg_price > 0:
-            service.repository.save_cycle_log(
-                logged_at=datetime.now(timezone.utc).isoformat(),
-                market="domestic",
-                symbol=candidate.stock_code,
-                exchange_code=None,
-                action_bias="SELL_REPLACED",
-                action_reason=exit_reason,
-                price=sell_price,
-                holding_qty=sell_qty,
-                cycle_no=getattr(service, "_cycle_count", 0),
-                session_id=getattr(service, "_session_id", ""),
-                strategy_flag=strategy_flag,
-                entry_by=entry_by,
-                exit_by=exit_by,
-                is_session_trade=0,
-                entry_price=entry_price,
-                qty_executed=sell_qty,
-                is_virtual=0,
-                orderable_qty=held.orderable_qty,
-                stock_name=candidate.stock_name,
-                hold_duration_min=hold_duration_min,
-                entry_time=entry_time_iso,
-                activity_score=candidate.activity_score,
-            )
         service._persist_trade_state(
             market="domestic",
             symbol=candidate.stock_code,
             exchange_code=None,
-            action_bias="SELL_REPLACED" if is_exit_replacement else "SELL_REAL",
-            signal_state="SELL_READY",
+            action_bias=(
+                "SELL_REPLACED" if is_exit_replacement else "SELL_SUBMITTED"
+            ),
+            signal_state="SELL_PENDING",
             note=(
                 f"stale_exit_replace:{exit_reason}"
                 if is_exit_replacement
                 else exit_reason
             ),
-            holding_qty=0,
+            holding_qty=held.quantity,
             last_price=sell_price,
             pnl_pct=pnl_pct if held.avg_price > 0 else None,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             exit_by=exit_by,
             signal_snapshot=signal_snapshot,
-            has_position=False,
+            has_position=True,
         )
 
         return {

@@ -1477,8 +1477,8 @@ def test_send_recent_trade_log_formats_latest_buy_and_sell(tmp_path) -> None:
 
     message = controller.notifier.messages[-1]
     assert "[KIS][손익요약]" in message
-    assert "실주문접수 기준" in message
-    assert "주의=체결확정은 MTS/잔고 기준 확인" in message
+    assert "KIS 체결확정 기준" in message
+    assert "검증=주문번호별 체결원장" in message
     assert "거래=1건" in message
     assert "해외손익=+$1.50" in message
 
@@ -1612,7 +1612,7 @@ def test_lab_log_command_sends_pnl_summary(tmp_path) -> None:
 
     message = notifier.messages[-1]
     assert "[KIS][손익요약]" in message
-    assert "실주문접수 기준" in message
+    assert "KIS 체결확정 기준" in message
     assert "환산손익=+3,900원" in message
 
 
@@ -1670,9 +1670,9 @@ def test_lab_performance_command_reports_realized_strategy_only(tmp_path) -> Non
 
     message = notifier.messages[-1]
     assert "[KIS][전략성과]" in message
-    assert "기준=실주문접수 SELL_REAL만 집계" in message
+    assert "기준=KIS 체결확정 SELL_REAL만 집계" in message
     assert "제외=감시 신호 BUY/SELL/HOLD" in message
-    assert "주의=체결확정은 MTS/잔고 기준 확인" in message
+    assert "검증=주문번호별 체결원장, 확인=/lab_orders" in message
     assert "전체=1건" in message
     assert "─── 상위 전략 ───" in message
     assert "─── 하위 전략 ───" in message
@@ -1727,7 +1727,7 @@ def test_lab_report_compare_command_reports_before_after_strategy(tmp_path) -> N
 
     message = notifier.messages[-1]
     assert "[KIS][전략리포트]" in message
-    assert "기준=실주문접수 SELL_REAL" in message
+    assert "기준=KIS 체결확정 SELL_REAL" in message
     assert "[전략 전후 비교] 기준=2026-07-10 00:15 KST" in message
     assert "[이전 2026-07-10 00:15]" in message
     assert "overseas VWAP" in message
@@ -1933,9 +1933,9 @@ def test_build_recent_order_events_message_formats_submission_cancel_and_virtual
     message = controller._build_recent_order_events_message(limit=5)
 
     assert "[KIS][주문기록]" in message
-    assert "기준=주문 접수/취소/가상기록 (체결확정 아님)" in message
+    assert "기준=주문 이벤트 + KIS 체결원장" in message
     assert "─── 접수 후 체결확정 추적 필요 ───" in message
-    assert "해외 AAPL 매수접수 $210.5000 x2 확인필요=MTS/잔고 경과=" in message
+    assert "해외 AAPL 매수접수 $210.5000 x2 확인필요=레거시주문/MTS 경과=" in message
     assert "주문번호=12345" in message
     assert "국내 073240 취소거부 6,990원 x126 상태=REJECTED" in message
     assert "오류=모의투자 장종료 입니다." in message
@@ -2020,7 +2020,7 @@ def test_build_recent_order_events_message_marks_audit_order_live_open_status(tm
         live_open_orders=[]
     )
 
-    assert "해외 AAPL 매도접수 $210.5000 x3 확인필요=MTS/잔고 경과=" in message
+    assert "해외 AAPL 매도접수 $210.5000 x3 확인필요=레거시주문/MTS 경과=" in message
     assert "주문번호=999 브로커상태=미체결" in message
     assert "브로커상태=미체결목록없음" in closed_or_filled_message
 

@@ -521,7 +521,7 @@ class OrderAdminHelper:
         lines = [
             "[KIS][주문기록]",
             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
-            "기준=주문 접수/취소/가상기록 (체결확정 아님)",
+            "기준=주문 이벤트 + KIS 체결원장",
         ]
         if live_open_domestic_orders is not None or live_open_domestic_error:
             lines.append("─── live 국내 미체결 ───")
@@ -872,8 +872,17 @@ class OrderAdminHelper:
             side_text,
             price_text,
             f"x{qty}",
-            "확인필요=MTS/잔고",
         ]
+        fill_status = str(row.get("fill_status") or "").strip().upper()
+        if fill_status:
+            filled_qty = int(row.get("filled_qty") or 0)
+            remaining_qty = int(row.get("remaining_qty") or 0)
+            parts.append(f"체결상태={fill_status}")
+            parts.append(f"체결={filled_qty}/{qty}")
+            if remaining_qty > 0:
+                parts.append(f"미체결={remaining_qty}")
+        else:
+            parts.append("확인필요=레거시주문/MTS")
         parts.extend(controller._format_open_order_age_parts(created_at))
         if order_no:
             parts.append(f"주문번호={order_no}")

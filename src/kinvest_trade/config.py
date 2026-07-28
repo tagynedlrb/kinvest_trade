@@ -178,6 +178,17 @@ class AutoTradeConfig:
     stale_run_grace_minutes: int
     inverse_etf_symbols: list[str]
     leveraged_etf_symbols: list[str]
+    inverse_regime_enabled: bool = False
+    inverse_execution_mode: str = "disabled"
+    inverse_benchmark_return_threshold_pct: float = -1.0
+    inverse_require_same_session: bool = True
+    inverse_require_product_intraday_up: bool = True
+    inverse_min_product_volume_ratio: float = 1.2
+    inverse_take_profit_pct: float = 0.02
+    inverse_stop_loss_pct: float = 0.0075
+    inverse_hard_stop_loss_pct: float = 0.012
+    inverse_max_hold_cycles: int = 24
+    inverse_slot_multiplier: float = 0.25
 
 
 @dataclass(slots=True)
@@ -904,10 +915,8 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("usd_krw_fallback_rate", 1350.0)
             ),
             stale_run_grace_minutes=int(auto_trade_raw.get("stale_run_grace_minutes", 180)),
-            # Intentionally sourced from the "liquidity_lab" JSON section, not
-            # "auto_trade": both trading modes must classify inverse/leveraged
-            # ETFs identically, so there is one shared config key, not two.
-            # Setting these under "auto_trade" in fixed_config.json has no effect.
+            # Legacy defaults for the shared scanner. Market policy files clone
+            # and override these lists independently for KRX and US products.
             inverse_etf_symbols=[
                 str(value)
                 for value in liquidity_lab_raw.get("inverse_etf_symbols", ["SQQQ", "SOXS"])

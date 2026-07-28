@@ -277,6 +277,7 @@ class KisRestClient:
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        include_response_headers: bool = False,
     ) -> dict[str, Any]:
         # KIS는 초당 호출 제한 응답(EGW00201)을 줄 수 있다.
         # 토큰 만료(EGW00123)도 간헐적으로 발생할 수 있어 자동 갱신 후 재시도한다.
@@ -365,6 +366,13 @@ class KisRestClient:
                     msg_cd=str(payload.get("msg_cd") or ""),
                     msg1=str(payload.get("msg1") or ""),
                 )
+                if include_response_headers:
+                    response_headers = getattr(response, "headers", {}) or {}
+                    payload = dict(payload)
+                    payload["_response_headers"] = {
+                        str(key).lower(): str(value)
+                        for key, value in response_headers.items()
+                    }
                 return payload
 
             self._log_api_call(
@@ -981,36 +989,66 @@ class KisRestClient:
         order_no: str = "",
         fk200: str = "",
         nk200: str = "",
+        paginate: bool = True,
+        max_pages: int = 10,
     ) -> dict[str, Any]:
         cano, product_code = self.account_parts()
         tr_id = "TTTS3035R" if self.credentials.env == "prod" else "VTTS3035R"
-        payload = await self._request(
-            "GET",
-            self.OVERSEAS_ORDER_HISTORY_PATH,
-            tr_id,
-            params={
-                "CANO": cano,
-                "ACNT_PRDT_CD": product_code,
-                "PDNO": symbol,
-                "ORD_STRT_DT": start_date,
-                "ORD_END_DT": end_date,
-                "SLL_BUY_DVSN": side_filter,
-                "CCLD_NCCS_DVSN": fill_filter,
-                "OVRS_EXCG_CD": exchange_code,
-                "SORT_SQN": sort_sqn,
-                "ORD_DT": order_date,
-                "ORD_GNO_BRNO": order_branch_no,
-                "ODNO": order_no,
-                "CTX_AREA_NK200": nk200,
-                "CTX_AREA_FK200": fk200,
-            },
-        )
-        output = payload.get("output", []) or []
-        rows = output if isinstance(output, list) else [output]
+        rows: list[dict[str, Any]] = []
+        payload: dict[str, Any] = {}
+        current_fk = fk200
+        current_nk = nk200
+        seen_contexts: set[tuple[str, str]] = set()
+        page_count = 0
+        for page_index in range(max(1, int(max_pages))):
+            payload = await self._request(
+                "GET",
+                self.OVERSEAS_ORDER_HISTORY_PATH,
+                tr_id,
+                params={
+                    "CANO": cano,
+                    "ACNT_PRDT_CD": product_code,
+                    "PDNO": symbol,
+                    "ORD_STRT_DT": start_date,
+                    "ORD_END_DT": end_date,
+                    "SLL_BUY_DVSN": side_filter,
+                    "CCLD_NCCS_DVSN": fill_filter,
+                    "OVRS_EXCG_CD": exchange_code,
+                    "SORT_SQN": sort_sqn,
+                    "ORD_DT": order_date,
+                    "ORD_GNO_BRNO": order_branch_no,
+                    "ODNO": order_no,
+                    "CTX_AREA_NK200": current_nk,
+                    "CTX_AREA_FK200": current_fk,
+                },
+                extra_headers={"tr_cont": "N"} if page_index > 0 else None,
+                include_response_headers=True,
+            )
+            page_count += 1
+            output = payload.get("output", []) or []
+            page_rows = output if isinstance(output, list) else [output]
+            rows.extend(row for row in page_rows if isinstance(row, dict))
+            headers = payload.get("_response_headers", {}) or {}
+            tr_cont = str(headers.get("tr_cont") or "").strip().upper()
+            next_fk = str(payload.get("ctx_area_fk200") or "")
+            next_nk = str(payload.get("ctx_area_nk200") or "")
+            context = (next_fk, next_nk)
+            if (
+                not paginate
+                or tr_cont not in {"M", "F"}
+                or context in seen_contexts
+            ):
+                break
+            seen_contexts.add(context)
+            current_fk, current_nk = next_fk, next_nk
         return {
             "orders": rows,
             "ctx_area_fk200": payload.get("ctx_area_fk200", ""),
             "ctx_area_nk200": payload.get("ctx_area_nk200", ""),
+            "tr_cont": str(
+                (payload.get("_response_headers", {}) or {}).get("tr_cont") or ""
+            ),
+            "page_count": page_count,
             "raw": payload,
         }
 
@@ -1030,51 +1068,86 @@ class KisRestClient:
         query_type_1: str = "",
         fk100: str = "",
         nk100: str = "",
+        paginate: bool = True,
+        max_pages: int = 10,
     ) -> dict[str, Any]:
         cano, product_code = self.account_parts()
         modern_tr_id = "TTTC0081R" if self.credentials.env == "prod" else "VTTC0081R"
         legacy_tr_id = "TTTC8001R" if self.credentials.env == "prod" else "VTTC8001R"
-        params = {
-            "CANO": cano,
-            "ACNT_PRDT_CD": product_code,
-            "INQR_STRT_DT": start_date,
-            "INQR_END_DT": end_date,
-            "SLL_BUY_DVSN_CD": side_filter,
-            "PDNO": symbol,
-            "CCLD_DVSN": fill_filter,
-            "INQR_DVSN": query_order,
-            "INQR_DVSN_3": query_type,
-            "ORD_GNO_BRNO": order_branch_no,
-            "ODNO": order_no,
-            "INQR_DVSN_1": query_type_1,
-            "CTX_AREA_FK100": fk100,
-            "CTX_AREA_NK100": nk100,
-        }
-        if exchange_code:
-            params["EXCG_ID_DVSN_CD"] = exchange_code
-
         last_error: KisApiError | None = None
         for tr_id in (modern_tr_id, legacy_tr_id):
+            rows: list[dict[str, Any]] = []
+            summaries: list[dict[str, Any]] = []
+            current_fk = fk100
+            current_nk = nk100
+            seen_contexts: set[tuple[str, str]] = set()
+            page_count = 0
+            payload: dict[str, Any] = {}
             try:
-                payload = await self._request(
-                    "GET",
-                    self.DOMESTIC_ORDER_HISTORY_PATH,
-                    tr_id,
-                    params=params,
-                )
+                for page_index in range(max(1, int(max_pages))):
+                    params = {
+                        "CANO": cano,
+                        "ACNT_PRDT_CD": product_code,
+                        "INQR_STRT_DT": start_date,
+                        "INQR_END_DT": end_date,
+                        "SLL_BUY_DVSN_CD": side_filter,
+                        "PDNO": symbol,
+                        "CCLD_DVSN": fill_filter,
+                        "INQR_DVSN": query_order,
+                        "INQR_DVSN_3": query_type,
+                        "ORD_GNO_BRNO": order_branch_no,
+                        "ODNO": order_no,
+                        "INQR_DVSN_1": query_type_1,
+                        "CTX_AREA_FK100": current_fk,
+                        "CTX_AREA_NK100": current_nk,
+                    }
+                    if exchange_code:
+                        params["EXCG_ID_DVSN_CD"] = exchange_code
+                    payload = await self._request(
+                        "GET",
+                        self.DOMESTIC_ORDER_HISTORY_PATH,
+                        tr_id,
+                        params=params,
+                        extra_headers={"tr_cont": "N"} if page_index > 0 else None,
+                        include_response_headers=True,
+                    )
+                    page_count += 1
+                    output1 = payload.get("output1")
+                    if output1 is None:
+                        output1 = payload.get("output")
+                    rows.extend(self._coerce_kis_list(output1))
+                    summary = payload.get("output2") or {}
+                    if isinstance(summary, list):
+                        summaries.extend(
+                            item for item in summary if isinstance(item, dict)
+                        )
+                    elif isinstance(summary, dict) and summary:
+                        summaries.append(summary)
+                    headers = payload.get("_response_headers", {}) or {}
+                    tr_cont = str(headers.get("tr_cont") or "").strip().upper()
+                    next_fk = str(payload.get("ctx_area_fk100") or "")
+                    next_nk = str(payload.get("ctx_area_nk100") or "")
+                    context = (next_fk, next_nk)
+                    if (
+                        not paginate
+                        or tr_cont not in {"M", "F"}
+                        or context in seen_contexts
+                    ):
+                        break
+                    seen_contexts.add(context)
+                    current_fk, current_nk = next_fk, next_nk
             except KisApiError as exc:
                 last_error = exc
                 continue
-
-            output1 = payload.get("output1")
-            if output1 is None:
-                output1 = payload.get("output")
-            rows = self._coerce_kis_list(output1)
             return {
                 "orders": rows,
-                "summary": payload.get("output2") or {},
+                "summary": summaries[0] if summaries else {},
                 "ctx_area_fk100": payload.get("ctx_area_fk100", ""),
                 "ctx_area_nk100": payload.get("ctx_area_nk100", ""),
+                "tr_cont": str(
+                    (payload.get("_response_headers", {}) or {}).get("tr_cont") or ""
+                ),
+                "page_count": page_count,
                 "tr_id": tr_id,
                 "raw": payload,
             }

@@ -96,8 +96,19 @@
     "capital_gains_tax_rate": 0.22,
     "usd_krw_fallback_rate": 1350.0,
     "stale_run_grace_minutes": 180,
-    "inverse_etf_symbols": ["SQQQ", "SOXS", "UVXY", "SPXU"],
-    "leveraged_etf_symbols": ["TQQQ", "SOXL"]
+    "inverse_etf_symbols": ["SQQQ", "SOXS", "SPXU"],
+    "leveraged_etf_symbols": ["TQQQ", "SOXL"],
+    "inverse_regime_enabled": true,
+    "inverse_execution_mode": "shadow",
+    "inverse_benchmark_return_threshold_pct": -1.0,
+    "inverse_require_same_session": true,
+    "inverse_require_product_intraday_up": true,
+    "inverse_min_product_volume_ratio": 1.3,
+    "inverse_take_profit_pct": 0.025,
+    "inverse_stop_loss_pct": 0.0075,
+    "inverse_hard_stop_loss_pct": 0.012,
+    "inverse_max_hold_cycles": 36,
+    "inverse_slot_multiplier": 0.15
   },
   "risk": {
     "max_consecutive_losses": 3,

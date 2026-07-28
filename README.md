@@ -42,6 +42,13 @@
    같은 기준값을 복제해 시작하지만 한 시장의 파라미터, ETF 분류, 수수료 공식, 전략 관리자,
    연속손실 카운터를 바꿔도 다른 시장에 전파되면 안 된다. 단, 계좌 전체 일일손실 한도와
    국내+해외 합산 포지션 한도는 의도적으로 공유한다.
+9. **주문 접수는 체결이나 실현손익이 아니다.** `broker_order_executions`가 KIS 주문체결내역의
+   실제 체결수량과 가중평균가를 확인한 뒤에만 `BUY_REAL`/`SELL_REAL`을 한 번 만든다. 취소,
+   미체결, 정정 재주문은 성과·쿨다운·연속손실을 갱신하지 않는다. 실제 매도 체결 뒤의
+   일일손실·연속손실 판정도 수수료와 세금을 차감한 순손익을 사용한다.
+10. **하락장 역방향 상품은 시장별 별도 정책이며 현재는 섀도 전용이다.** 같은 세션의
+    KOSPI/NASDAQ 하락과 상품 자체의 장중 상승·거래량을 모두 확인하되, `inverse_execution_mode`
+    가 `live`로 명시 전환되기 전에는 어떤 방어 경로에서도 KIS 매수주문을 내지 않는다.
 
 ## 현재 구조
 - `config/fixed_config.json`: 고정 설정
@@ -58,6 +65,9 @@
 - `src/kinvest_trade/lab_runtime.py`: 쿨다운/재시도/체결확정 대기 등 사이클 간 런타임 상태
 - `src/kinvest_trade/lab_risk.py`: 연속손절·일일손실 서킷브레이커, 주문거부 서킷브레이커 상태 관리
 - `src/kinvest_trade/market_policy.py`: 시장별 정책 선택, 전략 관리자 생성, 공통 엔진 연결
+- `src/kinvest_trade/execution_reconciler.py`: KIS 주문체결 이력과 제출 원장을 대조해
+  부분체결·정정 주문을 실행 그룹별 한 건의 체결로 확정
+- `src/kinvest_trade/inverse_policy.py`: 시장별 하락 레짐과 역방향 상품 실행모드 게이트
 - `src/kinvest_trade/lab_notify.py`: 거래 알림 큐/배치 전송
   - (위 `lab_*.py`는 원래 `liquidity_lab.py` 한 파일이었으나, 8,700줄을 넘기며 유지보수가
     어려워져 성격별로 분리했다. 각 파일은 `LiquidityLabService` 인스턴스를 `service`로 받아
@@ -414,8 +424,8 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 
 **📜 로그 및 성과**
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
-- `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실주문접수 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
-- `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 실주문접수 성과 비교
+- `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 KIS 체결확정 `SELL_REAL`만 전략별로 집계. 감시 신호와 주문 접수 행은 제외
+- `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 KIS 체결확정 성과 비교
 - `/lab_report wait [시간]`: 최근 N시간(기본 72시간)의 `WAIT` 병목을 시장·전략·사유별로 요약
 - `/lab_report regime [일수]`: KOSPI·NASDAQ Composite 마감 환경과 시장 레짐별 전략 순손익을 요약
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
@@ -516,13 +526,22 @@ TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events
 - `liquidity_lab`가 직접 해외 매도를 실행한 경우에도 `[KIS][LAB_SELL]` 텔레그램 알림이 별도로 전송된다.
 - `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
 - `/lab_portfolio`는 국내/해외 실제 보유 종목과 가상 체결 반영 통합 보유, 정산 대기 매도, 누적 실현손익을 함께 보여준다.
-- `/lab_performance`는 전략 평가용이다. `cycle_log`의 감시 신호 행(`BUY`, `SELL`, `HOLD`)을 제외하고 실주문접수 매도 행(`SELL_REAL`)만 집계한다. 체결 확정 여부는 MTS/잔고 기준으로 확인한다.
+- `/lab_performance`는 전략 평가용이다. 주문 접수는 `BUY_SUBMITTED`/`SELL_SUBMITTED`, KIS 이력에서 확인한 체결만 `BUY_REAL`/`SELL_REAL`로 기록한다. 정정 주문은 같은 실행 그룹으로 합산해 한 거래로 평가한다.
+- 주문 체결 reconciler는 각 시장 현지 주문일을 사용하고 KIS 연속조회 페이지를 끝까지 읽는다.
+  미체결·취소 주문은 성과에서 제외하며, 부분체결과 취소 후 재주문은 같은
+  `execution_group_id`로 합산해 exactly-once 성과 행을 만든다.
 - 시장환경 평가는 KIS 공식 일별 지수 API로 KOSPI(`0001`)와 NASDAQ Composite(`COMP`)의
   종가·거래량·일중범위를 수집한다. 20일 평균 대비 거래량과 변동폭으로
   추세/활동성/변동성 레짐을 별도 저장하고, 장중 임시값은 모니터링에만 쓰며 마감 확정값만
   `SELL_REAL` 성과와 연결한다. 레짐별 최소 5청산·3거래일 전에는 정책 변경 근거로 사용하지
   않는다.
-- `/lab_guard`는 `strategy_guard_lookback_hours` 기간의 실주문접수 `SELL_REAL`을 기준으로 전략별 평균 순손익을 보여준다. 차단 기준은 `strategy_guard_min_trades`와 `strategy_guard_max_avg_net_pnl_pct`를 따른다.
+- 하락장 후보는 국장 `114800`·`252670`, 미장 `SQQQ`·`SOXS`·`SPXU`로 별도 관리한다.
+  같은 현지 세션의 지수가 -1% 이하이면서 하락 추세이고 상품 자체의 분봉 추세·모멘텀·거래량이
+  확인될 때만 후보군에 넣는다. 현재 모드는 양 시장 모두 `shadow`다. `inverse_shadow_trades`
+  원장은 보수적 반스프레드와 왕복 수수료, 이익/손실/하드스톱, 시간제한, 지수 회복,
+  세션 rollover를 기록하며 `/lab_performance`에서 시장별 섀도 순성과를 함께 보여준다.
+  일일 재설정 상품이므로 다음 세션까지 이월하지 않는다.
+- `/lab_guard`는 `strategy_guard_lookback_hours` 기간의 체결확정 `SELL_REAL`을 기준으로 전략별 평균 순손익을 보여준다. 차단 기준은 `strategy_guard_min_trades`와 `strategy_guard_max_avg_net_pnl_pct`를 따른다.
 - `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 내부 `SUBMITTED` 기록은 체결 확정이 아니므로, `접수 후 체결확정 추적 필요` 섹션에서 `확인필요=MTS/잔고`로 따로 표시한다. live 미체결 조회가 성공하면 `브로커상태=미체결` 또는 `브로커상태=미체결목록없음`도 함께 표시한다.
 - **동일한 스킵 이유로 인한 무주문 알림은 30분에 한 번만 보낸다** (2026-07-14, `repeated_skip_notify_cooldown_minutes`). 실제로 주문이 제출되지 않은 채 매 사이클 같은 이유(`net_profit_below_cost` 등)로 계속 대기 상태만 반복되는 경우 텔레그램 알림이 무한히 반복 발송되는 것을 막는다. 실제 매수/매도 체결·주문 오류 알림에는 영향이 없다.
 - **장기 미체결 취소는 수동 명령 없이 정책으로만 처리한다** (2026-07-13, `/lab_cancel_stale_domestic`·`/lab_cancel_stale_overseas` 명령 및 확인 명령 삭제). 스케줄러가 매 사이클마다 국내는 정규장 중, 해외는 미국 주문 가능 세션 중에만, 10분에 한 번씩 30분 이상 된 미체결 주문을 조회해 **봇이 직접 제출한 주문만** 자동 취소한다(사용자가 MTS/HTS로 직접 넣은 주문은 건드리지 않음). 예전에는 이 자동 취소가 안 걸릴 때를 대비해 사람이 직접 `/lab_cancel_stale_*`로 강제 취소하는 수단을 남겨뒀는데, 그 배경이었던 해외 미체결 조회 버그(위 CRAN 사건)를 고치고 나니 별도 수동 경로를 유지할 이유가 없어져 삭제했다.

@@ -210,6 +210,11 @@ the current direction is wrong.
   execution group reached its full target within five minutes and its filled
   quantity covers the stale holding. Never apply this exception to a partial
   group fill.
+- FSUN and HUBB limit buys accepted near the 2026-07-28 US close remain
+  broker-reported as unfilled. Do not infer cancellation from the clock or
+  block late-session entries from these two rows. Keep them out of performance,
+  preserve their execution groups, and validate cancellation or unexpected
+  carry at the next VPS regular session.
 - The 2026-07-28 restart lost an active overseas breaker and allowed an ARX
   481-share paper-account buy during the original 30-minute halt. The fill
   remains part of account/risk PnL, but it must not be interpreted as evidence

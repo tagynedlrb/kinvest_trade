@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import os
 import time
 from datetime import datetime
 from typing import Any, Callable
@@ -93,23 +95,13 @@ class KisRestClient:
         )
 
     # KIS's per-second call limit (EGW00201) is enforced per account/appkey, not
-    # per Python object. The main telegram-control process holds one long-lived
-    # KisRestClient for its scan/trade loop, but admin commands (/lab_portfolio,
-    # /lab_status, /lab_orders, gitlog upload, ...) each open a *separate*
-    # short-lived KisRestClient concurrently. An instance-scoped throttle only
-    # paces calls made through that one object, so those concurrent clients kept
-    # racing past each other and tripping EGW00201 at a ~30-40% rate even after
-    # the per-instance throttle was added (2026-07-14) -- these class attributes
-    # (not `self.`) make the pacing clock shared process-wide across every
-    # instance instead. KIS's documented 모의투자(paper) limit is 2 calls/sec
-    # (0.5s spacing), but that assumes a perfect sliding window; live
-    # verification after the 0.7s fix still showed a stable 27-32% EGW00201
-    # retry rate over several days. That pattern is consistent with this paper
-    # account effectively accepting one request per second. Pace VPS at 1.05s
-    # so boundary jitter cannot put two requests in the same server-side
-    # bucket; keep the existing conservative 0.7s floor for production.
+    # per Python object or process. A class lock coordinates clients inside the
+    # telegram daemon, while a small file-locked timestamp also coordinates
+    # independently launched CLI/audit processes using the same token profile.
+    # VPS is paced at 1.05s because live verification showed that this paper
+    # account effectively accepts one request per second; production keeps the
+    # existing conservative 0.7s floor.
     _rate_limit_lock: "asyncio.Lock | None" = None
-    _last_request_at: float = 0.0
     _min_request_interval_sec: float = 0.7
     _vps_min_request_interval_sec: float = 1.05
     _RATE_LIMIT_MSG_CODES = frozenset({"EGW00201", "EGW00215"})
@@ -123,14 +115,43 @@ class KisRestClient:
         if KisRestClient._rate_limit_lock is None:
             KisRestClient._rate_limit_lock = asyncio.Lock()
         async with KisRestClient._rate_limit_lock:
-            now = time.monotonic()
-            wait_sec = (
-                self._request_interval_sec()
-                - (now - KisRestClient._last_request_at)
-            )
-            if wait_sec > 0:
-                await asyncio.sleep(wait_sec)
-            KisRestClient._last_request_at = time.monotonic()
+            await asyncio.to_thread(self._throttle_across_processes)
+
+    def _throttle_across_processes(self) -> None:
+        interval_sec = self._request_interval_sec()
+        state_path = self.credentials.token_cache_path.with_suffix(
+            f"{self.credentials.token_cache_path.suffix}.rate_limit"
+        )
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            state_path,
+            os.O_RDWR | os.O_CREAT,
+            0o600,
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "r+", encoding="ascii") as state_file:
+                descriptor = -1
+                fcntl.flock(state_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    raw_last_request = state_file.read().strip()
+                    try:
+                        last_request_at = float(raw_last_request or 0.0)
+                    except ValueError:
+                        last_request_at = 0.0
+                    now = time.monotonic()
+                    elapsed_sec = now - last_request_at
+                    if 0 <= elapsed_sec < interval_sec:
+                        time.sleep(interval_sec - elapsed_sec)
+                    state_file.seek(0)
+                    state_file.truncate()
+                    state_file.write(f"{time.monotonic():.9f}")
+                    state_file.flush()
+                finally:
+                    fcntl.flock(state_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
     def _log_api_call(
         self,

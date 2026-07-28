@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import time
 from pathlib import Path
+from queue import Empty
 
 import httpx
 import pytest
@@ -13,16 +15,11 @@ from kinvest_trade.config import KisCredentials
 
 @pytest.fixture(autouse=True)
 def _reset_client_rate_limit_state():
-    # _rate_limit_lock/_last_request_at are class attributes shared across
-    # every KisRestClient instance in the process (2026-07-15 fix, so a
-    # temporary admin-command client and the main loop's long-lived client
-    # pace against the same clock). Reset them per test so test order and
-    # wall-clock timing don't leak between tests in this file.
+    # The asyncio lock is shared across clients in one process. Reset it so an
+    # event loop created by one test cannot leak into another test.
     KisRestClient._rate_limit_lock = None
-    KisRestClient._last_request_at = 0.0
     yield
     KisRestClient._rate_limit_lock = None
-    KisRestClient._last_request_at = 0.0
 
 
 class FakeResponse:
@@ -185,6 +182,36 @@ def _make_paced_test_client(credentials: KisCredentials) -> KisRestClient:
     return client
 
 
+def _run_file_throttle_in_process(
+    token_cache_path: str,
+    interval_sec: float,
+    ready_queue,
+    start_event,
+    result_queue,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=Path(token_cache_path),
+    )
+    client = KisRestClient(credentials)
+    client._vps_min_request_interval_sec = interval_sec
+    ready_queue.put(True)
+    if not start_event.wait(timeout=3):
+        raise RuntimeError("parent did not release throttle workers")
+    started_at = time.monotonic()
+    client._throttle_across_processes()
+    result_queue.put((started_at, time.monotonic()))
+
+
 def test_consecutive_requests_are_paced_to_avoid_rate_limit(tmp_path: Path) -> None:
     # Regression test: back-to-back calls on the same client (e.g. several
     # domestic buy candidates submitted in one cycle, each now also doing a
@@ -257,6 +284,117 @@ def test_pacing_is_shared_across_separate_client_instances(tmp_path: Path) -> No
 
     assert client_a._request_interval_sec() == KisRestClient._vps_min_request_interval_sec
     assert elapsed >= KisRestClient._vps_min_request_interval_sec
+
+
+def test_pacing_file_coordinates_separate_clients(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client_a = KisRestClient(credentials)
+    client_b = KisRestClient(credentials)
+    client_a._vps_min_request_interval_sec = 0.05
+    client_b._vps_min_request_interval_sec = 0.05
+
+    client_a._throttle_across_processes()
+    started_at = time.monotonic()
+    client_b._throttle_across_processes()
+    elapsed = time.monotonic() - started_at
+
+    state_path = tmp_path / "token.json.rate_limit"
+    assert elapsed >= 0.045
+    assert state_path.exists()
+    assert state_path.stat().st_mode & 0o777 == 0o600
+    float(state_path.read_text(encoding="ascii"))
+
+
+def test_pacing_file_serializes_concurrent_processes(tmp_path: Path) -> None:
+    context = multiprocessing.get_context("fork")
+    ready_queue = context.Queue()
+    start_event = context.Event()
+    result_queue = context.Queue()
+    token_cache_path = str(tmp_path / "token.json")
+    interval_sec = 0.08
+    processes = [
+        context.Process(
+            target=_run_file_throttle_in_process,
+            args=(
+                token_cache_path,
+                interval_sec,
+                ready_queue,
+                start_event,
+                result_queue,
+            ),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    try:
+        for _ in processes:
+            assert ready_queue.get(timeout=3) is True
+        start_event.set()
+        results = [result_queue.get(timeout=3) for _ in processes]
+    except Empty as exc:
+        raise AssertionError("throttle worker did not report in time") from exc
+    finally:
+        start_event.set()
+        for process in processes:
+            process.join(timeout=3)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=1)
+
+    assert all(process.exitcode == 0 for process in processes)
+    completed_at = sorted(result[1] for result in results)
+    assert completed_at[1] - completed_at[0] >= interval_sec * 0.8
+
+
+@pytest.mark.parametrize("stored_value", ["not-a-timestamp", "future"])
+def test_pacing_file_recovers_invalid_or_pre_reboot_clock(
+    tmp_path: Path,
+    stored_value: str,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    state_path = tmp_path / "token.json.rate_limit"
+    value = (
+        f"{time.monotonic() + 3600:.9f}"
+        if stored_value == "future"
+        else stored_value
+    )
+    state_path.write_text(value, encoding="ascii")
+    client = KisRestClient(credentials)
+    client._vps_min_request_interval_sec = 0.05
+
+    started_at = time.monotonic()
+    client._throttle_across_processes()
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 0.5
+    assert float(state_path.read_text(encoding="ascii")) <= time.monotonic()
+    assert state_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_request_without_on_api_call_hook_does_not_error(tmp_path: Path) -> None:

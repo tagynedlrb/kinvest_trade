@@ -3,8 +3,8 @@
 ## Active improvement goal
 
 - The current long-running improvement goal ends when the user's current
-  100,000-token allocation resets. It does not end merely because the calendar
-  month changes.
+  10,000-credit allocation is consumed or resets. It does not end merely
+  because the calendar month changes.
 - At reset, finish the active verification/deployment checkpoint, record the
   remaining risks, and close the goal. Do not start speculative work just to
   consume tokens.

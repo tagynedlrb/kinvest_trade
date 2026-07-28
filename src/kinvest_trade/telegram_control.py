@@ -50,7 +50,11 @@ from .time_utils import (
     format_kst_korean,
     parse_datetime,
 )
-from .trade_analysis import compare_before_after, summarize_wait_bottlenecks
+from .trade_analysis import (
+    compare_before_after,
+    summarize_market_regime_performance,
+    summarize_wait_bottlenecks,
+)
 
 
 # Grouped by category so /lab_help doesn't dump 20+ commands as one flat list.

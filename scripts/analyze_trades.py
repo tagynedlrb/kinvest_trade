@@ -10,6 +10,7 @@ from pathlib import Path
 from kinvest_trade.trade_analysis import (
     _net_pnl_pct_expr,
     compare_before_after,
+    summarize_market_regime_performance,
     summarize_wait_bottlenecks,
 )
 
@@ -34,6 +35,7 @@ def main() -> None:
     )
     parser.add_argument("--wait-hours", type=int, default=0, help="최근 N시간 WAIT 병목 요약")
     parser.add_argument("--wait-limit", type=int, default=12, help="WAIT 병목 출력 행 수")
+    parser.add_argument("--regime-limit", type=int, default=12, help="시장 레짐 성과 출력 행 수")
     args = parser.parse_args()
 
     db_path = Path(args.db_path)
@@ -44,6 +46,13 @@ def main() -> None:
     if args.compare_date:
         try:
             print(compare_before_after(db_path, args.compare_date))
+            print(
+                summarize_market_regime_performance(
+                    db_path,
+                    days=args.days,
+                    limit=args.regime_limit,
+                )
+            )
         except ValueError as exc:
             print(f"기준일 형식 오류: {exc}", file=sys.stderr)
             raise SystemExit(2) from exc
@@ -214,6 +223,15 @@ def main() -> None:
                 f"평균Gross={row['avg_gross_pnl_pct']:7.3f}% 평균Net={row['avg_net_pnl_pct']:7.3f}% "
                 f"누적={int(row['total_krw'] or 0):,}원"
             )
+
+    print(
+        "\n"
+        + summarize_market_regime_performance(
+            db_path,
+            days=args.days,
+            limit=args.regime_limit,
+        )
+    )
 
     virtual_extra_filter = "AND COALESCE(excluded_from_performance, 0) = 0" if has_virtual_excluded else ""
     rows = conn.execute(

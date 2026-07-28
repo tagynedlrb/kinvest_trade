@@ -3,7 +3,12 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 
-from scripts.analyze_trades import compare_before_after, main, summarize_wait_bottlenecks
+from scripts.analyze_trades import (
+    compare_before_after,
+    main,
+    summarize_market_regime_performance,
+    summarize_wait_bottlenecks,
+)
 from kinvest_trade.repository import SqliteRepository
 
 
@@ -211,3 +216,102 @@ def test_summarize_wait_bottlenecks_groups_recent_wait_rows(tmp_path) -> None:
     assert "vr=0.30" in output
     assert "rsi=56.0" in output
     assert "domestic" not in output
+
+
+def _save_final_domestic_regime(
+    repository: SqliteRepository,
+    session_date: str,
+    *,
+    return_pct: float = -2.0,
+) -> None:
+    repository.upsert_market_regime(
+        {
+            "market": "domestic",
+            "session_date": session_date,
+            "benchmark_code": "0001",
+            "benchmark_name": "KOSPI",
+            "source": "KIS:FHKUP03500100",
+            "captured_at": f"{session_date}T07:00:00+00:00",
+            "is_final": 1,
+            "open_price": 100.0,
+            "high_price": 102.0,
+            "low_price": 95.0,
+            "close_price": 98.0,
+            "previous_close": 100.0,
+            "return_pct": return_pct,
+            "volume": 200,
+            "turnover": 1000.0,
+            "volume_avg_20": 100.0,
+            "volume_ratio_20": 2.0,
+            "range_pct": 7.0,
+            "range_avg_20": 2.0,
+            "range_ratio_20": 3.5,
+            "trend_regime": "strong_down",
+            "activity_regime": "very_active",
+            "volatility_regime": "extreme",
+            "regime_key": "strong_down|very_active|extreme",
+            "sample_days": 20,
+            "raw_json": {},
+        }
+    )
+
+
+def test_market_regime_performance_requires_multiple_days_before_policy_evaluation(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "regime_analysis.db")
+    session_dates = ["2026-07-20", "2026-07-21", "2026-07-22"]
+    for session_date in session_dates:
+        _save_final_domestic_regime(repository, session_date)
+    trade_dates = [
+        "2026-07-20",
+        "2026-07-20",
+        "2026-07-21",
+        "2026-07-21",
+        "2026-07-22",
+    ]
+    for index, session_date in enumerate(trade_dates):
+        repository.save_cycle_log(
+            logged_at=f"{session_date}T01:0{index}:00+00:00",
+            market="domestic",
+            symbol=f"00{index}",
+            exchange_code="KRX",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP",
+            pnl_pct=0.02,
+            entry_price=100.0,
+            qty_executed=1,
+            net_pnl_krw=1.0,
+        )
+
+    output = summarize_market_regime_performance(repository.db_path)
+
+    assert "[최근 시장 환경]" in output
+    assert "KOSPI=98.00" in output
+    assert "레짐=급락/매우활발/극단변동" in output
+    assert "[시장 레짐별 실주문접수 손익]" in output
+    assert "5건/3일" in output
+    assert "Net=+1.000%" in output
+    assert "평가가능" in output
+    assert "단일 장세 결과로 자동변경 금지" in output
+
+
+def test_market_regime_performance_marks_one_day_sample_insufficient(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "regime_one_day.db")
+    _save_final_domestic_regime(repository, "2026-07-20")
+    for index in range(5):
+        repository.save_cycle_log(
+            logged_at=f"2026-07-20T01:0{index}:00+00:00",
+            market="domestic",
+            symbol=f"10{index}",
+            exchange_code="KRX",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+        )
+
+    output = summarize_market_regime_performance(repository.db_path)
+
+    assert "표본부족(5/5건,1/3일)" in output

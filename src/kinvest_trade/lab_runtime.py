@@ -39,8 +39,12 @@ class LabRuntimeManager:
         self.recent_trade_count: int = 0
         self.recent_cycle_count: int = 0
         self.recent_order_reason_counts: dict[str, int] = {}
+        self.recent_trade_count_by_market: dict[str, int] = {}
+        self.recent_cycle_count_by_market: dict[str, int] = {}
+        self.recent_order_reason_counts_by_market: dict[str, dict[str, int]] = {}
         self.rsi_blocked_count: int = 0
         self.last_low_trade_frequency_alert_cycle: int = 0
+        self.last_low_trade_frequency_alert_cycle_by_market: dict[str, int] = {}
         self.last_trend_filter_alert_cycle: int = 0
         self.exit_cooldown: dict[str, datetime] = {}
         self.no_orderable_retry: dict[str, datetime] = {}
@@ -74,14 +78,36 @@ class LabRuntimeManager:
         no_orderable_retry: dict[str, datetime] | None,
         no_orderable_counts: dict[str, int] | None,
         symbol_loss_streak: dict[str, int] | None = None,
+        recent_trade_count_by_market: dict[str, int] | None = None,
+        recent_cycle_count_by_market: dict[str, int] | None = None,
+        recent_order_reason_counts_by_market: dict[str, dict[str, int]] | None = None,
+        last_low_trade_frequency_alert_cycle_by_market: dict[str, int] | None = None,
     ) -> None:
         self._cycle_no = int(cycle_no)
         self._session_id = str(session_id or "")
         self.recent_trade_count = int(recent_trade_count)
         self.recent_cycle_count = int(recent_cycle_count)
         self.recent_order_reason_counts = dict(recent_order_reason_counts or {})
+        self.recent_trade_count_by_market = {
+            str(market): int(count or 0)
+            for market, count in (recent_trade_count_by_market or {}).items()
+        }
+        self.recent_cycle_count_by_market = {
+            str(market): int(count or 0)
+            for market, count in (recent_cycle_count_by_market or {}).items()
+        }
+        self.recent_order_reason_counts_by_market = {
+            str(market): dict(counts or {})
+            for market, counts in (recent_order_reason_counts_by_market or {}).items()
+        }
         self.rsi_blocked_count = int(rsi_blocked_count)
         self.last_low_trade_frequency_alert_cycle = int(last_low_trade_frequency_alert_cycle)
+        self.last_low_trade_frequency_alert_cycle_by_market = {
+            str(market): int(cycle or 0)
+            for market, cycle in (
+                last_low_trade_frequency_alert_cycle_by_market or {}
+            ).items()
+        }
         self.last_trend_filter_alert_cycle = int(last_trend_filter_alert_cycle)
         self.exit_cooldown = dict(exit_cooldown or {})
         self.no_orderable_retry = dict(no_orderable_retry or {})
@@ -93,8 +119,17 @@ class LabRuntimeManager:
             "recent_trade_count": self.recent_trade_count,
             "recent_cycle_count": self.recent_cycle_count,
             "recent_order_reason_counts": dict(self.recent_order_reason_counts),
+            "recent_trade_count_by_market": dict(self.recent_trade_count_by_market),
+            "recent_cycle_count_by_market": dict(self.recent_cycle_count_by_market),
+            "recent_order_reason_counts_by_market": {
+                market: dict(counts)
+                for market, counts in self.recent_order_reason_counts_by_market.items()
+            },
             "rsi_blocked_count": self.rsi_blocked_count,
             "last_low_trade_frequency_alert_cycle": self.last_low_trade_frequency_alert_cycle,
+            "last_low_trade_frequency_alert_cycle_by_market": dict(
+                self.last_low_trade_frequency_alert_cycle_by_market
+            ),
             "last_trend_filter_alert_cycle": self.last_trend_filter_alert_cycle,
             "exit_cooldown": dict(self.exit_cooldown),
             "no_orderable_retry": dict(self.no_orderable_retry),
@@ -107,66 +142,98 @@ class LabRuntimeManager:
         *,
         domestic_orders: list[dict],
         overseas_orders: list[dict],
+        eligible_markets: set[str] | None = None,
     ) -> None:
-        self.recent_cycle_count += 1
-        reason_counts = dict(self.recent_order_reason_counts)
-        all_orders = [*domestic_orders, *overseas_orders]
+        eligible = (
+            {"domestic", "overseas"}
+            if eligible_markets is None
+            else {
+                str(market).strip().lower()
+                for market in eligible_markets
+                if str(market).strip().lower() in {"domestic", "overseas"}
+            }
+        )
         for market, orders in (
             ("domestic", domestic_orders),
             ("overseas", overseas_orders),
         ):
+            if market not in eligible:
+                continue
+            cycle_count = int(self.recent_cycle_count_by_market.get(market, 0)) + 1
+            reason_counts = dict(
+                self.recent_order_reason_counts_by_market.get(market, {})
+            )
             for order in orders:
                 if not isinstance(order, dict):
                     continue
                 side = str(order.get("side") or "none").strip().lower() or "none"
                 if self._is_effective_trade_order(order):
-                    reason_key = f"{market}:trade:{side}"
+                    reason_key = f"trade:{side}"
                 else:
                     reason = str(order.get("reason") or "inactive").strip() or "inactive"
-                    reason_key = f"{market}:skip:{reason[:80]}"
+                    reason_key = f"skip:{reason[:80]}"
                 reason_counts[reason_key] = int(reason_counts.get(reason_key, 0)) + 1
-        self.recent_order_reason_counts = reason_counts
-        trade_count = sum(1 for order in all_orders if self._is_effective_trade_order(order))
-        self.recent_trade_count += trade_count
-        if self.recent_cycle_count < 50:
-            return
-        trade_ratio = self.recent_trade_count / max(self.recent_cycle_count, 1)
-        top_reasons = dict(
-            sorted(
-                reason_counts.items(),
-                key=lambda item: (-int(item[1]), str(item[0])),
-            )[:8]
-        )
-        if trade_ratio < 0.01:
-            _logger.warning(
-                "[FREQ] 최근 %d사이클 매매율 %.1f%% (trade_count=%d, reasons=%s)",
-                self.recent_cycle_count,
-                trade_ratio * 100.0,
-                self.recent_trade_count,
-                top_reasons,
+            trade_count = int(self.recent_trade_count_by_market.get(market, 0)) + sum(
+                1
+                for order in orders
+                if isinstance(order, dict) and self._is_effective_trade_order(order)
             )
-            self.save_event(
-                event_type="low_trade_frequency",
-                detail={
-                    "cycle_count": self.recent_cycle_count,
-                    "trade_count": self.recent_trade_count,
-                    "ratio": round(trade_ratio, 4),
-                    "top_reasons": top_reasons,
-                },
+            self.recent_cycle_count_by_market[market] = cycle_count
+            self.recent_trade_count_by_market[market] = trade_count
+            self.recent_order_reason_counts_by_market[market] = reason_counts
+            if cycle_count < 50:
+                continue
+            trade_ratio = trade_count / max(cycle_count, 1)
+            top_reasons = dict(
+                sorted(
+                    reason_counts.items(),
+                    key=lambda item: (-int(item[1]), str(item[0])),
+                )[:8]
             )
-            self._maybe_notify_low_trade_frequency(
-                cycle_count=self.recent_cycle_count,
-                trade_count=self.recent_trade_count,
-                trade_ratio=trade_ratio,
-                top_reasons=top_reasons,
-            )
-        self.recent_trade_count = 0
-        self.recent_cycle_count = 0
-        self.recent_order_reason_counts = {}
+            if trade_ratio < 0.01:
+                _logger.warning(
+                    "[FREQ][%s] 최근 %d 주문가능 사이클 주문접수율 %.1f%% "
+                    "(trade_count=%d, reasons=%s)",
+                    market,
+                    cycle_count,
+                    trade_ratio * 100.0,
+                    trade_count,
+                    top_reasons,
+                )
+                self.save_event(
+                    event_type="low_trade_frequency",
+                    market=market,
+                    detail={
+                        "basis": "submitted_or_virtual_order",
+                        "cycle_scope": "market_orderable_only",
+                        "cycle_count": cycle_count,
+                        "trade_count": trade_count,
+                        "ratio": round(trade_ratio, 4),
+                        "top_reasons": top_reasons,
+                    },
+                )
+                self._maybe_notify_low_trade_frequency(
+                    market=market,
+                    cycle_count=cycle_count,
+                    trade_count=trade_count,
+                    trade_ratio=trade_ratio,
+                    top_reasons=top_reasons,
+                )
+            self.recent_trade_count_by_market[market] = 0
+            self.recent_cycle_count_by_market[market] = 0
+            self.recent_order_reason_counts_by_market[market] = {}
+        self.recent_trade_count = sum(self.recent_trade_count_by_market.values())
+        self.recent_cycle_count = sum(self.recent_cycle_count_by_market.values())
+        self.recent_order_reason_counts = {
+            f"{market}:{reason}": count
+            for market, counts in self.recent_order_reason_counts_by_market.items()
+            for reason, count in counts.items()
+        }
 
     def _maybe_notify_low_trade_frequency(
         self,
         *,
+        market: str,
         cycle_count: int,
         trade_count: int,
         trade_ratio: float,
@@ -176,7 +243,9 @@ class LabRuntimeManager:
         if notifier is None:
             return
         cycle_no = self._cycle_no
-        last_alert_cycle = self.last_low_trade_frequency_alert_cycle
+        last_alert_cycle = int(
+            self.last_low_trade_frequency_alert_cycle_by_market.get(market, 0)
+        )
         if cycle_no > 0 and last_alert_cycle > 0 and cycle_no - last_alert_cycle < 200:
             return
         try:
@@ -184,19 +253,26 @@ class LabRuntimeManager:
         except RuntimeError:
             return
 
-        self.last_low_trade_frequency_alert_cycle = (
+        next_alert_cycle = (
             cycle_no if cycle_no > 0 else last_alert_cycle + 200
+        )
+        self.last_low_trade_frequency_alert_cycle_by_market[market] = next_alert_cycle
+        self.last_low_trade_frequency_alert_cycle = max(
+            self.last_low_trade_frequency_alert_cycle_by_market.values(),
+            default=0,
         )
         top_reason_text = ", ".join(
             f"{reason} {count}회" for reason, count in list(top_reasons.items())[:3]
         )
+        market_label = "국장" if market == "domestic" else "미장"
         loop.create_task(
             notifier.send(
                 "\n".join(
                     [
                         "⚠️ 매매 빈도 낮음",
-                        f"범위=최근 {cycle_count}사이클",
-                        f"매매={trade_count}건 비율={trade_ratio * 100:.1f}%",
+                        f"시장={market_label}",
+                        f"범위=최근 {cycle_count} 주문가능 사이클",
+                        f"주문접수={trade_count}건 비율={trade_ratio * 100:.1f}%",
                         f"주요원인={top_reason_text or '-'}",
                         "확인=/lab_status /lab_report compare 2026-07-10",
                     ]

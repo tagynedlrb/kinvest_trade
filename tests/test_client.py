@@ -310,6 +310,90 @@ def test_get_overseas_daily_prices_uses_official_endpoint_fields(tmp_path: Path)
     assert rows == [{"xymd": "20260626", "clos": "219.53"}]
 
 
+def test_get_domestic_index_daily_prices_uses_kospi_endpoint(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        assert method == "GET"
+        assert path == client.DOMESTIC_INDEX_DAILY_PATH
+        assert tr_id == "FHKUP03500100"
+        assert kwargs["params"] == {
+            "FID_COND_MRKT_DIV_CODE": "U",
+            "FID_INPUT_ISCD": "0001",
+            "FID_INPUT_DATE_1": "20260701",
+            "FID_INPUT_DATE_2": "20260728",
+            "FID_PERIOD_DIV_CODE": "D",
+        }
+        return {"output2": [{"stck_bsop_date": "20260728", "bstp_nmix_prpr": "6023.66"}]}
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    rows = asyncio.run(
+        client.get_domestic_index_daily_prices(
+            start_date="20260701",
+            end_date="20260728",
+        )
+    )
+
+    assert rows[0]["bstp_nmix_prpr"] == "6023.66"
+
+
+def test_get_overseas_index_daily_prices_uses_nasdaq_composite_endpoint(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        assert method == "GET"
+        assert path == client.OVERSEAS_INDEX_DAILY_PATH
+        assert tr_id == "FHKST03030100"
+        assert kwargs["params"] == {
+            "FID_COND_MRKT_DIV_CODE": "N",
+            "FID_INPUT_ISCD": "COMP",
+            "FID_INPUT_DATE_1": "20260701",
+            "FID_INPUT_DATE_2": "20260728",
+            "FID_PERIOD_DIV_CODE": "D",
+        }
+        return {"output2": [{"stck_bsop_date": "20260728", "ovrs_nmix_prpr": "24646.14"}]}
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    rows = asyncio.run(
+        client.get_overseas_index_daily_prices(
+            start_date="20260701",
+            end_date="20260728",
+        )
+    )
+
+    assert rows[0]["ovrs_nmix_prpr"] == "24646.14"
+
+
 def test_get_overseas_minute_chart_reads_output2_head_when_present(tmp_path: Path) -> None:
     credentials = KisCredentials(
         env="vps",

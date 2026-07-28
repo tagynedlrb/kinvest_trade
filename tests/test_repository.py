@@ -1198,3 +1198,51 @@ def test_get_session_pnl_summary_after_filter(tmp_path) -> None:
     assert summary["real"]["overseas"]["total_pnl_usd"] == 7.0
     assert summary["virtual"]["overseas_USD"]["trade_count"] == 1
     assert summary["virtual"]["overseas_USD"]["total_pnl"] == 2.0
+
+
+def test_policy_evaluation_log_preserves_reasoning_and_later_validation(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "policy_evaluation.db")
+    evaluation_id = repository.save_policy_evaluation(
+        created_at="2026-07-28T15:00:00+00:00",
+        market="overseas",
+        evaluation_kind="frequency_review",
+        window_start="2026-07-27",
+        window_end="2026-07-28",
+        subject="entry_frequency",
+        decision="hold",
+        hypothesis="Blocked entries do not clear round-trip costs.",
+        evidence={"blocked_30m_avg_pct": 0.145, "cost_pct": 0.5},
+        financial_principles=["evaluate net expectancy", "avoid one-day overfit"],
+        alternatives=["loosen volume gate", "keep policy"],
+        confidence=0.82,
+        falsification_criteria="Revisit after five exits across three final sessions.",
+        validation_due_at="2026-07-31T23:59:00+09:00",
+        reasoning_mode="high_context",
+        comparison_baseline="unchanged_policy_checklist",
+        comparative_value_status="unverified",
+    )
+
+    pending = repository.list_policy_evaluations(pending_only=True)
+
+    assert len(pending) == 1
+    assert pending[0]["id"] == evaluation_id
+    assert pending[0]["evidence_json"]["cost_pct"] == 0.5
+    assert pending[0]["financial_principles_json"] == [
+        "evaluate net expectancy",
+        "avoid one-day overfit",
+    ]
+    assert pending[0]["comparative_value_status"] == "unverified"
+
+    repository.update_policy_evaluation_outcome(
+        evaluation_id,
+        outcome={"result": "policy remained protected from negative net entries"},
+        reviewed_at="2026-07-31T10:00:00+00:00",
+        comparative_value_status="confirmed",
+        git_commit="abc1234",
+    )
+    reviewed = repository.list_policy_evaluations(subject="entry_frequency")
+
+    assert reviewed[0]["reviewed_at"] == "2026-07-31T10:00:00+00:00"
+    assert reviewed[0]["comparative_value_status"] == "confirmed"
+    assert reviewed[0]["outcome_json"]["result"].startswith("policy remained")
+    assert reviewed[0]["git_commit"] == "abc1234"

@@ -23,7 +23,11 @@ from .message_format import (
     format_usd,
 )
 from .time_utils import KST, ensure_timezone, format_kst_korean, parse_datetime
-from .trade_analysis import compare_before_after, summarize_wait_bottlenecks
+from .trade_analysis import (
+    compare_before_after,
+    summarize_market_regime_performance,
+    summarize_wait_bottlenecks,
+)
 
 if TYPE_CHECKING:
     from .client import KisRestClient
@@ -1441,7 +1445,8 @@ class ReportHelper:
         args = str(report_args or "").strip().split()
         usage = (
             "사용법=/lab_report compare 2026-07-10 또는 2026-07-10T18:00\n"
-            "사용법=/lab_report wait 72"
+            "사용법=/lab_report wait 72\n"
+            "사용법=/lab_report regime 30"
         )
         if not args:
             return "\n".join(
@@ -1472,8 +1477,12 @@ class ReportHelper:
                     "[KIS][전략리포트]",
                     f"시각={format_kst_korean(now)}",
                     "기준=실주문접수 SELL_REAL",
-                    "주의=net은 평균 손익률에서 0.5% 비용을 차감한 추정치",
+                    "주의=net은 기록 수수료 우선, 미기록 건은 0.5% 비용 추정",
                     comparison,
+                    summarize_market_regime_performance(
+                        controller.repository.db_path,
+                        limit=6,
+                    ),
                 ]
             )
         if report_kind == "wait" and len(args) in {1, 2}:
@@ -1500,6 +1509,31 @@ class ReportHelper:
                     f"시각={format_kst_korean(now)}",
                     "기준=cycle_log WAIT",
                     bottlenecks,
+                ]
+            )
+        if report_kind == "regime" and len(args) in {1, 2}:
+            try:
+                days = int(args[1]) if len(args) == 2 else 30
+                regime_report = summarize_market_regime_performance(
+                    controller.repository.db_path,
+                    days=max(0, days),
+                    limit=10,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return "\n".join(
+                    [
+                        "[KIS][전략리포트]",
+                        f"시각={format_kst_korean(now)}",
+                        "실행실패=시장 레짐 리포트 생성 실패",
+                        f"오류={str(exc)[:120]}",
+                        usage,
+                    ]
+                )
+            return "\n".join(
+                [
+                    "[KIS][시장환경 리포트]",
+                    f"시각={format_kst_korean(now)}",
+                    regime_report,
                 ]
             )
         return "\n".join(

@@ -417,6 +417,7 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 실주문접수 `SELL_REAL`만 전략별로 집계. 감시 신호 `BUY/SELL/HOLD`는 제외
 - `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 실주문접수 성과 비교
 - `/lab_report wait [시간]`: 최근 N시간(기본 72시간)의 `WAIT` 병목을 시장·전략·사유별로 요약
+- `/lab_report regime [일수]`: KOSPI·NASDAQ Composite 마감 환경과 시장 레짐별 전략 순손익을 요약
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
 - `/lab_gitlog`: 당일 거래/이벤트/주문/텔레그램/API 호출 로그를 CSV 5종으로 정리해 GitHub 저장소에 업로드
 
@@ -516,6 +517,11 @@ TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events
 - `liquidity_lab`는 이제 국내 보유 포지션도 감시 목록에 포함해 손절/익절 신호가 나오면 실제 국내 매도 경로로 연결된다.
 - `/lab_portfolio`는 국내/해외 실제 보유 종목과 가상 체결 반영 통합 보유, 정산 대기 매도, 누적 실현손익을 함께 보여준다.
 - `/lab_performance`는 전략 평가용이다. `cycle_log`의 감시 신호 행(`BUY`, `SELL`, `HOLD`)을 제외하고 실주문접수 매도 행(`SELL_REAL`)만 집계한다. 체결 확정 여부는 MTS/잔고 기준으로 확인한다.
+- 시장환경 평가는 KIS 공식 일별 지수 API로 KOSPI(`0001`)와 NASDAQ Composite(`COMP`)의
+  종가·거래량·일중범위를 수집한다. 20일 평균 대비 거래량과 변동폭으로
+  추세/활동성/변동성 레짐을 별도 저장하고, 장중 임시값은 모니터링에만 쓰며 마감 확정값만
+  `SELL_REAL` 성과와 연결한다. 레짐별 최소 5청산·3거래일 전에는 정책 변경 근거로 사용하지
+  않는다.
 - `/lab_guard`는 `strategy_guard_lookback_hours` 기간의 실주문접수 `SELL_REAL`을 기준으로 전략별 평균 순손익을 보여준다. 차단 기준은 `strategy_guard_min_trades`와 `strategy_guard_max_avg_net_pnl_pct`를 따른다.
 - `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 내부 `SUBMITTED` 기록은 체결 확정이 아니므로, `접수 후 체결확정 추적 필요` 섹션에서 `확인필요=MTS/잔고`로 따로 표시한다. live 미체결 조회가 성공하면 `브로커상태=미체결` 또는 `브로커상태=미체결목록없음`도 함께 표시한다.
 - **동일한 스킵 이유로 인한 무주문 알림은 30분에 한 번만 보낸다** (2026-07-14, `repeated_skip_notify_cooldown_minutes`). 실제로 주문이 제출되지 않은 채 매 사이클 같은 이유(`net_profit_below_cost` 등)로 계속 대기 상태만 반복되는 경우 텔레그램 알림이 무한히 반복 발송되는 것을 막는다. 실제 매수/매도 체결·주문 오류 알림에는 영향이 없다.

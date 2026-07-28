@@ -620,6 +620,7 @@ class FixedSymbolAutoTrader:
             auto,
             snapshot,
             pnl_pct,
+            market="overseas",
             drawdown_from_peak=drawdown_from_peak,
             hold_cycles=self.position.hold_cycles,
             position_qty=self.position.qty,

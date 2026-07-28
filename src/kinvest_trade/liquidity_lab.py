@@ -23,6 +23,7 @@ from .market_sessions import (
 )
 from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
 from .market_policy import MarketPolicyRegistry, MomentumMarketPolicy, normalize_market_name
+from .market_regime import MarketRegimeCollector
 from .lab_domestic_orders import DomesticOrderHelper
 from .lab_notify import TradeNotifier
 from .lab_overseas_orders import OverseasOrderHelper
@@ -267,7 +268,16 @@ class LiquidityLabService:
         self._session_owned_symbols: set[str] = set()
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
         self._persisted_symbol_state: dict[tuple[str, str], dict] = {}
-        self._domestic_fluctuation_rank_disabled: bool = False
+        self._domestic_fluctuation_rank_disabled: bool = (
+            str(
+                getattr(
+                    getattr(self.config, "credentials", None),
+                    "env",
+                    "prod",
+                )
+            ).strip().lower()
+            != "prod"
+        )
         self._pending_trade_notifications: list[str] = []
         self._pending_trade_notification_started_at: datetime | None = None
         self._trade_notification_window_sec: int = 60
@@ -285,8 +295,12 @@ class LiquidityLabService:
         self._recent_trade_count: int = 0
         self._recent_cycle_count: int = 0
         self._recent_order_reason_counts: dict[str, int] = {}
+        self._recent_trade_count_by_market: dict[str, int] = {}
+        self._recent_cycle_count_by_market: dict[str, int] = {}
+        self._recent_order_reason_counts_by_market: dict[str, dict[str, int]] = {}
         self._rsi_blocked_count: int = 0
         self._last_low_trade_frequency_alert_cycle: int = 0
+        self._last_low_trade_frequency_alert_cycle_by_market: dict[str, int] = {}
         self._last_trend_filter_alert_cycle: int = 0
         self.runtime = LabRuntimeManager(
             self.config,
@@ -299,6 +313,10 @@ class LiquidityLabService:
         self.watch_state = WatchStateHelper(self)
         self.domestic_orders = DomesticOrderHelper(self)
         self.overseas_orders = OverseasOrderHelper(self)
+        self.market_regime_collector = MarketRegimeCollector(
+            self.client,
+            self.repository,
+        )
 
     def _get_circuit_breaker(self) -> CircuitBreakerManager:
         cb = getattr(self, "cb", None)
@@ -432,6 +450,26 @@ class LiquidityLabService:
             no_orderable_retry=getattr(self, "_no_orderable_retry", {}),
             no_orderable_counts=getattr(self, "_no_orderable_counts", {}),
             symbol_loss_streak=getattr(self, "_symbol_loss_streak", {}),
+            recent_trade_count_by_market=getattr(
+                self,
+                "_recent_trade_count_by_market",
+                {},
+            ),
+            recent_cycle_count_by_market=getattr(
+                self,
+                "_recent_cycle_count_by_market",
+                {},
+            ),
+            recent_order_reason_counts_by_market=getattr(
+                self,
+                "_recent_order_reason_counts_by_market",
+                {},
+            ),
+            last_low_trade_frequency_alert_cycle_by_market=getattr(
+                self,
+                "_last_low_trade_frequency_alert_cycle_by_market",
+                {},
+            ),
         )
         return runtime
 
@@ -443,9 +481,24 @@ class LiquidityLabService:
         self._recent_trade_count = int(snapshot["recent_trade_count"])
         self._recent_cycle_count = int(snapshot["recent_cycle_count"])
         self._recent_order_reason_counts = dict(snapshot["recent_order_reason_counts"])
+        self._recent_trade_count_by_market = dict(
+            snapshot["recent_trade_count_by_market"]
+        )
+        self._recent_cycle_count_by_market = dict(
+            snapshot["recent_cycle_count_by_market"]
+        )
+        self._recent_order_reason_counts_by_market = {
+            str(market): dict(counts)
+            for market, counts in dict(
+                snapshot["recent_order_reason_counts_by_market"]
+            ).items()
+        }
         self._rsi_blocked_count = int(snapshot["rsi_blocked_count"])
         self._last_low_trade_frequency_alert_cycle = int(
             snapshot["last_low_trade_frequency_alert_cycle"]
+        )
+        self._last_low_trade_frequency_alert_cycle_by_market = dict(
+            snapshot["last_low_trade_frequency_alert_cycle_by_market"]
         )
         self._last_trend_filter_alert_cycle = int(snapshot["last_trend_filter_alert_cycle"])
         self._exit_cooldown = dict(snapshot["exit_cooldown"])
@@ -1951,6 +2004,20 @@ class LiquidityLabService:
                 overseas_order=None,
             )
 
+    async def _refresh_market_regimes(self, now: datetime) -> None:
+        collector = getattr(self, "market_regime_collector", None)
+        if collector is None:
+            client = getattr(self, "client", None)
+            repository = getattr(self, "repository", None)
+            if client is None or repository is None:
+                return
+            collector = MarketRegimeCollector(client, repository)
+            self.market_regime_collector = collector
+        try:
+            await collector.refresh_if_due(now)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("[REGIME] collector_failed error=%s", exc)
+
     async def _run_cycle(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
@@ -1966,6 +2033,7 @@ class LiquidityLabService:
                     )
                 },
             )
+        await self._refresh_market_regimes(now)
         await self._ensure_tv_diagnostics()
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
         await self._maybe_send_overseas_relist_alert(now, nyse_holiday=nyse_holiday)
@@ -2265,6 +2333,14 @@ class LiquidityLabService:
         self._record_cycle_trade_frequency(
             domestic_orders=domestic_orders,
             overseas_orders=overseas_orders,
+            eligible_markets={
+                market
+                for market, eligible in (
+                    ("domestic", krx_open),
+                    ("overseas", us_orderable_in_profile),
+                )
+                if eligible
+            },
         )
         self._check_trend_filter_lost_ratio()
 
@@ -2705,8 +2781,8 @@ class LiquidityLabService:
         Return current overseas holdings as symbol -> exchange_code mapping.
 
         Reuses the balance cache populated by `_get_held_symbols()` to avoid
-        extra API calls. Virtual holdings default to NASD when no exchange
-        context exists.
+        extra API calls and preserves the exchange recorded with virtual
+        positions.
         """
         _ = await self._get_held_symbols()
         cache = getattr(self, "_overseas_balance_cache", {})
@@ -2720,10 +2796,17 @@ class LiquidityLabService:
                 raw_exch = str(row.get("ovrs_excg_cd", "")).strip().upper()
                 if symbol:
                     result[symbol] = raw_exch or "NASD"
-        for sym in self._get_virtual_held_symbols():
-            symbol = sym.upper()
-            if symbol not in result:
-                result[symbol] = "NASD"
+        manager = getattr(self, "virtual_trades", None)
+        if manager is not None:
+            for position in manager.list_positions("overseas"):
+                if position.qty <= 0:
+                    continue
+                symbol = position.symbol.strip().upper()
+                exchange_code = str(position.exchange_code or "NASD").strip().upper()
+                if symbol:
+                    result.setdefault(symbol, exchange_code or "NASD")
+        for symbol in self._get_virtual_held_symbols():
+            result.setdefault(symbol.strip().upper(), "NASD")
         return result
 
     def _get_virtual_held_symbols(self) -> set[str]:
@@ -4963,11 +5046,13 @@ class LiquidityLabService:
         *,
         domestic_orders: list[dict],
         overseas_orders: list[dict],
+        eligible_markets: set[str] | None = None,
     ) -> None:
         runtime = self._get_runtime_manager()
         runtime.record_cycle_trade_frequency(
             domestic_orders=domestic_orders,
             overseas_orders=overseas_orders,
+            eligible_markets=eligible_markets,
         )
         self._sync_runtime_legacy_state(runtime)
 
@@ -5335,6 +5420,7 @@ class LiquidityLabService:
             ),
             snapshot,
             pnl_pct,
+            market=market,
             drawdown_from_peak=0.0,
             hold_cycles=self._estimate_hold_cycles(symbol, market) if symbol else 0,
             position_qty=position_qty,

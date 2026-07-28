@@ -1881,6 +1881,15 @@ def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() ->
     assert broker_rows[1]["payload_json"]["original_order_price"] == 337.57
     assert broker_rows[1]["payload_json"]["reference_price"] == 316.9
     assert broker_rows[1]["payload_json"]["open_qty"] == 61
+    assert service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5) == []
+    replacement_rows = service.repository.query_cycle_log(
+        action_bias="SELL_REPLACED",
+        limit=5,
+    )
+    assert len(replacement_rows) == 1
+    assert replacement_rows[0]["realized_pnl_krw"] is None
+    assert replacement_rows[0]["net_pnl_krw"] is None
+    assert service._consecutive_losses_for_market("overseas") == 0
 
 
 def test_place_overseas_sell_order_waits_on_fresh_non_protective_pending_exit() -> None:
@@ -2722,6 +2731,43 @@ def test_load_overseas_positions_does_not_warn_for_normal_sized_position() -> No
     assert service.notifier.messages == []
 
 
+def test_get_held_symbol_map_preserves_virtual_position_exchange_codes() -> None:
+    service = _build_run_service()
+    service._overseas_balance_cache = {"cycle": 1, "data": {}}
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="WFC",
+        exchange_code="NYSE",
+        qty=2,
+        fill_price=87.20,
+        currency="USD",
+        session="regular",
+        reason="test",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="CLM",
+        exchange_code="AMEX",
+        qty=3,
+        fill_price=9.10,
+        currency="USD",
+        session="regular",
+        reason="test",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    async def fake_get_held_symbols() -> set[str]:
+        return {"WFC", "CLM"}
+
+    service._get_held_symbols = fake_get_held_symbols  # type: ignore[method-assign]
+
+    held_map = asyncio.run(service._get_held_symbol_map())
+
+    assert held_map["WFC"] == "NYSE"
+    assert held_map["CLM"] == "AMEX"
+
+
 def _build_domestic_sell_service(
     *,
     dry_run: bool = False,
@@ -2901,6 +2947,15 @@ def test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderab
     assert broker_rows[1]["payload_json"]["reference_price"] == 4925.0
     assert broker_rows[1]["payload_json"]["open_qty"] == 184
     assert "참고=미체결 매도 정정 후 재주문" in service.notifier.messages[0]
+    assert service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5) == []
+    replacement_rows = service.repository.query_cycle_log(
+        action_bias="SELL_REPLACED",
+        limit=5,
+    )
+    assert len(replacement_rows) == 1
+    assert replacement_rows[0]["realized_pnl_krw"] is None
+    assert replacement_rows[0]["net_pnl_krw"] is None
+    assert service._consecutive_losses_for_market("domestic") == 0
 
 
 def test_place_domestic_non_protective_sell_waits_on_fresh_pending_exit() -> None:
@@ -3645,18 +3700,19 @@ def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
         service._record_cycle_trade_frequency(
             domestic_orders=[{"skipped": True, "reason": "no_action"}],
             overseas_orders=[{"skipped": True, "reason": "no_action"}],
+            eligible_markets={"domestic"},
         )
 
     events = service.repository.list_event_log(event_type="low_trade_frequency", limit=1)
     assert len(events) == 1
+    assert events[0]["market"] == "domestic"
     detail = json.loads(events[0]["detail"])
+    assert detail["basis"] == "submitted_or_virtual_order"
+    assert detail["cycle_scope"] == "market_orderable_only"
     assert detail["cycle_count"] == 50
     assert detail["trade_count"] == 0
     assert detail["ratio"] == 0.0
-    assert detail["top_reasons"] == {
-        "domestic:skip:no_action": 50,
-        "overseas:skip:no_action": 50,
-    }
+    assert detail["top_reasons"] == {"skip:no_action": 50}
     assert service._recent_cycle_count == 0
     assert service._recent_order_reason_counts == {}
 
@@ -3670,12 +3726,14 @@ def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() 
             service._record_cycle_trade_frequency(
                 domestic_orders=[{"skipped": True, "reason": "no_action"}],
                 overseas_orders=[{"skipped": True, "reason": "overseas_position_cap_reached"}],
+                eligible_markets={"overseas"},
             )
         await asyncio.sleep(0)
 
         assert len(service.notifier.messages) == 1
         assert "매매 빈도 낮음" in service.notifier.messages[0]
-        assert "overseas:skip:overseas_position_cap_reached 50회" in service.notifier.messages[0]
+        assert "시장=미장" in service.notifier.messages[0]
+        assert "skip:overseas_position_cap_reached 50회" in service.notifier.messages[0]
         assert service._last_low_trade_frequency_alert_cycle == 200
 
         service._cycle_count = 300
@@ -3683,12 +3741,35 @@ def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() 
             service._record_cycle_trade_frequency(
                 domestic_orders=[{"skipped": True, "reason": "no_action"}],
                 overseas_orders=[{"skipped": True, "reason": "no_overseas_candidate"}],
+                eligible_markets={"overseas"},
             )
         await asyncio.sleep(0)
 
         assert len(service.notifier.messages) == 1
 
     asyncio.run(run_case())
+
+
+def test_record_cycle_trade_frequency_ignores_closed_or_unsupported_markets() -> None:
+    service = _build_run_service()
+
+    for _ in range(60):
+        service._record_cycle_trade_frequency(
+            domestic_orders=[{"skipped": True, "reason": "market_closed"}],
+            overseas_orders=[
+                {
+                    "skipped": True,
+                    "reason": "us_open_but_mock_session_not_supported",
+                }
+            ],
+            eligible_markets=set(),
+        )
+
+    assert service.repository.list_event_log(
+        event_type="low_trade_frequency",
+        limit=5,
+    ) == []
+    assert service._recent_cycle_count_by_market == {}
 
 
 def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:

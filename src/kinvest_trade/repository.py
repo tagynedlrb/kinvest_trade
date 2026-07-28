@@ -46,6 +46,8 @@ class SqliteRepository:
         "virtual_orders",
         "virtual_sell_pending",
         "lab_symbol_state",
+        "market_regimes",
+        "policy_evaluation_log",
     )
 
     def count_rows(self, table: str) -> int:
@@ -407,6 +409,68 @@ class SqliteRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at
                     ON api_call_log(created_at);
+
+                CREATE TABLE IF NOT EXISTS market_regimes (
+                    market TEXT NOT NULL,
+                    session_date TEXT NOT NULL,
+                    benchmark_code TEXT NOT NULL,
+                    benchmark_name TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    is_final INTEGER NOT NULL DEFAULT 0,
+                    open_price REAL,
+                    high_price REAL,
+                    low_price REAL,
+                    close_price REAL,
+                    previous_close REAL,
+                    return_pct REAL,
+                    volume INTEGER,
+                    turnover REAL,
+                    volume_avg_20 REAL,
+                    volume_ratio_20 REAL,
+                    range_pct REAL,
+                    range_avg_20 REAL,
+                    range_ratio_20 REAL,
+                    trend_regime TEXT NOT NULL DEFAULT 'unknown',
+                    activity_regime TEXT NOT NULL DEFAULT 'unknown',
+                    volatility_regime TEXT NOT NULL DEFAULT 'unknown',
+                    regime_key TEXT NOT NULL DEFAULT 'unknown|unknown|unknown',
+                    sample_days INTEGER NOT NULL DEFAULT 0,
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (market, session_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_market_regimes_date
+                    ON market_regimes(session_date);
+                CREATE INDEX IF NOT EXISTS idx_market_regimes_key
+                    ON market_regimes(market, regime_key, session_date);
+
+                CREATE TABLE IF NOT EXISTS policy_evaluation_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    evaluation_kind TEXT NOT NULL,
+                    window_start TEXT,
+                    window_end TEXT,
+                    subject TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    hypothesis TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '{}',
+                    financial_principles_json TEXT NOT NULL DEFAULT '[]',
+                    alternatives_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL,
+                    falsification_criteria TEXT NOT NULL DEFAULT '',
+                    validation_due_at TEXT,
+                    reasoning_mode TEXT NOT NULL DEFAULT '',
+                    comparison_baseline TEXT NOT NULL DEFAULT '',
+                    comparative_value_status TEXT NOT NULL DEFAULT 'unverified',
+                    outcome_json TEXT NOT NULL DEFAULT '{}',
+                    reviewed_at TEXT,
+                    git_commit TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_policy_evaluation_created
+                    ON policy_evaluation_log(created_at);
+                CREATE INDEX IF NOT EXISTS idx_policy_evaluation_subject
+                    ON policy_evaluation_log(market, subject, created_at);
                 """
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
@@ -591,6 +655,260 @@ class SqliteRepository:
                 ),
             )
             return int(cursor.lastrowid)
+
+    def upsert_market_regime(self, regime: dict) -> None:
+        columns = (
+            "market",
+            "session_date",
+            "benchmark_code",
+            "benchmark_name",
+            "source",
+            "captured_at",
+            "is_final",
+            "open_price",
+            "high_price",
+            "low_price",
+            "close_price",
+            "previous_close",
+            "return_pct",
+            "volume",
+            "turnover",
+            "volume_avg_20",
+            "volume_ratio_20",
+            "range_pct",
+            "range_avg_20",
+            "range_ratio_20",
+            "trend_regime",
+            "activity_regime",
+            "volatility_regime",
+            "regime_key",
+            "sample_days",
+            "raw_json",
+        )
+        values = []
+        for column in columns:
+            value = regime.get(column)
+            if column == "raw_json" and not isinstance(value, str):
+                value = json.dumps(value or {}, ensure_ascii=False, default=str)
+            values.append(value)
+        update_columns = columns[2:]
+        assignments = ", ".join(f"{column} = excluded.{column}" for column in update_columns)
+        placeholders = ", ".join("?" for _ in columns)
+        with self._connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO market_regimes ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(market, session_date) DO UPDATE SET
+                    {assignments}
+                """,
+                values,
+            )
+
+    def get_market_regime(
+        self,
+        market: str,
+        session_date: str | None = None,
+        *,
+        final_only: bool = False,
+    ) -> dict | None:
+        where = ["market = ?"]
+        params: list[object] = [str(market).strip().lower()]
+        if session_date:
+            where.append("session_date = ?")
+            params.append(str(session_date))
+        if final_only:
+            where.append("is_final = 1")
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM market_regimes
+                WHERE {" AND ".join(where)}
+                ORDER BY session_date DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_market_regimes(
+        self,
+        *,
+        market: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        final_only: bool = False,
+        limit: int = 250,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        if start_date:
+            where.append("session_date >= ?")
+            params.append(str(start_date))
+        if end_date:
+            where.append("session_date <= ?")
+            params.append(str(end_date))
+        if final_only:
+            where.append("is_final = 1")
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM market_regimes
+                {where_sql}
+                ORDER BY session_date DESC, market ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_policy_evaluation(
+        self,
+        *,
+        created_at: str,
+        market: str,
+        evaluation_kind: str,
+        subject: str,
+        decision: str,
+        hypothesis: str,
+        evidence: dict | list | None = None,
+        financial_principles: list | dict | None = None,
+        alternatives: list | dict | None = None,
+        confidence: float | None = None,
+        falsification_criteria: str = "",
+        validation_due_at: str | None = None,
+        reasoning_mode: str = "",
+        comparison_baseline: str = "",
+        comparative_value_status: str = "unverified",
+        window_start: str | None = None,
+        window_end: str | None = None,
+        outcome: dict | list | None = None,
+        reviewed_at: str | None = None,
+        git_commit: str = "",
+    ) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO policy_evaluation_log (
+                    created_at, market, evaluation_kind, window_start, window_end,
+                    subject, decision, hypothesis, evidence_json,
+                    financial_principles_json, alternatives_json, confidence,
+                    falsification_criteria, validation_due_at, reasoning_mode,
+                    comparison_baseline, comparative_value_status, outcome_json,
+                    reviewed_at, git_commit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    str(market).strip().lower(),
+                    evaluation_kind,
+                    window_start,
+                    window_end,
+                    subject,
+                    decision,
+                    hypothesis,
+                    json.dumps(evidence or {}, ensure_ascii=False, default=str),
+                    json.dumps(
+                        financial_principles or [],
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                    json.dumps(alternatives or [], ensure_ascii=False, default=str),
+                    confidence,
+                    falsification_criteria,
+                    validation_due_at,
+                    reasoning_mode,
+                    comparison_baseline,
+                    comparative_value_status,
+                    json.dumps(outcome or {}, ensure_ascii=False, default=str),
+                    reviewed_at,
+                    git_commit,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def update_policy_evaluation_outcome(
+        self,
+        evaluation_id: int,
+        *,
+        outcome: dict | list,
+        reviewed_at: str,
+        comparative_value_status: str,
+        git_commit: str = "",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE policy_evaluation_log
+                SET outcome_json = ?,
+                    reviewed_at = ?,
+                    comparative_value_status = ?,
+                    git_commit = CASE WHEN ? != '' THEN ? ELSE git_commit END
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(outcome, ensure_ascii=False, default=str),
+                    reviewed_at,
+                    comparative_value_status,
+                    git_commit,
+                    git_commit,
+                    int(evaluation_id),
+                ),
+            )
+
+    def list_policy_evaluations(
+        self,
+        *,
+        market: str | None = None,
+        subject: str | None = None,
+        pending_only: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        if subject:
+            where.append("subject = ?")
+            params.append(subject)
+        if pending_only:
+            where.append("reviewed_at IS NULL")
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM policy_evaluation_log
+                {where_sql}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            for key in (
+                "evidence_json",
+                "financial_principles_json",
+                "alternatives_json",
+                "outcome_json",
+            ):
+                try:
+                    item[key] = json.loads(str(item.get(key) or ""))
+                except json.JSONDecodeError:
+                    pass
+            result.append(item)
+        return result
 
     def save_cycle_log(
         self,

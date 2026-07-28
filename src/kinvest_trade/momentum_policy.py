@@ -206,6 +206,7 @@ def evaluate_exit_setup(
     snapshot: MovingAverageSnapshot,
     pnl_pct: float,
     *,
+    market: str = "overseas",
     drawdown_from_peak: float,
     hold_cycles: int,
     position_qty: int,
@@ -226,7 +227,20 @@ def evaluate_exit_setup(
     # this in production, but a misconfigured/defaulted value below it would
     # otherwise let a profit-exit reason propose a sell that gets net-negative
     # after fees (the same class of bug fixed for time_exit_profit).
-    commission_floor = getattr(config, "commission_rate", 0.0025) * 2 + 0.003
+    market_key = str(market or "overseas").strip().lower()
+    if market_key == "domestic":
+        commission_rate = getattr(
+            config,
+            "domestic_commission_rate",
+            getattr(config, "commission_rate", 0.0025),
+        )
+    else:
+        commission_rate = getattr(
+            config,
+            "overseas_commission_rate",
+            getattr(config, "commission_rate", 0.0025),
+        )
+    commission_floor = max(float(commission_rate or 0.0), 0.0) * 2 + 0.003
 
     if pnl_pct <= -hard_stop:
         return ExitSetup("sell", "atr_hard_stop", "SELL_READY", note)

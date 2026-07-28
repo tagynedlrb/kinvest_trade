@@ -132,6 +132,7 @@ class MomentumMarketPolicy:
             policy_config,
             snapshot,
             pnl_pct,
+            market=self.market,
             drawdown_from_peak=drawdown_from_peak,
             hold_cycles=hold_cycles,
             position_qty=position_qty,

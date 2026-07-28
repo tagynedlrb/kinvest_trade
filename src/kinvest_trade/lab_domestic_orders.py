@@ -398,6 +398,7 @@ class DomesticOrderHelper:
         order_kind = str(order_spec["order_kind"])
         sell_qty = min(held.quantity, max(held.orderable_qty, 0))
         replacement_note = ""
+        is_exit_replacement = False
         pending_sell_order = await service._find_open_domestic_order(
             symbol=candidate.stock_code,
             side="SELL",
@@ -493,6 +494,7 @@ class DomesticOrderHelper:
                 ),
             )
             replacement_note = "미체결 매도 정정 후 재주문"
+            is_exit_replacement = True
             if sell_qty <= 0:
                 sell_qty = min(
                     held.quantity,
@@ -711,14 +713,15 @@ class DomesticOrderHelper:
             candidate.stock_code,
             fallback_price=held.avg_price,
         )
-        service._reset_strategy_position(candidate.stock_code, "domestic")
-        service._register_exit_cooldown(
-            "domestic",
-            candidate.stock_code,
-            exit_reason,
-            pnl_pct=pnl_pct if held.avg_price > 0 else None,
-        )
-        if held.avg_price > 0:
+        if not is_exit_replacement:
+            service._reset_strategy_position(candidate.stock_code, "domestic")
+            service._register_exit_cooldown(
+                "domestic",
+                candidate.stock_code,
+                exit_reason,
+                pnl_pct=pnl_pct if held.avg_price > 0 else None,
+            )
+        if held.avg_price > 0 and not is_exit_replacement:
             service._on_realised(
                 market="domestic",
                 gross_pnl_krw=float(gross_pnl),
@@ -805,13 +808,42 @@ class DomesticOrderHelper:
                 pool_size=service._pool_size_for_market("domestic"),
                 activity_score=candidate.activity_score,
             )
+        elif held.avg_price > 0:
+            service.repository.save_cycle_log(
+                logged_at=datetime.now(timezone.utc).isoformat(),
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                action_bias="SELL_REPLACED",
+                action_reason=exit_reason,
+                price=sell_price,
+                holding_qty=sell_qty,
+                cycle_no=getattr(service, "_cycle_count", 0),
+                session_id=getattr(service, "_session_id", ""),
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                is_session_trade=0,
+                entry_price=entry_price,
+                qty_executed=sell_qty,
+                is_virtual=0,
+                orderable_qty=held.orderable_qty,
+                stock_name=candidate.stock_name,
+                hold_duration_min=hold_duration_min,
+                entry_time=entry_time_iso,
+                activity_score=candidate.activity_score,
+            )
         service._persist_trade_state(
             market="domestic",
             symbol=candidate.stock_code,
             exchange_code=None,
-            action_bias="SELL_REAL",
+            action_bias="SELL_REPLACED" if is_exit_replacement else "SELL_REAL",
             signal_state="SELL_READY",
-            note=exit_reason,
+            note=(
+                f"stale_exit_replace:{exit_reason}"
+                if is_exit_replacement
+                else exit_reason
+            ),
             holding_qty=0,
             last_price=sell_price,
             pnl_pct=pnl_pct if held.avg_price > 0 else None,

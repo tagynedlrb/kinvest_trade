@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 DEFAULT_COST_PCT = 0.005
+MIN_REGIME_TRADES = 5
+MIN_REGIME_DAYS = 3
+
+_REGIME_LABELS = {
+    "strong_down": "급락",
+    "down": "하락",
+    "sideways": "보합",
+    "up": "상승",
+    "strong_up": "급등",
+    "quiet": "한산",
+    "normal": "보통",
+    "active": "활발",
+    "very_active": "매우활발",
+    "calm": "안정",
+    "high": "고변동",
+    "extreme": "극단변동",
+    "unknown": "미확정",
+}
 
 
 def _parse_kst_cutoff(cutoff_text: str) -> datetime:
@@ -55,6 +74,16 @@ def _fmt_optional(value: object, *, digits: int = 2, suffix: str = "") -> str:
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _net_pnl_pct_expr(conn: sqlite3.Connection) -> str:
@@ -201,6 +230,205 @@ def summarize_wait_bottlenecks(
                 f"rsi={_fmt_optional(row['avg_rsi14'], digits=1)} "
                 f"mom={_fmt_optional(row['avg_momentum_pct'], digits=3, suffix='%')}"
             )
+        return "\n".join(result)
+    finally:
+        conn.close()
+
+
+def _cycle_session_date(row: dict[str, object]) -> str | None:
+    try:
+        logged_at = datetime.fromisoformat(
+            str(row.get("logged_at") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if logged_at.tzinfo is None:
+        logged_at = logged_at.replace(tzinfo=timezone.utc)
+    market = str(row.get("market") or "").strip().lower()
+    local_timezone = (
+        ZoneInfo("Asia/Seoul")
+        if market == "domestic"
+        else ZoneInfo("America/New_York")
+    )
+    return logged_at.astimezone(local_timezone).date().isoformat()
+
+
+def _recorded_net_pct(row: dict[str, object]) -> float:
+    market = str(row.get("market") or "").strip().lower()
+    try:
+        entry_price = float(row.get("entry_price") or 0.0)
+        qty = int(row.get("qty_executed") or 0)
+        if entry_price > 0 and qty > 0:
+            if market == "domestic" and row.get("net_pnl_krw") is not None:
+                return float(row["net_pnl_krw"]) / (entry_price * qty)
+            if market == "overseas" and row.get("net_pnl_usd") is not None:
+                return float(row["net_pnl_usd"]) / (entry_price * qty)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(row.get("pnl_pct") or 0.0) - DEFAULT_COST_PCT
+    except (TypeError, ValueError):
+        return -DEFAULT_COST_PCT
+
+
+def _regime_label(regime: dict[str, object]) -> str:
+    trend = _REGIME_LABELS.get(str(regime.get("trend_regime")), "미확정")
+    activity = _REGIME_LABELS.get(str(regime.get("activity_regime")), "미확정")
+    volatility = _REGIME_LABELS.get(
+        str(regime.get("volatility_regime")),
+        "미확정",
+    )
+    return f"{trend}/{activity}/{volatility}"
+
+
+def summarize_market_regime_performance(
+    db_path: Path | str,
+    *,
+    days: int = 0,
+    limit: int = 12,
+) -> str:
+    """Join final daily benchmark regimes to SELL_REAL order-submission estimates."""
+    conn = sqlite3.connect(Path(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        result = ["[최근 시장 환경]"]
+        if not _has_table(conn, "market_regimes"):
+            result.append("  환경자료=미수집")
+            return "\n".join(result)
+
+        final_rows = conn.execute(
+            """
+            SELECT *
+            FROM market_regimes
+            WHERE is_final = 1
+            ORDER BY session_date DESC
+            """
+        ).fetchall()
+        final_regimes = [dict(row) for row in final_rows]
+        for market in ("domestic", "overseas"):
+            latest = next(
+                (
+                    row
+                    for row in final_regimes
+                    if str(row.get("market") or "").lower() == market
+                ),
+                None,
+            )
+            if latest is None:
+                result.append(f"  {market:<8} 확정자료=없음")
+                continue
+            result.append(
+                f"  {market:<8} {latest['session_date']} "
+                f"{latest['benchmark_name']}={float(latest['close_price'] or 0):,.2f} "
+                f"등락={float(latest['return_pct'] or 0):+.2f}% "
+                f"거래량20일비={_fmt_optional(latest['volume_ratio_20'], digits=2)} "
+                f"레짐={_regime_label(latest)}"
+            )
+
+        result.append("[시장 레짐별 실주문접수 손익]")
+        where = ["action_bias = 'SELL_REAL'"]
+        params: list[object] = []
+        if days > 0:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+            ).isoformat()
+            where.append("logged_at >= ?")
+            params.append(cutoff)
+        trade_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT *
+                FROM cycle_log
+                WHERE {" AND ".join(where)}
+                ORDER BY logged_at ASC
+                """,
+                params,
+            ).fetchall()
+        ]
+        regime_map = {
+            (str(row["market"]).lower(), str(row["session_date"])): row
+            for row in final_regimes
+        }
+        grouped: dict[
+            tuple[str, str, str],
+            dict[str, object],
+        ] = defaultdict(
+            lambda: {
+                "count": 0,
+                "wins": 0,
+                "gross_sum": 0.0,
+                "net_sum": 0.0,
+                "net_krw_sum": 0.0,
+                "dates": set(),
+            }
+        )
+        unmatched = 0
+        for trade in trade_rows:
+            market = str(trade.get("market") or "").strip().lower()
+            session_date = _cycle_session_date(trade)
+            regime = regime_map.get((market, str(session_date)))
+            if regime is None:
+                unmatched += 1
+                continue
+            strategy = str(trade.get("strategy_flag") or "N/A").strip() or "N/A"
+            regime_key = str(regime.get("regime_key") or "unknown")
+            bucket = grouped[(market, regime_key, strategy)]
+            gross = float(trade.get("pnl_pct") or 0.0)
+            net = _recorded_net_pct(trade)
+            bucket["count"] = int(bucket["count"]) + 1
+            bucket["wins"] = int(bucket["wins"]) + int(net > 0)
+            bucket["gross_sum"] = float(bucket["gross_sum"]) + gross
+            bucket["net_sum"] = float(bucket["net_sum"]) + net
+            bucket["net_krw_sum"] = float(bucket["net_krw_sum"]) + float(
+                trade.get("net_pnl_krw")
+                if trade.get("net_pnl_krw") is not None
+                else trade.get("realized_pnl_krw")
+                or 0.0
+            )
+            dates = bucket["dates"]
+            if isinstance(dates, set):
+                dates.add(session_date)
+
+        if not grouped:
+            result.append("  성과=확정 시장환경과 연결된 청산 없음")
+        else:
+            sorted_groups = sorted(
+                grouped.items(),
+                key=lambda item: (
+                    -int(item[1]["count"]),
+                    item[0][0],
+                    item[0][1],
+                    item[0][2],
+                ),
+            )
+            for (market, regime_key, strategy), bucket in sorted_groups[: max(1, int(limit))]:
+                count = int(bucket["count"])
+                wins = int(bucket["wins"])
+                dates = bucket["dates"] if isinstance(bucket["dates"], set) else set()
+                readiness = (
+                    "평가가능"
+                    if count >= MIN_REGIME_TRADES and len(dates) >= MIN_REGIME_DAYS
+                    else f"표본부족({count}/{MIN_REGIME_TRADES}건,{len(dates)}/{MIN_REGIME_DAYS}일)"
+                )
+                regime_parts = regime_key.split("|")
+                regime_text = "/".join(
+                    _REGIME_LABELS.get(part, part)
+                    for part in regime_parts
+                )
+                result.append(
+                    f"  {market:<8} {strategy:<12} {regime_text:<16} "
+                    f"{count:>3}건/{len(dates)}일 승률={wins / count * 100:3.0f}% "
+                    f"Gross={float(bucket['gross_sum']) / count * 100:+.3f}% "
+                    f"Net={float(bucket['net_sum']) / count * 100:+.3f}% "
+                    f"{readiness}"
+                )
+        if unmatched:
+            result.append(f"  미연결={unmatched}건(해당일 확정 지수자료 없음)")
+        result.append(
+            f"  정책변경조건=레짐별 최소 {MIN_REGIME_TRADES}청산/{MIN_REGIME_DAYS}거래일, "
+            "비용차감 Net 기준; 단일 장세 결과로 자동변경 금지"
+        )
         return "\n".join(result)
     finally:
         conn.close()

@@ -53,6 +53,9 @@ class KisRestClient:
     DOMESTIC_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
     DOMESTIC_ASKING_PATH = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
     DOMESTIC_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+    DOMESTIC_INDEX_DAILY_PATH = (
+        "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice"
+    )
     DOMESTIC_TIME_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
     DOMESTIC_RANKING_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
     DOMESTIC_FLUCTUATION_PATH = "/uapi/domestic-stock/v1/quotations/fluctuation-rank"
@@ -63,6 +66,9 @@ class KisRestClient:
     DOMESTIC_REVISE_CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
     OVERSEAS_PRICE_PATH = "/uapi/overseas-price/v1/quotations/price"
     OVERSEAS_DAILY_PRICE_PATH = "/uapi/overseas-price/v1/quotations/dailyprice"
+    OVERSEAS_INDEX_DAILY_PATH = (
+        "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice"
+    )
     OVERSEAS_MINUTE_CHART_PATH = "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
     OVERSEAS_SEARCH_INFO_PATH = "/uapi/overseas-price/v1/quotations/search-info"
     OVERSEAS_BALANCE_PATH = "/uapi/overseas-stock/v1/trading/inquire-balance"
@@ -540,6 +546,29 @@ class KisRestClient:
         )
         return payload.get("output2", []) or []
 
+    async def get_domestic_index_daily_prices(
+        self,
+        *,
+        index_code: str = "0001",
+        start_date: str,
+        end_date: str,
+        period: str = "D",
+    ) -> list[dict[str, Any]]:
+        """Return KRX index OHLCV rows; ``0001`` is KOSPI."""
+        payload = await self._request(
+            "GET",
+            self.DOMESTIC_INDEX_DAILY_PATH,
+            "FHKUP03500100",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_INPUT_ISCD": index_code,
+                "FID_INPUT_DATE_1": start_date,
+                "FID_INPUT_DATE_2": end_date,
+                "FID_PERIOD_DIV_CODE": period,
+            },
+        )
+        return self._coerce_kis_list(payload.get("output2"))
+
     async def get_time_daily_chart(
         self,
         stock_code: str,
@@ -809,6 +838,29 @@ class KisRestClient:
             or payload.get("output2_head")
             or payload.get("output")
         )
+
+    async def get_overseas_index_daily_prices(
+        self,
+        *,
+        index_code: str = "COMP",
+        start_date: str,
+        end_date: str,
+        period: str = "D",
+    ) -> list[dict[str, Any]]:
+        """Return overseas index OHLCV rows; ``COMP`` is NASDAQ Composite."""
+        payload = await self._request(
+            "GET",
+            self.OVERSEAS_INDEX_DAILY_PATH,
+            "FHKST03030100",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "N",
+                "FID_INPUT_ISCD": index_code,
+                "FID_INPUT_DATE_1": start_date,
+                "FID_INPUT_DATE_2": end_date,
+                "FID_PERIOD_DIV_CODE": period,
+            },
+        )
+        return self._coerce_kis_list(payload.get("output2"))
 
     async def get_overseas_minute_chart(
         self,

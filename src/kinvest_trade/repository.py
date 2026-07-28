@@ -3120,7 +3120,7 @@ class SqliteRepository:
         after_logged_at: str = "",
         limit: int = 12,
     ) -> list[dict]:
-        """Summarize broker-confirmed SELL_REAL fills, excluding signal rows."""
+        """Summarize confirmed fills by canonical reason and strategy exit signal."""
         params: list[object] = []
         where = [
             "action_bias = 'SELL_REAL'",
@@ -3139,7 +3139,12 @@ class SqliteRepository:
                         market,
                         COALESCE(NULLIF(strategy_flag, ''), '-') AS strategy_label,
                         COALESCE(NULLIF(entry_by, ''), '-') AS entry_label,
-                        COALESCE(NULLIF(exit_by, ''), NULLIF(action_reason, ''), '-') AS exit_label,
+                        COALESCE(
+                            NULLIF(action_reason, ''),
+                            NULLIF(exit_by, ''),
+                            '-'
+                        ) AS exit_reason_label,
+                        COALESCE(NULLIF(exit_by, ''), '-') AS exit_signal_label,
                         CASE
                             WHEN lower(market) = 'overseas'
                               AND net_pnl_usd IS NOT NULL
@@ -3180,7 +3185,9 @@ class SqliteRepository:
                     market,
                     strategy_label AS strategy_flag,
                     entry_label AS entry_by,
-                    exit_label AS exit_by,
+                    exit_reason_label AS exit_by,
+                    exit_reason_label AS exit_reason,
+                    exit_signal_label AS exit_signal_by,
                     COUNT(*) AS trade_count,
                     SUM(CASE WHEN net_result > 0 THEN 1 ELSE 0 END) AS win_count,
                     SUM(CASE WHEN net_result <= 0 THEN 1 ELSE 0 END) AS loss_count,
@@ -3190,7 +3197,12 @@ class SqliteRepository:
                     SUM(COALESCE(net_pnl_krw, realized_pnl_krw, 0)) AS total_net_pnl_krw,
                     AVG(hold_duration_min) AS avg_hold_duration_min
                 FROM realized
-                GROUP BY market, strategy_label, entry_label, exit_label
+                GROUP BY
+                    market,
+                    strategy_label,
+                    entry_label,
+                    exit_reason_label,
+                    exit_signal_label
                 ORDER BY total_net_pnl_krw DESC, total_net_pnl_usd DESC, trade_count DESC
                 LIMIT ?
                 """,

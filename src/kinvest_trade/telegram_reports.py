@@ -1663,7 +1663,8 @@ class ReportHelper:
         market = format_market_korean(str(row.get("market") or "-"))
         strategy = str(row.get("strategy_flag") or "-")
         entry_by = str(row.get("entry_by") or "-")
-        exit_by = str(row.get("exit_by") or "-")
+        exit_reason = str(row.get("exit_reason") or row.get("exit_by") or "-")
+        exit_signal_by = str(row.get("exit_signal_by") or "")
         trade_count = int(row.get("trade_count") or 0)
         win_rate = float(row.get("win_rate") or 0.0)
         avg_pnl = float(row.get("avg_pnl_pct") or 0.0)
@@ -1671,9 +1672,13 @@ class ReportHelper:
             usd=float(row.get("total_net_pnl_usd") or 0.0),
             krw=float(row.get("total_net_pnl_krw") or 0.0),
         )
+        exit_signal_label = ""
+        if exit_signal_by not in {"", "-"} and exit_signal_by != exit_reason:
+            exit_signal_label = f" 신호={format_reason_korean(exit_signal_by)}"
         return (
             f"{market} {strategy} "
-            f"진입={entry_by} 청산={format_reason_korean(exit_by)} "
+            f"진입={entry_by} 청산={format_reason_korean(exit_reason)}"
+            f"{exit_signal_label} "
             f"{trade_count}건 승률={win_rate * 100:.0f}% "
             f"평균={format_pct(avg_pnl)} 손익={pnl_label}"
         )

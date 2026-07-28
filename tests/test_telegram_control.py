@@ -1797,7 +1797,7 @@ def test_lab_performance_command_reports_realized_strategy_only(
         action_reason="stop_loss",
         strategy_flag="VWAP",
         entry_by="VWAP",
-        exit_by="stop_loss",
+        exit_by="VWAP",
         pnl_pct=-0.012,
         qty_executed=3,
         net_pnl_usd=-12.5,
@@ -1834,7 +1834,8 @@ def test_lab_performance_command_reports_realized_strategy_only(
     assert "전체=1건" in message
     assert "─── 상위 전략 ───" in message
     assert "─── 하위 전략 ───" in message
-    assert "해외 VWAP 진입=VWAP 청산=손절 1건" in message
+    assert "해외 VWAP 진입=VWAP 청산=손절 신호=VWAP 1건" in message
+    assert "청산=VWAP" not in message
     assert "손익=-$12.50/-16,875원" in message
     assert "─── 역방향 shadow ───" in message
     assert "종료=0 진행=0 진입표본=없음" in message

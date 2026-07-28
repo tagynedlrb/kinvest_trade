@@ -3247,6 +3247,10 @@ class LiquidityLabService:
             )
         if not risk_controls_replayed:
             delayed_labels.append("위험제어=과거귀속")
+        exit_reason = reason or exit_by
+        exit_signal_labels = []
+        if exit_by and exit_by != exit_reason:
+            exit_signal_labels.append(f"신호={format_reason_korean(exit_by)}")
         self._queue_trade_notification(
             " ".join(
                 [
@@ -3257,7 +3261,8 @@ class LiquidityLabService:
                     f"x{filled_qty}",
                     f"수익률={format_pct(pnl_pct)}",
                     f"순손익={pnl_label}",
-                    f"청산={format_reason_korean(exit_by or reason)}",
+                    f"청산={format_reason_korean(exit_reason)}",
+                    *exit_signal_labels,
                     *delayed_labels,
                 ]
             )
@@ -3280,6 +3285,8 @@ class LiquidityLabService:
                 "execution_risk_day": execution_risk_day.isoformat(),
                 "current_risk_day": current_risk_day.isoformat(),
                 "risk_controls_replayed": risk_controls_replayed,
+                "exit_reason": exit_reason,
+                "exit_signal_by": exit_by,
             },
         )
         return True

@@ -84,6 +84,13 @@ performance, strategy guards, exit-reason warnings, before/after comparisons,
 and market-regime evaluation. Legacy rows remain available for audit but
 cannot train or score policy.
 
+For a confirmed exit, `action_reason` is the canonical decision cause used in
+reason-level performance and operator alerts. `exit_by` is the strategy
+manager's exit-signal attribution and remains a separate diagnostic dimension.
+Only when `action_reason` is empty may a report fall back to `exit_by`. A
+strategy signal such as `VWAP` must never silently replace a protective or
+profit-taking cause such as `momentum_loss_cut` or `take_profit`.
+
 ## Restart safety
 
 - A process restart does not start a new risk session. Persist and restore
@@ -240,10 +247,10 @@ the current direction is wrong.
 ## Current decision checkpoint
 
 - Domestic: eight broker-confirmed exits produced two after-cost wins and
-  -2,380.92 KRW net. Do not loosen entry thresholds from this sample. Blocked
+  -10,389.32 KRW net. Do not loosen entry thresholds from this sample. Blocked
   candidates had materially negative forward returns, and each observed regime
   still covers only one final KOSPI session. On 2026-07-28, KOSPI closed
-  -10.84% at 6,023.66 while two same-day exits lost 2,931.74 KRW net. This is
+  -10.84% at 6,023.66 while two same-day exits lost 4,314.74 KRW net. This is
   not evidence for increasing long-entry frequency.
 - Overseas: twenty broker-confirmed exits produced six after-cost wins and
   -325,904.33 KRW net. The final 2026-07-28 NASDAQ session was

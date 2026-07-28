@@ -1859,6 +1859,16 @@ def _submit_and_reconcile_overseas_loss(
         pnl_pct=(278.0 - 280.0) / 280.0,
     )
     _run_orderable_overseas_sell(service, candidate, held, "stop_loss")
+    with service.repository._connect() as conn:
+        conn.execute(
+            """
+            UPDATE broker_order_executions
+            SET exit_by = 'VWAP'
+            WHERE symbol = 'TSLA'
+              AND side = 'SELL'
+              AND finalized_at IS NULL
+            """
+        )
     service.client.pending_orders = [
         {
             "odno": "9001",
@@ -2374,6 +2384,10 @@ def test_historical_confirmed_loss_does_not_pollute_current_risk_controls() -> N
     confirmed_detail = json.loads(confirmed[0]["detail"])
     assert confirmed_detail["risk_controls_replayed"] is False
     assert confirmed_detail["execution_time_source"] == "kis_order_timestamp"
+    assert confirmed_detail["exit_reason"] == "stop_loss"
+    assert confirmed_detail["exit_signal_by"] == "VWAP"
+    assert "청산=손절" in service._pending_trade_notifications[-1]
+    assert "청산=VWAP" not in service._pending_trade_notifications[-1]
     assert "위험제어=과거귀속" in service._pending_trade_notifications[-1]
 
 

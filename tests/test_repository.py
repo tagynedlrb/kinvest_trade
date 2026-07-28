@@ -1247,6 +1247,7 @@ def test_get_realized_strategy_performance_excludes_signal_rows(
         action_reason="stop_loss",
         strategy_flag="VWAP",
         entry_by="VWAP",
+        exit_by="VWAP",
         pnl_pct=-0.02,
         qty_executed=2,
         net_pnl_usd=-4.0,
@@ -1293,6 +1294,8 @@ def test_get_realized_strategy_performance_excludes_signal_rows(
     assert by_key[("overseas", "VWAP", "stop_loss")]["trade_count"] == 1
     assert by_key[("overseas", "VWAP", "stop_loss")]["total_qty"] == 2
     assert by_key[("overseas", "VWAP", "stop_loss")]["total_net_pnl_usd"] == -4.0
+    assert by_key[("overseas", "VWAP", "stop_loss")]["exit_reason"] == "stop_loss"
+    assert by_key[("overseas", "VWAP", "stop_loss")]["exit_signal_by"] == "VWAP"
     assert by_key[("overseas", "VWAP", "take_profit")]["trade_count"] == 1
     assert by_key[("overseas", "VWAP", "take_profit")]["win_rate"] == 1.0
     assert by_key[("domestic", "RSI", "take_profit")]["win_rate"] == 1.0

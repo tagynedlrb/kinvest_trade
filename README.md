@@ -74,6 +74,12 @@
     실패로 과장하지 않되, 호출 간 경합의 운영지표로 계속 기록한다. 모의투자 해외
     체결내역의 연속페이지는 공식 예제처럼 별도 안정화 간격을 두며, 이 엔드포인트의
     관찰만으로 전체 호출이나 국내 조회를 더 늦추지 않는다.
+14. **국내 순손익은 KIS 상품구분에 따라 매도세를 분리한다.** 현재가 응답의
+    `rprs_mrkt_kor_name`을 체결 컨텍스트와 `cycle_log.product_type`에 보존하고,
+    일반주식에는 국장 정책의 매도세를 적용하되 ETF·ETN·ELW에는 적용하지 않는다.
+    상품구분이 비어 있으면 면세로 추정하지 않고 보수적으로 일반주식 세율을 쓴다.
+    계산식은 `cost_calculation_version`으로 식별하며, 기존 확정 체결 보정은 KIS
+    상품구분을 다시 조회하고 온라인 백업을 만든 뒤에만 수행한다.
 
 ## 현재 구조
 - `config/fixed_config.json`: 고정 설정
@@ -356,6 +362,10 @@ python3 main.py
 - 실현 손익은 `gross_pnl_usd`, `net_pnl_usd`, `net_pnl_krw`로 나눠 저장한다.
 - `net_pnl_usd`에는 매수/매도 수수료와 미국 매도 `SEC Fee` 추정치를 반영한다.
 - `net_pnl_krw`에는 체결 시점 환율 추정치와 환차손익을 반영한다.
+- 국내 일반주식은 매수·매도 수수료에 더해 매도금액의 `0.20%`를 차감한다.
+  ETF·ETN·ELW는 KIS 상품구분으로 확인해 이 매도세를 면제하며, 각 체결에
+  `domestic_product_tax_v2` 계산 버전을 남긴다. 시장별 세율은
+  `config/market_policies/domestic.json`에서만 관리한다.
 - `estimated_tax_krw`는 해외주식 양도소득세를 연간 기본공제 `250만원`과 세율 `22%` 기준으로 현재 런 기준 추정한 값이다.
 - `fx_fee_rate`는 사용자 환전 조건에 따라 달라질 수 있어 기본값을 `0.0`으로 두었고, 필요하면 `config/fixed_config.json`에서 직접 조정하면 된다.
 
@@ -713,6 +723,10 @@ PYTHONPATH=src python3 scripts/analyze_trades.py data/trading.db --days 7
 PYTHONPATH=src python3 scripts/repair_confirmed_hold_times.py data/trading.db
 # 감사 대상만 온라인 백업 후 파생 cycle_log 필드에 적용
 PYTHONPATH=src python3 scripts/repair_confirmed_hold_times.py data/trading.db --apply
+# 국내 확정 매도 종목의 KIS 상품구분만 사전 점검
+PYTHONPATH=src python3 scripts/reconcile_domestic_trade_costs.py data/trading.db --settings config/fixed_config.json
+# 온라인 DB 백업 후 일반주식 매도세·ETF 면제를 기존 확정 체결에 적용
+PYTHONPATH=src python3 scripts/reconcile_domestic_trade_costs.py data/trading.db --settings config/fixed_config.json --apply
 # 국내 매수 가능 수량 조회
 python3 main.py orderable-check <국내종목코드> --price <가격> --order-division 01
 # 국내 매수 주문 미리보기

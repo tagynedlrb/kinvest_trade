@@ -11,6 +11,11 @@ from types import SimpleNamespace
 
 import httpx
 
+from .auto_trade_math import (
+    DOMESTIC_COST_CALCULATION_VERSION,
+    OVERSEAS_COST_CALCULATION_VERSION,
+    estimate_domestic_trade_costs,
+)
 from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
 from .execution_reconciler import BrokerExecutionReconciler
@@ -84,6 +89,7 @@ class DomesticScanResult:
     volume_sum: int
     activity_score: float
     stock_name: str = ""
+    product_type: str = ""
 
 
 @dataclass(slots=True)
@@ -2798,6 +2804,7 @@ class LiquidityLabService:
         activity_score = self._parse_optional_float(context.get("activity_score"))
         orderable_qty = int(context.get("orderable_qty") or filled_qty)
         stock_name = str(context.get("stock_name") or symbol)
+        product_type = str(context.get("product_type") or "").strip()
         is_session_trade = int(first.get("is_session_trade") or 0)
         if side == "SELL" and not is_session_trade and self._is_session_owned(symbol):
             is_session_trade = 1
@@ -2857,6 +2864,12 @@ class LiquidityLabService:
             "is_virtual": 0,
             "orderable_qty": orderable_qty,
             "stock_name": stock_name,
+            "product_type": product_type,
+            "cost_calculation_version": (
+                DOMESTIC_COST_CALCULATION_VERSION
+                if market == "domestic"
+                else OVERSEAS_COST_CALCULATION_VERSION
+            ),
             "hold_duration_min": 0.0 if side == "BUY" else hold_duration_min,
             "entry_time": logged_at if side == "BUY" else entry_time,
             "exit_cooldown_remaining": 0.0,
@@ -2964,6 +2977,7 @@ class LiquidityLabService:
                 entry_price=entry_price,
                 exit_price=fill_price,
                 qty=filled_qty,
+                product_type=product_type,
             )
             inserted = self.repository.save_cycle_log(
                 **common,
@@ -3781,6 +3795,7 @@ class LiquidityLabService:
             volume_sum=acml_vol,
             activity_score=round(activity_score, 4),
             stock_name=stock_name,
+            product_type=str(current.get("product_type", "") or "").strip(),
         )
 
     async def scan_overseas(self) -> tuple[list[OverseasScanResult], set[str]]:
@@ -4119,6 +4134,7 @@ class LiquidityLabService:
             volume_sum=volume_sum,
             activity_score=round(activity_score, 4),
             stock_name=stock_name,
+            product_type=str(current.get("product_type", "") or "").strip(),
         )
 
     async def _scan_single_overseas(
@@ -6199,15 +6215,17 @@ class LiquidityLabService:
         entry_price: float,
         exit_price: float,
         qty: int,
+        product_type: str = "",
     ) -> tuple[float, float]:
-        gross = (exit_price - entry_price) * qty
-        buy_fee = entry_price * qty * self._domestic_commission_rate()
-        sell_fee = exit_price * qty * self._domestic_commission_rate()
-        sell_tax = exit_price * qty * self._domestic_sell_tax_rate()
-        return round(gross - buy_fee - sell_fee - sell_tax, 2), round(
-            sell_fee + sell_tax,
-            2,
+        estimate = estimate_domestic_trade_costs(
+            entry_price=entry_price,
+            exit_price=exit_price,
+            qty=qty,
+            commission_rate=self._domestic_commission_rate(),
+            stock_sell_tax_rate=self._domestic_sell_tax_rate(),
+            product_type=product_type,
         )
+        return estimate.net_pnl_krw, round(estimate.sell_cost_krw, 2)
 
     def _estimate_overseas_net_pnl(
         self,

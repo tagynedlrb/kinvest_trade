@@ -518,6 +518,8 @@ class KisRestClient:
             "open_price": parse_kis_number(output.get("stck_oprc")),
             "high_price": parse_kis_number(output.get("stck_hgpr")),
             "low_price": parse_kis_number(output.get("stck_lwpr")),
+            "product_type": str(output.get("rprs_mrkt_kor_name", "") or "").strip(),
+            "sector_name": str(output.get("bstp_kor_isnm", "") or "").strip(),
             "raw": output,
         }
 

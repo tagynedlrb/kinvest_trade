@@ -271,6 +271,7 @@ class DomesticOrderHelper:
             "activity_score": candidate.activity_score,
             "orderable_qty": qty,
             "stock_name": candidate.stock_name,
+            "product_type": candidate.product_type,
             "session_id": getattr(service, "_session_id", ""),
             "cycle_no": getattr(service, "_cycle_count", 0),
             "is_session_trade": 1,
@@ -580,6 +581,7 @@ class DomesticOrderHelper:
                 entry_price=float(held.avg_price or 0.0),
                 exit_price=sell_price,
                 qty=sell_qty,
+                product_type=candidate.product_type,
             )
             if estimated_net_krw <= 0:
                 service._record_trade_skip(
@@ -737,6 +739,7 @@ class DomesticOrderHelper:
             "activity_score": candidate.activity_score,
             "orderable_qty": held.orderable_qty,
             "stock_name": candidate.stock_name,
+            "product_type": candidate.product_type,
             "session_id": getattr(service, "_session_id", ""),
             "cycle_no": getattr(service, "_cycle_count", 0),
             "is_session_trade": (

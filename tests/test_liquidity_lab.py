@@ -3643,6 +3643,11 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
 
 def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> None:
     service = _build_domestic_sell_service()
+    service.config.auto_trade = SimpleNamespace(
+        commission_rate=0.00015,
+        domestic_commission_rate=0.00015,
+        domestic_sell_tax_rate=0.002,
+    )
     candidate = DomesticScanResult(
         stock_code="005930",
         current_price=82000,
@@ -3653,6 +3658,7 @@ def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> Non
         intraday_turnover_krw=100_000_000_000,
         volume_sum=500_000,
         activity_score=11.0,
+        product_type="KOSPI200",
     )
     held = DomesticHeldPosition(
         stock_code="005930",
@@ -3702,6 +3708,13 @@ def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> Non
     assert rows[0]["session_id"] == "sess-domestic"
     assert rows[0]["exit_by"] == "stop_loss"
     assert rows[0]["realized_pnl_krw"] == 3900.0
+    assert rows[0]["net_pnl_krw"] == 3523.61
+    assert rows[0]["commission_krw"] == 352.38
+    assert rows[0]["product_type"] == "KOSPI200"
+    assert (
+        rows[0]["cost_calculation_version"]
+        == "domestic_product_tax_v2"
+    )
 
 
 def test_place_domestic_protective_sell_replaces_stale_pending_exit_when_orderable_zero() -> None:

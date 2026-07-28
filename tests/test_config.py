@@ -126,6 +126,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.inverse_etf_symbols == ["SQQQ", "SOXS", "SPXU"]
     assert domestic.auto_trade.inverse_execution_mode == "shadow"
     assert overseas.auto_trade.inverse_execution_mode == "shadow"
+    assert domestic.auto_trade.domestic_sell_tax_rate == 0.002
+    assert overseas.auto_trade.domestic_sell_tax_rate == 0.0
     assert domestic.auto_trade is not overseas.auto_trade
     assert domestic.auto_trade.inverse_etf_symbols is not overseas.auto_trade.inverse_etf_symbols
 

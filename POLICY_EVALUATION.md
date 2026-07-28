@@ -55,6 +55,20 @@ Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
 not submitted-price or pre-cost PnL. A positive gross move that fails to clear
 round-trip costs is still a loss for risk control.
 
+Domestic costs are product-aware. The domestic policy charges its configured
+round-trip commission to every KRX fill and a 0.20% sell tax to ordinary KOSPI
+and KOSDAQ shares. ETF, ETN, and ELW rows are exempt only when the structured
+KIS current-price field `rprs_mrkt_kor_name` identifies that product class.
+An unknown class is treated as taxable rather than silently exempt. Persist the
+product class and `domestic_product_tax_v2` calculation version on confirmed
+cycles. Historical correction requires a consistent SQLite online backup,
+fresh KIS classification for every affected symbol, and an idempotent second
+pass. The rate basis is the current
+[Korea Investment domestic fee and tax schedule](https://securities.koreainvestment.com/main/customer/guide/_static/TF04ae010000.jsp?tab=1);
+the overseas 0.25% online commission and sell-side SEC fee remain governed by
+the separate
+[overseas market schedule](https://securities.koreainvestment.com/main/bond/research/_static/TF03ca050000.jsp).
+
 The account-wide risk day rolls at 07:00 KST, after the US regular close in
 both daylight-saving and standard time and before the KRX regular open. It
 combines the local KRX session and the corresponding US session into one

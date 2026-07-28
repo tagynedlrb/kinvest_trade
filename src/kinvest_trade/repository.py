@@ -6,6 +6,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .auto_trade_math import (
+    DOMESTIC_COST_CALCULATION_VERSION,
+    estimate_domestic_trade_costs,
+)
 from .market_sessions import KST, NEW_YORK
 from .time_utils import parse_datetime
 
@@ -59,13 +63,13 @@ class SqliteRepository:
         return conn
 
     def backup_db(self, suffix: str = "") -> Path:
-        import shutil
         from datetime import datetime, timezone
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         tag = f"_{suffix}" if suffix else ""
         backup_path = self.db_path.parent / f"{self.db_path.stem}_backup_{ts}{tag}.db"
-        shutil.copy2(self.db_path, backup_path)
+        with sqlite3.connect(self.db_path) as source, sqlite3.connect(backup_path) as target:
+            source.backup(target)
         return backup_path
 
     def reset_virtual_trades(self) -> dict[str, int]:
@@ -650,6 +654,13 @@ class SqliteRepository:
             self._ensure_column(conn, "cycle_log", "is_virtual", "INTEGER")
             self._ensure_column(conn, "cycle_log", "orderable_qty", "INTEGER")
             self._ensure_column(conn, "cycle_log", "stock_name", "TEXT")
+            self._ensure_column(conn, "cycle_log", "product_type", "TEXT")
+            self._ensure_column(
+                conn,
+                "cycle_log",
+                "cost_calculation_version",
+                "TEXT NOT NULL DEFAULT 'legacy_unversioned'",
+            )
             self._ensure_column(conn, "cycle_log", "hold_duration_min", "REAL")
             self._ensure_column(conn, "cycle_log", "entry_time", "TEXT")
             self._ensure_column(conn, "cycle_log", "exit_cooldown_remaining", "REAL")
@@ -1130,6 +1141,8 @@ class SqliteRepository:
         is_virtual: int | None = None,
         orderable_qty: int | None = None,
         stock_name: str | None = None,
+        product_type: str | None = None,
+        cost_calculation_version: str = "legacy_unversioned",
         hold_duration_min: float | None = None,
         entry_time: str | None = None,
         exit_cooldown_remaining: float | None = None,
@@ -1181,6 +1194,8 @@ class SqliteRepository:
                 "is_virtual",
                 "orderable_qty",
                 "stock_name",
+                "product_type",
+                "cost_calculation_version",
                 "hold_duration_min",
                 "entry_time",
                 "exit_cooldown_remaining",
@@ -1231,6 +1246,8 @@ class SqliteRepository:
                 is_virtual,
                 orderable_qty,
                 stock_name,
+                product_type,
+                cost_calculation_version,
                 hold_duration_min,
                 entry_time,
                 exit_cooldown_remaining,
@@ -1274,6 +1291,129 @@ class SqliteRepository:
                     ),
                 )
             return inserted
+
+    def reconcile_domestic_sell_costs(
+        self,
+        *,
+        product_types: dict[str, str],
+        commission_rate: float,
+        stock_sell_tax_rate: float,
+        calculation_version: str = DOMESTIC_COST_CALCULATION_VERSION,
+    ) -> dict[str, object]:
+        normalized_types = {
+            str(symbol).strip().upper(): str(product_type or "").strip()
+            for symbol, product_type in product_types.items()
+            if str(symbol).strip() and str(product_type or "").strip()
+        }
+        stats: dict[str, object] = {
+            "eligible": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "missing_product_type": [],
+            "applied_sell_tax_krw": 0.0,
+            "net_adjustment_krw": 0.0,
+        }
+        missing: set[str] = set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    id,
+                    symbol,
+                    entry_price,
+                    price,
+                    qty_executed,
+                    realized_pnl_krw,
+                    net_pnl_krw,
+                    commission_krw,
+                    product_type,
+                    cost_calculation_version
+                FROM cycle_log
+                WHERE market = 'domestic'
+                  AND action_bias = 'SELL_REAL'
+                  AND COALESCE(entry_price, 0) > 0
+                  AND COALESCE(price, 0) > 0
+                  AND COALESCE(qty_executed, 0) > 0
+                  AND {CONFIRMED_SELL_CYCLE_PREDICATE}
+                ORDER BY id
+                """
+            ).fetchall()
+            stats["eligible"] = len(rows)
+            for row in rows:
+                symbol = str(row["symbol"] or "").strip().upper()
+                product_type = normalized_types.get(
+                    symbol,
+                    str(row["product_type"] or "").strip(),
+                )
+                if not product_type:
+                    missing.add(symbol)
+                    continue
+                estimate = estimate_domestic_trade_costs(
+                    entry_price=float(row["entry_price"]),
+                    exit_price=float(row["price"]),
+                    qty=int(row["qty_executed"]),
+                    commission_rate=commission_rate,
+                    stock_sell_tax_rate=stock_sell_tax_rate,
+                    product_type=product_type,
+                )
+                old_net = float(
+                    row["net_pnl_krw"]
+                    if row["net_pnl_krw"] is not None
+                    else row["realized_pnl_krw"]
+                    or 0.0
+                )
+                unchanged = (
+                    str(row["product_type"] or "") == product_type
+                    and str(row["cost_calculation_version"] or "")
+                    == calculation_version
+                    and abs(
+                        float(row["realized_pnl_krw"] or 0.0)
+                        - estimate.gross_pnl_krw
+                    )
+                    < 0.005
+                    and abs(old_net - estimate.net_pnl_krw) < 0.005
+                    and abs(
+                        float(row["commission_krw"] or 0.0)
+                        - estimate.sell_cost_krw
+                    )
+                    < 0.005
+                )
+                if unchanged:
+                    stats["unchanged"] = int(stats["unchanged"]) + 1
+                    continue
+                conn.execute(
+                    """
+                    UPDATE cycle_log
+                    SET realized_pnl_krw = ?,
+                        net_pnl_krw = ?,
+                        commission_krw = ?,
+                        product_type = ?,
+                        cost_calculation_version = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        estimate.gross_pnl_krw,
+                        estimate.net_pnl_krw,
+                        round(estimate.sell_cost_krw, 2),
+                        product_type,
+                        calculation_version,
+                        int(row["id"]),
+                    ),
+                )
+                stats["updated"] = int(stats["updated"]) + 1
+                stats["applied_sell_tax_krw"] = round(
+                    float(stats["applied_sell_tax_krw"])
+                    + estimate.sell_tax_krw,
+                    2,
+                )
+                stats["net_adjustment_krw"] = round(
+                    float(stats["net_adjustment_krw"])
+                    + estimate.net_pnl_krw
+                    - old_net,
+                    2,
+                )
+        stats["missing_product_type"] = sorted(missing)
+        return stats
 
     def save_event(
         self,

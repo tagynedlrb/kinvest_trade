@@ -882,12 +882,75 @@ def test_clear_stale_lab_positions_preserves_active_keys(tmp_path) -> None:
 
 def test_backup_db_creates_copy(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
+    repository.save_event(event_type="before_backup", detail={"ok": True})
 
     backup_path = repository.backup_db(suffix="pre_reset")
 
     assert backup_path.exists()
     assert backup_path.name.startswith("test_backup_")
     assert backup_path.name.endswith("_pre_reset.db")
+    with sqlite3.connect(backup_path) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("SELECT COUNT(*) FROM event_log").fetchone()[0] == 1
+
+
+def test_reconcile_domestic_sell_costs_is_product_aware_and_idempotent(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "domestic_costs.db")
+    for symbol in ("STOCK", "FUND"):
+        save_confirmed_sell(
+            repository,
+            logged_at="2026-07-28T01:00:00+00:00",
+            market="domestic",
+            symbol=symbol,
+            exchange_code="KRX",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            entry_price=100.0,
+            price=101.0,
+            qty_executed=10,
+            realized_pnl_krw=10.0,
+            net_pnl_krw=7.99,
+            commission_krw=1.01,
+        )
+
+    first = repository.reconcile_domestic_sell_costs(
+        product_types={"STOCK": "KOSPI", "FUND": "ETF"},
+        commission_rate=0.001,
+        stock_sell_tax_rate=0.002,
+    )
+
+    assert first["eligible"] == 2
+    assert first["updated"] == 2
+    assert first["unchanged"] == 0
+    assert first["missing_product_type"] == []
+    assert first["applied_sell_tax_krw"] == 2.02
+    assert first["net_adjustment_krw"] == -2.02
+    rows = {
+        row["symbol"]: row
+        for row in repository.query_cycle_log(action_bias="SELL_REAL", limit=10)
+    }
+    assert rows["STOCK"]["net_pnl_krw"] == 5.97
+    assert rows["STOCK"]["commission_krw"] == 3.03
+    assert rows["STOCK"]["product_type"] == "KOSPI"
+    assert (
+        rows["STOCK"]["cost_calculation_version"]
+        == "domestic_product_tax_v2"
+    )
+    assert rows["FUND"]["net_pnl_krw"] == 7.99
+    assert rows["FUND"]["commission_krw"] == 1.01
+
+    second = repository.reconcile_domestic_sell_costs(
+        product_types={"STOCK": "KOSPI", "FUND": "ETF"},
+        commission_rate=0.001,
+        stock_sell_tax_rate=0.002,
+    )
+
+    assert second["updated"] == 0
+    assert second["unchanged"] == 2
+    assert second["net_adjustment_krw"] == 0.0
 
 
 def test_reset_virtual_trades_clears_virtual_tables(tmp_path) -> None:

@@ -7,6 +7,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from kinvest_trade.repository import (
+    CONFIRMED_BUY_CYCLE_PREDICATE,
+    CONFIRMED_SELL_CYCLE_PREDICATE,
+)
 from kinvest_trade.trade_analysis import (
     _net_pnl_pct_expr,
     compare_before_after,
@@ -96,29 +100,134 @@ def main() -> None:
     print("=" * 60)
     print(f"거래 분석 ({args.days}일 기준)" if args.days else "거래 분석 (전체)")
     print("=" * 60)
-    print("주의: cycle_log의 실거래 통계는 주문 접수 기록 기준이며, 체결확정은 MTS/잔고 기준 확인 필요")
+    print("주의: 실거래 성과/빈도는 KIS 체결확정 원장과 연결된 cycle_log만 포함")
     print("주의: virtual_orders 통계는 excluded_from_performance=0 항목만 포함")
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            action_bias,
+            COUNT(*) AS recorded_count,
+            SUM(
+                CASE
+                    WHEN action_bias = 'BUY_REAL'
+                         AND {CONFIRMED_BUY_CYCLE_PREDICATE}
+                    THEN 1
+                    WHEN action_bias = 'SELL_REAL'
+                         AND {CONFIRMED_SELL_CYCLE_PREDICATE}
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS confirmed_count
+        FROM cycle_log
+        {cycle_where}
+        AND action_bias IN ('BUY_REAL', 'SELL_REAL')
+        GROUP BY action_bias
+        ORDER BY action_bias
+        """
+        if cycle_where
+        else f"""
+        SELECT
+            action_bias,
+            COUNT(*) AS recorded_count,
+            SUM(
+                CASE
+                    WHEN action_bias = 'BUY_REAL'
+                         AND {CONFIRMED_BUY_CYCLE_PREDICATE}
+                    THEN 1
+                    WHEN action_bias = 'SELL_REAL'
+                         AND {CONFIRMED_SELL_CYCLE_PREDICATE}
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS confirmed_count
+        FROM cycle_log
+        WHERE action_bias IN ('BUY_REAL', 'SELL_REAL')
+        GROUP BY action_bias
+        ORDER BY action_bias
+        """,
+        cycle_params,
+    ).fetchall()
+    print("\n[실주문 측정 경계]")
+    for row in rows:
+        recorded_count = int(row["recorded_count"] or 0)
+        confirmed_count = int(row["confirmed_count"] or 0)
+        print(
+            f"  {row['action_bias']:12s} 체결확정={confirmed_count}건 "
+            f"성과제외={recorded_count - confirmed_count}건"
+        )
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            market,
+            SUM(CASE WHEN action_bias = 'BUY_REAL' THEN 1 ELSE 0 END)
+                AS buy_count,
+            SUM(CASE WHEN action_bias = 'SELL_REAL' THEN 1 ELSE 0 END)
+                AS sell_count
+        FROM cycle_log
+        {cycle_where}
+        AND (
+            (action_bias = 'BUY_REAL' AND {CONFIRMED_BUY_CYCLE_PREDICATE})
+            OR
+            (action_bias = 'SELL_REAL' AND {CONFIRMED_SELL_CYCLE_PREDICATE})
+        )
+        GROUP BY market
+        ORDER BY market
+        """
+        if cycle_where
+        else f"""
+        SELECT
+            market,
+            SUM(CASE WHEN action_bias = 'BUY_REAL' THEN 1 ELSE 0 END)
+                AS buy_count,
+            SUM(CASE WHEN action_bias = 'SELL_REAL' THEN 1 ELSE 0 END)
+                AS sell_count
+        FROM cycle_log
+        WHERE
+            (action_bias = 'BUY_REAL' AND {CONFIRMED_BUY_CYCLE_PREDICATE})
+            OR
+            (action_bias = 'SELL_REAL' AND {CONFIRMED_SELL_CYCLE_PREDICATE})
+        GROUP BY market
+        ORDER BY market
+        """,
+        cycle_params,
+    ).fetchall()
+    print("\n[시장별 KIS 체결확정 거래 빈도]")
+    for row in rows:
+        print(
+            f"  {row['market']:10s} "
+            f"매수={int(row['buy_count'] or 0)}건 "
+            f"청산={int(row['sell_count'] or 0)}건"
+        )
 
     rows = conn.execute(
         f"""
         SELECT action_bias, action_reason, COUNT(*) AS cnt
         FROM cycle_log
         {cycle_where}
-        AND action_bias IN ('BUY_REAL', 'SELL_REAL')
+        AND (
+            (action_bias = 'BUY_REAL' AND {CONFIRMED_BUY_CYCLE_PREDICATE})
+            OR
+            (action_bias = 'SELL_REAL' AND {CONFIRMED_SELL_CYCLE_PREDICATE})
+        )
         GROUP BY action_bias, action_reason
         ORDER BY action_bias, cnt DESC
         """
         if cycle_where
-        else """
+        else f"""
         SELECT action_bias, action_reason, COUNT(*) AS cnt
         FROM cycle_log
-        WHERE action_bias IN ('BUY_REAL', 'SELL_REAL')
+        WHERE
+            (action_bias = 'BUY_REAL' AND {CONFIRMED_BUY_CYCLE_PREDICATE})
+            OR
+            (action_bias = 'SELL_REAL' AND {CONFIRMED_SELL_CYCLE_PREDICATE})
         GROUP BY action_bias, action_reason
         ORDER BY action_bias, cnt DESC
         """,
         cycle_params,
     ).fetchall()
-    print("\n[진입/청산 이유별 건수]")
+    print("\n[KIS 체결확정 진입/청산 이유별 건수]")
     for row in rows:
         print(f"  {row['action_bias']:12s} {row['action_reason']:35s} {row['cnt']}건")
 
@@ -136,6 +245,7 @@ def main() -> None:
         FROM cycle_log
         {cycle_where}
         AND action_bias = 'SELL_REAL'
+        AND {CONFIRMED_SELL_CYCLE_PREDICATE}
         GROUP BY market
         """
         if cycle_where
@@ -151,11 +261,12 @@ def main() -> None:
                {usd_expr} AS total_usd
         FROM cycle_log
         WHERE action_bias = 'SELL_REAL'
+        AND {CONFIRMED_SELL_CYCLE_PREDICATE}
         GROUP BY market
         """,
         cycle_params,
     ).fetchall()
-    print("\n[실거래 손익 통계]")
+    print("\n[KIS 체결확정 손익 통계]")
     for row in rows:
         win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
         print(
@@ -195,6 +306,7 @@ def main() -> None:
             FROM cycle_log
             {cycle_where}
             AND action_bias = 'SELL_REAL'
+            AND {CONFIRMED_SELL_CYCLE_PREDICATE}
             GROUP BY market, strategy, exit_reason
             ORDER BY total_krw ASC
             """
@@ -209,12 +321,13 @@ def main() -> None:
 	                   {usd_expr} AS total_usd
             FROM cycle_log
             WHERE action_bias = 'SELL_REAL'
+            AND {CONFIRMED_SELL_CYCLE_PREDICATE}
             GROUP BY market, strategy, exit_reason
             ORDER BY total_krw ASC
             """,
             cycle_params,
         ).fetchall()
-        print("\n[전략별 실주문접수 손익]")
+        print("\n[전략별 KIS 체결확정 손익]")
         for row in rows[:15]:
             win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
             print(
@@ -315,22 +428,24 @@ def main() -> None:
         FROM cycle_log
         {cycle_where}
         AND action_bias = 'BUY_REAL'
+        AND {CONFIRMED_BUY_CYCLE_PREDICATE}
         GROUP BY symbol, market
         ORDER BY buy_count DESC
         LIMIT 10
         """
         if cycle_where
-        else """
+        else f"""
         SELECT symbol, market, COUNT(*) AS buy_count
         FROM cycle_log
         WHERE action_bias = 'BUY_REAL'
+        AND {CONFIRMED_BUY_CYCLE_PREDICATE}
         GROUP BY symbol, market
         ORDER BY buy_count DESC
         LIMIT 10
         """,
         cycle_params,
     ).fetchall()
-    print("\n[종목별 진입 빈도]")
+    print("\n[KIS 체결확정 종목별 진입 빈도]")
     for row in rows:
         print(f"  {row['symbol']:8s} ({row['market']:8s}) {row['buy_count']}건")
 

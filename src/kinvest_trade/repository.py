@@ -21,6 +21,17 @@ AND EXISTS (
 )
 """.strip()
 
+CONFIRMED_BUY_CYCLE_PREDICATE = """
+COALESCE(cycle_log.execution_group_id, '') != ''
+AND EXISTS (
+    SELECT 1
+    FROM broker_order_executions AS confirmed_execution
+    WHERE confirmed_execution.execution_group_id = cycle_log.execution_group_id
+      AND UPPER(confirmed_execution.side) = 'BUY'
+      AND confirmed_execution.filled_qty > 0
+)
+""".strip()
+
 CONFIRMED_SESSION_OWNERSHIP_PREDICATE = """
 EXISTS (
     SELECT 1

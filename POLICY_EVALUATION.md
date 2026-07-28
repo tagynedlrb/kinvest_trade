@@ -45,12 +45,13 @@ Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
 not submitted-price or pre-cost PnL. A positive gross move that fails to clear
 round-trip costs is still a loss for risk control.
 
-An action label is not fill evidence. A `SELL_REAL` cycle row is eligible only
-when it has an execution-group ID and that group has a KIS-confirmed sell fill
-with positive filled quantity. This same boundary applies to session PnL,
-strategy performance, strategy guards, exit-reason warnings, before/after
-comparisons, and market-regime evaluation. Legacy rows remain available for
-audit but cannot train or score policy.
+An action label is not fill evidence. A `BUY_REAL` or `SELL_REAL` cycle row is
+eligible only when it has an execution-group ID and that group has a
+KIS-confirmed fill in the matching direction with positive filled quantity.
+This same boundary applies to entry frequency, session PnL, strategy
+performance, strategy guards, exit-reason warnings, before/after comparisons,
+and market-regime evaluation. Legacy rows remain available for audit but
+cannot train or score policy.
 
 ## Restart safety
 

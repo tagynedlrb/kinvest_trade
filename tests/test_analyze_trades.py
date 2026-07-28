@@ -191,6 +191,100 @@ def test_strategy_breakdown_prefers_action_reason_over_exit_by(
     assert "exit=VWAP" not in output
 
 
+def test_main_excludes_unconfirmed_and_wrong_side_real_rows(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    save_confirmed_buy,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "confirmed_boundary.db")
+    logged_at = "2026-07-28T01:00:00+00:00"
+    save_confirmed_buy(
+        repository,
+        logged_at=logged_at,
+        market="domestic",
+        symbol="GOODBUY",
+        exchange_code="KRX",
+        action_bias="BUY_REAL",
+        action_reason="confirmed_buy",
+        strategy_flag="VOL",
+        price=1000.0,
+        pnl_pct=0.0,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-28T01:01:00+00:00",
+        market="domestic",
+        symbol="GOODSELL",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="confirmed_sell",
+        strategy_flag="VOL",
+        price=1010.0,
+        entry_price=1000.0,
+        qty_executed=1,
+        pnl_pct=0.01,
+        net_pnl_krw=9.0,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-28T01:02:00+00:00",
+        market="domestic",
+        symbol="NOFILLBUY",
+        exchange_code="KRX",
+        action_bias="BUY_REAL",
+        action_reason="unconfirmed_buy",
+        strategy_flag="VWAP",
+        price=1000.0,
+        qty_executed=1,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-28T01:03:00+00:00",
+        market="domestic",
+        symbol="NOFILLSELL",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="unconfirmed_sell",
+        strategy_flag="VWAP",
+        price=100.0,
+        entry_price=1000.0,
+        qty_executed=1,
+        pnl_pct=-0.9,
+        net_pnl_krw=-900.0,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-28T01:04:00+00:00",
+        market="domestic",
+        symbol="WRONGSIDE",
+        exchange_code="KRX",
+        action_bias="BUY_REAL",
+        action_reason="wrong_side_execution",
+        strategy_flag="RSI",
+        price=1000.0,
+        pnl_pct=0.0,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["analyze_trades.py", str(repository.db_path)])
+    main()
+    output = capsys.readouterr().out
+
+    assert "실거래 성과/빈도는 KIS 체결확정 원장" in output
+    assert "BUY_REAL     체결확정=1건 성과제외=2건" in output
+    assert "SELL_REAL    체결확정=1건 성과제외=1건" in output
+    assert "domestic   매수=1건 청산=1건" in output
+    assert "confirmed_buy" in output
+    assert "confirmed_sell" in output
+    assert "unconfirmed_buy" not in output
+    assert "unconfirmed_sell" not in output
+    assert "wrong_side_execution" not in output
+    assert "GOODBUY" in output
+    assert "NOFILLBUY" not in output
+    assert "WRONGSIDE" not in output
+    assert "거래=1건" in output
+    assert "누적=9원" in output
+
+
 def test_summarize_wait_bottlenecks_groups_recent_wait_rows(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "wait_bottleneck.db")
     now = datetime.now(timezone.utc)

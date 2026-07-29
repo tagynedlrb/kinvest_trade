@@ -253,11 +253,15 @@
 - The US formula change is an observation-path correction, not a profitability
   claim. On 2026-07-29, `event_log.id=4556` recorded SOXS at 69.54 with NASDAQ
   at -1.135%, relative volume 1.70, positive momentum and a 1.05% breakout,
-  yet the generic consensus returned `setup_not_ready`. A later 70.35 price
-  implies about +0.66% after the configured round-trip cost, but this is an
-  unexecuted counterfactual. In the same snapshot, SQQQ and SPXU remained
-  below the 1.3 volume floor, and a later SOXS reversal had negative current
-  momentum. Preserve those selective controls and require completed
+  yet the generic consensus returned `setup_not_ready`. Looking only at a later
+  70.35 price implied about +0.66% after the configured round-trip cost, but
+  full path replay invalidated that favorable snapshot: the next recorded
+  SOXS quote was 69.1951, a modeled -0.99% net result that would have triggered
+  the current shadow stop. The first later SQQQ setup also modeled a -1.21%
+  hard stop, while SPXU remained open at about -0.33% net at the replay cutoff.
+  None was an executed shadow trade. In the original snapshot, SQQQ and SPXU
+  remained below the 1.3 volume floor, and a later SOXS reversal had negative
+  current momentum. Preserve those selective controls and require completed
   out-of-sample shadow paths before any economic conclusion.
 - Evaluate inverse exits with price-path attribution before changing their
   thresholds. For closed shadow rows, report maximum favorable excursion as
@@ -818,9 +822,11 @@ the current direction is wrong.
   that session. On 2026-07-29 the provisional NASDAQ return crossed -1% and
   exposed a different zero-sample cause: the generic formula rejected a liquid,
   rising SOXS setup. Route future US observations through the separately named
-  shadow formula, but treat the later favorable price as counterfactual only.
-  There are still zero completed US inverse samples. Durable regime and
-  product-stage observations make each zero-sample reason auditable.
+  shadow formula. Same-session full-path replay then showed that the favorable
+  later SOXS price was a cherry-picked endpoint: the current cost-aware stop
+  would have closed on the immediately adverse next observation. There are
+  still zero completed US inverse samples. Durable regime and product-stage
+  observations make each zero-sample reason auditable.
 - Performance now uses the broker execution ledger. Submission rows, canceled
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.

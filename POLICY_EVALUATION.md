@@ -263,6 +263,11 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   fresh expired cooldown.
 - Runtime-state replacement must be atomic. A partial JSON write must leave the
   prior valid state available rather than silently resetting safeguards.
+- An unexpired overseas signal-unavailable suppression is also restart state.
+  Persist only its future expiry and associated failure count; discard expired
+  or unrelated counters. A deployment restart must not turn a declared
+  180-minute exclusion into three fresh broker chart calls, while held symbols
+  remain exempt so exit monitoring continues.
 - Session ownership is reconstructed from same-session broker-confirmed buys,
   not symbol identity alone. This keeps restarted bot positions attributable
   without claiming manually imported holdings.

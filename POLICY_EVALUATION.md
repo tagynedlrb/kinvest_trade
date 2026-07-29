@@ -263,6 +263,14 @@
   remained below the 1.3 volume floor, and a later SOXS reversal had negative
   current momentum. Preserve those selective controls and require completed
   out-of-sample shadow paths before any economic conclusion.
+- The first deployed cycle supplied out-of-sample routing evidence, not
+  performance evidence. With provisional NASDAQ return at -1.448%, SQQQ and
+  SPXU opened shadow rows under `us_regime_trend_breakout_v1`; SOXS remained
+  blocked because its projected relative volume was 1.19, below 1.3. No broker
+  order or execution was created. Simultaneous inverse products share the same
+  market shock and are correlated observations: retain each product path for
+  execution analysis, but do not count them as independent market-session
+  evidence when considering live promotion.
 - Evaluate inverse exits with price-path attribution before changing their
   thresholds. For closed shadow rows, report maximum favorable excursion as
   `(peak-entry)/entry`, maximum adverse excursion as

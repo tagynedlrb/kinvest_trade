@@ -734,6 +734,7 @@ Official product/risk references:
 - [FINRA leveraged/inverse ETP guidance](https://www.finra.org/investors/insights/lowdown-leveraged-and-inverse-exchange-traded-products)
 - [FINRA non-traditional ETF FAQ](https://www.finra.org/rules-guidance/key-topics/etf/non-traditional-etf-faq)
 - [Gao et al., Market intraday momentum](https://doi.org/10.1016/j.jfineco.2018.05.009)
+- [Daniel and Moskowitz, Momentum Crashes](https://www.nber.org/papers/w20439)
 - [KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)
 - [KODEX Inverse](https://www.samsungfund.com/etf/product/view.do?id=2ETF20)
 
@@ -812,7 +813,7 @@ the current direction is wrong.
   after the declared regime sample matures instead of converting one crash
   episode into a permanent entry block.
 - Frequency: the seven-day confirmed ledger contains eleven domestic and
-  twenty-seven overseas entries, followed by eleven and twenty exits. The
+  thirty-five overseas entries, followed by eleven and twenty-four exits. The
   largest raw WAIT bucket shrinks from 1,251 to 178 domestic episodes and from
   5,143 to 247 overseas episodes after deduplication. This is not evidence of a
   system frequency ceiling. Do not loosen entry gates while after-cost
@@ -838,8 +839,18 @@ the current direction is wrong.
   shadow formula. Same-session full-path replay then showed that the favorable
   later SOXS price was a cherry-picked endpoint: the current cost-aware stop
   would have closed on the immediately adverse next observation. There are
-  still zero completed US inverse samples. Durable regime and product-stage
-  observations make each zero-sample reason auditable.
+  now two completed US product paths but only one observed US market session.
+  SQQQ and SPXU closed at -1.16% and -0.79% net; their MFE values of +0.28%
+  and +0.25% never covered the modeled round-trip cost. This confirms the
+  routing path and the prior replay warning, not a profitable formula. Durable
+  regime and product-stage observations make each zero-sample reason auditable.
+- In the same provisional `down|unknown|normal` NASDAQ session, four completed
+  ordinary-long entries all lost after costs, averaging -0.85% net. Two more
+  open positions were near flat gross but about -0.49% and -0.47% after modeled
+  round-trip costs at review time. Reject a frequency increase. Do not install
+  a permanent broad-market long block from this one correlated, non-final
+  session; retain the existing consecutive-loss breaker and collect at least
+  five confirmed exits across three final down-regime sessions first.
 - Performance now uses the broker execution ledger. Submission rows, canceled
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.

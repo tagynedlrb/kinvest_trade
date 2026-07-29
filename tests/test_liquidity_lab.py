@@ -5302,6 +5302,88 @@ def test_confirmed_loss_restore_prefers_unreleased_persisted_breaker_event(
     assert current - active_halts["domestic"] < timedelta(seconds=1)
 
 
+def test_confirmed_loss_restore_truncates_outcomes_at_persisted_release(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.risk.max_consecutive_losses = 3
+    service.config.risk.circuit_breaker_cooldown_minutes = 30
+    now = datetime.now(timezone.utc)
+    for idx, minutes_ago in enumerate((26 * 60, 25 * 60, 73, 66, 64, 37)):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=(now - timedelta(minutes=minutes_ago)).isoformat(),
+            market="domestic",
+            symbol=f"LOSS{idx}",
+            exchange_code="KRX",
+            action_reason="atr_hard_stop",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+            entry_price=10_000.0,
+            qty_executed=1,
+            net_pnl_krw=-100.0,
+        )
+    service.repository.save_event(
+        event_type="cb_fired",
+        detail={
+            "type": "consecutive",
+            "market": "domestic",
+            "consecutive_losses": 3,
+        },
+    )
+    service.repository.save_event(
+        event_type="cb_released",
+        detail={
+            "type": "consecutive",
+            "market": "domestic",
+            "consecutive_losses": 0,
+        },
+    )
+    after_release = datetime.now(timezone.utc)
+
+    streaks, active_halts = service._confirmed_consecutive_loss_state(
+        after_release
+    )
+
+    assert streaks == {"domestic": 0}
+    assert active_halts == {}
+
+    result = service._reconcile_confirmed_risk_day_pnl(
+        after_release,
+        restore_consecutive=True,
+    )
+
+    assert result["consecutive_losses_by_market"] == {"domestic": 0}
+    restored = service.repository.list_event_log(
+        event_type="cb_state_restored",
+        limit=1,
+    )
+    assert json.loads(restored[0]["detail"])[
+        "consecutive_losses_by_market"
+    ] == {"domestic": 0}
+
+    save_confirmed_sell(
+        service.repository,
+        logged_at=(after_release + timedelta(minutes=1)).isoformat(),
+        market="domestic",
+        symbol="NEWLOSS",
+        exchange_code="KRX",
+        action_reason="atr_hard_stop",
+        strategy_flag="VWAP",
+        pnl_pct=-0.01,
+        entry_price=10_000.0,
+        qty_executed=1,
+        net_pnl_krw=-100.0,
+    )
+
+    later_streaks, later_halts = service._confirmed_consecutive_loss_state(
+        after_release + timedelta(minutes=2)
+    )
+
+    assert later_streaks == {"domestic": 1}
+    assert later_halts == {}
+
+
 def _save_test_regime(
     service: LiquidityLabService,
     *,

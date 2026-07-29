@@ -124,6 +124,12 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   If the streak crossed its market threshold, anchor the remaining cooldown to
   the confirmed exit that first crossed it. Do not erase a live cooldown or
   restart an already expired cooldown from process startup time.
+- A persisted market-specific `cb_released` event is a hard timeline boundary
+  for consecutive-loss restoration. Confirmed outcomes at or before that
+  release remain in account PnL but cannot reappear as a post-release streak.
+  Outcomes after the release start again from zero. A later unexpired
+  `cb_fired` still overrides inferred streak state with its recorded count and
+  original timestamp.
 - KIS aggregate order-history rows expose filled quantity and price but only an
   order timestamp, not a distinct fill timestamp. Treat that timestamp as the
   best available effective time, name the source in the audit event, and retain

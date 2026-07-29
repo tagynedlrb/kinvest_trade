@@ -558,7 +558,12 @@ class LiquidityLabService:
             limit=1000,
             cost_pct=0.005,
         )
-        streaks: dict[str, int] = {}
+        persisted_halts, released_at_by_market = (
+            self._persisted_consecutive_breaker_state(current)
+        )
+        streaks: dict[str, int] = {
+            market: 0 for market in released_at_by_market
+        }
         trigger_at: dict[str, datetime] = {}
         base_threshold = int(
             getattr(self.config.risk, "max_consecutive_losses", 0) or 0
@@ -576,6 +581,13 @@ class LiquidityLabService:
             if not market:
                 continue
             occurred_at = parse_datetime(str(row.get("logged_at") or ""))
+            released_at = released_at_by_market.get(market)
+            if (
+                occurred_at is not None
+                and released_at is not None
+                and ensure_timezone(occurred_at) <= released_at
+            ):
+                continue
             active_since = trigger_at.get(market)
             if active_since is not None and occurred_at is not None:
                 cooldown_minutes = self._market_risk_value(
@@ -628,21 +640,21 @@ class LiquidityLabService:
                 streaks[market] = 0
                 continue
             active_halts[market] = started_at
-        for market, (count, started_at) in (
-            self._persisted_active_consecutive_halts(current).items()
-        ):
+        for market, (count, started_at) in persisted_halts.items():
             streaks[market] = count
             active_halts[market] = started_at
         return streaks, active_halts
 
-    def _persisted_active_consecutive_halts(
+    def _persisted_consecutive_breaker_state(
         self,
         current: datetime,
-    ) -> dict[str, tuple[int, datetime]]:
+    ) -> tuple[dict[str, tuple[int, datetime]], dict[str, datetime]]:
         list_events = getattr(self.repository, "list_event_log", None)
         if not callable(list_events):
-            return {}
+            return {}, {}
         latest: dict[str, tuple[datetime, str, int]] = {}
+        latest_release: dict[str, datetime] = {}
+        current_at = ensure_timezone(current)
         for event_type in ("cb_fired", "cb_released"):
             for row in list_events(event_type=event_type, limit=1000):
                 detail = row.get("detail")
@@ -660,6 +672,12 @@ class LiquidityLabService:
                 if not market or occurred_at is None:
                     continue
                 timestamp = ensure_timezone(occurred_at)
+                if timestamp > current_at:
+                    continue
+                if event_type == "cb_released":
+                    previous_release = latest_release.get(market)
+                    if previous_release is None or timestamp > previous_release:
+                        latest_release[market] = timestamp
                 previous = latest.get(market)
                 if previous is None or timestamp > previous[0]:
                     latest[market] = (
@@ -687,12 +705,12 @@ class LiquidityLabService:
             )
             if (
                 cooldown_minutes > 0
-                and current
+                and current_at
                 >= started_at + timedelta(minutes=cooldown_minutes)
             ):
                 continue
             active[market] = (count, started_at)
-        return active
+        return active, latest_release
 
     async def _send_circuit_breaker_notification(self, message: str) -> None:
         notifier = getattr(self, "notifier", None)

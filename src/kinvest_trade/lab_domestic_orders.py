@@ -66,6 +66,12 @@ class DomesticOrderHelper:
             market="domestic",
             strategy_flag=strategy_flag,
         )
+        if not block_reason:
+            block_reason = service._entry_formula_block_reason(
+                market="domestic",
+                symbol=candidate.stock_code,
+                signal_snapshot=signal_snapshot,
+            )
         if block_reason:
             service._record_trade_skip(
                 market="domestic",

@@ -129,6 +129,7 @@ class AutoTradeConfig:
     min_bar_return_pct: float
     max_breakout_extension_pct: float
     vwap_min_price_above_pct: float
+    leveraged_require_dual_trend_confirmation: bool
     pullback_distance_lower_pct: float
     pullback_distance_upper_pct: float
     pullback_rsi_low: float
@@ -820,6 +821,12 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             ),
             vwap_min_price_above_pct=float(
                 auto_trade_raw.get("vwap_min_price_above_pct", 0.0)
+            ),
+            leveraged_require_dual_trend_confirmation=bool(
+                auto_trade_raw.get(
+                    "leveraged_require_dual_trend_confirmation",
+                    False,
+                )
             ),
             pullback_distance_lower_pct=float(
                 auto_trade_raw.get("pullback_distance_lower_pct", 0.015)

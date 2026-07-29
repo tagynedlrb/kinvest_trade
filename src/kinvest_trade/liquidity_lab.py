@@ -1166,6 +1166,17 @@ class LiquidityLabService:
         }
         return str(symbol).strip().upper() in inverse_symbols
 
+    def _is_leveraged_symbol(self, market: str, symbol: str) -> bool:
+        policy = self._get_market_policy(market)
+        if policy.auto_trade is None:
+            return False
+        leveraged_symbols = {
+            str(value).strip().upper()
+            for value in policy.auto_trade.leveraged_etf_symbols
+            if str(value).strip()
+        }
+        return str(symbol).strip().upper() in leveraged_symbols
+
     @staticmethod
     def _market_session_date(market: str, now: datetime | None = None) -> str:
         current = now or datetime.now(timezone.utc)
@@ -1946,6 +1957,38 @@ class LiquidityLabService:
             return "standalone_vol_blocked"
         if (market_key, strategy) in self._strategy_guard_blocked_keys():
             return "recent_strategy_underperformance"
+        return ""
+
+    def _entry_formula_block_reason(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        signal_snapshot: MovingAverageSnapshot | None,
+    ) -> str:
+        if signal_snapshot is None:
+            return ""
+        market_key = normalize_market_name(market)
+        policy = self._get_market_policy(market_key)
+        auto_trade = policy.auto_trade
+        if auto_trade is None:
+            return ""
+
+        if (
+            bool(
+                getattr(
+                    auto_trade,
+                    "leveraged_require_dual_trend_confirmation",
+                    False,
+                )
+            )
+            and self._is_leveraged_symbol(market_key, symbol)
+            and not (
+                signal_snapshot.daily_trend_up
+                and signal_snapshot.intraday_trend_up
+            )
+        ):
+            return "leveraged_trend_unconfirmed"
         return ""
 
     def _entry_liquidity_block_reason(

@@ -4692,6 +4692,74 @@ def test_place_domestic_test_order_blocks_recent_underperforming_strategy_before
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
+def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() -> None:
+    class FailingDomesticClient:
+        async def get_domestic_order_history(self, **_kwargs):
+            raise AssertionError("open-order API should not be called")
+
+        async def place_cash_order(self, **_kwargs):
+            raise AssertionError("cash-order API should not be called")
+
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.client = FailingDomesticClient()
+    snapshot = _snapshot(
+        price=78_055.0,
+        daily_ma_fast=134_123.0,
+        daily_ma_slow=167_558.17,
+        minute_ma_fast=78_063.33,
+        minute_ma_slow=76_920.71,
+        rsi14=19.83,
+        intraday_momentum=-0.00793,
+        intraday_bar_return=-0.00038,
+        volume_ratio=0.046,
+        regime="breakdown",
+    )
+    candidate = DomesticScanResult(
+        stock_code="122630",
+        current_price=78_055,
+        best_ask=78_060,
+        best_bid=78_050,
+        spread_pct=0.00013,
+        minute_change_pct=-0.00038,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+        stock_name="KODEX 레버리지",
+    )
+    watch_target = WatchTargetStatus(
+        market="domestic",
+        code="122630",
+        exchange_code=None,
+        price=78_055.0,
+        activity_score=11.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d<60d 9>21",
+        note="[RSI] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="RSI",
+        entry_by="RSI",
+    )
+
+    result = asyncio.run(
+        service._place_domestic_test_order(
+            candidate,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "leveraged_trend_unconfirmed"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["symbol"] == "122630"
+    assert rows[0]["action_reason"] == "buy:leveraged_trend_unconfirmed"
+
+
 def test_domestic_buy_skips_when_recent_pending_buy_exists() -> None:
     # Regression test: unlike the overseas buy path, the domestic buy path had
     # no pending-buy-order duplicate check at all. A restart between
@@ -5827,7 +5895,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v2"
+    assert trade["policy_id"] == "domestic_momentum_v3"
 
 
 def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products() -> None:
@@ -6616,6 +6684,95 @@ def test_build_watch_target_status_blocks_overseas_standalone_vwap() -> None:
     assert watch_target.note == "[VWAP] standalone_vwap_blocked"
     assert watch_target.strategy_flag == "VWAP"
     assert watch_target.entry_by == "VWAP"
+
+
+def test_build_watch_target_status_requires_leveraged_trend_confirmation() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    snapshot = _snapshot(
+        price=78_055.0,
+        daily_ma_fast=134_123.0,
+        daily_ma_slow=167_558.17,
+        minute_ma_fast=78_063.33,
+        minute_ma_slow=76_920.71,
+        rsi14=19.83,
+        intraday_momentum=-0.00793,
+        intraday_bar_return=-0.00038,
+        volume_ratio=0.046,
+        regime="breakdown",
+    )
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(
+                signal="BUY",
+                flag="RSI",
+                entry_by="RSI",
+                exit_by="",
+            )
+
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="domestic",
+        code="122630",
+        exchange_code=None,
+        price=78_055.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.signal_state == "WAIT"
+    assert watch_target.note == "[RSI] leveraged_trend_unconfirmed"
+
+
+def test_build_watch_target_status_allows_confirmed_leveraged_trend() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    snapshot = _snapshot(
+        price=20_000.0,
+        daily_ma_fast=19_800.0,
+        daily_ma_slow=19_400.0,
+        minute_ma_fast=20_100.0,
+        minute_ma_slow=19_900.0,
+    )
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(
+                signal="BUY",
+                flag="VOL+RSI",
+                entry_by="VOL",
+                exit_by="",
+            )
+
+        def buy_score(self, *args, **kwargs):
+            return 50.0
+
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="domestic",
+        code="122630",
+        exchange_code=None,
+        price=20_000.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "BUY"
+    assert watch_target.strategy_flag == "VOL+RSI"
 
 
 def test_build_watch_target_status_blocks_overseas_standalone_rsi() -> None:

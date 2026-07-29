@@ -1,5 +1,5 @@
 {
-  "policy_id": "domestic_momentum_v2",
+  "policy_id": "domestic_momentum_v3",
   "engine": "momentum_v1",
   "parameters": {
     "enabled": true,
@@ -49,6 +49,7 @@
     "min_bar_return_pct": 0.0008,
     "max_breakout_extension_pct": 0.015,
     "vwap_min_price_above_pct": 0.003,
+    "leveraged_require_dual_trend_confirmation": true,
     "pullback_distance_lower_pct": 0.015,
     "pullback_distance_upper_pct": 0.012,
     "pullback_rsi_low": 40.0,

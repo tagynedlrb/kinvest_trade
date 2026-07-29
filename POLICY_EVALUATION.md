@@ -55,7 +55,7 @@
   volume confirmation remain mandatory. Unapproved symbols and an approved
   code returned as an ordinary stock receive no exemption.
 - Domestic inverse entries use the independently versioned
-  `domestic_momentum_v2` shadow formula. The ordinary long-side VWAP, RSI/MACD
+  `domestic_momentum_v3` shadow formula. The ordinary long-side VWAP, RSI/MACD
   and 2x-volume consensus is not an adequate proxy after an inverse ETF has
   already moved far above VWAP during a broad-market decline. The dedicated
   formula requires a same-session KOSPI decline of at least 3%, an up-sloping
@@ -86,6 +86,26 @@
   ([KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)).
   Therefore one entry per symbol/session, intraday exits, conservative spread
   simulation and no live promotion from one crash-day replay remain mandatory.
+- The domestic approved leveraged-long list currently contains only `122630`.
+  Under `domestic_momentum_v3`, every strategy signal for that list must pass
+  both the daily and intraday uptrend properties before it can become a buy
+  candidate, and the order helper must recheck the same boundary immediately
+  before submission. This closes the path where the generic entry formula
+  returned `leveraged_product_trend_down` while an independent RSI strategy
+  still surfaced `BUY`. The overseas option remains disabled; a domestic
+  counterexample does not modify `TQQQ/SOXL`.
+- Product recognition is not product approval. `233740` is officially a
+  KOSDAQ150 daily 2x ETF
+  ([KODEX KOSDAQ150 Leverage](https://www.samsungfund.com/etf/product/view.do?id=2ETF56)),
+  but it remains outside the approved list and must continue to be excluded as
+  `unapproved_leveraged_product`. Adding a known leveraged code to an approval
+  list requires separate final-session performance and product-risk evidence.
+- Five broker-confirmed, session-owned domestic standalone-VWAP exits across
+  only two sessions are insufficient for a permanent formula deletion or
+  momentum threshold. Keep the 48-hour market-specific performance guard
+  active, retain legacy unconfirmed rows for diagnostics only, and wait for at
+  least three distinct final KOSPI sessions before evaluating a permanent
+  standalone-VWAP change.
 - Volatility uses percentage True Range: the maximum of the session high-low
   range and each absolute high/low distance from the prior close. This captures
   close-to-open gaps while normalizing domestic and overseas markets against

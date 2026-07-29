@@ -8,6 +8,7 @@ import pytest
 from kinvest_trade.market_regime import (
     REGIME_CALCULATION_VERSION,
     MarketRegimeCollector,
+    build_domestic_futures_benchmark_record,
     build_regime_records,
     classify_activity,
     classify_trend,
@@ -166,6 +167,125 @@ def test_build_regime_records_excludes_open_us_day_from_final_status() -> None:
     assert records[1]["is_final"] == 0
 
 
+def test_build_domestic_futures_benchmark_record_uses_front_contract_summary() -> None:
+    record = build_domestic_futures_benchmark_record(
+        {
+            "summary": {
+                "futs_shrn_iscd": "A01609",
+                "futs_prdy_clpr": "956.75",
+                "futs_prdy_ctrt": "-6.07",
+                "futs_prpr": "898.65",
+            },
+            "rows": [
+                {
+                    "stck_bsop_date": "20260728",
+                    "futs_prpr": "956.75",
+                },
+                {
+                    "stck_bsop_date": "20260729",
+                    "futs_prpr": "898.65",
+                    "futs_oprc": "956.75",
+                    "futs_hgpr": "987.00",
+                    "futs_lwpr": "823.00",
+                    "acml_vol": "236834",
+                    "acml_tr_pbmn": "53521964863",
+                }
+            ],
+        },
+        benchmark_code="101000",
+        benchmark_name="F-KOSPI200",
+        source="KIS:FHKIF03020100",
+        captured_at=datetime(2026, 7, 29, 5, 0, tzinfo=timezone.utc),
+    )
+
+    assert record is not None
+    assert record["session_date"] == "2026-07-29"
+    assert record["benchmark_code"] == "101000"
+    assert record["return_pct"] == pytest.approx(-6.07)
+    assert record["trend_regime"] == "strong_down"
+    assert record["regime_key"] == "strong_down|unknown|unknown"
+    assert record["is_final"] == 0
+    assert record["calculation_version"] == "futures_continuous_snapshot_v1"
+    assert '"resolved_instrument_code": "A01609"' in record["raw_json"]
+
+
+@pytest.mark.parametrize(
+    ("captured_at", "expected_final"),
+    [
+        (datetime(2026, 7, 29, 6, 40, tzinfo=timezone.utc), 0),
+        (datetime(2026, 7, 29, 6, 50, tzinfo=timezone.utc), 1),
+    ],
+)
+def test_domestic_futures_benchmark_waits_for_derivatives_close(
+    captured_at: datetime,
+    expected_final: int,
+) -> None:
+    record = build_domestic_futures_benchmark_record(
+        {
+            "summary": {
+                "futs_shrn_iscd": "A01609",
+                "futs_prdy_clpr": "956.75",
+                "futs_prdy_ctrt": "-6.07",
+                "futs_prpr": "898.65",
+            },
+            "rows": [
+                {
+                    "stck_bsop_date": "20260729",
+                    "futs_prpr": "898.65",
+                }
+            ],
+        },
+        benchmark_code="101000",
+        benchmark_name="F-KOSPI200",
+        source="KIS:FHKIF03020100",
+        captured_at=captured_at,
+    )
+
+    assert record is not None
+    assert record["is_final"] == expected_final
+
+
+@pytest.mark.parametrize(
+    "summary_override",
+    [
+        {"futs_shrn_iscd": ""},
+        {"futs_prdy_clpr": "0"},
+        {"futs_prpr": "900.00"},
+        {"futs_prdy_ctrt": "-1.00"},
+    ],
+)
+def test_build_domestic_futures_benchmark_record_rejects_unaligned_summary(
+    summary_override: dict,
+) -> None:
+    summary = {
+        "futs_shrn_iscd": "A01609",
+        "futs_prdy_clpr": "956.75",
+        "futs_prdy_ctrt": "-6.07",
+        "futs_prpr": "898.65",
+        **summary_override,
+    }
+
+    record = build_domestic_futures_benchmark_record(
+        {
+            "summary": summary,
+            "rows": [
+                {
+                    "stck_bsop_date": "20260729",
+                    "futs_prpr": "898.65",
+                    "futs_oprc": "956.75",
+                    "futs_hgpr": "987.00",
+                    "futs_lwpr": "823.00",
+                }
+            ],
+        },
+        benchmark_code="101000",
+        benchmark_name="F-KOSPI200",
+        source="KIS:FHKIF03020100",
+    )
+
+    assert record is None
+
+
 def test_collector_persists_both_market_benchmarks(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "regime.db")
 
@@ -206,6 +326,147 @@ def test_collector_persists_both_market_benchmarks(tmp_path) -> None:
     assert result["overseas"]["observations"] == 1
     assert len(observations) == 2
     assert {row["session_date"] for row in observations} == {"2026-07-28"}
+
+
+def test_collector_persists_symbol_specific_inverse_benchmarks(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "inverse-regime.db")
+    requested_codes: list[str] = []
+
+    class FakeClient:
+        async def get_overseas_index_daily_prices(
+            self,
+            *,
+            index_code,
+            **_kwargs,
+        ):
+            requested_codes.append(index_code)
+            base = 100.0 if index_code == "NDX" else 200.0
+            return [
+                _overseas_row("20260727", base),
+                _overseas_row("20260728", base * 0.98),
+            ]
+
+    collector = MarketRegimeCollector(FakeClient(), repository)
+    result = asyncio.run(
+        collector.refresh_inverse_benchmarks_if_due(
+            [
+                {
+                    "market": "overseas",
+                    "benchmark_code": "NDX",
+                    "benchmark_name": "NASDAQ-100",
+                    "source": "KIS:FHKST03030100",
+                    "instrument_type": "overseas_index",
+                    "available": True,
+                },
+                {
+                    "market": "overseas",
+                    "benchmark_code": "SPX",
+                    "benchmark_name": "S&P 500",
+                    "source": "KIS:FHKST03030100",
+                    "instrument_type": "overseas_index",
+                    "available": True,
+                },
+                {
+                    "market": "overseas",
+                    "benchmark_code": "",
+                    "benchmark_name": "NYSE Semiconductor Index",
+                    "source": "",
+                    "instrument_type": "",
+                    "available": False,
+                },
+            ],
+            datetime(2026, 7, 28, 14, 0, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert requested_codes == ["NDX", "SPX"]
+    assert set(result) == {"NDX", "SPX"}
+    ndx = repository.get_inverse_benchmark_regime(
+        "overseas",
+        "NDX",
+        "2026-07-28",
+    )
+    spx = repository.get_inverse_benchmark_regime(
+        "overseas",
+        "SPX",
+        "2026-07-28",
+    )
+    assert ndx is not None
+    assert ndx["benchmark_name"] == "NASDAQ-100"
+    assert ndx["return_pct"] == pytest.approx(-2.0)
+    assert spx is not None
+    assert spx["benchmark_name"] == "S&P 500"
+    assert spx["return_pct"] == pytest.approx(-2.0)
+    observations = repository.list_inverse_benchmark_observations(limit=10)
+    assert {row["benchmark_code"] for row in observations} == {"NDX", "SPX"}
+    ndx_observation = repository.get_inverse_benchmark_observation_at(
+        "overseas",
+        "NDX",
+        datetime(2026, 7, 28, 14, 0, tzinfo=timezone.utc),
+        session_date="2026-07-28",
+    )
+    assert ndx_observation is not None
+    assert ndx_observation["benchmark_name"] == "NASDAQ-100"
+
+
+def test_collector_persists_domestic_futures_inverse_benchmark(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "domestic-inverse-regime.db")
+
+    class FakeClient:
+        async def get_domestic_futures_continuous_daily_snapshot(
+            self,
+            **_kwargs,
+        ):
+            return {
+                "summary": {
+                    "futs_shrn_iscd": "A01609",
+                    "futs_prdy_clpr": "956.75",
+                    "futs_prdy_ctrt": "-6.07",
+                },
+                "rows": [
+                    {
+                        "stck_bsop_date": "20260729",
+                        "futs_prpr": "898.65",
+                        "futs_oprc": "956.75",
+                        "futs_hgpr": "987.00",
+                        "futs_lwpr": "823.00",
+                        "acml_vol": "236834",
+                    }
+                ],
+            }
+
+    collector = MarketRegimeCollector(FakeClient(), repository)
+    result = asyncio.run(
+        collector.refresh_inverse_benchmarks_if_due(
+            [
+                {
+                    "market": "domestic",
+                    "benchmark_code": "101000",
+                    "benchmark_name": "F-KOSPI200",
+                    "source": "KIS:FHKIF03020100",
+                    "instrument_type": "domestic_futures_continuous",
+                    "available": True,
+                }
+            ],
+            datetime(2026, 7, 29, 5, 0, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert result["101000"]["status"] == "updated"
+    assert result["101000"]["resolved_instrument_code"] == "A01609"
+    regime = repository.get_inverse_benchmark_regime(
+        "domestic",
+        "101000",
+        "2026-07-29",
+    )
+    assert regime is not None
+    assert regime["benchmark_name"] == "F-KOSPI200"
+    assert regime["return_pct"] == pytest.approx(-6.07)
+    observations = repository.list_inverse_benchmark_observations(limit=10)
+    assert len(observations) == 1
+    assert observations[0]["benchmark_code"] == "101000"
 
 
 def test_market_regime_observations_are_append_only_and_queryable_by_time(

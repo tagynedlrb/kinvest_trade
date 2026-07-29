@@ -10,6 +10,7 @@ from .auto_trade_math import (
     DOMESTIC_COST_CALCULATION_VERSION,
     estimate_domestic_trade_costs,
 )
+from .inverse_policy import INVERSE_BENCHMARK_ALIGNMENT_VERSION
 from .market_sessions import KST, NEW_YORK
 from .time_utils import ensure_timezone, parse_datetime
 
@@ -59,6 +60,36 @@ AND (
 )
 """.strip()
 
+_INVERSE_BENCHMARK_REGIME_COLUMNS = (
+    "market",
+    "benchmark_code",
+    "session_date",
+    "benchmark_name",
+    "source",
+    "captured_at",
+    "is_final",
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "previous_close",
+    "return_pct",
+    "volume",
+    "turnover",
+    "volume_avg_20",
+    "volume_ratio_20",
+    "range_pct",
+    "range_avg_20",
+    "range_ratio_20",
+    "trend_regime",
+    "activity_regime",
+    "volatility_regime",
+    "regime_key",
+    "sample_days",
+    "calculation_version",
+    "raw_json",
+)
+
 
 class SqliteRepository:
     def __init__(self, db_path: Path | str) -> None:
@@ -102,6 +133,8 @@ class SqliteRepository:
         "lab_symbol_state",
         "market_regime_observations",
         "market_regimes",
+        "inverse_benchmark_observations",
+        "inverse_benchmark_regimes",
         "policy_evaluation_log",
     )
 
@@ -644,6 +677,83 @@ class SqliteRepository:
                         market, regime_key, captured_at
                     );
 
+                CREATE TABLE IF NOT EXISTS inverse_benchmark_regimes (
+                    market TEXT NOT NULL,
+                    benchmark_code TEXT NOT NULL,
+                    session_date TEXT NOT NULL,
+                    benchmark_name TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    is_final INTEGER NOT NULL DEFAULT 0,
+                    open_price REAL,
+                    high_price REAL,
+                    low_price REAL,
+                    close_price REAL,
+                    previous_close REAL,
+                    return_pct REAL,
+                    volume INTEGER,
+                    turnover REAL,
+                    volume_avg_20 REAL,
+                    volume_ratio_20 REAL,
+                    range_pct REAL,
+                    range_avg_20 REAL,
+                    range_ratio_20 REAL,
+                    trend_regime TEXT NOT NULL DEFAULT 'unknown',
+                    activity_regime TEXT NOT NULL DEFAULT 'unknown',
+                    volatility_regime TEXT NOT NULL DEFAULT 'unknown',
+                    regime_key TEXT NOT NULL DEFAULT 'unknown|unknown|unknown',
+                    sample_days INTEGER NOT NULL DEFAULT 0,
+                    calculation_version TEXT NOT NULL DEFAULT 'true_range_v2',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (market, benchmark_code, session_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_inverse_benchmark_regimes_date
+                    ON inverse_benchmark_regimes(
+                        market, session_date, benchmark_code
+                    );
+
+                CREATE TABLE IF NOT EXISTS inverse_benchmark_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    market TEXT NOT NULL,
+                    benchmark_code TEXT NOT NULL,
+                    session_date TEXT NOT NULL,
+                    benchmark_name TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    is_final INTEGER NOT NULL DEFAULT 0,
+                    open_price REAL,
+                    high_price REAL,
+                    low_price REAL,
+                    close_price REAL,
+                    previous_close REAL,
+                    return_pct REAL,
+                    volume INTEGER,
+                    turnover REAL,
+                    volume_avg_20 REAL,
+                    volume_ratio_20 REAL,
+                    range_pct REAL,
+                    range_avg_20 REAL,
+                    range_ratio_20 REAL,
+                    trend_regime TEXT NOT NULL DEFAULT 'unknown',
+                    activity_regime TEXT NOT NULL DEFAULT 'unknown',
+                    volatility_regime TEXT NOT NULL DEFAULT 'unknown',
+                    regime_key TEXT NOT NULL DEFAULT 'unknown|unknown|unknown',
+                    sample_days INTEGER NOT NULL DEFAULT 0,
+                    calculation_version TEXT NOT NULL DEFAULT 'true_range_v2',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE (
+                        market,
+                        benchmark_code,
+                        session_date,
+                        captured_at,
+                        calculation_version
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS idx_inverse_benchmark_obs_session
+                    ON inverse_benchmark_observations(
+                        market, benchmark_code, session_date, captured_at
+                    );
+
                 CREATE TABLE IF NOT EXISTS strategy_guard_state (
                     market TEXT NOT NULL,
                     strategy_flag TEXT NOT NULL,
@@ -1099,6 +1209,214 @@ class SqliteRepository:
                 values,
             )
         return cursor.rowcount > 0
+
+    @staticmethod
+    def _inverse_benchmark_regime_values(regime: dict) -> list[object]:
+        values: list[object] = []
+        for column in _INVERSE_BENCHMARK_REGIME_COLUMNS:
+            value = regime.get(column)
+            if column == "market":
+                value = str(value or "").strip().lower()
+            elif column == "benchmark_code":
+                value = str(value or "").strip().upper()
+            elif column == "captured_at":
+                parsed = parse_datetime(value)
+                if parsed is not None:
+                    value = ensure_timezone(parsed).astimezone(
+                        timezone.utc
+                    ).isoformat()
+            elif column == "calculation_version":
+                value = str(value or "true_range_v2")
+            elif column == "raw_json" and not isinstance(value, str):
+                value = json.dumps(value or {}, ensure_ascii=False, default=str)
+            values.append(value)
+        return values
+
+    def upsert_inverse_benchmark_regime(self, regime: dict) -> None:
+        columns = _INVERSE_BENCHMARK_REGIME_COLUMNS
+        values = self._inverse_benchmark_regime_values(regime)
+        update_columns = columns[3:]
+        assignments = ", ".join(
+            f"{column} = excluded.{column}"
+            for column in update_columns
+        )
+        placeholders = ", ".join("?" for _ in columns)
+        with self._connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO inverse_benchmark_regimes ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(market, benchmark_code, session_date) DO UPDATE SET
+                    {assignments}
+                """,
+                values,
+            )
+
+    def save_inverse_benchmark_observation(self, regime: dict) -> bool:
+        columns = _INVERSE_BENCHMARK_REGIME_COLUMNS
+        values = self._inverse_benchmark_regime_values(regime)
+        placeholders = ", ".join("?" for _ in columns)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                INSERT INTO inverse_benchmark_observations (
+                    {", ".join(columns)}
+                )
+                VALUES ({placeholders})
+                ON CONFLICT(
+                    market, benchmark_code, session_date, captured_at,
+                    calculation_version
+                ) DO NOTHING
+                """,
+                values,
+            )
+        return int(cursor.rowcount or 0) > 0
+
+    def get_inverse_benchmark_regime(
+        self,
+        market: str,
+        benchmark_code: str,
+        session_date: str | None = None,
+        *,
+        final_only: bool = False,
+    ) -> dict | None:
+        where = ["market = ?", "benchmark_code = ?"]
+        params: list[object] = [
+            str(market).strip().lower(),
+            str(benchmark_code).strip().upper(),
+        ]
+        if session_date:
+            where.append("session_date = ?")
+            params.append(str(session_date))
+        if final_only:
+            where.append("is_final = 1")
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM inverse_benchmark_regimes
+                WHERE {" AND ".join(where)}
+                ORDER BY session_date DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_inverse_benchmark_regimes(
+        self,
+        *,
+        market: str | None = None,
+        benchmark_code: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        final_only: bool = False,
+        limit: int = 250,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        if benchmark_code:
+            where.append("benchmark_code = ?")
+            params.append(str(benchmark_code).strip().upper())
+        if start_date:
+            where.append("session_date >= ?")
+            params.append(str(start_date))
+        if end_date:
+            where.append("session_date <= ?")
+            params.append(str(end_date))
+        if final_only:
+            where.append("is_final = 1")
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM inverse_benchmark_regimes
+                {where_sql}
+                ORDER BY session_date DESC, benchmark_code ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_inverse_benchmark_observations(
+        self,
+        *,
+        market: str | None = None,
+        benchmark_code: str | None = None,
+        session_date: str | None = None,
+        limit: int = 250,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        if benchmark_code:
+            where.append("benchmark_code = ?")
+            params.append(str(benchmark_code).strip().upper())
+        if session_date:
+            where.append("session_date = ?")
+            params.append(str(session_date))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM inverse_benchmark_observations
+                {where_sql}
+                ORDER BY captured_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_inverse_benchmark_observation_at(
+        self,
+        market: str,
+        benchmark_code: str,
+        observed_at: str | datetime,
+        *,
+        session_date: str | None = None,
+    ) -> dict | None:
+        parsed = parse_datetime(observed_at)
+        captured_before = (
+            ensure_timezone(parsed).astimezone(timezone.utc).isoformat()
+            if parsed is not None
+            else str(observed_at).strip()
+        )
+        where = [
+            "market = ?",
+            "benchmark_code = ?",
+            "captured_at <= ?",
+        ]
+        params: list[object] = [
+            str(market).strip().lower(),
+            str(benchmark_code).strip().upper(),
+            captured_before,
+        ]
+        if session_date:
+            where.append("session_date = ?")
+            params.append(str(session_date))
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM inverse_benchmark_observations
+                WHERE {" AND ".join(where)}
+                ORDER BY captured_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def get_market_regime_observation_at(
         self,
@@ -1882,6 +2200,7 @@ class SqliteRepository:
         """Summarize unique inverse-policy observations without restart inflation."""
         observation_types = (
             "inverse_regime_observed",
+            "inverse_symbol_regime_observed",
             "inverse_quote_failed",
             "inverse_quote_excluded",
             "inverse_product_blocked",
@@ -2529,62 +2848,128 @@ class SqliteRepository:
                 f"""
                 SELECT
                     market,
-                    SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END)
-                        AS open_count,
-                    SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END)
-                        AS closed_count,
-                    COUNT(DISTINCT entry_session_date)
-                        AS observed_session_count,
-                    COUNT(
-                        DISTINCT CASE
-                            WHEN status = 'OPEN' THEN entry_session_date
-                        END
-                    ) AS open_session_count,
-                    COUNT(
-                        DISTINCT CASE
-                            WHEN status = 'CLOSED' THEN entry_session_date
-                        END
-                    ) AS closed_session_count,
-                    SUM(
-                        CASE
-                            WHEN status = 'CLOSED' AND net_pnl_pct > 0 THEN 1
-                            ELSE 0
-                        END
-                    ) AS win_count,
-                    AVG(
-                        CASE WHEN status = 'CLOSED' THEN net_pnl_pct END
-                    ) AS avg_net_pnl_pct,
-                    AVG(
-                        CASE
-                            WHEN status = 'CLOSED' AND entry_price > 0
-                            THEN (peak_price - entry_price) / entry_price
-                        END
-                    ) AS avg_mfe_pct,
-                    AVG(
-                        CASE
-                            WHEN status = 'CLOSED' AND entry_price > 0
-                            THEN (trough_price - entry_price) / entry_price
-                        END
-                    ) AS avg_mae_pct,
-                    AVG(
-                        CASE
-                            WHEN status = 'CLOSED'
-                                 AND entry_price > 0
-                                 AND exit_price IS NOT NULL
-                            THEN (peak_price - exit_price) / entry_price
-                        END
-                    ) AS avg_peak_giveback_pct,
-                    SUM(
-                        CASE WHEN status = 'CLOSED' THEN net_pnl_pct ELSE 0 END
-                    ) AS total_net_pnl_pct
+                    status,
+                    entry_session_date,
+                    entry_price,
+                    peak_price,
+                    trough_price,
+                    exit_price,
+                    net_pnl_pct,
+                    context_json
                 FROM inverse_shadow_trades
                 WHERE {' AND '.join(where)}
-                GROUP BY market
-                ORDER BY market
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+
+        grouped: dict[str, list[dict]] = {}
+        for raw_row in rows:
+            row = dict(raw_row)
+            grouped.setdefault(str(row.get("market") or ""), []).append(row)
+
+        def summarize(items: list[dict]) -> dict[str, int | float | None]:
+            open_items = [
+                item for item in items if str(item.get("status")) == "OPEN"
+            ]
+            closed_items = [
+                item for item in items if str(item.get("status")) == "CLOSED"
+            ]
+            net_values = [
+                float(item["net_pnl_pct"])
+                for item in closed_items
+                if item.get("net_pnl_pct") is not None
+            ]
+            mfe_values = [
+                (float(item["peak_price"]) - float(item["entry_price"]))
+                / float(item["entry_price"])
+                for item in closed_items
+                if float(item.get("entry_price") or 0.0) > 0
+            ]
+            mae_values = [
+                (float(item["trough_price"]) - float(item["entry_price"]))
+                / float(item["entry_price"])
+                for item in closed_items
+                if float(item.get("entry_price") or 0.0) > 0
+            ]
+            giveback_values = [
+                (float(item["peak_price"]) - float(item["exit_price"]))
+                / float(item["entry_price"])
+                for item in closed_items
+                if float(item.get("entry_price") or 0.0) > 0
+                and item.get("exit_price") is not None
+            ]
+
+            def average(values: list[float]) -> float | None:
+                return sum(values) / len(values) if values else None
+
+            return {
+                "open_count": len(open_items),
+                "closed_count": len(closed_items),
+                "observed_session_count": len(
+                    {
+                        str(item.get("entry_session_date") or "")
+                        for item in items
+                    }
+                ),
+                "open_session_count": len(
+                    {
+                        str(item.get("entry_session_date") or "")
+                        for item in open_items
+                    }
+                ),
+                "closed_session_count": len(
+                    {
+                        str(item.get("entry_session_date") or "")
+                        for item in closed_items
+                    }
+                ),
+                "win_count": sum(value > 0 for value in net_values),
+                "avg_net_pnl_pct": average(net_values),
+                "avg_mfe_pct": average(mfe_values),
+                "avg_mae_pct": average(mae_values),
+                "avg_peak_giveback_pct": average(giveback_values),
+                "total_net_pnl_pct": sum(net_values),
+            }
+
+        result: list[dict] = []
+        for market, market_rows in sorted(grouped.items()):
+            comparable_rows = []
+            legacy_rows = []
+            for row in market_rows:
+                try:
+                    context = json.loads(str(row.get("context_json") or "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    context = {}
+                target = (
+                    comparable_rows
+                    if isinstance(context, dict)
+                    and context.get("benchmark_alignment_version")
+                    == INVERSE_BENCHMARK_ALIGNMENT_VERSION
+                    else legacy_rows
+                )
+                target.append(row)
+
+            item = {
+                "market": market,
+                "benchmark_alignment_version": (
+                    INVERSE_BENCHMARK_ALIGNMENT_VERSION
+                ),
+                **summarize(market_rows),
+            }
+            item.update(
+                {
+                    f"comparable_{key}": value
+                    for key, value in summarize(comparable_rows).items()
+                }
+            )
+            item.update(
+                {
+                    f"legacy_{key}": value
+                    for key, value in summarize(legacy_rows).items()
+                }
+            )
+            result.append(item)
+        return result
 
     def save_telegram_message(
         self,

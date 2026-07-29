@@ -210,6 +210,19 @@ class MomentumMarketPolicy:
             return self.definition.policy_id
         return f"{self.market}_momentum_v1"
 
+    @property
+    def inverse_require_symbol_benchmark(self) -> bool:
+        return bool(
+            self.definition is not None
+            and self.definition.inverse_require_symbol_benchmark
+        )
+
+    @property
+    def inverse_benchmarks(self) -> dict:
+        if self.definition is None:
+            return {}
+        return self.definition.inverse_benchmarks
+
     def evaluate_entry(
         self,
         snapshot: MovingAverageSnapshot,

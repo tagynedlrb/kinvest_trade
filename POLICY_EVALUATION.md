@@ -183,6 +183,15 @@
   other formula.
 - Domestic performance is joined to the final KOSPI session regime.
 - Overseas performance is joined to the final NASDAQ Composite session regime.
+- Those broad indexes describe the market day; they do not automatically own
+  inverse-product activation. `114800` and `252670` use F-KOSPI200, SQQQ uses
+  Nasdaq-100, and SPXU uses S&P 500. SOXS stays fail-closed until the exact
+  NYSE Semiconductor Index can be collected; a PHLX Semiconductor proxy is
+  not contract-equivalent.
+- Exact inverse benchmarks have separate market-qualified latest and
+  append-only observation tables. A symbol mapping, source, and instrument
+  type are owned by that market's policy file. Initial thresholds may be
+  cloned, but later evidence and changes remain market- and product-specific.
 - Provisional benchmark rows are stored for monitoring but excluded from policy
   evaluation until the market close is final.
 - `market_regimes` remains the authoritative latest/final daily row. Intraday
@@ -216,11 +225,11 @@
   `domestic_momentum_v4` shadow formula. The ordinary long-side VWAP, RSI/MACD
   and 2x-volume consensus is not an adequate proxy after an inverse ETF has
   already moved far above VWAP during a broad-market decline. The dedicated
-  formula requires a same-session KOSPI decline of at least 3%, an up-sloping
-  inverse-product minute trend with both positive multi-bar momentum and a
-  positive current-bar return, projected relative volume of at least 0.8,
-  price within 0.5% below the recent breakout level, RSI no higher than 85,
-  and the existing spread and extension limits.
+  formula requires a same-session F-KOSPI200 decline of at least 3%, an
+  up-sloping inverse-product minute trend with both positive multi-bar
+  momentum and a positive current-bar return, projected relative volume of at
+  least 0.8, price within 0.5% below the recent breakout level, RSI no higher
+  than 85, and the existing spread and extension limits.
 - Before that domestic formula can produce a shadow entry, the official KIS
   ETF/ETN quote must confirm a negative tracking multiplier, positive NAV, and
   an absolute market-price/NAV deviation no greater than 1%. Missing or stale
@@ -244,12 +253,13 @@
   simulation and no live promotion from one crash-day replay remain mandatory.
 - US inverse entries independently use
   `overseas_momentum_v2/us_regime_trend_breakout_v1`. The formula requires a
-  same-session NASDAQ decline of at least 1%, an inverse-product price above
-  its rising fast minute average, positive multi-bar and current-bar returns,
-  projected relative volume of at least 1.3, price no more than 0.5% below
-  the recent breakout level, RSI no higher than 85, and the existing spread
-  and extension limits. It remains shadow-only and retains the dedicated
-  `live` hard block.
+  same-session decline of at least 1% in the product's exact benchmark:
+  Nasdaq-100 for SQQQ and S&P 500 for SPXU. It also requires an inverse-product
+  price above its rising fast minute average, positive multi-bar and
+  current-bar returns, projected relative volume of at least 1.3, price no
+  more than 0.5% below the recent breakout level, RSI no higher than 85, and
+  the existing spread and extension limits. It remains shadow-only and
+  retains the dedicated `live` hard block.
 - The US formula change is an observation-path correction, not a profitability
   claim. On 2026-07-29, `event_log.id=4556` recorded SOXS at 69.54 with NASDAQ
   at -1.135%, relative volume 1.70, positive momentum and a 1.05% breakout,
@@ -756,15 +766,27 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   structured products cannot fall through to the ordinary long formula.
 - A currently held domestic product remains in quote and exit monitoring even
   when it is no longer in the dynamic rank or is ineligible for a new entry.
-- A candidate is eligible only when the same local session's benchmark is down
-  at least 1%, its benchmark trend is down, and the inverse product itself has
-  a rising intraday trend, positive current momentum, and market-specific
-  volume confirmation.
+- A candidate is eligible only when the same local session's product-specific
+  benchmark is down at least 1%, its benchmark trend is down, and the inverse
+  product itself has a rising intraday trend, positive current momentum, and
+  market-specific volume confirmation. Broad KOSPI and NASDAQ Composite rows
+  remain day-character evidence, not substitutes for the product benchmark.
 - Eligibility and entry formulas are independently owned. Domestic
-  `regime_trend_breakout_v1` uses its KOSPI crash threshold, projected-volume
-  floor and KIS ETF/NAV validation. US `us_regime_trend_breakout_v1` uses its
-  NASDAQ threshold and US product-volume floor. The shared evaluator is code
-  reuse only; neither market reads the other market's parameters or evidence.
+  `regime_trend_breakout_v1` uses its F-KOSPI200 crash threshold,
+  projected-volume floor and KIS ETF/NAV validation. US
+  `us_regime_trend_breakout_v1` uses Nasdaq-100 for SQQQ and S&P 500 for SPXU
+  with its US product-volume floor. The shared evaluator is code reuse only;
+  neither market reads the other market's parameters or evidence.
+- Domestic F-KOSPI200 collection must resolve KIS continuous alias `101000`
+  to a nonempty current contract and reconcile the summary price, previous
+  close and percentage return with the newest daily row. It remains
+  provisional through the KOSPI200 futures 15:45 KST closing auction and
+  becomes final no earlier than 15:50. Missing or inconsistent fields fail
+  closed.
+- SOXS must not use the available PHLX Semiconductor index as a proxy for its
+  contractual NYSE Semiconductor Index. Keep the candidate visible in
+  diagnostics but ineligible with `inverse_exact_benchmark_unavailable` until
+  an exact and verified runtime source exists.
 - During an open session, refresh the provisional benchmark regime every five
   minutes so a threshold crossing is not hidden behind the normal 30-minute
   history refresh. Provisional rows may activate shadow observation but remain
@@ -788,6 +810,12 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   `observed_session_count` and `closed_session_count` count distinct
   market-scoped `entry_session_date` values. Multiple products from one shock
   may contribute multiple product paths but only one observed market session.
+- Freeze `benchmark_alignment_version=product_exact_v1` only when the decision
+  code and source match the configured product benchmark. Preserve earlier
+  KOSPI/NASDAQ-Composite shadow rows as historical path evidence, but exclude
+  them from exact-policy win rate, expectancy, MFE, MAE and giveback. Reports
+  must show both populations and label the legacy population as evaluation
+  excluded; never rewrite old trades to manufacture comparability.
 - Every inverse shadow entry freezes the same-session benchmark snapshot,
   including observation lineage, return, session-low return, rebound from that
   low, current position inside the intraday high-low range, and minutes until
@@ -820,6 +848,7 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
 Official product/risk references:
 
 - [ProShares SQQQ](https://www.proshares.com/our-etfs/leveraged-and-inverse/sqqq?gad=1)
+- [ProShares SPXU](https://www.proshares.com/our-etfs/leveraged-and-inverse/spxu)
 - [Direxion SOXS](https://www.direxion.com/product/daily-semiconductor-bull-bear-3x-etfs)
 - [FINRA leveraged/inverse ETP guidance](https://www.finra.org/investors/insights/lowdown-leveraged-and-inverse-exchange-traded-products)
 - [FINRA non-traditional ETF FAQ](https://www.finra.org/rules-guidance/key-topics/etf/non-traditional-etf-faq)
@@ -827,6 +856,7 @@ Official product/risk references:
 - [Daniel and Moskowitz, Momentum Crashes](https://www.nber.org/papers/w20439)
 - [KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)
 - [KODEX Inverse](https://www.samsungfund.com/etf/product/view.do?id=2ETF20)
+- [KRX KOSPI200 futures trading hours](https://open.krx.co.kr/contents/OPN/01/01040201/OPN01040201.jsp)
 
 ## Reasoning value audit
 
@@ -915,25 +945,22 @@ the current direction is wrong.
   session. It stopped after eight hold cycles at -0.899% gross and -0.928%
   after modeled costs. The benchmark had been observed at -11.72% at 13:22 KST
   and had recovered to -6.48% when the trade opened at 15:02 KST, about 28
-  minutes before the regular close; this supports a late-rebound-whipsaw
-  hypothesis but is only one path. Preserve entry/exit market-path context
-  from the next observation onward and keep the formula, five-exit,
-  three-final-session, positive-net gate unchanged. FINRA notes that most
-  geared ETP objectives reset daily, can deviate over shorter or longer
-  periods, and require close monitoring; that supports path measurement rather
-  than threshold fitting from one loss. The final NASDAQ return of -0.22%
-  remained above the overseas -1% gate, so no US inverse trade was expected in
-  that session. On 2026-07-29 the provisional NASDAQ return crossed -1% and
-  exposed a different zero-sample cause: the generic formula rejected a liquid,
-  rising SOXS setup. Route future US observations through the separately named
-  shadow formula. Same-session full-path replay then showed that the favorable
-  later SOXS price was a cherry-picked endpoint: the current cost-aware stop
-  would have closed on the immediately adverse next observation. There are
-  now two completed US product paths but only one observed US market session.
-  SQQQ and SPXU closed at -1.16% and -0.79% net; their MFE values of +0.28%
-  and +0.25% never covered the modeled round-trip cost. This confirms the
-  routing path and the prior replay warning, not a profitable formula. Durable
-  regime and product-stage observations make each zero-sample reason auditable.
+  minutes before the regular close. SQQQ and SPXU later closed at -1.16% and
+  -0.79% net; their MFE values of +0.28% and +0.25% never covered the modeled
+  round-trip cost. All three entries used broad KOSPI or NASDAQ Composite
+  proxies instead of their contractual F-KOSPI200, Nasdaq-100 or S&P 500
+  benchmarks. Preserve them as path and implementation evidence but classify
+  them as legacy, evaluation-excluded rows. They do not count toward the
+  five-exit/three-session domestic gate or the ten-exit/three-session US gate.
+  FINRA's daily-reset and path-dependence warning still supports measuring
+  entry/exit paths, but not fitting a threshold from these mismatched samples.
+- A live, non-production-DB collector validation resolved KIS continuous
+  futures alias `101000` to `A01609` and stored the 2026-07-29 F-KOSPI200
+  return at -6.07%. It separately stored provisional 2026-07-29 NDX at
+  -1.3866% and SPX at -1.1653%. This confirms the source contracts and
+  market-qualified persistence, not inverse profitability. The next economic
+  review starts from `product_exact_v1` shadow rows only. SOXS contributes no
+  exact row until its NYSE Semiconductor benchmark source is available.
 - In the same provisional `down|unknown|normal` NASDAQ session, four completed
   ordinary-long entries all lost after costs, averaging -0.85% net. Two more
   open positions were near flat gross but about -0.49% and -0.47% after modeled

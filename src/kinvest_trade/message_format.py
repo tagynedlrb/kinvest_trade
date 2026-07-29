@@ -121,6 +121,8 @@ REASON_KOREAN_MAP = {
     "inverse_regime_disabled": "역방향 레짐 정책 비활성",
     "inverse_execution_disabled": "역방향 실행 비활성",
     "inverse_benchmark_regime_missing": "기준지수 레짐 없음",
+    "inverse_symbol_benchmark_mapping_missing": "상품별 기준지수 매핑 없음",
+    "inverse_exact_benchmark_unavailable": "정확한 상품 기준지수 수집 불가",
     "inverse_benchmark_regime_stale": "기준지수 레짐 거래일 불일치",
     "inverse_benchmark_return_missing": "기준지수 등락률 없음",
     "inverse_benchmark_decline_insufficient": "기준지수 하락폭 미달",

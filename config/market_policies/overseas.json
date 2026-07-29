@@ -1,6 +1,34 @@
 {
   "policy_id": "overseas_momentum_v2",
   "engine": "momentum_v1",
+  "inverse_require_symbol_benchmark": true,
+  "inverse_benchmarks": {
+    "SQQQ": {
+      "benchmark_code": "NDX",
+      "benchmark_name": "NASDAQ-100",
+      "source": "KIS:FHKST03030100",
+      "instrument_type": "overseas_index",
+      "available": true,
+      "reference_url": "https://www.proshares.com/our-etfs/leveraged-and-inverse/sqqq"
+    },
+    "SPXU": {
+      "benchmark_code": "SPX",
+      "benchmark_name": "S&P 500",
+      "source": "KIS:FHKST03030100",
+      "instrument_type": "overseas_index",
+      "available": true,
+      "reference_url": "https://www.proshares.com/our-etfs/leveraged-and-inverse/spxu"
+    },
+    "SOXS": {
+      "benchmark_code": "",
+      "benchmark_name": "NYSE Semiconductor Index",
+      "source": "",
+      "instrument_type": "",
+      "available": false,
+      "unavailable_reason": "inverse_exact_benchmark_unavailable",
+      "reference_url": "https://www.direxion.com/product/daily-semiconductor-bull-bear-3x-etfs"
+    }
+  },
   "parameters": {
     "enabled": true,
     "mode": "FIXED_SYMBOL_MOMENTUM",

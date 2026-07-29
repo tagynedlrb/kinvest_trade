@@ -127,6 +127,29 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
     assert domestic.post_cb_max_fires_per_session is None
     assert overseas.post_cb_max_fires_per_session == 2
+    assert domestic.inverse_require_symbol_benchmark is True
+    assert domestic.inverse_benchmarks["114800"].market == "domestic"
+    assert domestic.inverse_benchmarks["114800"].benchmark_code == "101000"
+    assert (
+        domestic.inverse_benchmarks["114800"].instrument_type
+        == "domestic_futures_continuous"
+    )
+    assert domestic.inverse_benchmarks["252670"].benchmark_name == "F-KOSPI200"
+    assert overseas.inverse_require_symbol_benchmark is True
+    assert overseas.inverse_benchmarks["SQQQ"].market == "overseas"
+    assert overseas.inverse_benchmarks["SQQQ"].benchmark_code == "NDX"
+    assert (
+        overseas.inverse_benchmarks["SQQQ"].instrument_type
+        == "overseas_index"
+    )
+    assert overseas.inverse_benchmarks["SQQQ"].benchmark_name == "NASDAQ-100"
+    assert overseas.inverse_benchmarks["SPXU"].benchmark_code == "SPX"
+    assert overseas.inverse_benchmarks["SPXU"].benchmark_name == "S&P 500"
+    assert overseas.inverse_benchmarks["SOXS"].available is False
+    assert (
+        overseas.inverse_benchmarks["SOXS"].unavailable_reason
+        == "inverse_exact_benchmark_unavailable"
+    )
     assert domestic.auto_trade.strategy_guard_lookback_hours == 48
     assert overseas.auto_trade.strategy_guard_lookback_hours == 48
     assert domestic.auto_trade.strategy_guard_min_trades == 3

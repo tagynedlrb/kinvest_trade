@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from kinvest_trade.inverse_policy import INVERSE_BENCHMARK_ALIGNMENT_VERSION
 from kinvest_trade.repository import SqliteRepository
 
 
@@ -2076,6 +2077,73 @@ def test_inverse_shadow_performance_counts_distinct_market_sessions(
     assert performance[0]["open_session_count"] == 1
     assert performance[0]["closed_session_count"] == 2
     assert performance[0]["win_count"] == 1
+
+
+def test_inverse_shadow_performance_separates_exact_and_legacy_benchmarks(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "inverse_alignment.db")
+    trades = (
+        ("SQQQ", "2026-07-28", 0.01, {}),
+        (
+            "SPXU",
+            "2026-07-29",
+            -0.02,
+            {
+                "benchmark_alignment_version": (
+                    INVERSE_BENCHMARK_ALIGNMENT_VERSION
+                )
+            },
+        ),
+    )
+    for symbol, session_date, _, context in trades:
+        assert repository.open_inverse_shadow_trade(
+            opened_at=f"{session_date}T14:00:00+00:00",
+            market="overseas",
+            symbol=symbol,
+            exchange_code="AMEX",
+            entry_session_date=session_date,
+            policy_id="overseas_momentum_v2",
+            entry_price=100.0,
+            entry_spread_pct=0.0,
+            commission_rate=0.0025,
+            benchmark_name="product benchmark",
+            benchmark_return_pct=-1.5,
+            benchmark_regime_key="down|normal|normal",
+            entry_reason="inverse_regime_trend_breakout_entry",
+            strategy_flag="INV",
+            entry_by="INV",
+            context=context,
+        )
+    opened = {
+        row["symbol"]: row
+        for row in repository.list_inverse_shadow_trades(limit=10)
+    }
+    for symbol, session_date, net_pnl_pct, _ in trades:
+        assert repository.update_inverse_shadow_trade(
+            int(opened[symbol]["id"]),
+            updated_at=f"{session_date}T15:00:00+00:00",
+            hold_cycles=5,
+            peak_price=102.0,
+            trough_price=98.0,
+            last_price=100.0 * (1.0 + net_pnl_pct),
+            closed_at=f"{session_date}T15:00:00+00:00",
+            exit_price=100.0 * (1.0 + net_pnl_pct),
+            gross_pnl_pct=net_pnl_pct,
+            net_pnl_pct=net_pnl_pct,
+            exit_reason="inverse_time_exit",
+        )
+
+    performance = repository.get_inverse_shadow_performance()[0]
+
+    assert performance["closed_count"] == 2
+    assert performance["avg_net_pnl_pct"] == pytest.approx(-0.005)
+    assert performance["comparable_closed_count"] == 1
+    assert performance["comparable_win_count"] == 0
+    assert performance["comparable_avg_net_pnl_pct"] == pytest.approx(-0.02)
+    assert performance["legacy_closed_count"] == 1
+    assert performance["legacy_win_count"] == 1
+    assert performance["legacy_avg_net_pnl_pct"] == pytest.approx(0.01)
 
 
 def test_policy_evaluation_log_preserves_reasoning_and_later_validation(tmp_path) -> None:

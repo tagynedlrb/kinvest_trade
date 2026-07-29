@@ -1,6 +1,25 @@
 {
   "policy_id": "domestic_momentum_v4",
   "engine": "momentum_v1",
+  "inverse_require_symbol_benchmark": true,
+  "inverse_benchmarks": {
+    "114800": {
+      "benchmark_code": "101000",
+      "benchmark_name": "F-KOSPI200",
+      "source": "KIS:FHKIF03020100",
+      "instrument_type": "domestic_futures_continuous",
+      "available": true,
+      "reference_url": "https://www.samsungfund.com/etf/product/view.do?id=2ETF20"
+    },
+    "252670": {
+      "benchmark_code": "101000",
+      "benchmark_name": "F-KOSPI200",
+      "source": "KIS:FHKIF03020100",
+      "instrument_type": "domestic_futures_continuous",
+      "available": true,
+      "reference_url": "https://www.samsungfund.com/etf/product/view.do?id=2ETF70"
+    }
+  },
   "parameters": {
     "enabled": true,
     "mode": "FIXED_SYMBOL_MOMENTUM",

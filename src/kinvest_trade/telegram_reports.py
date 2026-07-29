@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from .client import parse_kis_number
+from .inverse_policy import INVERSE_BENCHMARK_ALIGNMENT_VERSION
 from .liquidity_lab import VirtualTradeManager
 from .market_policy import (
     get_market_auto_trade_config,
@@ -1963,9 +1964,13 @@ class ReportHelper:
         status = str(row.get("status") or "").upper()
         context = row.get("context_json")
         context = context if isinstance(context, dict) else {}
-        entry_regime = context.get("entry_market_regime")
+        entry_regime = context.get("entry_inverse_benchmark_context")
+        if not isinstance(entry_regime, dict):
+            entry_regime = context.get("entry_market_regime")
         entry_regime = entry_regime if isinstance(entry_regime, dict) else {}
-        exit_regime = context.get("exit_market_regime")
+        exit_regime = context.get("exit_inverse_benchmark_context")
+        if not isinstance(exit_regime, dict):
+            exit_regime = context.get("exit_market_regime")
         exit_regime = exit_regime if isinstance(exit_regime, dict) else {}
 
         def optional_float(value: object) -> float | None:
@@ -2032,6 +2037,14 @@ class ReportHelper:
             parts.append(
                 f"청산={format_reason_korean(str(row.get('exit_reason') or '-'))}"
             )
+        benchmark_name = str(row.get("benchmark_name") or "-")
+        if (
+            context.get("benchmark_alignment_version")
+            == INVERSE_BENCHMARK_ALIGNMENT_VERSION
+        ):
+            parts.append(f"기준={benchmark_name}(상품정확)")
+        else:
+            parts.append(f"기준={benchmark_name}(과거대용·평가제외)")
         return " ".join(parts)
 
     def build_performance_message(self, hours_text: str | None = None) -> str:
@@ -2099,28 +2112,61 @@ class ReportHelper:
                 lines.append(controller._format_performance_row(row))
         lines.append("─── 역방향 shadow ───")
         if shadow_rows:
-            for row in shadow_rows:
-                closed_count = int(row.get("closed_count") or 0)
-                win_count = int(row.get("win_count") or 0)
+            lines.append(
+                "정책평가=상품정확 기준지수 "
+                f"{INVERSE_BENCHMARK_ALIGNMENT_VERSION} 표본만 사용"
+            )
+
+            def append_shadow_summary(
+                row: dict,
+                *,
+                prefix: str,
+                label: str,
+            ) -> None:
+                def value(name: str) -> object:
+                    return row.get(f"{prefix}{name}")
+
+                closed_count = int(value("closed_count") or 0)
+                win_count = int(value("win_count") or 0)
                 win_rate = win_count / closed_count if closed_count else 0.0
                 lines.append(
                     f"{format_market_korean(str(row.get('market') or ''))} "
+                    f"{label} "
                     f"상품종료={closed_count} "
-                    f"상품진행={int(row.get('open_count') or 0)} "
-                    f"관찰세션={int(row.get('observed_session_count') or 0)} "
-                    f"종료세션={int(row.get('closed_session_count') or 0)} "
+                    f"상품진행={int(value('open_count') or 0)} "
+                    f"관찰세션={int(value('observed_session_count') or 0)} "
+                    f"종료세션={int(value('closed_session_count') or 0)} "
                     f"승률={win_rate * 100:.0f}% "
-                    f"평균순수익={format_pct(float(row.get('avg_net_pnl_pct') or 0.0))}"
+                    "평균순수익="
+                    f"{format_pct(float(value('avg_net_pnl_pct') or 0.0))}"
                     + (
                         " "
-                        f"평균MFE={format_pct(float(row.get('avg_mfe_pct') or 0.0))} "
-                        f"평균MAE={format_pct(float(row.get('avg_mae_pct') or 0.0))} "
+                        "평균MFE="
+                        f"{format_pct(float(value('avg_mfe_pct') or 0.0))} "
+                        "평균MAE="
+                        f"{format_pct(float(value('avg_mae_pct') or 0.0))} "
                         "평균고점반납="
-                        f"{format_pct(float(row.get('avg_peak_giveback_pct') or 0.0))}"
+                        f"{format_pct(float(value('avg_peak_giveback_pct') or 0.0))}"
                         if closed_count
                         else ""
                     )
                 )
+
+            for row in shadow_rows:
+                append_shadow_summary(
+                    row,
+                    prefix="comparable_",
+                    label="상품정확",
+                )
+                if (
+                    int(row.get("legacy_open_count") or 0)
+                    or int(row.get("legacy_closed_count") or 0)
+                ):
+                    append_shadow_summary(
+                        row,
+                        prefix="legacy_",
+                        label="과거대용지표(평가제외)",
+                    )
             for row in recent_shadow_rows:
                 lines.append(self.format_inverse_shadow_trade(row))
         else:
@@ -2133,6 +2179,7 @@ class ReportHelper:
         else:
             event_labels = {
                 "inverse_regime_observed": "레짐",
+                "inverse_symbol_regime_observed": "상품기준지수",
                 "inverse_quote_failed": "조회실패",
                 "inverse_quote_excluded": "후보제외",
                 "inverse_product_blocked": "상품차단",

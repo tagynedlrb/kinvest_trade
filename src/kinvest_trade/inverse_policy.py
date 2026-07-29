@@ -3,13 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+INVERSE_BENCHMARK_ALIGNMENT_VERSION = "product_exact_v1"
+
+
 @dataclass(frozen=True, slots=True)
 class InverseRegimeDecision:
     eligible: bool
     reason: str
     execution_mode: str
     session_date: str
+    benchmark_code: str
     benchmark_name: str
+    benchmark_source: str
     benchmark_return_pct: float | None
     regime_key: str
 
@@ -19,6 +24,7 @@ def evaluate_inverse_regime(
     regime: dict | None,
     *,
     expected_session_date: str,
+    benchmark_unavailable_reason: str = "",
 ) -> InverseRegimeDecision:
     mode = str(
         getattr(config, "inverse_execution_mode", "disabled") or "disabled"
@@ -28,7 +34,9 @@ def evaluate_inverse_regime(
     common = {
         "execution_mode": mode,
         "session_date": str((regime or {}).get("session_date") or ""),
+        "benchmark_code": str((regime or {}).get("benchmark_code") or ""),
         "benchmark_name": str((regime or {}).get("benchmark_name") or ""),
+        "benchmark_source": str((regime or {}).get("source") or ""),
         "benchmark_return_pct": _optional_float(
             (regime or {}).get("return_pct")
         ),
@@ -44,6 +52,12 @@ def evaluate_inverse_regime(
         return InverseRegimeDecision(
             eligible=False,
             reason="inverse_execution_disabled",
+            **common,
+        )
+    if benchmark_unavailable_reason:
+        return InverseRegimeDecision(
+            eligible=False,
+            reason=str(benchmark_unavailable_reason),
             **common,
         )
     if regime is None:

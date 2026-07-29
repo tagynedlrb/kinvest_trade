@@ -251,6 +251,18 @@ class NotificationConfig:
 
 
 @dataclass(slots=True)
+class InverseBenchmarkDefinition:
+    market: str
+    benchmark_code: str
+    benchmark_name: str
+    source: str
+    instrument_type: str
+    available: bool = True
+    unavailable_reason: str = ""
+    reference_url: str = ""
+
+
+@dataclass(slots=True)
 class MarketPolicyDefinition:
     policy_id: str
     engine: str
@@ -260,6 +272,10 @@ class MarketPolicyDefinition:
     post_cb_reentry_benchmark_floor_pct: float | None = None
     post_cb_reentry_regime_max_age_sec: int = 600
     post_cb_max_fires_per_session: int | None = None
+    inverse_require_symbol_benchmark: bool = False
+    inverse_benchmarks: dict[str, InverseBenchmarkDefinition] = field(
+        default_factory=dict
+    )
     source_path: Path | None = None
 
 
@@ -446,6 +462,122 @@ def _load_market_policy_definition(
             )
         except ValueError as exc:
             raise ValueError(f"invalid {market} market policy parameter {key}: {exc}") from exc
+    cloned_base = replace(
+        base_auto_trade,
+        inverse_etf_symbols=list(base_auto_trade.inverse_etf_symbols),
+        leveraged_etf_symbols=list(base_auto_trade.leveraged_etf_symbols),
+        strategy_guard_strategy_flags=list(
+            base_auto_trade.strategy_guard_strategy_flags
+        ),
+    )
+    market_auto_trade = replace(cloned_base, **overrides)
+
+    raw_inverse_benchmarks = definition.get("inverse_benchmarks", {})
+    if not isinstance(raw_inverse_benchmarks, dict):
+        raise ValueError(f"{market} inverse_benchmarks must be a JSON object")
+    configured_inverse_symbols = {
+        str(value).strip().upper()
+        for value in market_auto_trade.inverse_etf_symbols
+        if str(value).strip()
+    }
+    inverse_benchmarks: dict[str, InverseBenchmarkDefinition] = {}
+    allowed_benchmark_fields = {
+        "benchmark_code",
+        "benchmark_name",
+        "source",
+        "instrument_type",
+        "available",
+        "unavailable_reason",
+        "reference_url",
+    }
+    for raw_symbol, raw_benchmark in raw_inverse_benchmarks.items():
+        symbol = str(raw_symbol).strip().upper()
+        if not symbol:
+            raise ValueError(f"{market} inverse benchmark symbol must not be empty")
+        if symbol not in configured_inverse_symbols:
+            raise ValueError(
+                f"{market} inverse benchmark symbol is not configured: {symbol}"
+            )
+        if not isinstance(raw_benchmark, dict):
+            raise ValueError(
+                f"{market} inverse benchmark for {symbol} must be a JSON object"
+            )
+        unknown_benchmark_fields = sorted(
+            set(raw_benchmark) - allowed_benchmark_fields
+        )
+        if unknown_benchmark_fields:
+            raise ValueError(
+                f"unknown {market} inverse benchmark fields for {symbol}: "
+                f"{', '.join(unknown_benchmark_fields)}"
+            )
+        available = raw_benchmark.get("available", True)
+        if not isinstance(available, bool):
+            raise ValueError(
+                f"{market} inverse benchmark available for {symbol} "
+                "must be a boolean"
+            )
+        benchmark_code = str(
+            raw_benchmark.get("benchmark_code", "") or ""
+        ).strip().upper()
+        benchmark_name = str(
+            raw_benchmark.get("benchmark_name", "") or ""
+        ).strip()
+        source = str(raw_benchmark.get("source", "") or "").strip()
+        instrument_type = str(
+            raw_benchmark.get("instrument_type", "") or ""
+        ).strip().lower()
+        unavailable_reason = str(
+            raw_benchmark.get("unavailable_reason", "") or ""
+        ).strip()
+        if not benchmark_name:
+            raise ValueError(
+                f"{market} inverse benchmark name is required for {symbol}"
+            )
+        if available and (
+            not benchmark_code
+            or not source
+            or not instrument_type
+        ):
+            raise ValueError(
+                f"{market} available inverse benchmark for {symbol} "
+                "requires benchmark_code, source and instrument_type"
+            )
+        supported_instrument_types = {
+            "domestic_futures_continuous",
+            "overseas_index",
+        }
+        if available and instrument_type not in supported_instrument_types:
+            raise ValueError(
+                f"unsupported {market} inverse benchmark instrument_type "
+                f"for {symbol}: {instrument_type}"
+            )
+        expected_instrument_type = (
+            "domestic_futures_continuous"
+            if market == "domestic"
+            else "overseas_index"
+        )
+        if available and instrument_type != expected_instrument_type:
+            raise ValueError(
+                f"{market} inverse benchmark for {symbol} must use "
+                f"{expected_instrument_type}"
+            )
+        if not available and not unavailable_reason:
+            raise ValueError(
+                f"{market} unavailable inverse benchmark for {symbol} "
+                "requires unavailable_reason"
+            )
+        inverse_benchmarks[symbol] = InverseBenchmarkDefinition(
+            market=market,
+            benchmark_code=benchmark_code,
+            benchmark_name=benchmark_name,
+            source=source,
+            instrument_type=instrument_type,
+            available=available,
+            unavailable_reason=unavailable_reason,
+            reference_url=str(
+                raw_benchmark.get("reference_url", "") or ""
+            ).strip(),
+        )
 
     raw_risk = definition.get("risk", {})
     if not isinstance(raw_risk, dict):
@@ -462,22 +594,22 @@ def _load_market_policy_definition(
         raise ValueError(
             f"unknown {market} market policy risk fields: {', '.join(unknown_risk_fields)}"
         )
-
-    cloned_base = replace(
-        base_auto_trade,
-        inverse_etf_symbols=list(base_auto_trade.inverse_etf_symbols),
-        leveraged_etf_symbols=list(base_auto_trade.leveraged_etf_symbols),
-        strategy_guard_strategy_flags=list(
-            base_auto_trade.strategy_guard_strategy_flags
-        ),
+    inverse_require_symbol_benchmark = definition.get(
+        "inverse_require_symbol_benchmark",
+        False,
     )
+    if not isinstance(inverse_require_symbol_benchmark, bool):
+        raise ValueError(
+            f"{market} inverse_require_symbol_benchmark must be a boolean"
+        )
+
     return MarketPolicyDefinition(
         policy_id=str(
             definition.get("policy_id", f"{market}_momentum_v1")
             or f"{market}_momentum_v1"
         ).strip(),
         engine=engine,
-        auto_trade=replace(cloned_base, **overrides),
+        auto_trade=market_auto_trade,
         max_consecutive_losses=int(
             raw_risk.get(
                 "max_consecutive_losses",
@@ -504,6 +636,8 @@ def _load_market_policy_definition(
             if raw_risk.get("post_cb_max_fires_per_session") is None
             else max(1, int(raw_risk["post_cb_max_fires_per_session"]))
         ),
+        inverse_require_symbol_benchmark=inverse_require_symbol_benchmark,
+        inverse_benchmarks=inverse_benchmarks,
         source_path=source_path,
     )
 

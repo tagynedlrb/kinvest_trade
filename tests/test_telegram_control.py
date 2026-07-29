@@ -18,6 +18,7 @@ from kinvest_trade.telegram_control import (
     SessionPerformance,
     TelegramLiquidityLabController,
 )
+from kinvest_trade.telegram_reports import ReportHelper
 from kinvest_trade.time_utils import KST
 
 
@@ -2038,6 +2039,13 @@ def test_lab_performance_command_reports_inverse_entry_market_path(
     )
 
     message = notifier.messages[-1]
+    assert "정책평가=상품정확 기준지수 product_exact_v1 표본만 사용" in message
+    assert (
+        "국내 상품정확 상품종료=0 상품진행=0 관찰세션=0 "
+        "종료세션=0 승률=0% 평균순수익=+0.00%"
+        in message
+    )
+    assert "국내 과거대용지표(평가제외) 상품종료=1" in message
     assert (
         "상품종료=1 상품진행=0 관찰세션=1 종료세션=1 "
         "승률=0% 평균순수익=-0.93% "
@@ -2051,6 +2059,7 @@ def test_lab_performance_command_reports_inverse_entry_market_path(
         "고점반납=+1.87% 순수익=-0.93% 청산=인버스 손절"
         in message
     )
+    assert "기준=KOSPI(과거대용·평가제외)" in message
 
 
 def test_lab_performance_command_explains_inverse_zero_sample(tmp_path) -> None:
@@ -2072,6 +2081,19 @@ def test_lab_performance_command_explains_inverse_zero_sample(tmp_path) -> None:
             "reason": "inverse_product_volume_low",
             "expected_session_date": datetime.now(timezone.utc).date().isoformat(),
             "volume_ratio": 0.8,
+        },
+    )
+    repository.save_event(
+        event_type="inverse_symbol_regime_observed",
+        market="overseas",
+        symbol="SPXU",
+        detail={
+            "reason": "inverse_regime_shadow",
+            "expected_session_date": (
+                datetime.now(timezone.utc).date().isoformat()
+            ),
+            "observation_version": "symbol_benchmark_v1",
+            "benchmark_code": "SPX",
         },
     )
     notifier = DummyNotifier()
@@ -2099,7 +2121,52 @@ def test_lab_performance_command_explains_inverse_zero_sample(tmp_path) -> None:
 
     message = notifier.messages[-1]
     assert "해외 레짐=기준지수 하락폭 미달 1세션" in message
+    assert (
+        "해외 상품기준지수=역방향 shadow 레짐 충족 "
+        "1세션·종목 종목=SPXU"
+        in message
+    )
     assert "해외 상품차단=인버스 상품 거래량 부족 1세션·종목 종목=SQQQ" in message
+
+
+def test_inverse_shadow_report_prefers_exact_benchmark_path() -> None:
+    text = ReportHelper.format_inverse_shadow_trade(
+        {
+            "market": "overseas",
+            "symbol": "SQQQ",
+            "status": "CLOSED",
+            "opened_at": "2026-07-29T15:00:00+00:00",
+            "benchmark_name": "NASDAQ-100",
+            "benchmark_return_pct": -1.5,
+            "entry_price": 100.0,
+            "peak_price": 102.0,
+            "trough_price": 99.0,
+            "exit_price": 101.0,
+            "net_pnl_pct": 0.005,
+            "exit_reason": "inverse_time_exit",
+            "context_json": {
+                "benchmark_alignment_version": "product_exact_v1",
+                "entry_market_regime": {
+                    "benchmark_rebound_from_low_pct": 9.0,
+                    "session_range_position": 0.9,
+                },
+                "entry_inverse_benchmark_context": {
+                    "minutes_to_regular_close": 20.0,
+                    "benchmark_rebound_from_low_pct": 0.5,
+                    "session_range_position": 0.25,
+                },
+                "exit_market_regime": {"return_pct": 0.0},
+                "exit_inverse_benchmark_context": {"return_pct": -1.0},
+            },
+        }
+    )
+
+    assert "저점반등=+0.50%p" in text
+    assert "범위위치=25%" in text
+    assert "마감잔여=20분" in text
+    assert "지수변화=+0.50%p" in text
+    assert "기준=NASDAQ-100(상품정확)" in text
+    assert "저점반등=+9.00%p" not in text
 
 
 def test_lab_report_compare_command_reports_before_after_strategy(

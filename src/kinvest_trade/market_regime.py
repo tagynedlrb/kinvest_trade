@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 REGIME_CALCULATION_VERSION = "true_range_v2"
+DOMESTIC_FUTURES_FINAL_TIME = time(15, 50)
 
 _MARKET_CONFIG = {
     "domestic": {
@@ -140,11 +141,20 @@ def build_regime_records(
     rows: list[dict[str, Any]],
     *,
     captured_at: datetime | None = None,
+    benchmark_code: str | None = None,
+    benchmark_name: str | None = None,
+    source: str | None = None,
 ) -> list[dict[str, Any]]:
     market_key = str(market).strip().lower()
     if market_key not in _MARKET_CONFIG:
         raise ValueError(f"unsupported market: {market}")
-    config = _MARKET_CONFIG[market_key]
+    config = dict(_MARKET_CONFIG[market_key])
+    if benchmark_code is not None:
+        config["benchmark_code"] = str(benchmark_code).strip().upper()
+    if benchmark_name is not None:
+        config["benchmark_name"] = str(benchmark_name).strip()
+    if source is not None:
+        config["source"] = str(source).strip()
     now_utc = captured_at or datetime.now(timezone.utc)
     if now_utc.tzinfo is None:
         now_utc = now_utc.replace(tzinfo=timezone.utc)
@@ -289,6 +299,117 @@ def build_regime_records(
     return records
 
 
+def build_domestic_futures_benchmark_record(
+    snapshot: dict[str, Any],
+    *,
+    benchmark_code: str,
+    benchmark_name: str,
+    source: str,
+    captured_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    summary = snapshot.get("summary")
+    rows = snapshot.get("rows")
+    if not isinstance(summary, dict) or not isinstance(rows, list):
+        return None
+    resolved_instrument_code = str(
+        summary.get("futs_shrn_iscd") or ""
+    ).strip().upper()
+    previous_close = _as_float(summary.get("futs_prdy_clpr"))
+    if not resolved_instrument_code or previous_close is None or previous_close <= 0:
+        return None
+
+    valid_rows: list[tuple[date, dict[str, Any], float]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        raw_date = str(item.get("stck_bsop_date") or "").strip()
+        try:
+            item_date = datetime.strptime(raw_date, "%Y%m%d").date()
+        except ValueError:
+            continue
+        item_close = _as_float(item.get("futs_prpr"))
+        if item_close is not None and item_close > 0:
+            valid_rows.append((item_date, item, item_close))
+    if not valid_rows:
+        return None
+
+    session_date, row, close_price = max(valid_rows, key=lambda item: item[0])
+    summary_price = _as_float(summary.get("futs_prpr"))
+    price_tolerance = max(0.01, close_price * 0.000001)
+    if (
+        summary_price is not None
+        and abs(summary_price - close_price) > price_tolerance
+    ):
+        return None
+    calculated_return_pct = (
+        (close_price - previous_close) / previous_close * 100.0
+    )
+    return_pct = _as_float(summary.get("futs_prdy_ctrt"))
+    if return_pct is None:
+        return_pct = calculated_return_pct
+    elif abs(return_pct - calculated_return_pct) > 0.05:
+        return None
+    open_price = _as_float(row.get("futs_oprc"))
+    high_price = _as_float(row.get("futs_hgpr"))
+    low_price = _as_float(row.get("futs_lwpr"))
+    range_pct = _true_range_pct(
+        previous_close,
+        high_price,
+        low_price,
+    )
+    trend = classify_trend(return_pct)
+    now_utc = captured_at or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    local_now = now_utc.astimezone(KST)
+    is_final = (
+        session_date < local_now.date()
+        or (
+            session_date == local_now.date()
+            and local_now.time() >= DOMESTIC_FUTURES_FINAL_TIME
+        )
+    )
+    return {
+        "market": "domestic",
+        "benchmark_code": str(benchmark_code).strip().upper(),
+        "session_date": session_date.isoformat(),
+        "benchmark_name": str(benchmark_name).strip(),
+        "source": str(source).strip(),
+        "captured_at": now_utc.astimezone(timezone.utc).isoformat(),
+        "is_final": int(is_final),
+        "open_price": open_price,
+        "high_price": high_price,
+        "low_price": low_price,
+        "close_price": close_price,
+        "previous_close": previous_close,
+        "return_pct": return_pct,
+        "volume": _as_int(row.get("acml_vol")),
+        "turnover": _as_float(row.get("acml_tr_pbmn")),
+        "volume_avg_20": None,
+        "volume_ratio_20": None,
+        "range_pct": range_pct,
+        "range_avg_20": None,
+        "range_ratio_20": None,
+        "trend_regime": trend,
+        "activity_regime": "unknown",
+        "volatility_regime": "unknown",
+        "regime_key": f"{trend}|unknown|unknown",
+        "sample_days": 1,
+        "calculation_version": "futures_continuous_snapshot_v1",
+        "raw_json": json.dumps(
+            {
+                "summary": summary,
+                "row": row,
+                "resolved_instrument_code": resolved_instrument_code,
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+    }
+
+
 class MarketRegimeCollector:
     """Collect and persist daily KOSPI/NASDAQ market context without blocking trades."""
 
@@ -313,6 +434,12 @@ class MarketRegimeCollector:
             minutes=max(5, int(incomplete_final_retry_minutes))
         )
         self._last_attempt: dict[str, datetime] = {}
+
+    @staticmethod
+    def _profile_value(profile: object, name: str, default: object = "") -> object:
+        if isinstance(profile, dict):
+            return profile.get(name, default)
+        return getattr(profile, name, default)
 
     @staticmethod
     def _needs_final_activity_refresh(
@@ -486,6 +613,312 @@ class MarketRegimeCollector:
             self._last_attempt[market] = current
             results[market] = await self._refresh_market(market, current)
         return results
+
+    def _inverse_benchmark_is_due(
+        self,
+        market: str,
+        benchmark_code: str,
+        now_utc: datetime,
+        *,
+        force: bool,
+    ) -> bool:
+        if force:
+            return True
+        market_key = str(market).strip().lower()
+        if market_key not in _MARKET_CONFIG:
+            return False
+        code = str(benchmark_code).strip().upper()
+        attempt_key = f"inverse:{market_key}:{code}"
+        last_attempt = self._last_attempt.get(attempt_key)
+        market_config = _MARKET_CONFIG[market_key]
+        local_now = now_utc.astimezone(market_config["timezone"])
+        today = local_now.date().isoformat()
+        record = self.repository.get_inverse_benchmark_regime(
+            market_key,
+            code,
+            today,
+        )
+        retry_interval = (
+            self.intraday_refresh_interval
+            if record is None or int(record.get("is_final") or 0) == 0
+            else self.refresh_interval
+        )
+        if (
+            last_attempt is not None
+            and now_utc - last_attempt < retry_interval
+        ):
+            return False
+        latest = self.repository.get_inverse_benchmark_regime(
+            market_key,
+            code,
+        )
+        if latest is None:
+            return True
+        if record is not None and int(record.get("is_final") or 0) == 1:
+            return False
+        return (
+            self._is_trading_day(market_key, local_now.date())
+            and local_now.time() >= market_config["open_time"]
+        )
+
+    def _merge_inverse_benchmark_rows(
+        self,
+        benchmark_code: str,
+        fetched_rows: list[dict[str, Any]],
+        *,
+        start_date: str,
+    ) -> list[dict[str, Any]]:
+        config = _MARKET_CONFIG["overseas"]
+        merged: dict[str, dict[str, Any]] = {}
+
+        def add_row(raw: object) -> None:
+            if not isinstance(raw, dict):
+                return
+            raw_date = str(raw.get("stck_bsop_date") or "").strip()
+            if len(raw_date) != 8:
+                return
+            close_price = _as_float(raw.get(config["close_field"]))
+            if close_price is None or close_price <= 0:
+                return
+            merged[raw_date] = raw
+
+        try:
+            stored_rows = self.repository.list_inverse_benchmark_regimes(
+                market="overseas",
+                benchmark_code=benchmark_code,
+                start_date=start_date,
+                limit=max(250, self.backfill_days * 2),
+            )
+            for stored in reversed(list(stored_rows or [])):
+                raw = stored.get("raw_json")
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                add_row(raw)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[INVERSE_BENCHMARK][%s] stored_raw_merge_failed error=%s",
+                benchmark_code,
+                exc,
+            )
+        for raw in fetched_rows:
+            add_row(raw)
+        return list(merged.values())
+
+    async def refresh_inverse_benchmarks_if_due(
+        self,
+        profiles: list[object],
+        now_utc: datetime | None = None,
+        *,
+        force: bool = False,
+    ) -> dict[str, dict[str, object]]:
+        current = now_utc or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        unique_profiles: dict[tuple[str, str], object] = {}
+        for profile in profiles:
+            if not bool(self._profile_value(profile, "available", True)):
+                continue
+            market = str(
+                self._profile_value(profile, "market", "overseas")
+            ).strip().lower()
+            code = str(
+                self._profile_value(profile, "benchmark_code")
+            ).strip().upper()
+            if market in _MARKET_CONFIG and code:
+                unique_profiles.setdefault((market, code), profile)
+
+        results: dict[str, dict[str, object]] = {}
+        for (market, code), profile in unique_profiles.items():
+            if not self._inverse_benchmark_is_due(
+                market,
+                code,
+                current,
+                force=force,
+            ):
+                results[code] = {"status": "not_due", "records": 0}
+                continue
+            self._last_attempt[f"inverse:{market}:{code}"] = current
+            name = str(
+                self._profile_value(profile, "benchmark_name")
+            ).strip()
+            source = str(self._profile_value(profile, "source")).strip()
+            instrument_type = str(
+                self._profile_value(profile, "instrument_type")
+            ).strip().lower()
+            results[code] = await self._refresh_inverse_benchmark(
+                market,
+                code,
+                name,
+                source,
+                instrument_type,
+                current,
+            )
+        return results
+
+    async def _refresh_inverse_benchmark(
+        self,
+        market: str,
+        benchmark_code: str,
+        benchmark_name: str,
+        source: str,
+        instrument_type: str,
+        now_utc: datetime,
+    ) -> dict[str, object]:
+        if (
+            market == "domestic"
+            and instrument_type == "domestic_futures_continuous"
+        ):
+            return await self._refresh_domestic_futures_benchmark(
+                benchmark_code,
+                benchmark_name,
+                source,
+                now_utc,
+            )
+        if market != "overseas" or instrument_type != "overseas_index":
+            return {
+                "status": "unsupported_instrument_type",
+                "records": 0,
+            }
+        local_date = now_utc.astimezone(NEW_YORK).date()
+        start_session_date = local_date - timedelta(days=self.backfill_days)
+        start_date = start_session_date.strftime("%Y%m%d")
+        end_date = local_date.strftime("%Y%m%d")
+        try:
+            fetched_rows = list(
+                await self.client.get_overseas_index_daily_prices(
+                    index_code=benchmark_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    period="D",
+                )
+                or []
+            )
+            rows = self._merge_inverse_benchmark_rows(
+                benchmark_code,
+                fetched_rows,
+                start_date=start_session_date.isoformat(),
+            )
+            records = build_regime_records(
+                "overseas",
+                rows,
+                captured_at=now_utc,
+                benchmark_code=benchmark_code,
+                benchmark_name=benchmark_name,
+                source=source,
+            )
+            for record in records:
+                self.repository.upsert_inverse_benchmark_regime(record)
+            current_session = local_date.isoformat()
+            current_record = next(
+                (
+                    record
+                    for record in records
+                    if record["session_date"] == current_session
+                ),
+                None,
+            )
+            observation_saved = int(
+                current_record is not None
+                and self.repository.save_inverse_benchmark_observation(
+                    current_record
+                )
+            )
+            _logger.info(
+                "[INVERSE_BENCHMARK] code=%s name=%s fetched=%d merged=%d "
+                "observation=%d",
+                benchmark_code,
+                benchmark_name,
+                len(fetched_rows),
+                len(records),
+                observation_saved,
+            )
+            return {
+                "status": "updated",
+                "records": len(records),
+                "observations": observation_saved,
+            }
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[INVERSE_BENCHMARK][%s] refresh_failed error=%s",
+                benchmark_code,
+                exc,
+            )
+            return {
+                "status": "failed",
+                "records": 0,
+                "error": str(exc)[:200],
+            }
+
+    async def _refresh_domestic_futures_benchmark(
+        self,
+        benchmark_code: str,
+        benchmark_name: str,
+        source: str,
+        now_utc: datetime,
+    ) -> dict[str, object]:
+        local_date = now_utc.astimezone(KST).date()
+        start_date = (local_date - timedelta(days=10)).strftime("%Y%m%d")
+        end_date = local_date.strftime("%Y%m%d")
+        method = getattr(
+            self.client,
+            "get_domestic_futures_continuous_daily_snapshot",
+            None,
+        )
+        if not callable(method):
+            return {"status": "unsupported_client", "records": 0}
+        try:
+            snapshot = await method(
+                index_code=benchmark_code,
+                start_date=start_date,
+                end_date=end_date,
+                period="D",
+            )
+            record = build_domestic_futures_benchmark_record(
+                snapshot,
+                benchmark_code=benchmark_code,
+                benchmark_name=benchmark_name,
+                source=source,
+                captured_at=now_utc,
+            )
+            if record is None:
+                return {"status": "empty", "records": 0}
+            self.repository.upsert_inverse_benchmark_regime(record)
+            observation_saved = int(
+                record["session_date"] == local_date.isoformat()
+                and self.repository.save_inverse_benchmark_observation(record)
+            )
+            raw = json.loads(str(record.get("raw_json") or "{}"))
+            _logger.info(
+                "[INVERSE_BENCHMARK] code=%s name=%s resolved=%s "
+                "return_pct=%s observation=%d",
+                benchmark_code,
+                benchmark_name,
+                raw.get("resolved_instrument_code", ""),
+                record.get("return_pct"),
+                observation_saved,
+            )
+            return {
+                "status": "updated",
+                "records": 1,
+                "observations": observation_saved,
+                "resolved_instrument_code": str(
+                    raw.get("resolved_instrument_code") or ""
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[INVERSE_BENCHMARK][%s] refresh_failed error=%s",
+                benchmark_code,
+                exc,
+            )
+            return {
+                "status": "failed",
+                "records": 0,
+                "error": str(exc)[:200],
+            }
 
     async def _refresh_market(
         self,

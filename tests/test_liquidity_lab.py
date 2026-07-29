@@ -6185,6 +6185,60 @@ def _save_test_regime(
             "raw_json": {},
         }
     )
+    if market == "domestic":
+        inverse_regime = {
+            "market": "domestic",
+            "benchmark_code": "101000",
+            "session_date": session_date,
+            "benchmark_name": "F-KOSPI200",
+            "source": "KIS:FHKIF03020100",
+            "captured_at": f"{session_date}T05:00:00+00:00",
+            "is_final": 0,
+            "open_price": 100.0,
+            "high_price": 103.0,
+            "low_price": 95.0,
+            "close_price": 98.0,
+            "previous_close": 100.0,
+            "return_pct": return_pct,
+            "trend_regime": trend_regime,
+            "activity_regime": "unknown",
+            "volatility_regime": "unknown",
+            "regime_key": f"{trend_regime}|unknown|unknown",
+            "sample_days": 1,
+            "calculation_version": "futures_continuous_snapshot_v1",
+            "raw_json": {},
+        }
+        service.repository.upsert_inverse_benchmark_regime(inverse_regime)
+        service.repository.save_inverse_benchmark_observation(inverse_regime)
+
+
+def _save_test_inverse_benchmark_regime(
+    service: LiquidityLabService,
+    *,
+    benchmark_code: str,
+    benchmark_name: str,
+    session_date: str,
+    return_pct: float,
+    trend_regime: str,
+) -> None:
+    regime = {
+        "market": "overseas",
+        "benchmark_code": benchmark_code,
+        "session_date": session_date,
+        "benchmark_name": benchmark_name,
+        "source": "KIS:FHKST03030100",
+        "captured_at": f"{session_date}T15:00:00+00:00",
+        "is_final": 0,
+        "return_pct": return_pct,
+        "trend_regime": trend_regime,
+        "activity_regime": "unknown",
+        "volatility_regime": "high",
+        "regime_key": f"{trend_regime}|unknown|high",
+        "sample_days": 20,
+        "raw_json": {},
+    }
+    service.repository.upsert_inverse_benchmark_regime(regime)
+    service.repository.save_inverse_benchmark_observation(regime)
 
 
 def _configure_overseas_post_cb_reentry_gate(
@@ -6525,6 +6579,104 @@ def test_inverse_candidates_reject_stale_benchmark_regime() -> None:
     )
 
 
+def test_overseas_inverse_candidates_use_product_specific_benchmarks() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    _save_test_inverse_benchmark_regime(
+        service,
+        benchmark_code="NDX",
+        benchmark_name="NASDAQ-100",
+        session_date="2026-07-28",
+        return_pct=0.5,
+        trend_regime="up",
+    )
+    _save_test_inverse_benchmark_regime(
+        service,
+        benchmark_code="SPX",
+        benchmark_name="S&P 500",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
+
+    assert service._active_inverse_symbols("overseas", now=now) == ["SPXU"]
+    sqqq = service._inverse_regime_decision(
+        "overseas",
+        "SQQQ",
+        now=now,
+    )
+    spxu = service._inverse_regime_decision(
+        "overseas",
+        "SPXU",
+        now=now,
+    )
+    soxs = service._inverse_regime_decision(
+        "overseas",
+        "SOXS",
+        now=now,
+    )
+    assert sqqq is not None
+    assert sqqq.benchmark_code == "NDX"
+    assert sqqq.reason == "inverse_benchmark_decline_insufficient"
+    assert spxu is not None
+    assert spxu.benchmark_code == "SPX"
+    assert spxu.eligible is True
+    assert soxs is not None
+    assert soxs.benchmark_name == "NYSE Semiconductor Index"
+    assert soxs.reason == "inverse_exact_benchmark_unavailable"
+    symbol_observations = [
+        row
+        for row in service.repository.get_inverse_policy_observation_summary()
+        if row["event_type"] == "inverse_symbol_regime_observed"
+    ]
+    assert sum(
+        int(row["observation_count"]) for row in symbol_observations
+    ) == 3
+    assert {
+        symbol
+        for row in symbol_observations
+        for symbol in row["symbols"]
+    } == {"SQQQ", "SPXU", "SOXS"}
+
+
+def test_overseas_inverse_candidate_fails_closed_without_exact_mapping() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    del service.config.market_policies.overseas.inverse_benchmarks["SQQQ"]
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date="2026-07-28",
+        return_pct=-2.0,
+        trend_regime="strong_down",
+    )
+    now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
+
+    decision = service._inverse_regime_decision(
+        "overseas",
+        "SQQQ",
+        now=now,
+    )
+
+    assert decision is not None
+    assert decision.eligible is False
+    assert decision.reason == "inverse_symbol_benchmark_mapping_missing"
+
+
 def test_domestic_scan_routes_liquid_low_price_inverse_to_signal_stage() -> None:
     service = _build_run_service()
     service.config = load_app_config(
@@ -6721,7 +6873,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade["policy_id"] == "domestic_momentum_v4"
 
 
-def test_overseas_dedicated_inverse_formula_replays_selective_soxs_setup() -> None:
+def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
     service = _build_run_service()
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
@@ -6735,7 +6887,15 @@ def test_overseas_dedicated_inverse_formula_replays_selective_soxs_setup() -> No
         return_pct=-1.1346666446918063,
         trend_regime="down",
     )
-    soxs_snapshot = _snapshot(
+    _save_test_inverse_benchmark_regime(
+        service,
+        benchmark_code="NDX",
+        benchmark_name="NASDAQ-100",
+        session_date=service._market_session_date("overseas", now),
+        return_pct=-1.1346666446918063,
+        trend_regime="down",
+    )
+    sqqq_snapshot = _snapshot(
         price=69.54,
         spread_pct=0.0,
         minute_ma_fast=67.1477888888889,
@@ -6749,24 +6909,24 @@ def test_overseas_dedicated_inverse_formula_replays_selective_soxs_setup() -> No
     )
 
     ready, decision, entry_formula, _ = service._entry_setup_for_policy(
-        soxs_snapshot,
-        "SOXS",
+        sqqq_snapshot,
+        "SQQQ",
         "overseas",
         now=now,
     )
     low_volume, _, _, _ = service._entry_setup_for_policy(
-        replace(soxs_snapshot, volume_ratio=1.2328811729889535),
+        replace(sqqq_snapshot, volume_ratio=1.2328811729889535),
         "SQQQ",
         "overseas",
         now=now,
     )
     reversal, _, _, _ = service._entry_setup_for_policy(
         replace(
-            soxs_snapshot,
+            sqqq_snapshot,
             volume_ratio=1.5459357054422562,
             intraday_bar_return=-0.002899780748284862,
         ),
-        "SOXS",
+        "SQQQ",
         "overseas",
         now=now,
     )
@@ -6782,11 +6942,11 @@ def test_overseas_dedicated_inverse_formula_replays_selective_soxs_setup() -> No
 
     watch_target = service._build_watch_target_status(
         market="overseas",
-        code="SOXS",
+        code="SQQQ",
         exchange_code="AMEX",
         price=69.54,
         activity_score=2497.25,
-        signal_snapshot=soxs_snapshot,
+        signal_snapshot=sqqq_snapshot,
         held_position=None,
         holding_qty=0,
     )
@@ -6795,7 +6955,7 @@ def test_overseas_dedicated_inverse_formula_replays_selective_soxs_setup() -> No
     assert watch_target.note == "[INV] inverse_shadow_mode"
     trade = service.repository.get_open_inverse_shadow_trade(
         "overseas",
-        "SOXS",
+        "SQQQ",
     )
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
@@ -6822,9 +6982,17 @@ def test_overseas_dedicated_inverse_formula_remains_blocked_in_live_mode() -> No
         return_pct=-1.1346666446918063,
         trend_regime="down",
     )
+    _save_test_inverse_benchmark_regime(
+        service,
+        benchmark_code="NDX",
+        benchmark_name="NASDAQ-100",
+        session_date="2026-07-29",
+        return_pct=-1.1346666446918063,
+        trend_regime="down",
+    )
 
     assert (
-        service._inverse_entry_block_reason("overseas", "SOXS", now=now)
+        service._inverse_entry_block_reason("overseas", "SQQQ", now=now)
         == "inverse_dedicated_live_unvalidated"
     )
 
@@ -7106,6 +7274,13 @@ def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
         ]
         == 90.0
     )
+    entry_inverse_context = open_trade["context_json"][
+        "entry_inverse_benchmark_context"
+    ]
+    assert entry_inverse_context["benchmark_code"] == "101000"
+    assert entry_inverse_context["benchmark_name"] == "F-KOSPI200"
+    assert entry_inverse_context["observation_id"] is not None
+    assert entry_inverse_context["benchmark_rebound_from_low_pct"] == 3.0
 
     exit_reason = service._update_inverse_shadow_trade(
         market="domestic",
@@ -7131,8 +7306,24 @@ def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
     assert performance[0]["win_count"] == 1
     assert performance[0]["avg_net_pnl_pct"] > 0.025
     closed_trade = service.repository.list_inverse_shadow_trades(limit=1)[0]
+    assert (
+        closed_trade["context_json"]["benchmark_alignment_version"]
+        == "product_exact_v1"
+    )
+    assert (
+        closed_trade["context_json"]["inverse_benchmark_profile"][
+            "benchmark_code"
+        ]
+        == "101000"
+    )
     assert closed_trade["context_json"]["entry_market_regime"]["available"] is True
     assert closed_trade["context_json"]["exit_market_regime"]["available"] is True
+    assert (
+        closed_trade["context_json"]["exit_inverse_benchmark_context"][
+            "benchmark_code"
+        ]
+        == "101000"
+    )
     assert (
         closed_trade["context_json"]["exit_market_regime"][
             "minutes_to_regular_close"

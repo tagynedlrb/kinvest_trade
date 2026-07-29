@@ -69,6 +69,10 @@ class KisRestClient:
     DOMESTIC_INDEX_DAILY_PATH = (
         "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice"
     )
+    DOMESTIC_FUTURE_DAILY_PATH = (
+        "/uapi/domestic-futureoption/v1/quotations/"
+        "inquire-daily-fuopchartprice"
+    )
     DOMESTIC_TIME_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
     DOMESTIC_RANKING_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
     DOMESTIC_FLUCTUATION_PATH = "/uapi/domestic-stock/v1/quotations/fluctuation-rank"
@@ -974,6 +978,33 @@ class KisRestClient:
             },
         )
         return self._coerce_kis_list(payload.get("output2"))
+
+    async def get_domestic_futures_continuous_daily_snapshot(
+        self,
+        *,
+        index_code: str = "101000",
+        start_date: str,
+        end_date: str,
+        period: str = "D",
+    ) -> dict[str, Any]:
+        """Return the current KOSPI200 front-futures summary and daily row."""
+        payload = await self._request(
+            "GET",
+            self.DOMESTIC_FUTURE_DAILY_PATH,
+            "FHKIF03020100",
+            params={
+                "FID_COND_MRKT_DIV_CODE": "F",
+                "FID_INPUT_ISCD": index_code,
+                "FID_INPUT_DATE_1": start_date,
+                "FID_INPUT_DATE_2": end_date,
+                "FID_PERIOD_DIV_CODE": period,
+            },
+        )
+        summary = payload.get("output1")
+        return {
+            "summary": dict(summary) if isinstance(summary, dict) else {},
+            "rows": self._coerce_kis_list(payload.get("output2")),
+        }
 
     async def get_time_daily_chart(
         self,

@@ -20,7 +20,11 @@ from .auto_trade_math import (
 from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, OverseasCandidateConfig
 from .execution_reconciler import BrokerExecutionReconciler
-from .inverse_policy import InverseRegimeDecision, evaluate_inverse_regime
+from .inverse_policy import (
+    INVERSE_BENCHMARK_ALIGNMENT_VERSION,
+    InverseRegimeDecision,
+    evaluate_inverse_regime,
+)
 from .market_sessions import (
     KST,
     NEW_YORK,
@@ -384,7 +388,9 @@ class LiquidityLabService:
         self.execution_reconciler = BrokerExecutionReconciler(self)
         self._last_execution_reconcile_at: datetime | None = None
         self._execution_reconcile_interval_sec = 20
-        self._inverse_regime_notice_keys: set[tuple[str, str, str]] = set()
+        self._inverse_regime_notice_keys: set[
+            tuple[str, str, str, str, str]
+        ] = set()
         self._inverse_observation_keys: set[
             tuple[str, str, str, str, str, str]
         ] = set()
@@ -1306,8 +1312,10 @@ class LiquidityLabService:
         market: str,
         *,
         now: datetime | None = None,
+        inverse_benchmark_code: str = "",
     ) -> dict:
         market_key = normalize_market_name(market)
+        inverse_code = str(inverse_benchmark_code).strip().upper()
         current = ensure_timezone(now or datetime.now(timezone.utc))
         expected_session_date = self._market_session_date(
             market_key,
@@ -1318,13 +1326,22 @@ class LiquidityLabService:
             "market": market_key,
             "expected_session_date": expected_session_date,
         }
+        if inverse_code:
+            unavailable["benchmark_code"] = inverse_code
         repository = getattr(self, "repository", None)
         if repository is None:
             return {**unavailable, "reason": "repository_unavailable"}
-        regime = repository.get_market_regime(
-            market_key,
-            expected_session_date,
-        )
+        if inverse_code:
+            regime = repository.get_inverse_benchmark_regime(
+                market_key,
+                inverse_code,
+                expected_session_date,
+            )
+        else:
+            regime = repository.get_market_regime(
+                market_key,
+                expected_session_date,
+            )
         if regime is None:
             return {**unavailable, "reason": "same_session_regime_missing"}
 
@@ -1339,15 +1356,27 @@ class LiquidityLabService:
         observation_id = None
         observation_lookup = getattr(
             repository,
-            "get_market_regime_observation_at",
+            (
+                "get_inverse_benchmark_observation_at"
+                if inverse_code
+                else "get_market_regime_observation_at"
+            ),
             None,
         )
         if callable(observation_lookup):
-            observation = observation_lookup(
-                market_key,
-                current,
-                session_date=expected_session_date,
-            )
+            if inverse_code:
+                observation = observation_lookup(
+                    market_key,
+                    inverse_code,
+                    current,
+                    session_date=expected_session_date,
+                )
+            else:
+                observation = observation_lookup(
+                    market_key,
+                    current,
+                    session_date=expected_session_date,
+                )
             if (
                 observation is not None
                 and str(observation.get("captured_at") or "")
@@ -1455,15 +1484,55 @@ class LiquidityLabService:
         if policy.auto_trade is None:
             return None
         repository = getattr(self, "repository", None)
-        regime = (
-            repository.get_market_regime(market_key)
-            if repository is not None
+        symbol_key = str(symbol).strip().upper()
+        benchmark_profile = (
+            policy.inverse_benchmarks.get(symbol_key)
+            if symbol_key
             else None
         )
+        unavailable_reason = ""
+        if benchmark_profile is not None:
+            benchmark_context = {
+                "benchmark_code": benchmark_profile.benchmark_code,
+                "benchmark_name": benchmark_profile.benchmark_name,
+                "source": benchmark_profile.source,
+            }
+            if not benchmark_profile.available:
+                regime = benchmark_context
+                unavailable_reason = (
+                    benchmark_profile.unavailable_reason
+                    or "inverse_exact_benchmark_unavailable"
+                )
+            else:
+                regime = (
+                    repository.get_inverse_benchmark_regime(
+                        market_key,
+                        benchmark_profile.benchmark_code,
+                    )
+                    if repository is not None
+                    and hasattr(
+                        repository,
+                        "get_inverse_benchmark_regime",
+                    )
+                    else None
+                )
+                if regime is None:
+                    regime = benchmark_context
+                    unavailable_reason = "inverse_benchmark_regime_missing"
+        elif symbol_key and policy.inverse_require_symbol_benchmark:
+            regime = {}
+            unavailable_reason = "inverse_symbol_benchmark_mapping_missing"
+        else:
+            regime = (
+                repository.get_market_regime(market_key)
+                if repository is not None
+                else None
+            )
         return evaluate_inverse_regime(
             policy.auto_trade,
             regime,
             expected_session_date=self._market_session_date(market_key, now),
+            benchmark_unavailable_reason=unavailable_reason,
         )
 
     def _record_inverse_observation(
@@ -1588,7 +1657,9 @@ class LiquidityLabService:
                 "eligible": decision.eligible,
                 "execution_mode": decision.execution_mode,
                 "observed_session_date": decision.session_date,
+                "benchmark_code": decision.benchmark_code,
                 "benchmark": decision.benchmark_name,
+                "benchmark_source": decision.benchmark_source,
                 "benchmark_return_pct": decision.benchmark_return_pct,
                 "regime_key": decision.regime_key,
             },
@@ -1665,6 +1736,17 @@ class LiquidityLabService:
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
         policy = self._get_market_policy(market_key)
+        benchmark_profile = policy.inverse_benchmarks.get(
+            str(symbol).strip().upper()
+        )
+        exact_benchmark_aligned = bool(
+            benchmark_profile is not None
+            and benchmark_profile.available
+            and decision.benchmark_code
+            == benchmark_profile.benchmark_code
+            and decision.benchmark_source
+            == benchmark_profile.source
+        )
         spread_pct = max(0.0, float(signal_snapshot.spread_pct or 0.0))
         entry_price = float(price) * (1.0 + min(spread_pct, 0.05) / 2.0)
         commission_rate = (
@@ -1675,6 +1757,11 @@ class LiquidityLabService:
         entry_market_regime = self._market_regime_context(
             market_key,
             now=current,
+        )
+        entry_inverse_benchmark_context = self._market_regime_context(
+            market_key,
+            now=current,
+            inverse_benchmark_code=decision.benchmark_code,
         )
         inserted = self.repository.open_inverse_shadow_trade(
             opened_at=current.astimezone(timezone.utc).isoformat(),
@@ -1697,6 +1784,20 @@ class LiquidityLabService:
                 "reference_price": float(price),
                 "execution_mode": "shadow",
                 "entry_formula": self._inverse_entry_formula(market_key),
+                "benchmark_alignment_version": (
+                    INVERSE_BENCHMARK_ALIGNMENT_VERSION
+                    if exact_benchmark_aligned
+                    else ""
+                ),
+                "inverse_benchmark": asdict(decision),
+                "entry_inverse_benchmark_context": (
+                    entry_inverse_benchmark_context
+                ),
+                "inverse_benchmark_profile": (
+                    asdict(benchmark_profile)
+                    if benchmark_profile is not None
+                    else {}
+                ),
                 "entry_market_regime": entry_market_regime,
                 "etf_metadata": (
                     self._cached_domestic_inverse_etf_metadata(symbol)
@@ -1713,17 +1814,25 @@ class LiquidityLabService:
                 detail={
                     "policy_id": policy.policy_id,
                     "entry_price": round(entry_price, 8),
+                    "benchmark_code": decision.benchmark_code,
                     "benchmark": decision.benchmark_name,
+                    "benchmark_source": decision.benchmark_source,
                     "benchmark_return_pct": decision.benchmark_return_pct,
                     "entry_reason": entry_reason,
-                    "minutes_to_regular_close": entry_market_regime.get(
-                        "minutes_to_regular_close"
+                    "minutes_to_regular_close": (
+                        entry_inverse_benchmark_context.get(
+                            "minutes_to_regular_close"
+                        )
                     ),
-                    "benchmark_rebound_from_low_pct": entry_market_regime.get(
-                        "benchmark_rebound_from_low_pct"
+                    "benchmark_rebound_from_low_pct": (
+                        entry_inverse_benchmark_context.get(
+                            "benchmark_rebound_from_low_pct"
+                        )
                     ),
-                    "session_range_position": entry_market_regime.get(
-                        "session_range_position"
+                    "session_range_position": (
+                        entry_inverse_benchmark_context.get(
+                            "session_range_position"
+                        )
                     ),
                 },
             )
@@ -1798,6 +1907,7 @@ class LiquidityLabService:
             int(getattr(policy, "inverse_max_hold_cycles", 48) or 48),
         )
         exit_reason = ""
+        exit_benchmark_decision: InverseRegimeDecision | None = None
         if net_pnl_pct <= -hard_stop:
             exit_reason = "inverse_hard_stop"
         elif net_pnl_pct <= -stop_loss:
@@ -1812,23 +1922,29 @@ class LiquidityLabService:
         elif hold_cycles >= max_hold_cycles:
             exit_reason = "inverse_time_exit"
         else:
-            decision = self._inverse_regime_decision(
+            exit_benchmark_decision = self._inverse_regime_decision(
                 market_key,
                 symbol,
                 now=current,
             )
             if (
-                decision is not None
-                and decision.session_date
+                exit_benchmark_decision is not None
+                and exit_benchmark_decision.session_date
                 == str(trade.get("entry_session_date") or "")
-                and decision.benchmark_return_pct is not None
-                and decision.benchmark_return_pct > -0.3
+                and exit_benchmark_decision.benchmark_return_pct is not None
+                and exit_benchmark_decision.benchmark_return_pct > -0.3
             ):
                 exit_reason = "inverse_benchmark_recovered"
 
         now_iso = current.astimezone(timezone.utc).isoformat()
         updated_context = None
         if exit_reason:
+            if exit_benchmark_decision is None:
+                exit_benchmark_decision = self._inverse_regime_decision(
+                    market_key,
+                    symbol,
+                    now=current,
+                )
             existing_context = trade.get("context_json")
             updated_context = (
                 dict(existing_context)
@@ -1839,6 +1955,24 @@ class LiquidityLabService:
                 market_key,
                 now=current,
             )
+            updated_context["exit_inverse_benchmark"] = (
+                asdict(exit_benchmark_decision)
+                if exit_benchmark_decision is not None
+                else {}
+            )
+            if (
+                exit_benchmark_decision is not None
+                and exit_benchmark_decision.benchmark_code
+            ):
+                updated_context["exit_inverse_benchmark_context"] = (
+                    self._market_regime_context(
+                        market_key,
+                        now=current,
+                        inverse_benchmark_code=(
+                            exit_benchmark_decision.benchmark_code
+                        ),
+                    )
+                )
             if signal_snapshot is not None:
                 updated_context["exit_signal_snapshot"] = asdict(
                     signal_snapshot
@@ -1908,39 +2042,75 @@ class LiquidityLabService:
     ) -> list[str]:
         market_key = normalize_market_name(market)
         open_symbols = sorted(self._open_inverse_shadow_symbols(market_key))
-        decision = self._inverse_regime_decision(market_key, now=now)
-        if decision is None or not decision.eligible:
-            return open_symbols
         policy = self._get_market_policy(market_key)
-        symbols = [
+        if policy.auto_trade is None:
+            return open_symbols
+        configured_symbols = [
             str(value).strip().upper()
             for value in policy.auto_trade.inverse_etf_symbols
             if str(value).strip()
         ]
-        symbols = list(dict.fromkeys([*symbols, *open_symbols]))
-        notice_key = (
-            market_key,
-            decision.session_date,
-            decision.execution_mode,
-        )
+        symbols: list[str] = []
         notice_keys = getattr(self, "_inverse_regime_notice_keys", None)
         if notice_keys is None:
             notice_keys = set()
             self._inverse_regime_notice_keys = notice_keys
-        if notice_key not in notice_keys:
-            notice_keys.add(notice_key)
-            self._save_event(
-                event_type="inverse_regime_active",
+        for symbol in dict.fromkeys(configured_symbols):
+            decision = self._inverse_regime_decision(
+                market_key,
+                symbol,
+                now=now,
+            )
+            if decision is None:
+                continue
+            self._record_inverse_observation(
+                event_type="inverse_symbol_regime_observed",
                 market=market_key,
+                symbol=symbol,
+                reason=decision.reason,
+                now=now,
                 detail={
-                    "mode": decision.execution_mode,
-                    "benchmark": decision.benchmark_name,
+                    "observation_version": "symbol_benchmark_v1",
+                    "eligible": decision.eligible,
+                    "execution_mode": decision.execution_mode,
+                    "benchmark_code": decision.benchmark_code,
+                    "benchmark_name": decision.benchmark_name,
+                    "benchmark_source": decision.benchmark_source,
                     "benchmark_return_pct": decision.benchmark_return_pct,
                     "regime_key": decision.regime_key,
-                    "symbols": symbols,
-                    "live_orders_enabled": decision.execution_mode == "live",
                 },
             )
+            if not decision.eligible:
+                continue
+            symbols.append(symbol)
+            notice_key = (
+                market_key,
+                symbol,
+                decision.session_date,
+                decision.execution_mode,
+                decision.benchmark_code,
+            )
+            if notice_key not in notice_keys:
+                notice_keys.add(notice_key)
+                self._save_event(
+                    event_type="inverse_regime_active",
+                    market=market_key,
+                    symbol=symbol,
+                    detail={
+                        "mode": decision.execution_mode,
+                        "benchmark_code": decision.benchmark_code,
+                        "benchmark": decision.benchmark_name,
+                        "benchmark_source": decision.benchmark_source,
+                        "benchmark_return_pct": (
+                            decision.benchmark_return_pct
+                        ),
+                        "regime_key": decision.regime_key,
+                        "live_orders_enabled": (
+                            decision.execution_mode == "live"
+                        ),
+                    },
+                )
+        symbols = list(dict.fromkeys([*symbols, *open_symbols]))
         return symbols
 
     def _get_market_policy_registry(self) -> MarketPolicyRegistry:
@@ -4128,6 +4298,28 @@ class LiquidityLabService:
             await collector.refresh_if_due(now)
         except Exception as exc:  # noqa: BLE001
             _logger.warning("[REGIME] collector_failed error=%s", exc)
+        refresh_inverse = getattr(
+            collector,
+            "refresh_inverse_benchmarks_if_due",
+            None,
+        )
+        if not callable(refresh_inverse):
+            return
+        try:
+            domestic_policy = self._get_market_policy("domestic")
+            overseas_policy = self._get_market_policy("overseas")
+            await refresh_inverse(
+                [
+                    *domestic_policy.inverse_benchmarks.values(),
+                    *overseas_policy.inverse_benchmarks.values(),
+                ],
+                now,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[INVERSE_BENCHMARK] collector_failed error=%s",
+                exc,
+            )
 
     def _get_execution_reconciler(self) -> BrokerExecutionReconciler:
         reconciler = getattr(self, "execution_reconciler", None)

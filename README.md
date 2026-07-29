@@ -333,8 +333,8 @@ DRY_RUN=false python3 main.py overseas-order-test sell <종목코드> --exchange
 - 국장: `config/market_policies/domestic.json`
 - 미장: `config/market_policies/overseas.json`
 
-현재 두 파일은 기존 `auto_trade` 정책의 모든 값을 동일하게 복제한 초기 상태다. 이후에는 각
-파일을 따로 수정하며 시장별로 고도화한다. 런타임에서도 `DomesticMomentumPolicy`와
+두 파일은 기존 `auto_trade` 정책을 복제해 시작했지만, 현재는 축적된 시장별 근거에 따라
+독립적으로 변경된다. 이후에도 각 파일을 따로 수정하며 시장별로 고도화한다. 런타임에서도 `DomesticMomentumPolicy`와
 `OverseasMomentumPolicy`가 별도 설정 객체를 보유하고, 전략 관리자는 `market:symbol` 키로
 분리된다. 미장 고정종목 모드인 `auto-run`도 미장 정책 파일을 사용한다.
 
@@ -436,7 +436,9 @@ python3 main.py liquidity-lab
   분봉이 모두 상승 추세일 때만 전략 매수를 허용한다. 이 조건은 감시 상태와
   주문 제출 직전에 모두 확인한다. 미장 레버리지는 별도 정책이며 이번 국장
   조건을 복제하지 않는다. `233740`은 레버리지 상품으로 인식하지만 승인
-  목록에는 포함하지 않는다.
+  목록에는 포함하지 않는다. 상품 분류는 `leveraged_etf_symbols`, 동적 풀
+  승인은 `dynamic_pool_approved_leveraged_symbols`가 각각 소유하므로
+  보호식 추가가 후보군 확대로 번지지 않는다.
 - 흔히 말하는 `개잡주` 성격을 줄이기 위해, 현재 버전은 `저가주 + 얇은 거래대금/거래량 + 넓은 스프레드` 조합의 후보를 자동 제외한다.
 - 국내 기본 제외 기준은 `3,000원 미만`, `당일 거래대금 500억 원 미만`, `최근 체결량 합계 10만 미만`, `스프레드 0.3% 초과`다.
   이 `domestic_min_price_krw`(3,000원)는 정적 후보(`domestic_candidates`)와 동적 스캔 결과 모두에 사후 적용되는 범용 하한선이고, `domestic_dynamic_min_price_krw`(5,000원, 더 높음)는 KIS 랭킹 API 요청 자체에 실리는 소스단 사전 필터라 용도가 다르다 — 노이즈가 많은 자동탐색 풀은 소스에서 더 엄격히 걸러내고, 사람이 직접 고른 정적 후보에는 더 완화된 하한선을 적용하는 의도된 이중 기준이다.
@@ -449,6 +451,12 @@ python3 main.py liquidity-lab
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
 - 최근 성과 기준으로 해외 `VWAP` 단독, `RSI` 단독, `VOL` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`, `overseas_block_standalone_vol=true`). 해외에서는 `VWAP+RSI`, `VOL+RSI`처럼 보조 확인이 둘 이상 붙은 신호를 우선한다.
+- 국내 `VWAP` 단독 신호는 `entry_confirmation_strategy_flags=["VWAP"]`에 따라
+  공통 모멘텀 진입식도 동시에 `ready`여야 한다. 감시 상태, 최종 후보 선정,
+  주문 제출 직전 모두 같은 검사를 반복하며 거래량·추세·모멘텀·추격매수
+  조건 중 하나라도 충족하지 못하면 `strategy_confirmation_*`로 대기한다.
+  미장 목록은 비어 있어 이 국장 결정을 복제하지 않고 기존 미장 복합신호
+  정책을 유지한다.
 - 체결확정 기반 동적 전략 가드는 국장·미장을 `(시장, 전략)` 키로 따로 계산한다.
   관찰시간·최소 거래수·평균 순손익 임계값·감시 전략·최소 최종세션은 각
   `config/market_policies/{domestic,overseas}.json`에 동일한 초기값으로

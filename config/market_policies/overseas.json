@@ -132,6 +132,7 @@
     "strategy_guard_min_final_sessions": 3,
     "inverse_etf_symbols": ["SQQQ", "SOXS", "SPXU"],
     "leveraged_etf_symbols": ["TQQQ", "SOXL"],
+    "dynamic_pool_approved_leveraged_symbols": [],
     "inverse_regime_enabled": true,
     "inverse_execution_mode": "shadow",
     "inverse_entry_formula": "us_regime_trend_breakout_v1",

@@ -5354,7 +5354,7 @@ def test_strategy_guard_uses_independent_market_policy_parameters(
     assert detail["market_policies"]["overseas"]["min_trades"] == 3
 
 
-def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() -> None:
+def test_place_domestic_test_order_rechecks_vwap_confirmation_before_submission() -> None:
     class FailingDomesticClient:
         async def get_domestic_order_history(self, **_kwargs):
             raise AssertionError("open-order API should not be called")
@@ -5367,6 +5367,80 @@ def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() 
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service.client = FailingDomesticClient()
+    snapshot = _snapshot(
+        price=4_405.0,
+        volume_ratio=0.06,
+        volume_last=6_000.0,
+        volume_avg=100_000.0,
+    )
+    candidate = DomesticScanResult(
+        stock_code="006340",
+        current_price=4_405,
+        best_ask=4_410,
+        best_bid=4_400,
+        spread_pct=0.00227,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+        stock_name="대원전선",
+    )
+    watch_target = WatchTargetStatus(
+        market="domestic",
+        code="006340",
+        exchange_code=None,
+        price=4_405.0,
+        activity_score=11.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[VWAP] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(
+        service._place_domestic_test_order(
+            candidate,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "strategy_confirmation_volume_low"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["symbol"] == "006340"
+    assert rows[0]["action_reason"] == "buy:strategy_confirmation_volume_low"
+
+
+@pytest.mark.parametrize(
+    ("symbol", "stock_name"),
+    [
+        ("122630", "KODEX 레버리지"),
+        ("233740", "KODEX 코스닥150 레버리지"),
+    ],
+)
+def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission(
+    symbol: str,
+    stock_name: str,
+) -> None:
+    class FailingDomesticClient:
+        async def get_domestic_order_history(self, **_kwargs):
+            raise AssertionError("open-order API should not be called")
+
+        async def place_cash_order(self, **_kwargs):
+            raise AssertionError("cash-order API should not be called")
+
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
     service.client = FailingDomesticClient()
     snapshot = _snapshot(
         price=78_055.0,
@@ -5381,7 +5455,7 @@ def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() 
         regime="breakdown",
     )
     candidate = DomesticScanResult(
-        stock_code="122630",
+        stock_code=symbol,
         current_price=78_055,
         best_ask=78_060,
         best_bid=78_050,
@@ -5390,11 +5464,11 @@ def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() 
         intraday_turnover_krw=100_000_000_000,
         volume_sum=500_000,
         activity_score=11.0,
-        stock_name="KODEX 레버리지",
+        stock_name=stock_name,
     )
     watch_target = WatchTargetStatus(
         market="domestic",
-        code="122630",
+        code=symbol,
         exchange_code=None,
         price=78_055.0,
         activity_score=11.0,
@@ -5418,7 +5492,7 @@ def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() 
     assert result["skipped"] is True
     assert result["reason"] == "leveraged_trend_unconfirmed"
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
-    assert rows[0]["symbol"] == "122630"
+    assert rows[0]["symbol"] == symbol
     assert rows[0]["action_reason"] == "buy:leveraged_trend_unconfirmed"
 
 
@@ -8059,6 +8133,88 @@ def test_build_watch_target_status_blocks_overseas_standalone_vwap() -> None:
     assert watch_target.note == "[VWAP] standalone_vwap_blocked"
     assert watch_target.strategy_flag == "VWAP"
     assert watch_target.entry_by == "VWAP"
+
+
+def test_build_watch_target_status_confirms_domestic_standalone_vwap() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    snapshot = _snapshot(
+        price=20_000.0,
+        volume_ratio=0.06,
+        volume_last=6_000.0,
+        volume_avg=100_000.0,
+    )
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(
+                signal="BUY",
+                flag="VWAP",
+                entry_by="VWAP",
+                exit_by="",
+            )
+
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="domestic",
+        code="006340",
+        exchange_code=None,
+        price=20_000.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.signal_state == "WAIT"
+    assert watch_target.note == "[VWAP] strategy_confirmation_volume_low"
+    assert watch_target.strategy_flag == "VWAP"
+    assert watch_target.entry_by == "VWAP"
+
+
+def test_build_watch_target_status_allows_confirmed_domestic_vwap() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    snapshot = _snapshot()
+
+    class FakeStrategyManager:
+        def evaluate(self, *args, **kwargs):
+            return SimpleNamespace(
+                signal="BUY",
+                flag="VWAP",
+                entry_by="VWAP",
+                exit_by="",
+            )
+
+        def buy_score(self, *args, **kwargs):
+            return 50.0
+
+    service._get_strategy_manager = lambda code, market="overseas": FakeStrategyManager()  # type: ignore[method-assign]
+
+    watch_target = service._build_watch_target_status(
+        market="domestic",
+        code="006340",
+        exchange_code=None,
+        price=20.0,
+        activity_score=12.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "BUY"
+    assert watch_target.signal_state == "BUY"
+    assert watch_target.strategy_flag == "VWAP"
 
 
 def test_build_watch_target_status_requires_leveraged_trend_confirmation() -> None:

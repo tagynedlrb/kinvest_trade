@@ -1,6 +1,12 @@
 import json
+from pathlib import Path
 
-from kinvest_trade.config import _normalize_kis_env, _split_account_fields, load_app_config
+from kinvest_trade.config import (
+    _load_market_policies,
+    _normalize_kis_env,
+    _split_account_fields,
+    load_app_config,
+)
 
 
 def test_split_account_fields_with_10_digits() -> None:
@@ -56,6 +62,10 @@ def test_load_app_config_uses_paper_profile_variables(monkeypatch) -> None:
     assert config.auto_trade.daily_fast_window < config.auto_trade.daily_slow_window
     assert config.auto_trade.intraday_fast_window < config.auto_trade.intraday_slow_window
     assert config.auto_trade.min_hold_before_trend_exit == 30
+    assert (
+        config.auto_trade.dynamic_pool_approved_leveraged_symbols
+        == config.auto_trade.leveraged_etf_symbols
+    )
     assert len(config.liquidity_lab.domestic_candidates) >= 1
     assert len(config.liquidity_lab.overseas_candidates) == 0
     assert config.notifications.telegram_command_poll_timeout_sec > 0
@@ -167,12 +177,18 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "VOL",
         "VWAP+VOL",
     ]
+    assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
+    assert overseas.auto_trade.entry_confirmation_strategy_flags == []
+    assert domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == [
+        "122630"
+    ]
+    assert overseas.auto_trade.dynamic_pool_approved_leveraged_symbols == []
     assert domestic.engine == overseas.engine == "momentum_v1"
     assert domestic.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert domestic.auto_trade.inverse_etf_symbols == ["114800", "252670"]
     assert overseas.auto_trade.inverse_etf_symbols == ["SQQQ", "SOXS", "SPXU"]
-    assert domestic.auto_trade.leveraged_etf_symbols == ["122630"]
+    assert domestic.auto_trade.leveraged_etf_symbols == ["122630", "233740"]
     assert overseas.auto_trade.leveraged_etf_symbols == ["TQQQ", "SOXL"]
     assert domestic.auto_trade.leveraged_require_dual_trend_confirmation is True
     assert overseas.auto_trade.leveraged_require_dual_trend_confirmation is False
@@ -201,18 +217,58 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         domestic.auto_trade.strategy_guard_strategy_flags
         is not overseas.auto_trade.strategy_guard_strategy_flags
     )
+    assert (
+        domestic.auto_trade.entry_confirmation_strategy_flags
+        is not overseas.auto_trade.entry_confirmation_strategy_flags
+    )
+    assert (
+        domestic.auto_trade.dynamic_pool_approved_leveraged_symbols
+        is not overseas.auto_trade.dynamic_pool_approved_leveraged_symbols
+    )
 
     domestic.auto_trade.take_profit_pct = 0.123
     domestic.auto_trade.inverse_etf_symbols.append("KRX_TEST")
     domestic.auto_trade.strategy_guard_strategy_flags.append("KRX_TEST")
+    domestic.auto_trade.entry_confirmation_strategy_flags.append("KRX_TEST")
+    domestic.auto_trade.dynamic_pool_approved_leveraged_symbols.append("KRX_TEST")
 
     assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert "KRX_TEST" not in overseas.auto_trade.inverse_etf_symbols
     assert "KRX_TEST" not in overseas.auto_trade.strategy_guard_strategy_flags
+    assert "KRX_TEST" not in overseas.auto_trade.entry_confirmation_strategy_flags
+    assert (
+        "KRX_TEST"
+        not in overseas.auto_trade.dynamic_pool_approved_leveraged_symbols
+    )
     assert domestic.source_path is not None
     assert domestic.source_path.name == "domestic.json"
     assert overseas.source_path is not None
     assert overseas.source_path.name == "overseas.json"
+
+
+def test_market_policy_fallback_preserves_legacy_leveraged_pool_approval(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KIS_ENV", "vps")
+    monkeypatch.setenv("KIS_VPS_APPKEY", "paper-key")
+    monkeypatch.setenv("KIS_VPS_APPSECRET", "paper-secret")
+    monkeypatch.setenv("KIS_VPS_ACCOUNT_NO", "8765432101")
+    config = load_app_config()
+
+    policies = _load_market_policies(
+        project_root=Path(__file__).resolve().parents[1],
+        raw_definitions={},
+        base_auto_trade=config.auto_trade,
+        base_risk=config.risk,
+    )
+
+    expected = config.auto_trade.leveraged_etf_symbols
+    assert policies.domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == expected
+    assert policies.overseas.auto_trade.dynamic_pool_approved_leveraged_symbols == expected
+    assert (
+        policies.domestic.auto_trade.dynamic_pool_approved_leveraged_symbols
+        is not policies.overseas.auto_trade.dynamic_pool_approved_leveraged_symbols
+    )
 
 
 def test_fixed_config_risk_section_contains_only_live_keys() -> None:

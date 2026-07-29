@@ -2633,6 +2633,7 @@ class LiquidityLabService:
         market: str,
         symbol: str,
         signal_snapshot: MovingAverageSnapshot | None,
+        strategy_flag: str = "",
     ) -> str:
         if not hasattr(self, "config"):
             return ""
@@ -2642,12 +2643,34 @@ class LiquidityLabService:
         if auto_trade is None:
             return ""
 
-        if not self._is_inverse_symbol(market_key, symbol):
+        is_inverse = self._is_inverse_symbol(market_key, symbol)
+        if not is_inverse:
             post_cb_reason, _ = self._post_cb_reentry_regime_gate(
                 market_key,
             )
             if post_cb_reason:
                 return post_cb_reason
+
+            strategy = str(strategy_flag or "").strip().upper()
+            confirmation_flags = {
+                str(value).strip().upper()
+                for value in getattr(
+                    auto_trade,
+                    "entry_confirmation_strategy_flags",
+                    [],
+                )
+                if str(value).strip()
+            }
+            if strategy and strategy in confirmation_flags:
+                if signal_snapshot is None:
+                    return "strategy_confirmation_signal_unavailable"
+                entry_setup = self._evaluate_entry_setup(
+                    signal_snapshot,
+                    symbol,
+                    market_key,
+                )
+                if not entry_setup.ready:
+                    return f"strategy_confirmation_{entry_setup.reason}"
         if signal_snapshot is None:
             return ""
 
@@ -4068,9 +4091,13 @@ class LiquidityLabService:
             for value in getattr(auto_trade, "inverse_etf_symbols", [])
             if str(value).strip()
         }
-        leveraged_symbols = {
+        approved_leveraged_symbols = {
             str(value).strip().upper()
-            for value in getattr(auto_trade, "leveraged_etf_symbols", [])
+            for value in getattr(
+                auto_trade,
+                "dynamic_pool_approved_leveraged_symbols",
+                [],
+            )
             if str(value).strip()
         }
         if "인버스" in name or "INVERSE" in name:
@@ -4083,7 +4110,7 @@ class LiquidityLabService:
             "레버리지" in name
             or "LEVERAGE" in name
             or "LEVERAGED" in name
-        ) and code not in leveraged_symbols:
+        ) and code not in approved_leveraged_symbols:
             return "unapproved_leveraged_product"
         return ""
 

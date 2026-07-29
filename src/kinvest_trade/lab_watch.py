@@ -938,6 +938,7 @@ class WatchStateHelper:
                 market=market,
                 symbol=code,
                 signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_result.flag,
             )
             if formula_block_reason:
                 return service._make_watch_target_status(
@@ -1154,6 +1155,7 @@ class WatchStateHelper:
                 market=watch_target.market,
                 symbol=watch_target.code,
                 signal_snapshot=watch_target.signal_snapshot,
+                strategy_flag=watch_target.strategy_flag,
             )
         ]
         if not ready_targets or max_concurrent <= 0:
@@ -1259,6 +1261,7 @@ class WatchStateHelper:
                 market=watch_target.market,
                 symbol=watch_target.code,
                 signal_snapshot=watch_target.signal_snapshot,
+                strategy_flag=watch_target.strategy_flag,
             )
         ]
         if not ready_targets or max_concurrent <= 0:

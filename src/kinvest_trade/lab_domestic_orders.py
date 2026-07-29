@@ -71,6 +71,7 @@ class DomesticOrderHelper:
                 market="domestic",
                 symbol=candidate.stock_code,
                 signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
             )
         if block_reason:
             service._record_trade_skip(

@@ -204,6 +204,10 @@ class AutoTradeConfig:
         default_factory=lambda: ["VWAP", "RSI", "VOL"]
     )
     strategy_guard_min_final_sessions: int = 3
+    entry_confirmation_strategy_flags: list[str] = field(default_factory=list)
+    dynamic_pool_approved_leveraged_symbols: list[str] = field(
+        default_factory=list
+    )
 
 
 @dataclass(slots=True)
@@ -468,6 +472,12 @@ def _load_market_policy_definition(
         leveraged_etf_symbols=list(base_auto_trade.leveraged_etf_symbols),
         strategy_guard_strategy_flags=list(
             base_auto_trade.strategy_guard_strategy_flags
+        ),
+        entry_confirmation_strategy_flags=list(
+            base_auto_trade.entry_confirmation_strategy_flags
+        ),
+        dynamic_pool_approved_leveraged_symbols=list(
+            base_auto_trade.dynamic_pool_approved_leveraged_symbols
         ),
     )
     market_auto_trade = replace(cloned_base, **overrides)
@@ -1103,6 +1113,13 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             leveraged_etf_symbols=[
                 str(value)
                 for value in liquidity_lab_raw.get("leveraged_etf_symbols", ["TQQQ", "SOXL"])
+            ],
+            dynamic_pool_approved_leveraged_symbols=[
+                str(value)
+                for value in liquidity_lab_raw.get(
+                    "leveraged_etf_symbols",
+                    ["TQQQ", "SOXL"],
+                )
             ],
         ),
         strategy=StrategyConfig(

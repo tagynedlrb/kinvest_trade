@@ -166,6 +166,7 @@ class OverseasOrderHelper:
                 market="overseas",
                 symbol=candidate.symbol,
                 signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
             )
         if block_reason:
             service._record_trade_skip(
@@ -1566,6 +1567,7 @@ class OverseasOrderHelper:
                 market="overseas",
                 symbol=candidate.symbol,
                 signal_snapshot=snapshot,
+                strategy_flag=strategy_flag,
             )
         if block_reason:
             service._record_trade_skip(

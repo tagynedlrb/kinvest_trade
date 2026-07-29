@@ -197,6 +197,7 @@ class AutoTradeConfig:
     inverse_hard_stop_loss_pct: float = 0.012
     inverse_max_hold_cycles: int = 24
     inverse_slot_multiplier: float = 0.25
+    strategy_guard_min_final_sessions: int = 3
 
 
 @dataclass(slots=True)

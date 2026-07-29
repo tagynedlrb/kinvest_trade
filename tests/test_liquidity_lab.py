@@ -4817,6 +4817,69 @@ def test_place_domestic_test_order_blocks_recent_underperforming_strategy_before
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
+def test_strategy_guard_stays_blocked_until_three_final_market_sessions() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
+    service.config.liquidity_lab.strategy_guard_markets = ["domestic"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["VWAP"]
+    service.repository.activate_strategy_guard_state(
+        market="domestic",
+        strategy_flag="VWAP",
+        activated_at="2026-07-29T00:30:00+00:00",
+        activation_session_date="2026-07-29",
+        trigger_trade_count=3,
+        trigger_avg_net_pnl_pct=-0.0165,
+    )
+    for session_date in ("2026-07-29", "2026-07-30"):
+        _save_test_regime(
+            service,
+            market="domestic",
+            session_date=session_date,
+            return_pct=-1.0,
+            trend_regime="down",
+        )
+        regime = service.repository.get_market_regime(
+            "domestic",
+            session_date,
+        )
+        assert regime is not None
+        regime["is_final"] = 1
+        service.repository.upsert_market_regime(regime)
+
+    assert service._strategy_guard_blocked_keys() == {("domestic", "VWAP")}
+    cache_detail = service._strategy_guard_cache["blocked_detail"][0]
+    assert cache_detail["retention_source"] == "minimum_final_session_hold"
+    assert cache_detail["final_sessions"] == 2
+    assert cache_detail["min_final_sessions"] == 3
+
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date="2026-07-31",
+        return_pct=0.5,
+        trend_regime="up",
+    )
+    regime = service.repository.get_market_regime("domestic", "2026-07-31")
+    assert regime is not None
+    regime["is_final"] = 1
+    service.repository.upsert_market_regime(regime)
+    service._cycle_count = 1
+
+    assert service._strategy_guard_blocked_keys() == set()
+    assert service.repository.list_active_strategy_guard_states() == []
+    releases = service.repository.list_event_log(
+        event_type="strategy_guard_released",
+        limit=1,
+    )
+    assert len(releases) == 1
+    detail = json.loads(releases[0]["detail"])
+    assert detail["final_sessions"] == 3
+    assert detail["reason"] == "minimum_final_sessions_observed"
+
+
 def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() -> None:
     class FailingDomesticClient:
         async def get_domestic_order_history(self, **_kwargs):
@@ -6100,7 +6163,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v3"
+    assert trade["policy_id"] == "domestic_momentum_v4"
 
 
 def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products() -> None:

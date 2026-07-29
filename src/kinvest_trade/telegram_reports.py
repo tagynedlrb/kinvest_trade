@@ -1760,13 +1760,31 @@ class ReportHelper:
             after_logged_at=after_logged_at,
             cost_pct=cost_pct,
         )
-        if not rows:
+        active_states = (
+            controller.repository.list_active_strategy_guard_states()
+            if hasattr(
+                controller.repository,
+                "list_active_strategy_guard_states",
+            )
+            else []
+        )
+        active_by_key = {
+            (
+                str(row.get("market") or "").strip().lower(),
+                str(row.get("strategy_flag") or "").strip().upper(),
+            ): row
+            for row in active_states
+        }
+        if not rows and not active_states:
             lines.append("성과=없음")
             return "\n".join(lines)
 
+        seen_keys: set[tuple[str, str]] = set()
         for row in rows[:10]:
             market = str(row.get("market") or "").strip().lower()
             strategy = str(row.get("strategy_flag") or "").strip().upper()
+            key = (market, strategy)
+            seen_keys.add(key)
             trade_count = int(row.get("trade_count") or 0)
             win_count = int(row.get("win_count") or 0)
             avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
@@ -1775,7 +1793,33 @@ class ReportHelper:
                 not guard_flags or strategy in guard_flags
             )
             blocked = monitored and trade_count >= min_trades and avg_net <= max_avg_net
-            if blocked:
+            persistent_state = active_by_key.get(key)
+            if persistent_state is not None:
+                market_auto_trade = get_market_auto_trade_config(
+                    controller.config,
+                    market,
+                )
+                min_final_sessions = max(
+                    0,
+                    int(
+                        getattr(
+                            market_auto_trade,
+                            "strategy_guard_min_final_sessions",
+                            3,
+                        )
+                        or 0
+                    ),
+                )
+                final_sessions = controller.repository.count_final_market_regimes(
+                    market=market,
+                    start_date=str(
+                        persistent_state.get("activation_session_date") or ""
+                    ),
+                )
+                state = (
+                    f"차단(최종세션 {final_sessions}/{min_final_sessions})"
+                )
+            elif blocked:
                 state = "차단"
             elif monitored:
                 state = "감시"
@@ -1785,6 +1829,37 @@ class ReportHelper:
                 f"{format_market_korean(market)} {strategy or '-'} "
                 f"상태={state} {trade_count}건 승률={win_rate * 100:.0f}% "
                 f"평균순={format_pct(avg_net)}"
+            )
+        for key, persistent_state in active_by_key.items():
+            if key in seen_keys:
+                continue
+            market, strategy = key
+            market_auto_trade = get_market_auto_trade_config(
+                controller.config,
+                market,
+            )
+            min_final_sessions = max(
+                0,
+                int(
+                    getattr(
+                        market_auto_trade,
+                        "strategy_guard_min_final_sessions",
+                        3,
+                    )
+                    or 0
+                ),
+            )
+            final_sessions = controller.repository.count_final_market_regimes(
+                market=market,
+                start_date=str(
+                    persistent_state.get("activation_session_date") or ""
+                ),
+            )
+            lines.append(
+                f"{format_market_korean(market)} {strategy or '-'} "
+                f"상태=차단(관찰유지) 최종세션="
+                f"{final_sessions}/{min_final_sessions} "
+                f"시작={persistent_state.get('activation_session_date') or '-'}"
             )
         return "\n".join(lines)
 

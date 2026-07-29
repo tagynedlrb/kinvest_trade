@@ -1,5 +1,5 @@
 {
-  "policy_id": "domestic_momentum_v3",
+  "policy_id": "domestic_momentum_v4",
   "engine": "momentum_v1",
   "parameters": {
     "enabled": true,
@@ -97,6 +97,7 @@
     "capital_gains_tax_rate": 0.22,
     "usd_krw_fallback_rate": 1350.0,
     "stale_run_grace_minutes": 180,
+    "strategy_guard_min_final_sessions": 3,
     "inverse_etf_symbols": ["114800", "252670"],
     "leveraged_etf_symbols": ["122630"],
     "inverse_regime_enabled": true,

@@ -170,7 +170,7 @@
   volume confirmation remain mandatory. Unapproved symbols and an approved
   code returned as an ordinary stock receive no exemption.
 - Domestic inverse entries use the independently versioned
-  `domestic_momentum_v3` shadow formula. The ordinary long-side VWAP, RSI/MACD
+  `domestic_momentum_v4` shadow formula. The ordinary long-side VWAP, RSI/MACD
   and 2x-volume consensus is not an adequate proxy after an inverse ETF has
   already moved far above VWAP during a broad-market decline. The dedicated
   formula requires a same-session KOSPI decline of at least 3%, an up-sloping
@@ -192,7 +192,7 @@
 - The domestic dedicated formula remains shadow-only even if an operator
   changes the inverse execution mode to `live`; a separate code and evidence
   change is required to remove that block. The overseas policy remains
-  `overseas_momentum_v1/strategy_consensus_v1` until US-specific down-regime
+  `overseas_momentum_v2/strategy_consensus_v1` until US-specific down-regime
   observations support its own revision. KODEX states that `114800` targets
   the inverse of the F-KOSPI200 **daily** return and that longer or more
   volatile holding periods can diverge
@@ -211,7 +211,7 @@
   evidence, and a repeated path mechanism. One domestic crash-session
   giveback is not evidence for the independently owned overseas inverse exit.
 - The domestic approved leveraged-long list currently contains only `122630`.
-  Under `domestic_momentum_v3`, every strategy signal for that list must pass
+  Under `domestic_momentum_v4`, every strategy signal for that list must pass
   both the daily and intraday uptrend properties before it can become a buy
   candidate, and the order helper must recheck the same boundary immediately
   before submission. This closes the path where the generic entry formula
@@ -226,10 +226,19 @@
   list requires separate final-session performance and product-risk evidence.
 - Five broker-confirmed, session-owned domestic standalone-VWAP exits across
   only two sessions are insufficient for a permanent formula deletion or
-  momentum threshold. Keep the 48-hour market-specific performance guard
-  active, retain legacy unconfirmed rows for diagnostics only, and wait for at
-  least three distinct final KOSPI sessions before evaluating a permanent
-  standalone-VWAP change.
+  momentum threshold. A market-strategy guard activation is durable: keep it
+  active while the rolling loss condition remains true, and after that
+  condition clears, release it only when that market has recorded its
+  separately configured minimum number of final benchmark sessions since
+  activation. The initial domestic and overseas values are both three, but
+  they belong to separate policy files and may diverge only on market-specific
+  evidence. Three sessions are a minimum observation hold, not proof of
+  profitability or permission to loosen a formula. Retain legacy unconfirmed
+  rows for diagnostics only and keep the existing five confirmed exits across
+  three final sessions requirement for a permanent change. This avoids
+  treating repeated scans from one market path as independent evidence, a
+  known source of backtest-selection bias
+  ([NBER Working Paper 21329](https://www.nber.org/papers/w21329)).
 - Volatility uses percentage True Range: the maximum of the session high-low
   range and each absolute high/low distance from the prior close. This captures
   close-to-open gaps while normalizing domestic and overseas markets against

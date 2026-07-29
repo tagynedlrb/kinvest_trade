@@ -2348,6 +2348,79 @@ def test_lab_guard_command_reports_current_strategy_guard_state(
     assert "국내 VWAP 상태=참고 1건 승률=100% 평균순=+1.50%" in message
 
 
+def test_lab_guard_command_reports_persistent_final_session_hold(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_guard_hold.db")
+    repository.activate_strategy_guard_state(
+        market="domestic",
+        strategy_flag="VWAP",
+        activated_at="2026-07-29T00:30:00+00:00",
+        activation_session_date="2026-07-29",
+        trigger_trade_count=3,
+        trigger_avg_net_pnl_pct=-0.0165,
+    )
+    for session_date in ("2026-07-29", "2026-07-30"):
+        repository.upsert_market_regime(
+            {
+                "market": "domestic",
+                "session_date": session_date,
+                "benchmark_code": "0001",
+                "benchmark_name": "KOSPI",
+                "source": "test",
+                "captured_at": f"{session_date}T06:30:00+00:00",
+                "is_final": 1,
+                "trend_regime": "down",
+                "activity_regime": "normal",
+                "volatility_regime": "high",
+                "regime_key": "down|normal|high",
+                "sample_days": 20,
+            }
+        )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                strategy_guard_enabled=True,
+                strategy_guard_lookback_hours=48,
+                strategy_guard_min_trades=3,
+                strategy_guard_max_avg_net_pnl_pct=-0.003,
+                strategy_guard_markets=["domestic"],
+                strategy_guard_strategy_flags=["VWAP"],
+            ),
+            storage=SimpleNamespace(
+                runtime_state_path=tmp_path / "runtime_state.json"
+            ),
+            auto_trade=SimpleNamespace(
+                usd_krw_fallback_rate=1350.0,
+                overseas_commission_rate=0.0025,
+                strategy_guard_min_final_sessions=3,
+            ),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_guard",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert (
+        "국내 VWAP 상태=차단(관찰유지) "
+        "최종세션=2/3 시작=2026-07-29"
+    ) in message
+
+
 def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "telegram_orders.db")
     repository.save_broker_order_event(

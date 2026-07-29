@@ -1660,6 +1660,8 @@ def test_get_recent_strategy_guard_performance_groups_executed_sell_real(
     assert round(row["avg_gross_pnl_pct"], 6) == 0.005
     assert round(row["avg_net_pnl_pct"], 6) == 0.0
     assert row["total_net_pnl_krw"] == 1000.0
+    assert row["first_trade_at"] == "2026-07-02T00:00:00+00:00"
+    assert row["last_trade_at"] == "2026-07-02T00:01:00+00:00"
 
 
 def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(
@@ -1708,6 +1710,78 @@ def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(
     assert round(row["avg_gross_pnl_pct"], 6) == 0.10
     assert round(row["avg_net_pnl_pct"], 6) == -0.005
     assert row["total_net_pnl_krw"] == -100.0
+
+
+def test_strategy_guard_state_persists_activation_until_released(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "strategy_guard_state.db")
+
+    initial = repository.activate_strategy_guard_state(
+        market="domestic",
+        strategy_flag="vwap",
+        activated_at="2026-07-29T00:30:00+00:00",
+        activation_session_date="2026-07-29",
+        trigger_trade_count=3,
+        trigger_avg_net_pnl_pct=-0.0165,
+    )
+    repeated = repository.activate_strategy_guard_state(
+        market="domestic",
+        strategy_flag="VWAP",
+        activated_at="2026-07-30T00:30:00+00:00",
+        activation_session_date="2026-07-30",
+        trigger_trade_count=4,
+        trigger_avg_net_pnl_pct=-0.02,
+    )
+
+    assert initial["status"] == "ACTIVE"
+    assert repeated["activated_at"] == "2026-07-29T00:30:00+00:00"
+    assert repeated["activation_session_date"] == "2026-07-29"
+    assert repeated["trigger_trade_count"] == 3
+    for session_date in ("2026-07-29", "2026-07-30", "2026-07-31"):
+        repository.upsert_market_regime(
+            {
+                "market": "domestic",
+                "session_date": session_date,
+                "benchmark_code": "0001",
+                "benchmark_name": "KOSPI",
+                "source": "test",
+                "captured_at": f"{session_date}T06:30:00+00:00",
+                "is_final": 1,
+                "trend_regime": "down",
+                "activity_regime": "normal",
+                "volatility_regime": "high",
+                "regime_key": "down|normal|high",
+                "sample_days": 20,
+            }
+        )
+    assert (
+        repository.count_final_market_regimes(
+            market="domestic",
+            start_date="2026-07-29",
+        )
+        == 3
+    )
+
+    assert repository.release_strategy_guard_state(
+        market="domestic",
+        strategy_flag="VWAP",
+        released_at="2026-07-31T06:40:00+00:00",
+        release_reason="minimum_final_sessions_observed",
+    )
+    assert repository.list_active_strategy_guard_states() == []
+
+    reactivated = repository.activate_strategy_guard_state(
+        market="domestic",
+        strategy_flag="VWAP",
+        activated_at="2026-08-03T00:30:00+00:00",
+        activation_session_date="2026-08-03",
+        trigger_trade_count=3,
+        trigger_avg_net_pnl_pct=-0.01,
+    )
+    assert reactivated["activated_at"] == "2026-08-03T00:30:00+00:00"
+    assert reactivated["activation_session_date"] == "2026-08-03"
+    assert reactivated["status"] == "ACTIVE"
 
 
 def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:

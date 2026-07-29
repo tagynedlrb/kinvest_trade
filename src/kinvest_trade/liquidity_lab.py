@@ -2028,6 +2028,23 @@ class LiquidityLabService:
             )
         )
 
+    def _strategy_guard_min_final_sessions(self, market: str) -> int:
+        try:
+            auto_trade = self._get_market_policy(market).auto_trade
+        except (AttributeError, KeyError, RuntimeError, ValueError):
+            auto_trade = None
+        return max(
+            0,
+            int(
+                getattr(
+                    auto_trade,
+                    "strategy_guard_min_final_sessions",
+                    3,
+                )
+                or 0
+            ),
+        )
+
     def _strategy_guard_blocked_keys(self) -> set[tuple[str, str]]:
         config = getattr(self.config, "liquidity_lab", object())
         if not bool(getattr(config, "strategy_guard_enabled", False)):
@@ -2065,12 +2082,14 @@ class LiquidityLabService:
             after_logged_at=after_logged_at,
             cost_pct=cost_pct,
         )
+        now = datetime.now(timezone.utc)
         current_market_regimes = {
-            market: self._market_regime_context(market)
+            market: self._market_regime_context(market, now=now)
             for market in sorted(guard_markets)
         }
         blocked: set[tuple[str, str]] = set()
         blocked_detail: list[dict] = []
+        rolling_blocked: dict[tuple[str, str], dict] = {}
         for row in rows:
             market = str(row.get("market") or "").strip().lower()
             strategy = str(row.get("strategy_flag") or "").strip().upper()
@@ -2084,24 +2103,170 @@ class LiquidityLabService:
             avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
             if trade_count < min_trades or avg_net > max_avg_net:
                 continue
-            blocked.add((market, strategy))
+            rolling_blocked[(market, strategy)] = row
+
+        state_methods_available = all(
+            callable(getattr(repository, method, None))
+            for method in (
+                "activate_strategy_guard_state",
+                "list_active_strategy_guard_states",
+                "release_strategy_guard_state",
+                "count_final_market_regimes",
+            )
+        )
+        active_states = (
+            repository.list_active_strategy_guard_states()
+            if state_methods_available
+            else []
+        )
+        active_by_key = {
+            (
+                str(row.get("market") or "").strip().lower(),
+                str(row.get("strategy_flag") or "").strip().upper(),
+            ): row
+            for row in active_states
+        }
+        newly_activated: set[tuple[str, str]] = set()
+        for key, row in rolling_blocked.items():
+            market, strategy = key
+            state = active_by_key.get(key)
+            if state is None and state_methods_available:
+                last_trade_at = parse_datetime(row.get("last_trade_at"))
+                activation_session_date = self._market_session_date(
+                    market,
+                    last_trade_at or now,
+                )
+                state = repository.activate_strategy_guard_state(
+                    market=market,
+                    strategy_flag=strategy,
+                    activated_at=now,
+                    activation_session_date=activation_session_date,
+                    trigger_trade_count=int(row.get("trade_count") or 0),
+                    trigger_avg_net_pnl_pct=float(
+                        row.get("avg_net_pnl_pct") or 0.0
+                    ),
+                )
+                active_by_key[key] = state
+                newly_activated.add(key)
+
+            activation_session_date = str(
+                (state or {}).get("activation_session_date")
+                or self._market_session_date(market, now)
+            )
+            min_final_sessions = self._strategy_guard_min_final_sessions(market)
+            final_sessions = (
+                repository.count_final_market_regimes(
+                    market=market,
+                    start_date=activation_session_date,
+                )
+                if state_methods_available
+                else 0
+            )
+            blocked.add(key)
             blocked_detail.append(
                 {
                     "market": market,
                     "strategy_flag": strategy,
-                    "trade_count": trade_count,
-                    "avg_net_pnl_pct": round(avg_net, 6),
+                    "trade_count": int(row.get("trade_count") or 0),
+                    "avg_net_pnl_pct": round(
+                        float(row.get("avg_net_pnl_pct") or 0.0),
+                        6,
+                    ),
+                    "retention_source": "rolling_performance",
+                    "activation_session_date": activation_session_date,
+                    "final_sessions": final_sessions,
+                    "min_final_sessions": min_final_sessions,
                 }
             )
+
+        released_detail: list[dict] = []
+        if state_methods_available:
+            for key, state in active_by_key.items():
+                if key in rolling_blocked:
+                    continue
+                market, strategy = key
+                activation_session_date = str(
+                    state.get("activation_session_date") or ""
+                )
+                if (
+                    (guard_markets and market not in guard_markets)
+                    or (guard_flags and strategy not in guard_flags)
+                ):
+                    release_reason = "guard_scope_removed"
+                    final_sessions = repository.count_final_market_regimes(
+                        market=market,
+                        start_date=activation_session_date,
+                    )
+                    should_release = True
+                    min_final_sessions = self._strategy_guard_min_final_sessions(
+                        market
+                    )
+                else:
+                    min_final_sessions = self._strategy_guard_min_final_sessions(
+                        market
+                    )
+                    final_sessions = repository.count_final_market_regimes(
+                        market=market,
+                        start_date=activation_session_date,
+                    )
+                    should_release = final_sessions >= min_final_sessions
+                    release_reason = "minimum_final_sessions_observed"
+
+                if should_release:
+                    if repository.release_strategy_guard_state(
+                        market=market,
+                        strategy_flag=strategy,
+                        released_at=now,
+                        release_reason=release_reason,
+                    ):
+                        released_detail.append(
+                            {
+                                "market": market,
+                                "strategy_flag": strategy,
+                                "activation_session_date": activation_session_date,
+                                "final_sessions": final_sessions,
+                                "min_final_sessions": min_final_sessions,
+                                "reason": release_reason,
+                            }
+                        )
+                    continue
+
+                blocked.add(key)
+                blocked_detail.append(
+                    {
+                        "market": market,
+                        "strategy_flag": strategy,
+                        "trade_count": int(
+                            state.get("trigger_trade_count") or 0
+                        ),
+                        "avg_net_pnl_pct": round(
+                            float(
+                                state.get("trigger_avg_net_pnl_pct") or 0.0
+                            ),
+                            6,
+                        ),
+                        "retention_source": "minimum_final_session_hold",
+                        "activation_session_date": activation_session_date,
+                        "final_sessions": final_sessions,
+                        "min_final_sessions": min_final_sessions,
+                    }
+                )
 
         self._strategy_guard_cache = {
             "cycle_no": cycle_no,
             "blocked": blocked,
             "rows": rows,
+            "blocked_detail": blocked_detail,
+            "released_detail": released_detail,
             "current_market_regimes": current_market_regimes,
         }
         previous = getattr(self, "_last_strategy_guard_blocked_keys", set())
-        if blocked and blocked != previous:
+        should_emit_active = (
+            bool(newly_activated)
+            if state_methods_available
+            else bool(blocked and blocked != previous)
+        )
+        if should_emit_active:
             self._save_event(
                 event_type="strategy_guard_active",
                 detail={
@@ -2111,6 +2276,12 @@ class LiquidityLabService:
                     "blocked": blocked_detail,
                     "current_market_regimes": current_market_regimes,
                 },
+            )
+        for released in released_detail:
+            self._save_event(
+                event_type="strategy_guard_released",
+                market=str(released["market"]),
+                detail=released,
             )
         self._last_strategy_guard_blocked_keys = blocked
         return blocked

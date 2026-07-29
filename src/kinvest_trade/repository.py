@@ -641,6 +641,21 @@ class SqliteRepository:
                         market, regime_key, captured_at
                     );
 
+                CREATE TABLE IF NOT EXISTS strategy_guard_state (
+                    market TEXT NOT NULL,
+                    strategy_flag TEXT NOT NULL,
+                    activated_at TEXT NOT NULL,
+                    activation_session_date TEXT NOT NULL,
+                    trigger_trade_count INTEGER NOT NULL DEFAULT 0,
+                    trigger_avg_net_pnl_pct REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    released_at TEXT,
+                    release_reason TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (market, strategy_flag)
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_guard_state_status
+                    ON strategy_guard_state(status, market, strategy_flag);
+
                 CREATE TABLE IF NOT EXISTS policy_evaluation_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -1201,6 +1216,28 @@ class SqliteRepository:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_final_market_regimes(
+        self,
+        *,
+        market: str,
+        start_date: str,
+    ) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM market_regimes
+                WHERE market = ?
+                  AND session_date >= ?
+                  AND is_final = 1
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(start_date),
+                ),
+            ).fetchone()
+        return int(row["cnt"] or 0) if row is not None else 0
 
     def has_outdated_market_regime_calculation(
         self,
@@ -3839,6 +3876,129 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def activate_strategy_guard_state(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+        activated_at: str | datetime,
+        activation_session_date: str,
+        trigger_trade_count: int,
+        trigger_avg_net_pnl_pct: float,
+    ) -> dict:
+        parsed_at = parse_datetime(activated_at)
+        normalized_at = (
+            ensure_timezone(parsed_at).astimezone(timezone.utc).isoformat()
+            if parsed_at is not None
+            else str(activated_at).strip()
+        )
+        normalized_market = str(market).strip().lower()
+        normalized_strategy = str(strategy_flag).strip().upper()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO strategy_guard_state (
+                    market,
+                    strategy_flag,
+                    activated_at,
+                    activation_session_date,
+                    trigger_trade_count,
+                    trigger_avg_net_pnl_pct,
+                    status,
+                    released_at,
+                    release_reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', NULL, '')
+                ON CONFLICT(market, strategy_flag) DO UPDATE SET
+                    activated_at = CASE
+                        WHEN strategy_guard_state.status = 'ACTIVE'
+                        THEN strategy_guard_state.activated_at
+                        ELSE excluded.activated_at
+                    END,
+                    activation_session_date = CASE
+                        WHEN strategy_guard_state.status = 'ACTIVE'
+                        THEN strategy_guard_state.activation_session_date
+                        ELSE excluded.activation_session_date
+                    END,
+                    trigger_trade_count = CASE
+                        WHEN strategy_guard_state.status = 'ACTIVE'
+                        THEN strategy_guard_state.trigger_trade_count
+                        ELSE excluded.trigger_trade_count
+                    END,
+                    trigger_avg_net_pnl_pct = CASE
+                        WHEN strategy_guard_state.status = 'ACTIVE'
+                        THEN strategy_guard_state.trigger_avg_net_pnl_pct
+                        ELSE excluded.trigger_avg_net_pnl_pct
+                    END,
+                    status = 'ACTIVE',
+                    released_at = NULL,
+                    release_reason = ''
+                """,
+                (
+                    normalized_market,
+                    normalized_strategy,
+                    normalized_at,
+                    str(activation_session_date),
+                    max(0, int(trigger_trade_count)),
+                    float(trigger_avg_net_pnl_pct),
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM strategy_guard_state
+                WHERE market = ? AND strategy_flag = ?
+                """,
+                (normalized_market, normalized_strategy),
+            ).fetchone()
+        return dict(row) if row is not None else {}
+
+    def list_active_strategy_guard_states(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM strategy_guard_state
+                WHERE status = 'ACTIVE'
+                ORDER BY activated_at ASC, market ASC, strategy_flag ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def release_strategy_guard_state(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+        released_at: str | datetime,
+        release_reason: str,
+    ) -> bool:
+        parsed_at = parse_datetime(released_at)
+        normalized_at = (
+            ensure_timezone(parsed_at).astimezone(timezone.utc).isoformat()
+            if parsed_at is not None
+            else str(released_at).strip()
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE strategy_guard_state
+                SET status = 'RELEASED',
+                    released_at = ?,
+                    release_reason = ?
+                WHERE market = ?
+                  AND strategy_flag = ?
+                  AND status = 'ACTIVE'
+                """,
+                (
+                    normalized_at,
+                    str(release_reason),
+                    str(market).strip().lower(),
+                    str(strategy_flag).strip().upper(),
+                ),
+            )
+        return cursor.rowcount > 0
+
     def get_recent_strategy_guard_performance(
         self,
         *,
@@ -3877,7 +4037,8 @@ class SqliteRepository:
                             ELSE COALESCE(pnl_pct, 0) - ?
                         END AS net_pnl_pct,
                         COALESCE(net_pnl_usd, realized_pnl_usd, 0) AS net_pnl_usd_value,
-                        COALESCE(net_pnl_krw, realized_pnl_krw, 0) AS net_pnl_krw_value
+                        COALESCE(net_pnl_krw, realized_pnl_krw, 0) AS net_pnl_krw_value,
+                        logged_at
                     FROM cycle_log
                     WHERE {' AND '.join(where)}
                 )
@@ -3889,7 +4050,9 @@ class SqliteRepository:
                     AVG(gross_pnl_pct) AS avg_gross_pnl_pct,
                     AVG(net_pnl_pct) AS avg_net_pnl_pct,
                     SUM(net_pnl_usd_value) AS total_net_pnl_usd,
-                    SUM(net_pnl_krw_value) AS total_net_pnl_krw
+                    SUM(net_pnl_krw_value) AS total_net_pnl_krw,
+                    MIN(logged_at) AS first_trade_at,
+                    MAX(logged_at) AS last_trade_at
                 FROM evaluated
                 GROUP BY market, strategy_flag
                 ORDER BY avg_net_pnl_pct ASC, trade_count DESC

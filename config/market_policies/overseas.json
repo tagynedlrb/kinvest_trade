@@ -1,5 +1,5 @@
 {
-  "policy_id": "overseas_momentum_v1",
+  "policy_id": "overseas_momentum_v2",
   "engine": "momentum_v1",
   "parameters": {
     "enabled": true,
@@ -97,6 +97,7 @@
     "capital_gains_tax_rate": 0.22,
     "usd_krw_fallback_rate": 1350.0,
     "stale_run_grace_minutes": 180,
+    "strategy_guard_min_final_sessions": 3,
     "inverse_etf_symbols": ["SQQQ", "SOXS", "SPXU"],
     "leveraged_etf_symbols": ["TQQQ", "SOXL"],
     "inverse_regime_enabled": true,

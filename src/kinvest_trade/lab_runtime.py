@@ -463,6 +463,12 @@ class LabRuntimeManager:
         symbol: str,
         holding_qty: int,
         orderable_qty: int,
+        cause: str = "broker_orderable_qty_zero",
+        note: str = (
+            "unrepresented holding has zero sellable quantity; "
+            "check open orders or broker balance state"
+        ),
+        error: str = "",
     ) -> bool:
         key = f"{market}:{symbol.strip().upper()}"
         now = datetime.now(timezone.utc)
@@ -471,17 +477,21 @@ class LabRuntimeManager:
             return True
         retry_minutes = self.no_orderable_retry_minutes(key)
         self.no_orderable_retry[key] = now + timedelta(minutes=retry_minutes)
+        detail = {
+            "reason": "no_orderable_qty",
+            "cause": cause,
+            "holding_qty": holding_qty,
+            "orderable_qty": orderable_qty,
+            "note": note,
+            "retry_after_min": retry_minutes,
+        }
+        if error:
+            detail["error"] = error[:500]
         self.save_event(
             event_type="trade_skip",
             market=market,
             symbol=symbol,
-            detail={
-                "reason": "no_orderable_qty",
-                "holding_qty": holding_qty,
-                "orderable_qty": orderable_qty,
-                "note": "T+2 pending or API delay",
-                "retry_after_min": retry_minutes,
-            },
+            detail=detail,
         )
         return True
 

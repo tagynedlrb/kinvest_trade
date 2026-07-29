@@ -1166,6 +1166,7 @@ class WatchStateHelper:
         held_positions: list["OverseasHeldPosition"],
         *,
         max_exits: int = 10,
+        profile_orderable: bool = True,
     ) -> list[tuple["OverseasScanResult", "OverseasHeldPosition", str, MovingAverageSnapshot | None]]:
         if not held_positions:
             return []
@@ -1191,6 +1192,7 @@ class WatchStateHelper:
                 MovingAverageSnapshot | None,
             ]
         ] = []
+        skip_policy_exit_symbols: set[str] = set()
 
         symbols_to_check = set(real_by_symbol.keys())
         virtual_manager = getattr(service, "virtual_trades", None)
@@ -1212,17 +1214,29 @@ class WatchStateHelper:
 
             pending = None if tracker is None else tracker.get_pending_settlement("overseas", symbol)
             already_pending_qty = 0 if pending is None else pending[0]
+            if (
+                real is not None
+                and real.quantity > 0
+                and already_pending_qty >= real.quantity
+            ):
+                if not profile_orderable:
+                    service._clear_no_orderable_retry("overseas", symbol)
+                    service._reset_no_orderable_stall("overseas", symbol)
+                skip_policy_exit_symbols.add(symbol)
+                continue
             remaining_real_orderable = max(0, (real.orderable_qty if real else 0) - already_pending_qty)
             if (
                 remaining_real_orderable <= 0
                 and real is not None
                 and service._is_no_orderable_retry_active("overseas", symbol)
             ):
-                service._track_no_orderable_stall(
-                    market="overseas",
-                    symbol=symbol,
-                    holding_qty=real.quantity,
-                )
+                if not (profile_orderable and already_pending_qty > 0):
+                    service._track_no_orderable_stall(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=real.quantity,
+                    )
+                skip_policy_exit_symbols.add(symbol)
                 continue
 
             avg_price = 0.0
@@ -1261,6 +1275,7 @@ class WatchStateHelper:
                         symbol=symbol,
                         holding_qty=real.quantity,
                     )
+                    skip_policy_exit_symbols.add(symbol)
                     continue
                 # KIS orderable_qty reflects unsettled state inconsistently, so
                 # fall back to held quantity and let the actual sell API decide.
@@ -1284,6 +1299,7 @@ class WatchStateHelper:
                     holding_qty=0 if real is None else real.quantity,
                     orderable_qty=effective_orderable,
                 )
+                skip_policy_exit_symbols.add(symbol)
                 continue
             effective_orderable = (
                 (virtual_buy.qty if virtual_buy is not None else 0)
@@ -1401,7 +1417,7 @@ class WatchStateHelper:
 
         already_exiting = {item[2].symbol.upper() for item in results}
         for symbol, held in real_by_symbol.items():
-            if symbol in already_exiting:
+            if symbol in already_exiting or symbol in skip_policy_exit_symbols:
                 continue
             quote = quote_map.get(symbol)
             if quote is None:

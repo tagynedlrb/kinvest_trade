@@ -3890,6 +3890,7 @@ class LiquidityLabService:
                 overseas_ranked,
                 monitored_overseas_positions,
                 max_exits=5,
+                profile_orderable=us_orderable_in_profile,
             )
             if us_cycle_open
             else []
@@ -5192,11 +5193,13 @@ class LiquidityLabService:
         held_positions: list[OverseasHeldPosition],
         *,
         max_exits: int = 10,
+        profile_orderable: bool = True,
     ) -> list[tuple[OverseasScanResult, OverseasHeldPosition, str, MovingAverageSnapshot | None]]:
         return await self._get_watch_state_helper().select_overseas_exit_targets(
             overseas_ranked,
             held_positions,
             max_exits=max_exits,
+            profile_orderable=profile_orderable,
         )
 
     async def _select_overseas_exit_target(
@@ -6373,6 +6376,24 @@ class LiquidityLabService:
             real_qty = 0 if real is None else real.quantity
             orderable_qty = 0 if real is None else real.orderable_qty
             settle_qty = min(pending_qty, orderable_qty)
+            if real is not None and pending_qty > 0 and orderable_qty <= 0:
+                self._track_no_orderable_stall(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=real.quantity,
+                )
+                self._defer_no_orderable_position(
+                    market="overseas",
+                    symbol=symbol,
+                    holding_qty=real.quantity,
+                    orderable_qty=orderable_qty,
+                    cause="pending_virtual_sell_reconcile_zero_qty",
+                    note=(
+                        "profile-orderable session but pending virtual sell "
+                        "has zero broker orderable quantity"
+                    ),
+                )
+                continue
             if settle_qty > 0 and real is not None:
                 try:
                     await self.client.place_overseas_order_for_current_session(
@@ -6383,9 +6404,28 @@ class LiquidityLabService:
                         price=f"{real.current_price:.4f}",
                         order_division="00",
                     )
-                except KisApiError:
+                except KisApiError as exc:
+                    self._track_no_orderable_stall(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=real.quantity,
+                    )
+                    self._defer_no_orderable_position(
+                        market="overseas",
+                        symbol=symbol,
+                        holding_qty=real.quantity,
+                        orderable_qty=orderable_qty,
+                        cause="pending_virtual_sell_reconcile_rejected",
+                        note=(
+                            "broker rejected pending virtual sell settlement "
+                            "during profile-orderable session"
+                        ),
+                        error=str(exc),
+                    )
                     continue
 
+                self._clear_no_orderable_retry("overseas", symbol)
+                self._reset_no_orderable_stall("overseas", symbol)
                 realized_pnl = (pending_avg_price - real.avg_price) * settle_qty
                 pnl_pct = (
                     (pending_avg_price - real.avg_price) / real.avg_price
@@ -7340,6 +7380,12 @@ class LiquidityLabService:
         symbol: str,
         holding_qty: int,
         orderable_qty: int,
+        cause: str = "broker_orderable_qty_zero",
+        note: str = (
+            "unrepresented holding has zero sellable quantity; "
+            "check open orders or broker balance state"
+        ),
+        error: str = "",
     ) -> bool:
         runtime = self._get_runtime_manager()
         deferred = runtime.defer_no_orderable_position(
@@ -7347,6 +7393,9 @@ class LiquidityLabService:
             symbol=symbol,
             holding_qty=holding_qty,
             orderable_qty=orderable_qty,
+            cause=cause,
+            note=note,
+            error=error,
         )
         self._sync_runtime_legacy_state(runtime)
         return deferred

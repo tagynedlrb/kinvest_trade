@@ -8024,7 +8024,13 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     async def fake_send_summary(report):
         return None
 
-    async def fake_select_overseas_exit_targets(overseas_ranked, overseas_positions, max_exits=5):
+    async def fake_select_overseas_exit_targets(
+        overseas_ranked,
+        overseas_positions,
+        max_exits=5,
+        profile_orderable=True,
+    ):
+        del profile_orderable
         return None if max_exits < 0 else []
 
     service.scan_domestic = lambda: []  # type: ignore[method-assign]
@@ -8100,7 +8106,13 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     async def fake_build_unified_watch_targets(**kwargs):
         return []
 
-    async def fake_select_overseas_exit_targets(overseas_ranked, overseas_positions, max_exits=5):
+    async def fake_select_overseas_exit_targets(
+        overseas_ranked,
+        overseas_positions,
+        max_exits=5,
+        profile_orderable=True,
+    ):
+        del profile_orderable
         return [(candidate, held, "stop_loss", None)]
 
     async def fake_place_overseas_sell_order(candidate, held, exit_reason, signal_snapshot=None):
@@ -10245,7 +10257,13 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     async def fake_build_unified_watch_targets(**kwargs):
         return []
 
-    async def fake_select_overseas_exit_targets(overseas_ranked, overseas_positions, max_exits=5):
+    async def fake_select_overseas_exit_targets(
+        overseas_ranked,
+        overseas_positions,
+        max_exits=5,
+        profile_orderable=True,
+    ):
+        del profile_orderable
         return [(candidate, held, "stop_loss", None)]
 
     async def fake_place_overseas_sell_order(candidate, held, exit_reason, signal_snapshot=None):

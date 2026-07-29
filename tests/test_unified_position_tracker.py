@@ -1,8 +1,11 @@
 import asyncio
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import mkdtemp
 from types import SimpleNamespace
 
+from kinvest_trade.client import KisApiError
 from kinvest_trade.lab_positions import UnifiedPositionTracker, VirtualTradeManager
 from kinvest_trade.liquidity_lab import (
     LiquidityLabService,
@@ -227,6 +230,158 @@ def test_exit_target_does_not_repick_already_pending_quantity() -> None:
     _, selected_held, reason, _ = result
     assert reason == "take_profit"
     assert selected_held.orderable_qty == 2
+
+
+def test_exit_target_fully_pending_is_not_no_orderable_stall_outside_profile() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=5,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    service._no_orderable_retry = {
+        "overseas:NVDA": datetime.now(timezone.utc) + timedelta(minutes=20),
+    }
+    service._no_orderable_counts = {"overseas:NVDA": 42}
+    quote = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=120.0,
+        bid=119.9,
+        ask=120.1,
+        spread_pct=0.001,
+        change_rate_pct=2.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=5,
+        orderable_qty=0,
+        avg_price=100.0,
+        current_price=120.0,
+        pnl_pct=0.2,
+    )
+
+    result = asyncio.run(
+        service._select_overseas_exit_targets(
+            [quote],
+            [held],
+            profile_orderable=False,
+        )
+    )
+
+    assert result == []
+    assert service._no_orderable_retry == {}
+    assert service._no_orderable_counts == {}
+    events = service.repository.list_event_log(event_type="trade_skip", limit=10)
+    assert events == []
+
+
+def test_reconcile_pending_zero_orderable_tracks_real_stall() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=5,
+            orderable_qty=0,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+
+    assert service.client.order_calls == []
+    assert service._no_orderable_counts == {"overseas:NVDA": 1}
+    assert "overseas:NVDA" in service._no_orderable_retry
+    events = service.repository.list_event_log(event_type="trade_skip", limit=5)
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["reason"] == "no_orderable_qty"
+    assert detail["cause"] == "pending_virtual_sell_reconcile_zero_qty"
+    assert "T+2" not in detail["note"]
+
+    quote = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=111.0,
+        bid=110.9,
+        ask=111.1,
+        spread_pct=0.001,
+        change_rate_pct=1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=10.0,
+    )
+    asyncio.run(
+        service._select_overseas_exit_targets(
+            [quote],
+            positions,
+            profile_orderable=True,
+        )
+    )
+    assert service._no_orderable_counts == {"overseas:NVDA": 1}
+
+
+def test_reconcile_pending_rejection_keeps_pending_and_records_cause() -> None:
+    class RejectingClient(DummyClient):
+        async def place_overseas_order_for_current_session(self, **kwargs) -> dict:
+            await super().place_overseas_order_for_current_session(**kwargs)
+            raise KisApiError("mock settlement rejected")
+
+    service = _build_service()
+    service.client = RejectingClient()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert pending["qty"] == 2
+    assert service._no_orderable_counts == {"overseas:NVDA": 1}
+    events = service.repository.list_event_log(event_type="trade_skip", limit=5)
+    detail = json.loads(events[0]["detail"])
+    assert detail["cause"] == "pending_virtual_sell_reconcile_rejected"
+    assert detail["error"] == "mock settlement rejected"
 
 
 def test_reconcile_settles_min_of_pending_and_orderable() -> None:

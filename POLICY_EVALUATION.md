@@ -204,6 +204,25 @@ eligible exits across three distinct final sessions. Passing this minimum does
 not force a change; it only permits evaluation. Higher-risk changes require a
 larger sample.
 
+Overseas virtual performance must report both gross PnL and estimated net PnL
+after the configured buy and sell commission plus the sell-side SEC fee.
+Aggregate results must also be split by exit session so regular, premarket,
+aftermarket, daytime, overnight, and unknown-session outcomes cannot hide one
+another. The displayed session is the exit timestamp; it is not evidence of
+the entry session by itself.
+
+A virtual sell created to close an existing real holding during a
+profile-unavailable session is reconciliation evidence, not a
+strategy-originated virtual entry. Do not use that row to infer entry quality
+unless a preceding virtual buy proves its origin. Reconsider an
+aftermarket-entry restriction only after at least five virtual-origin exits
+across three independent US entry sessions and a persistently negative
+after-cost expectancy relative to regular or premarket observations. The SEC
+identifies lower liquidity, wider or unavailable quotes, uncertain prices and
+greater volatility as extended-hours risks
+([SEC extended-hours bulletin](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins-42));
+these risks justify separate measurement, not a conclusion from two sessions.
+
 Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
 not submitted-price or pre-cost PnL. A positive gross move that fails to clear
 round-trip costs is still a loss for risk control.

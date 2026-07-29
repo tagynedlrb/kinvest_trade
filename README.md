@@ -593,8 +593,13 @@ TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events
 - 모의투자: 실거래(KIS 모의서버 체결) + 가상거래(virtual, 거래불가 세션 대체) 손익을 함께 표시
 - 실거래: 실거래 손익만 표시하고 가상거래는 제외
 - 표시 항목: 거래 건수, 승률, 해외 USD 손익, KRW 환산 손익, 시장별 세부 통계
+- 가상 해외거래: Gross/추정 Net 승률과 손익, 추정 비용, 청산 세션별
+  정규장·프리마켓·애프터마켓 결과를 함께 표시
 
-수수료, 세금, 환율 손익은 반영되지 않은 매매 차익 기준 추정값이며, 정확한 실현 손익은 KIS 앱에서 확인하는 것이 안전하다.
+실거래 집계는 KIS 체결확정 원장의 기록 비용을 사용한다. 가상 해외거래의
+Net은 현재 미장 정책의 매수·매도 수수료와 매도 SEC fee를 적용한
+추정값이고 세션 구분은 청산시각 기준이다. 실제 청구 비용과 환율 손익은
+브로커 명세에서 최종 확인한다.
 
 메뉴 메모:
 - `/lab_paper_test`는 텔레그램 메뉴에서 누르면 종목코드 없이 들어오므로, 실제 실행할 때는 `/lab_paper_test 005930`처럼 직접 종목코드를 덧붙여 입력해야 한다.
@@ -821,8 +826,8 @@ python3 main.py overseas-order-test buy <종목코드> --exchange <거래소코�
 python3 main.py indicator-check <국내종목코드> --timeframe minute
 # 국내 종목 일봉 기준 지표 조회
 python3 main.py indicator-check <국내종목코드> --timeframe daily
-# 최근 7일 KIS 체결확정 거래와 마감 시장 레짐 분석
-PYTHONPATH=src python3 scripts/analyze_trades.py data/trading.db --days 7
+# 최근 7일 KIS 체결확정 거래·가상 비용차감/청산세션 성과와 마감 시장 레짐 분석
+PYTHONPATH=src python3 scripts/analyze_trades.py data/trading.db --days 7 --settings config/fixed_config.json
 # 확정 매수 원장 대비 SELL_REAL 진입시각·보유시간 감사(변경 없음)
 PYTHONPATH=src python3 scripts/repair_confirmed_hold_times.py data/trading.db
 # 감사 대상만 온라인 백업 후 파생 cycle_log 필드에 적용

@@ -456,6 +456,12 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
 ## Frequency decisions
 
 - Low order frequency is not itself a defect.
+- In a VPS US session that cannot submit broker orders, refresh the complete
+  overseas candidate universe once per independently configured US policy bar.
+  Between those refreshes, continue every-cycle quote and exit monitoring for
+  real holdings, virtual holdings, pending settlements and open inverse shadow
+  trades. This cadence applies whether KRX is open or closed; an orderable US
+  profile still receives a complete scan every cycle.
 - Loosen entry gates only when blocked candidates show positive forward net
   expectancy after realistic costs and the result persists across regimes.
 - Reject a frequency increase when the apparent gross edge is below costs,

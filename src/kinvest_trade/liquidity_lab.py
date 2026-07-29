@@ -289,7 +289,7 @@ class LiquidityLabService:
             tuple[datetime, list[dict]],
         ] = {}
         self._overseas_scan_scope: str = "full"
-        self._last_non_orderable_overlap_full_scan_at: datetime | None = None
+        self._last_non_orderable_full_scan_at: datetime | None = None
         self._last_logged_overseas_scan_scope: str = ""
         self._last_overseas_scan_candidate_count: int = 0
         self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
@@ -2881,7 +2881,7 @@ class LiquidityLabService:
     ) -> str:
         if not us_open:
             return "none"
-        if us_orderable_in_profile or not krx_open:
+        if us_orderable_in_profile:
             return "full"
 
         auto = self._get_market_policy("overseas").auto_trade
@@ -2891,7 +2891,7 @@ class LiquidityLabService:
         )
         last_full_scan = getattr(
             self,
-            "_last_non_orderable_overlap_full_scan_at",
+            "_last_non_orderable_full_scan_at",
             None,
         )
         if (
@@ -4773,15 +4773,17 @@ class LiquidityLabService:
                         * 60,
                     ),
                     "reason": (
-                        "non_orderable_overlap_bar_refresh"
+                        "non_orderable_policy_bar_refresh"
                         if (
                             overseas_scan_scope == "full"
-                            and krx_cycle_open
                             and not us_orderable_in_profile
                         )
-                        else "orderable_profile_or_no_krx_overlap"
+                        else "orderable_profile"
                         if overseas_scan_scope == "full"
                         else "protect_krx_live_cadence"
+                        if overseas_scan_scope == "monitored"
+                        and krx_cycle_open
+                        else "non_orderable_between_policy_bars"
                         if overseas_scan_scope == "monitored"
                         else "us_market_closed"
                     ),
@@ -4805,10 +4807,9 @@ class LiquidityLabService:
             overseas_ranked, held_symbols_cache = await self.scan_overseas()
             if (
                 overseas_scan_scope == "full"
-                and krx_cycle_open
                 and not us_orderable_in_profile
             ):
-                self._last_non_orderable_overlap_full_scan_at = (
+                self._last_non_orderable_full_scan_at = (
                     overseas_scan_started_at
                 )
             overseas_positions = await self._load_overseas_positions(

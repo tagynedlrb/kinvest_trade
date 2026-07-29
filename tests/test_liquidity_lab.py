@@ -9387,7 +9387,7 @@ def test_overseas_full_scan_cadence_is_market_and_profile_specific() -> None:
         == "full"
     )
 
-    service._last_non_orderable_overlap_full_scan_at = now
+    service._last_non_orderable_full_scan_at = now
     assert (
         service._overseas_scan_scope_for_cycle(
             now=now + timedelta(seconds=299),
@@ -9422,17 +9422,26 @@ def test_overseas_full_scan_cadence_is_market_and_profile_specific() -> None:
             us_open=True,
             us_orderable_in_profile=False,
         )
+        == "monitored"
+    )
+    assert (
+        service._overseas_scan_scope_for_cycle(
+            now=now + timedelta(seconds=300),
+            krx_open=False,
+            us_open=True,
+            us_orderable_in_profile=False,
+        )
         == "full"
     )
 
 
-def test_overlap_monitor_scope_blocks_new_virtual_entry_but_keeps_scan() -> None:
+def test_non_orderable_monitor_scope_blocks_new_virtual_entry_but_keeps_scan() -> None:
     service = _build_run_service()
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
-    service._last_non_orderable_overlap_full_scan_at = datetime.now(timezone.utc)
+    service._last_non_orderable_full_scan_at = datetime.now(timezone.utc)
     service._confirmed_risk_state_restored = True
     service._session_start_logged = True
     scan_scopes: list[str] = []
@@ -9522,7 +9531,7 @@ def test_overlap_monitor_scope_blocks_new_virtual_entry_but_keeps_scan() -> None
     original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
     original_session = liquidity_lab_module.get_us_trading_session
     original_transition = liquidity_lab_module.seconds_until_us_session_transition
-    liquidity_lab_module.is_krx_regular_session = lambda _now: True
+    liquidity_lab_module.is_krx_regular_session = lambda _now: False
     liquidity_lab_module.is_us_regular_session = lambda _now: True
     liquidity_lab_module.is_us_orderable_session_for_env = (
         lambda _now, _env: False

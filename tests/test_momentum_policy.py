@@ -210,7 +210,7 @@ def test_time_exit_profit_does_not_fire_below_commission_floor() -> None:
     )
 
     assert result.action == "hold"
-    assert result.reason != "time_exit_profit"
+    assert result.reason == "time_exit_cost_floor_hold"
 
 
 def test_momentum_loss_cut_requires_two_of_three_conditions() -> None:

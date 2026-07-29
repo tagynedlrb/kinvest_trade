@@ -401,7 +401,7 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     assert "─── 실보유 종목 ───" in message
     assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
     assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
-    assert "─── 가상보유 종목 ───" in message
+    assert "─── 전략 유효보유 ───" in message
     assert "국내 005930 수량=3 매입=80,000원 현재=82,400원 손익=+3.00%" in message
     assert "해외 SOXL 수량=1 매입=$19.2500 현재=$19.7500 손익=+2.60%" in message
     assert "해외 AAPL 수량=2 매입=$200.0000 현재=$210.0000 손익=+5.00%" in message
@@ -412,6 +412,94 @@ def test_build_portfolio_message_formats_real_virtual_pending_and_summary(tmp_pa
     ) in message
     assert "─── 정산 대기 매도 ───" in message
     assert "해외 TSLA(v) 수량=-1 가상매도가=$250.0000" in message
+
+
+def test_portfolio_capacity_deduplicates_real_and_virtual_symbols(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_portfolio_capacity.db")
+    manager = VirtualTradeManager(repository)
+    for symbol in ("AAPL", "MSFT"):
+        manager.record_buy(
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            qty=1,
+            fill_price=100.0,
+            currency="USD",
+            session="regular",
+            reason="seed",
+            created_at="2026-07-01T00:00:00+00:00",
+        )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_sell_price=20.0,
+        currency="USD",
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                max_concurrent_overseas_orders=3,
+                max_concurrent_total_positions=4,
+            ),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    real_positions = [
+        {
+            "market": "domestic",
+            "stock_code": "005930",
+            "quantity": 1,
+        },
+        {
+            "market": "overseas",
+            "symbol": "SOXL",
+            "quantity": 1,
+        },
+        {
+            "market": "overseas",
+            "symbol": "AAPL",
+            "quantity": 1,
+        },
+    ]
+
+    lines = controller._get_report_helper().build_position_capacity_lines(
+        real_positions,
+        manager,
+    )
+
+    assert lines == [
+        "해외포지션=3/3 상태=가득참 신규진입=차단",
+        "합산포지션=4/4 상태=가득참 신규진입=차단",
+        "정산대기매도=1종목 주의=KIS 체결확정 전까지 한도 점유",
+    ]
+
+
+def test_portfolio_holding_age_uses_compact_units() -> None:
+    helper = TelegramLiquidityLabController.__new__(
+        TelegramLiquidityLabController
+    )._get_report_helper()
+    now = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
+
+    assert helper.format_holding_age_text(
+        now - timedelta(minutes=59),
+        now=now,
+    ) == "59분"
+    assert helper.format_holding_age_text(
+        now - timedelta(hours=14, minutes=24),
+        now=now,
+    ) == "14.4시간"
+    assert helper.format_holding_age_text(
+        now - timedelta(days=14, hours=9, minutes=36),
+        now=now,
+    ) == "14.4일"
 
 
 def test_build_portfolio_message_flags_holding_mismatch(tmp_path) -> None:
@@ -1067,6 +1155,7 @@ def test_build_portfolio_message_shows_virtual_position_cap(tmp_path) -> None:
 
     assert "해외 가상매수노출=$200.00 2종목" in message
     assert "포지션한도=2/1 초과 감시=중지" in message
+    assert "해외포지션=2/1 상태=초과" in message
     assert "─── 가상보유 정리 후보 ───" in message
     assert "초과=2/1 정리필요=1종목" in message
     assert "해외 AAPL 손익=현재가없음 노출=$100.00" in message

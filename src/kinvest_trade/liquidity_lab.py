@@ -177,6 +177,8 @@ class WatchTargetStatus:
     signal_snapshot: MovingAverageSnapshot | None = None
     strategy_flag: str = ""
     entry_by: str = ""
+    decision_reason: str = ""
+    is_virtual: bool | None = None
 
 
 @dataclass(slots=True)
@@ -914,6 +916,8 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None = None,
         strategy_flag: str = "",
         entry_by: str = "",
+        decision_reason: str = "",
+        is_virtual: bool | None = None,
     ) -> WatchTargetStatus:
         return WatchTargetStatus(
             market=market,
@@ -930,6 +934,8 @@ class LiquidityLabService:
             signal_snapshot=signal_snapshot,
             strategy_flag=strategy_flag,
             entry_by=entry_by,
+            decision_reason=decision_reason,
+            is_virtual=is_virtual,
         )
 
     def _evaluate_entry_setup(

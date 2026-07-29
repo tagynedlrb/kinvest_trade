@@ -949,6 +949,116 @@ def test_select_overseas_exit_targets_applies_policy_exit_to_virtual_position() 
     assert selected_snapshot is snapshot
 
 
+def test_virtual_time_exit_selection_reaches_sell_ledger() -> None:
+    service = _build_run_service()
+    entry_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    snapshot = _snapshot(
+        price=101.0,
+        daily_ma_fast=100.8,
+        daily_ma_slow=100.0,
+        minute_ma_fast=101.1,
+        minute_ma_slow=100.9,
+        intraday_momentum=-0.001,
+        volume_ratio=1.0,
+        atr=0.5,
+        atr_pct=0.005,
+    )
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="FG",
+        exchange_code="NYSE",
+        qty=2,
+        fill_price=100.0,
+        currency="USD",
+        session="regular",
+        reason="seed",
+        created_at=entry_time.isoformat(),
+    )
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="FG",
+        exchange_code="NYSE",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="seed",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=2,
+        last_price=100.0,
+        pnl_pct=0.0,
+        entry_price=100.0,
+        entry_time=entry_time.isoformat(),
+        peak_price=101.0,
+        has_position=1,
+        snapshot_json=asdict(snapshot),
+        updated_at=entry_time.isoformat(),
+    )
+    held = OverseasHeldPosition(
+        symbol="FG",
+        exchange_code="NYSE",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=100.0,
+        current_price=101.0,
+        pnl_pct=0.01,
+        is_virtual=True,
+    )
+    candidate = OverseasScanResult(
+        symbol="FG",
+        exchange_code="NYSE",
+        last_price=101.0,
+        bid=100.99,
+        ask=101.01,
+        spread_pct=0.0002,
+        change_rate_pct=0.3,
+        volume=900_000,
+        orderable_qty=0,
+        fx_rate_krw=1350.0,
+        activity_score=8.0,
+    )
+    service._restore_strategy_contexts(
+        domestic_positions=[],
+        overseas_positions=[held],
+    )
+    service._signal_cache = {"FG": snapshot}
+
+    selected = asyncio.run(
+        service._select_overseas_exit_targets(
+            [candidate],
+            [held],
+            max_exits=5,
+        )
+    )
+
+    assert len(selected) == 1
+    selected_candidate, selected_held, reason, selected_snapshot = selected[0]
+    assert reason == "time_exit_profit"
+    assert selected_snapshot is snapshot
+
+    with _force_overseas_orderable_session():
+        result = asyncio.run(
+            service._place_overseas_sell_order(
+                selected_candidate,
+                selected_held,
+                reason,
+                selected_snapshot,
+            )
+        )
+
+    assert result["submitted"] is True
+    assert result["virtual"] is True
+    assert result["exit_reason"] == "time_exit_profit"
+    assert service.virtual_trades.get_position("overseas", "FG") is None
+    sell_rows = [
+        row
+        for row in service.repository.list_virtual_orders(limit=10)
+        if row["side"] == "sell"
+    ]
+    assert len(sell_rows) == 1
+    assert sell_rows[0]["symbol"] == "FG"
+    assert sell_rows[0]["reason"] == "time_exit_profit"
+
+
 def test_select_overseas_exit_targets_uses_held_qty_when_orderable_is_zero() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -7990,6 +8100,132 @@ def test_held_position_shows_hold_not_wait() -> None:
 
     assert watch_target.action_bias == "HOLD"
     assert watch_target.signal_state == "HOLD"
+
+
+def test_held_watch_log_records_decision_and_position_age_context() -> None:
+    service = _build_run_service()
+    entry_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="persisted",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=2,
+        last_price=151.0,
+        pnl_pct=0.0005,
+        entry_price=150.0,
+        entry_time=entry_time.isoformat(),
+        peak_price=151.0,
+        has_position=1,
+        updated_at=entry_time.isoformat(),
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=150.0,
+        current_price=150.075,
+        pnl_pct=0.0005,
+        is_virtual=True,
+    )
+    service._restore_strategy_contexts(
+        domestic_positions=[],
+        overseas_positions=[held],
+    )
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="NVDA",
+        exchange_code="NASD",
+        price=150.075,
+        activity_score=20.0,
+        signal_snapshot=_snapshot(
+            price=150.075,
+            volume_ratio=0.5,
+            intraday_momentum=-0.001,
+        ),
+        held_position=held,
+        holding_qty=2,
+    )
+
+    service._save_cycle_log_from_watch_target(
+        watch_target,
+        pnl_pct=held.pnl_pct,
+    )
+
+    with service.repository._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT action_reason, hold_cycles, entry_price, entry_time,
+                   hold_duration_min, is_virtual
+            FROM cycle_log
+            WHERE market = 'overseas' AND symbol = 'NVDA'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert row["action_reason"] == "time_exit_cost_floor_hold"
+    assert int(row["hold_cycles"]) >= 120
+    assert float(row["entry_price"]) == 150.0
+    assert row["entry_time"] == entry_time.isoformat()
+    assert float(row["hold_duration_min"]) >= 119.0
+    assert row["is_virtual"] == 1
+
+
+def test_held_watch_log_derives_cycles_from_persisted_age() -> None:
+    service = _build_run_service()
+    entry_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="MANUAL",
+        exchange_code="NYSE",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="imported_holding",
+        holding_qty=1,
+        last_price=50.0,
+        pnl_pct=0.0,
+        entry_price=50.0,
+        entry_time=entry_time.isoformat(),
+        peak_price=50.0,
+        has_position=1,
+        updated_at=entry_time.isoformat(),
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="MANUAL",
+        exchange_code="NYSE",
+        price=50.0,
+        activity_score=0.0,
+        signal_score=0.0,
+        action_bias="HOLD",
+        signal_state="HOLD",
+        ma_summary="-",
+        note="imported_holding",
+        holding_qty=1,
+    )
+
+    service._save_cycle_log_from_watch_target(watch_target)
+
+    with service.repository._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT hold_cycles, entry_time, hold_duration_min
+            FROM cycle_log
+            WHERE market = 'overseas' AND symbol = 'MANUAL'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert int(row["hold_cycles"]) >= 120
+    assert row["entry_time"] == entry_time.isoformat()
+    assert float(row["hold_duration_min"]) >= 119.0
 
 
 def test_strategy_buy_can_override_entry_setup_wait() -> None:

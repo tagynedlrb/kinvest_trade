@@ -370,6 +370,42 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   independently performing strategies open, and require final market-regime
   evidence across multiple sessions before converting it to a fixed block.
 
+## Position lifecycle and capacity
+
+- Position capacity is the unique union of positive real and virtual holdings
+  by market and symbol. A virtual sell against a real holding removes strategy
+  exposure but does not free broker capacity until KIS confirms settlement.
+  Report `at capacity` separately from an actual overflow.
+- Reaching the position cap explains blocked entry frequency; it is not by
+  itself evidence that the cap should increase. Raise a market's cap only when
+  released-slot candidates have positive net expectancy across at least three
+  final benchmark sessions and the extra simultaneous exposure remains inside
+  account risk limits.
+- After `max_hold_cycles`, a nonnegative gross return below the market's
+  conservative cost floor remains a hold with reason
+  `time_exit_cost_floor_hold`. The floor is round-trip commission plus a
+  0.3-percentage-point slippage buffer. Record the entry time, hold duration,
+  hold cycles and virtual/real marker so this interval can be evaluated rather
+  than hidden under a generic HOLD note.
+- The conservative policy floor and the execution-time net estimate serve
+  different purposes. A position slightly above estimated commissions but
+  below the policy floor is not proof that immediate liquidation improves
+  expectancy; spread, slippage and the path after exit still need observation.
+- Do not force-close a position solely because it is old. The July 15 overseas
+  long-duration cohort supplied a direct counterexample: WFC, BCC and UGP
+  eventually closed at positive gross returns while CLM closed at a loss.
+  Compare cost-adjusted alternatives at declared horizons and across final
+  NASDAQ regimes before changing the overseas time-exit formula. Apply the
+  same test independently to KRX data before changing the domestic formula.
+- FINRA warns that frequent day trading can generate substantial commissions
+  even when per-trade costs are low
+  ([FINRA Rule 2270](https://www.finra.org/rules-guidance/rulebooks/finra-rules/2270)).
+  The SEC's investor material likewise treats commissions as per-transaction
+  fees that reduce portfolio returns and recommends calculating the increase
+  required to break even
+  ([Investor.gov fee bulletin](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins/updated),
+  [ETF fee bulletin](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins/mutual-fund-and-etf-fees-and-expenses-investor-bulletin)).
+
 ## Down-market inverse policy
 
 - Domestic inverse symbols and US inverse symbols are separately configured;
@@ -473,6 +509,14 @@ the current direction is wrong.
   -0.049% at sixty (7), using a five-minute matching tolerance. Coverage is
   incomplete and direction is mixed, so retain the 30-cycle minimum hold and
   reject both a longer exit delay and a frequency increase for now.
+- Overseas capacity/lifecycle review: seven broker-visible holdings plus three
+  virtual-only holdings occupy all ten overseas and account-wide slots. Four
+  broker-visible holdings also have pending virtual sells and correctly retain
+  capacity until KIS settlement. CPRX and FG have been open about 14.4 days;
+  their current gross returns are approximately +0.03% and +0.63%, below the
+  conservative 0.8% policy floor. Keep the cap and exit thresholds unchanged,
+  label the cost-floor hold explicitly, and reassess after additional final
+  NASDAQ sessions and completed outcomes.
 - Do not extend the aggregate standalone-strategy guard to combination labels
   from the current 48-hour average alone. Under True Range, the eleven
   `VWAP+VOL` exits belong to the same sideways/normal-activity/normal-volatility

@@ -394,6 +394,25 @@ class ReportHelper:
         age_min = int(max((current - ensure_timezone(then)).total_seconds(), 0.0) // 60)
         return _tc.TelegramLiquidityLabController._format_saved_price_age(age_min)
 
+    @staticmethod
+    def format_holding_age_text(
+        then: datetime | None,
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        if then is None:
+            return ""
+        current = now or datetime.now(timezone.utc)
+        age_min = int(
+            max((current - ensure_timezone(then)).total_seconds(), 0.0) // 60
+        )
+        if age_min < 60:
+            return f"{age_min}분"
+        age_hours = age_min / 60
+        if age_hours < 48:
+            return f"{age_hours:.1f}시간"
+        return f"{age_hours / 24:.1f}일"
+
     def build_recent_sell_block_status_line(self, *, lookback_hours: int = 12) -> str:
         controller = self.controller
         repository = getattr(controller, "repository", None)
@@ -654,6 +673,87 @@ class ReportHelper:
         lines.append(f"평균손익={format_pct(avg_pnl)}")
         return "\n".join(lines)
 
+    def build_position_capacity_lines(
+        self,
+        real_positions: list[dict],
+        virtual_manager: VirtualTradeManager,
+    ) -> list[str]:
+        controller = self.controller
+        open_keys = {
+            (
+                str(
+                    position.get(
+                        "market",
+                        "domestic" if position.get("stock_code") else "overseas",
+                    )
+                ).strip().lower(),
+                str(
+                    position.get("symbol")
+                    or position.get("stock_code")
+                    or ""
+                ).strip().upper(),
+            )
+            for position in real_positions
+            if int(position.get("quantity", 0) or 0) > 0
+        }
+        open_keys.update(
+            (position.market.strip().lower(), position.symbol.strip().upper())
+            for position in virtual_manager.list_positions()
+            if position.qty > 0
+        )
+        open_keys = {
+            (market, symbol)
+            for market, symbol in open_keys
+            if market and symbol
+        }
+
+        overseas_count = sum(1 for market, _ in open_keys if market == "overseas")
+        total_count = len(open_keys)
+        max_overseas = controller._max_concurrent_overseas_positions()
+        max_total = int(
+            getattr(
+                controller.config.liquidity_lab,
+                "max_concurrent_total_positions",
+                0,
+            )
+            or 0
+        )
+
+        def cap_status(count: int, limit: int) -> str:
+            if count > limit:
+                return "초과"
+            if count == limit:
+                return "가득참 신규진입=차단"
+            return f"여유={limit - count}"
+
+        lines: list[str] = []
+        if max_overseas > 0:
+            lines.append(
+                f"해외포지션={overseas_count}/{max_overseas} "
+                f"상태={cap_status(overseas_count, max_overseas)}"
+            )
+        if max_total > 0:
+            lines.append(
+                f"합산포지션={total_count}/{max_total} "
+                f"상태={cap_status(total_count, max_total)}"
+            )
+
+        pending_sells = controller.repository.list_virtual_sell_pending()
+        pending_symbols = {
+            (
+                str(row.get("market", "")).strip().lower(),
+                str(row.get("symbol", "")).strip().upper(),
+            )
+            for row in pending_sells
+            if int(row.get("qty", 0) or 0) > 0
+        }
+        if pending_symbols:
+            lines.append(
+                f"정산대기매도={len(pending_symbols)}종목 "
+                "주의=KIS 체결확정 전까지 한도 점유"
+            )
+        return lines
+
     def detect_holding_mismatch_lines(
         self,
         real_positions: list[dict],
@@ -837,13 +937,21 @@ class ReportHelper:
             lines.append("─── 보유상태 불일치 ───")
             lines.extend(mismatch_lines)
 
+        capacity_lines = self.build_position_capacity_lines(
+            real_positions,
+            manager,
+        )
+        if capacity_lines:
+            lines.append("─── 포지션 한도 ───")
+            lines.extend(capacity_lines)
+
         effective_positions = controller._build_effective_positions(
             last_report,
             real_positions_override=real_positions,
         )
-        lines.append("─── 가상보유 종목 ───")
+        lines.append("─── 전략 유효보유 ───")
         if not effective_positions:
-            lines.append("가상보유=없음")
+            lines.append("유효보유=없음")
         else:
             for position in effective_positions:
                 market_key = str(position["market"])
@@ -856,6 +964,17 @@ class ReportHelper:
                 currency = str(position["currency"])
                 avg_price = float(position["avg_price"])
                 qty = int(position["qty"])
+                entry_time = parse_datetime(
+                    controller.repository.get_latest_position_entry_time(
+                        market_key,
+                        str(position["symbol"]).upper(),
+                    )
+                )
+                age_text = self.format_holding_age_text(
+                    entry_time,
+                    now=now,
+                )
+                age_suffix = f" 보유={age_text}" if age_text else ""
                 cur_price = price_lookup.get(
                     (market_key, str(position["symbol"]).upper()),
                     0.0,
@@ -871,6 +990,7 @@ class ReportHelper:
                         f"매입={avg_text} "
                         f"현재={cur_text} "
                         f"손익={format_pct(pnl_pct)}"
+                        f"{age_suffix}"
                     )
                 else:
                     lines.append(
@@ -878,6 +998,7 @@ class ReportHelper:
                         f"수량={qty} "
                         f"평균단가={avg_text} "
                         f"(현재가 없음)"
+                        f"{age_suffix}"
                     )
 
             virtual_risk_lines = controller._build_virtual_position_risk_lines(

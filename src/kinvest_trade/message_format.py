@@ -79,6 +79,7 @@ REASON_KOREAN_MAP = {
     "momentum_loss_cut": "모멘텀 소실 손절",
     "trend_filter_lost": "추세 이탈 손절",
     "time_exit_profit": "시간 만료 청산(수익)",
+    "time_exit_cost_floor_hold": "시간 만료 후 비용기준 미달 보유",
     "time_exit_loss": "시간 만료 청산(손실)",
     "time_exit_forced": "시간 만료 강제 청산",
     "partial_profit_lock": "부분 익절",

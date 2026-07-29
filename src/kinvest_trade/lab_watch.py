@@ -530,13 +530,47 @@ class WatchStateHelper:
                 signal_snapshot,
                 watch_target.market,
             )
+        entry_price = None
+        entry_time = None
+        hold_duration_min = None
+        hold_cycles = None
+        if watch_target.holding_qty > 0:
+            entry_price, entry_time, hold_duration_min = service._get_entry_context(
+                watch_target.market,
+                watch_target.code,
+            )
+            if entry_time is not None:
+                hold_cycles = service._estimate_hold_cycles(
+                    watch_target.code,
+                    watch_target.market,
+                )
+                if hold_cycles <= 0 and hold_duration_min is not None:
+                    loop_interval_sec = max(
+                        1,
+                        int(
+                            getattr(
+                                service.config.liquidity_lab,
+                                "loop_interval_sec",
+                                25,
+                            )
+                            or 25
+                        ),
+                    )
+                    hold_cycles = max(
+                        0,
+                        int(hold_duration_min * 60 // loop_interval_sec),
+                    )
         service.repository.save_cycle_log(
             logged_at=datetime.now(timezone.utc).isoformat(),
             market=watch_target.market,
             symbol=watch_target.code,
             exchange_code=watch_target.exchange_code,
             action_bias=watch_target.action_bias,
-            action_reason=watch_target.note or watch_target.action_bias,
+            action_reason=(
+                watch_target.decision_reason
+                or watch_target.note
+                or watch_target.action_bias
+            ),
             price=watch_target.price,
             pnl_pct=pnl_pct,
             holding_qty=watch_target.holding_qty,
@@ -563,6 +597,15 @@ class WatchStateHelper:
             atr=signal_snapshot.atr if signal_snapshot else None,
             spread_pct=signal_snapshot.spread_pct if signal_snapshot else None,
             consecutive_losses=service._consecutive_losses_for_market(watch_target.market),
+            hold_cycles=hold_cycles,
+            entry_price=entry_price,
+            is_virtual=(
+                None
+                if watch_target.is_virtual is None
+                else int(watch_target.is_virtual)
+            ),
+            hold_duration_min=hold_duration_min,
+            entry_time=entry_time,
         )
         self.persist_watch_target_state(
             watch_target,
@@ -627,6 +670,10 @@ class WatchStateHelper:
                             signal_snapshot=fallback_snapshot,
                             strategy_flag=existing_flag,
                             entry_by=existing_entry_by,
+                            decision_reason=exit_setup.reason,
+                            is_virtual=bool(
+                                getattr(held_position, "is_virtual", False)
+                            ),
                         )
                     return service._make_watch_target_status(
                         market=market,
@@ -643,6 +690,10 @@ class WatchStateHelper:
                         signal_snapshot=fallback_snapshot,
                         strategy_flag=existing_flag,
                         entry_by=existing_entry_by,
+                        decision_reason=exit_setup.reason,
+                        is_virtual=bool(
+                            getattr(held_position, "is_virtual", False)
+                        ),
                     )
                 strategy_result = service._get_strategy_manager(code, market).evaluate(
                     code,
@@ -787,6 +838,10 @@ class WatchStateHelper:
                     signal_snapshot=signal_snapshot,
                     strategy_flag=existing_flag,
                     entry_by=existing_entry_by,
+                    decision_reason=exit_setup.reason,
+                    is_virtual=bool(
+                        getattr(held_position, "is_virtual", False)
+                    ),
                 )
             return service._make_watch_target_status(
                 market=market,
@@ -803,6 +858,10 @@ class WatchStateHelper:
                 signal_snapshot=signal_snapshot,
                 strategy_flag=existing_flag,
                 entry_by=existing_entry_by,
+                decision_reason=exit_setup.reason,
+                is_virtual=bool(
+                    getattr(held_position, "is_virtual", False)
+                ),
             )
 
         entry_setup = service._evaluate_entry_setup(signal_snapshot, code, market)

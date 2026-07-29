@@ -2203,7 +2203,7 @@ def test_lab_report_wait_forward_command_reports_deduplicated_returns(tmp_path) 
     now = datetime.now(timezone.utc)
     regular_time = next(
         candidate
-        for minutes_ago in range(10, 7 * 24 * 60)
+        for minutes_ago in range(20, 7 * 24 * 60)
         if (
             candidate := now - timedelta(minutes=minutes_ago)
         ).weekday()
@@ -3169,6 +3169,125 @@ def test_filter_bot_submitted_overseas_orders_matches_despite_zero_padding_diffe
 
     assert len(result) == 1
     assert result[0]["order_no"] == "41501"
+
+
+def test_filter_bot_submitted_overseas_orders_suppresses_resolved_ghost(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_resolved_ghost_overseas.db")
+    repository.save_broker_order_event(
+        created_at="2026-07-28T19:29:14+00:00",
+        market="overseas",
+        symbol="FSUN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=157,
+        requested_price=39.07,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no="0000046162",
+        is_virtual=0,
+        payload={},
+    )
+    repository.save_broker_order_event(
+        created_at="2026-07-29T13:30:13+00:00",
+        market="overseas",
+        symbol="FSUN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=157,
+        requested_price=39.07,
+        status="CANCELED",
+        reason="stale_order_already_resolved",
+        broker_order_no="46162",
+        is_virtual=0,
+        payload={"original_order_no": "46162", "open_qty": 157},
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    result = controller._filter_bot_submitted_overseas_orders(
+        [
+            {
+                "symbol": "FSUN",
+                "exchange_code": "NASD",
+                "order_no": "46162",
+                "open_qty": 157,
+            }
+        ]
+    )
+
+    assert result == []
+
+
+def test_filter_bot_submitted_overseas_orders_keeps_reused_order_after_resolution(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_reused_order_overseas.db")
+    for created_at, order_kind, status, reason, payload in (
+        (
+            "2026-07-28T19:29:14+00:00",
+            "limit",
+            "SUBMITTED",
+            "strategy_buy_signal",
+            {},
+        ),
+        (
+            "2026-07-28T20:00:00+00:00",
+            "cancel",
+            "CANCELED",
+            "stale_order_already_resolved",
+            {"original_order_no": "46162"},
+        ),
+        (
+            "2026-07-29T13:41:16+00:00",
+            "limit",
+            "SUBMITTED",
+            "strategy_buy_signal",
+            {},
+        ),
+    ):
+        repository.save_broker_order_event(
+            created_at=created_at,
+            market="overseas",
+            symbol="FSUN",
+            exchange_code="NASD",
+            side="BUY",
+            order_kind=order_kind,
+            requested_qty=157,
+            requested_price=39.07,
+            status=status,
+            reason=reason,
+            broker_order_no="0000046162",
+            is_virtual=0,
+            payload=payload,
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+
+    result = controller._filter_bot_submitted_overseas_orders(
+        [{"symbol": "FSUN", "exchange_code": "NASD", "order_no": "46162"}]
+    )
+
+    assert len(result) == 1
 
 
 def test_auto_cancel_overseas_uses_new_york_date_for_holiday_check(tmp_path) -> None:

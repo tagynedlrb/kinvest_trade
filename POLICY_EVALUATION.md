@@ -467,6 +467,14 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   that window, defer API reconciliation until the next eligible session; do
   not infer a cancel, rejection, or no-fill from elapsed wall time. Explicit
   forced audits may bypass this scheduling guard.
+- A VPS unfilled-order response can resurface an old row after the cancel API
+  says the original order no longer exists. Once a later overseas cancel
+  follow-up is terminal, exclude that normalized `(symbol, original order
+  number)` from repeated automatic-cancel candidates. Compare timestamps so a
+  later submission that reuses the same order number remains eligible. This
+  tombstone stops duplicate broker calls only: an order-not-found response
+  alone must not finalize or delete the execution ledger because it does not
+  prove whether the order filled, expired, or was previously canceled.
 
 ## Session boundary safety
 

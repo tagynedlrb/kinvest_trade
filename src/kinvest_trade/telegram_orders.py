@@ -335,23 +335,64 @@ class OrderAdminHelper:
         controller = self.controller
         if not rows:
             return []
-        submitted_events: dict[str, dict] = {}
+        submitted_events: dict[tuple[str, str], dict] = {}
+        resolved_at_by_order: dict[tuple[str, str], datetime] = {}
         for event in controller.repository.list_broker_order_events(limit=500):
+            if str(event.get("market", "") or "").lower() != "overseas":
+                continue
+            symbol = str(event.get("symbol") or "").strip().upper()
             order_no = _normalize_order_no(event.get("broker_order_no"))
             if (
-                order_no
-                and str(event.get("market", "") or "").lower() == "overseas"
+                symbol
+                and order_no
                 and str(event.get("status", "") or "").upper() == "SUBMITTED"
                 and str(event.get("order_kind", "") or "").lower() != "cancel"
             ):
-                submitted_events[order_no] = event
+                submitted_events.setdefault((symbol, order_no), event)
+                continue
+            if (
+                not symbol
+                or str(event.get("status", "") or "").upper()
+                not in {"CANCELED", "CANCELLED"}
+                or str(event.get("order_kind", "") or "").lower() != "cancel"
+            ):
+                continue
+            payload = (
+                event.get("payload_json")
+                if isinstance(event.get("payload_json"), dict)
+                else {}
+            )
+            original_order_no = _normalize_order_no(
+                payload.get("original_order_no")
+            )
+            resolved_at = parse_datetime(str(event.get("created_at") or ""))
+            if original_order_no and resolved_at is not None:
+                resolved_at_by_order.setdefault(
+                    (symbol, original_order_no),
+                    resolved_at,
+                )
         if not submitted_events:
             return []
         result: list[dict] = []
         for row in rows:
             order_no = _normalize_order_no(row.get("order_no") or row.get("odno"))
-            event = submitted_events.get(order_no)
+            symbol = str(
+                row.get("symbol")
+                or row.get("pdno")
+                or row.get("ovrs_pdno")
+                or ""
+            ).strip().upper()
+            key = (symbol, order_no)
+            event = submitted_events.get(key)
             if event is None:
+                continue
+            submitted_at = parse_datetime(str(event.get("created_at") or ""))
+            resolved_at = resolved_at_by_order.get(key)
+            if (
+                resolved_at is not None
+                and submitted_at is not None
+                and resolved_at >= submitted_at
+            ):
                 continue
             item = dict(row)
             if not str(item.get("exchange_code") or "").strip():

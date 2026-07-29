@@ -181,6 +181,15 @@
   ([KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)).
   Therefore one entry per symbol/session, intraday exits, conservative spread
   simulation and no live promotion from one crash-day replay remain mandatory.
+- Evaluate inverse exits with price-path attribution before changing their
+  thresholds. For closed shadow rows, report maximum favorable excursion as
+  `(peak-entry)/entry`, maximum adverse excursion as
+  `(trough-entry)/entry`, and peak giveback as `(peak-exit)/entry`; open rows
+  may show current MFE and MAE but must not enter closed averages. A trailing
+  stop, take-profit or stop-loss change still requires at least five closed
+  observations across three final benchmark sessions, positive after-cost
+  evidence, and a repeated path mechanism. One domestic crash-session
+  giveback is not evidence for the independently owned overseas inverse exit.
 - The domestic approved leveraged-long list currently contains only `122630`.
   Under `domestic_momentum_v3`, every strategy signal for that list must pass
   both the daily and intraday uptrend properties before it can become a buy

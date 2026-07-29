@@ -7737,6 +7737,158 @@ def test_overseas_daily_chart_cache_does_not_stale_intraday_chart() -> None:
     assert client.minute_calls == 2
 
 
+def test_overseas_signal_records_distinct_short_history_reason() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    cases = (
+        ("IPFX", 50, 40, "daily_history_short"),
+        ("KOYN", 80, 13, "minute_history_short"),
+    )
+
+    for symbol, daily_count, minute_count, expected_reason in cases:
+        service = _build_run_service()
+        service.config = load_app_config(
+            project_root / "config" / "fixed_config.json"
+        )
+
+        class ShortHistoryClient:
+            async def get_overseas_daily_prices(self, *_args, **_kwargs):
+                return [
+                    {"clos": str(100 + index)}
+                    for index in range(daily_count)
+                ]
+
+            async def get_overseas_minute_chart(self, *_args, **_kwargs):
+                return [
+                    {
+                        "kymd": "20260729",
+                        "khms": f"12{index:02d}00",
+                        "last": str(120 + index),
+                        "high": str(121 + index),
+                        "low": str(119 + index),
+                        "evol": "1000",
+                    }
+                    for index in range(minute_count)
+                ]
+
+        service.client = ShortHistoryClient()
+        candidate = OverseasScanResult(
+            symbol=symbol,
+            exchange_code="NASD",
+            last_price=10.15,
+            bid=10.14,
+            ask=10.16,
+            spread_pct=0.00197,
+            change_rate_pct=0.1,
+            volume=1_000_000,
+            orderable_qty=0,
+            fx_rate_krw=1_350.0,
+            activity_score=50.0,
+        )
+
+        result = asyncio.run(service._load_overseas_signal(candidate))
+
+        assert result is None
+        assert service._overseas_signal_unavailable_details[symbol] == {
+            "unavailable_reason": expected_reason,
+            "daily_rows": daily_count,
+            "daily_required": 60,
+            "minute_rows": minute_count,
+            "minute_required": 21,
+        }
+
+
+def test_overseas_signal_suppression_event_keeps_unavailable_detail() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_signal_failure_threshold = 1
+    service.config.liquidity_lab.overseas_signal_failure_cooldown_minutes = 180
+    service._overseas_signal_unavailable_details = {
+        "IPFX": {
+            "unavailable_reason": "daily_history_short",
+            "daily_rows": 50,
+            "daily_required": 60,
+            "minute_rows": 40,
+            "minute_required": 21,
+        }
+    }
+    candidate = OverseasScanResult(
+        symbol="IPFX",
+        exchange_code="NASD",
+        last_price=10.15,
+        bid=10.14,
+        ask=10.16,
+        spread_pct=0.00197,
+        change_rate_pct=0.1,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1_350.0,
+        activity_score=50.0,
+    )
+
+    service._record_overseas_signal_result(
+        candidate,
+        None,
+        is_held=False,
+    )
+
+    event = service.repository.list_event_log(
+        event_type="overseas_signal_suppressed",
+        limit=1,
+    )[0]
+    detail = json.loads(event["detail"])
+    assert detail["reason"] == "signal_unavailable"
+    assert detail["unavailable_reason"] == "daily_history_short"
+    assert detail["daily_rows"] == 50
+    assert detail["daily_required"] == 60
+    assert detail["minute_rows"] == 40
+    assert detail["minute_required"] == 21
+
+    service._record_overseas_signal_result(
+        candidate,
+        _snapshot(price=10.15),
+        is_held=False,
+    )
+    assert "IPFX" not in service._overseas_signal_unavailable_details
+
+
+def test_overseas_signal_records_chart_api_failure_stage() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    service = _build_run_service()
+    service.config = load_app_config(
+        project_root / "config" / "fixed_config.json"
+    )
+
+    class FailingDailyChartClient:
+        async def get_overseas_daily_prices(self, *_args, **_kwargs):
+            raise KisApiError("chart unavailable")
+
+        async def get_overseas_minute_chart(self, *_args, **_kwargs):
+            raise AssertionError("minute chart must not run after daily failure")
+
+    service.client = FailingDailyChartClient()
+    candidate = OverseasScanResult(
+        symbol="IPFX",
+        exchange_code="NASD",
+        last_price=10.15,
+        bid=10.14,
+        ask=10.16,
+        spread_pct=0.00197,
+        change_rate_pct=0.1,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1_350.0,
+        activity_score=50.0,
+    )
+
+    result = asyncio.run(service._load_overseas_signal(candidate))
+
+    assert result is None
+    assert service._overseas_signal_unavailable_details["IPFX"] == {
+        "unavailable_reason": "chart_api_error",
+        "failure_stage": "daily_chart",
+        "error_type": "KisApiError",
+    }
+
+
 def test_overseas_signal_uses_policy_bar_duration_and_kis_korean_time(monkeypatch) -> None:
     project_root = Path(__file__).resolve().parents[1]
     service = LiquidityLabService.__new__(LiquidityLabService)

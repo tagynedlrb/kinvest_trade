@@ -383,6 +383,12 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
 - Raw WAIT rows are repeated scanner observations, not independent blocked
   opportunities. Start a new evaluation episode only when the same
   market/symbol/reason has been absent for at least five minutes.
+- A chart-unavailable candidate is not an executable blocked opportunity.
+  Overseas suppression evidence must distinguish a broker chart API error,
+  insufficient daily history, and insufficient intraday bars, and must record
+  actual versus required row counts. Do not lengthen the cooldown or blacklist
+  a symbol until repeated reason-specific observations show that the current
+  retry cadence has no recovery value.
 - Evaluate 15/30/60-minute paths using the latest same-session price at or
   before the horizon, no more than five minutes stale. Exclude right-censored
   horizons and report observation coverage rather than filling them with a
@@ -568,6 +574,15 @@ the current direction is wrong.
   conservative 0.8% policy floor. Keep the cap and exit thresholds unchanged,
   label the cost-floor hold explicitly, and reassess after additional final
   NASDAQ sessions and completed outcomes.
+- Overseas signal availability: direct KIS reads on 2026-07-29 returned 50
+  daily and 40 intraday rows for recently listed `IPFX`, versus required
+  60/21, while `KOYN` returned 100 daily but only 13 intraday rows. These are
+  different deficiencies hidden by the old `signal_unavailable` label.
+  Preserve the three-failure/180-minute policy, record the exact reason and
+  row counts from the next suppression, and exclude these rows from blocked
+  entry expectancy until a valid signal exists. The final NASDAQ regime is
+  still sideways/normal-activity/normal-volatility; do not transfer this
+  US-data observation to the domestic formula.
 - Do not extend the aggregate standalone-strategy guard to combination labels
   from the current 48-hour average alone. Under True Range, the eleven
   `VWAP+VOL` exits belong to the same sideways/normal-activity/normal-volatility

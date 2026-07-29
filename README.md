@@ -432,7 +432,7 @@ python3 main.py liquidity-lab
 - 해외 후보군은 TradingView Scanner 기반 동적 풀을 우선 사용한다. TV 스캔이 실패/빈 결과를 반환하고 수동 `/lab_relist` 목록도 없으면, `liquidity_lab.overseas_candidates`(기본은 비어 있음)가 설정돼 있는 경우 그 정적 후보군으로 자동 대체하고, 그마저 없을 때만 감시 풀이 완전히 비어 사람에게 `/lab_relist` 지정을 요청한다(2026-07-14, 이 정적 폴백 자체가 죽은 설정으로 방치돼 있던 것을 고쳐서 되살렸다 — 부록 참고).
 - chart 기반 signal 계산은 `overseas_scan_top_n` 기준으로 우선 로드하며, 기본값은 `25`라 상위 25개와 보유 종목에만 signal 캐시를 붙인다.
 - 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
-- 비보유 해외 종목이 chart signal 생성에 반복 실패하면 `overseas_signal_failure_threshold`(기본 `3`)회 이후 `overseas_signal_failure_cooldown_minutes`(기본 `180`분) 동안 제외한다.
+- 비보유 해외 종목이 chart signal 생성에 반복 실패하면 `overseas_signal_failure_threshold`(기본 `3`)회 이후 `overseas_signal_failure_cooldown_minutes`(기본 `180`분) 동안 제외한다. 억제 이벤트에는 차트 API 단계 오류, 일봉 이력 부족, 분봉 이력 부족을 구분하고 실제/요구 행 수를 함께 남긴다. 유효 신호가 없으므로 이를 실행 가능한 차단 진입이나 거래 빈도 표본으로 세지 않는다.
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
 - 최근 성과 기준으로 해외 `VWAP` 단독, `RSI` 단독, `VOL` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`, `overseas_block_standalone_vol=true`). 해외에서는 `VWAP+RSI`, `VOL+RSI`처럼 보조 확인이 둘 이상 붙은 신호를 우선한다.

@@ -258,6 +258,7 @@ class LiquidityLabService:
         self._signal_cache_updated_at: dict[str, datetime] = {}
         self._overseas_signal_failures: dict[str, int] = {}
         self._overseas_signal_suppressed_until: dict[str, datetime] = {}
+        self._overseas_signal_unavailable_details: dict[str, dict] = {}
         self._repeated_skip_notify_last: dict[tuple[str, str, str], datetime] = {}
         self._cycle_count: int = 0
         self._session_id: str = uuid.uuid4().hex[:12]
@@ -6478,6 +6479,13 @@ class LiquidityLabService:
             failures = getattr(self, "_overseas_signal_failures", None)
             if failures:
                 failures.pop(key, None)
+            details = getattr(
+                self,
+                "_overseas_signal_unavailable_details",
+                None,
+            )
+            if details:
+                details.pop(key, None)
             return ""
         return "signal_unavailable_cooldown"
 
@@ -6503,6 +6511,13 @@ class LiquidityLabService:
         if snapshot is not None:
             failures.pop(symbol, None)
             suppressed.pop(symbol, None)
+            details = getattr(
+                self,
+                "_overseas_signal_unavailable_details",
+                None,
+            )
+            if details:
+                details.pop(symbol, None)
             return
         if is_held:
             return
@@ -6535,6 +6550,16 @@ class LiquidityLabService:
         )
         until = datetime.now(timezone.utc) + timedelta(minutes=cooldown_minutes)
         suppressed[symbol] = until
+        unavailable_details = getattr(
+            self,
+            "_overseas_signal_unavailable_details",
+            None,
+        )
+        unavailable_detail = (
+            dict(unavailable_details.get(symbol) or {})
+            if isinstance(unavailable_details, dict)
+            else {}
+        )
         self._save_event(
             event_type="overseas_signal_suppressed",
             market="overseas",
@@ -6546,6 +6571,7 @@ class LiquidityLabService:
                 "cooldown_minutes": cooldown_minutes,
                 "activity_score": candidate.activity_score,
                 "price": candidate.last_price,
+                **unavailable_detail,
             },
         )
 
@@ -7334,6 +7360,16 @@ class LiquidityLabService:
         candidate: OverseasScanResult,
     ) -> MovingAverageSnapshot | None:
         auto = self._get_market_policy("overseas").auto_trade
+        symbol = candidate.symbol.strip().upper()
+        unavailable_details = getattr(
+            self,
+            "_overseas_signal_unavailable_details",
+            None,
+        )
+        if unavailable_details is None:
+            unavailable_details = {}
+            self._overseas_signal_unavailable_details = unavailable_details
+        unavailable_details.pop(symbol, None)
         captured_at = datetime.now(timezone.utc)
         daily_rows = self._fresh_daily_chart_rows(
             market="overseas",
@@ -7342,6 +7378,7 @@ class LiquidityLabService:
             now=captured_at,
             refresh_sec=auto.daily_chart_refresh_sec,
         )
+        failure_stage = "daily_chart"
         try:
             if daily_rows is None:
                 daily_rows = await self.client.get_overseas_daily_prices(
@@ -7357,6 +7394,7 @@ class LiquidityLabService:
                         rows=daily_rows,
                         captured_at=captured_at,
                     )
+            failure_stage = "minute_chart"
             minute_rows = await self.client.get_overseas_minute_chart(
                 candidate.symbol,
                 candidate.exchange_code,
@@ -7371,6 +7409,11 @@ class LiquidityLabService:
                 ),
             )
         except KisApiError as exc:
+            unavailable_details[symbol] = {
+                "unavailable_reason": "chart_api_error",
+                "failure_stage": failure_stage,
+                "error_type": type(exc).__name__,
+            }
             _logger.warning(
                 "overseas_signal_load_failed symbol=%s exchange=%s error=%s",
                 candidate.symbol,
@@ -7389,10 +7432,23 @@ class LiquidityLabService:
         )
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
-        if (
-            len(daily_closes) < auto.daily_slow_window
-            or len(minute_closes) < auto.intraday_slow_window
-        ):
+        history_detail = {
+            "daily_rows": len(daily_closes),
+            "daily_required": int(auto.daily_slow_window),
+            "minute_rows": len(minute_closes),
+            "minute_required": int(auto.intraday_slow_window),
+        }
+        if len(daily_closes) < auto.daily_slow_window:
+            unavailable_details[symbol] = {
+                "unavailable_reason": "daily_history_short",
+                **history_detail,
+            }
+            return None
+        if len(minute_closes) < auto.intraday_slow_window:
+            unavailable_details[symbol] = {
+                "unavailable_reason": "minute_history_short",
+                **history_detail,
+            }
             return None
         bar_duration_sec = max(1, int(auto.intraday_bar_minutes)) * 60
         chart_elapsed_sec = chart_bar_elapsed_seconds(

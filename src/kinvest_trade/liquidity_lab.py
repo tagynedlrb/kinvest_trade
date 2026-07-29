@@ -7439,6 +7439,7 @@ class LiquidityLabService:
             "krx_open_but_no_candidate",
             "us_open_but_no_candidate",
             "us_open_but_mock_session_not_supported",
+            "overseas_monitor_only",
             "us_session_transition_guard",
             "market_session_changed_during_cycle",
             "market_closed_during_cycle",

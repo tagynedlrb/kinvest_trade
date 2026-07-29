@@ -9154,6 +9154,38 @@ def test_send_summary_suppresses_overseas_position_cap_reached_notice() -> None:
     assert service.notifier.messages == []
 
 
+def test_send_summary_suppresses_overseas_monitor_only_notice() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-07-29 13:14:00 KST",
+        krx_market_open=True,
+        us_market_open=True,
+        us_market_session="daytime",
+        us_orderable_in_profile=False,
+        primary_market="both",
+        primary_target=None,
+        primary_selection_reason="both_waiting",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=74,
+        domestic_order={"skipped": True, "reason": "no_action"},
+        overseas_order={
+            "skipped": True,
+            "reason": "overseas_monitor_only",
+        },
+        overseas_scan_scope="monitored",
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
+
+
 def test_build_action_summary_surfaces_non_primary_market_skip() -> None:
     # Regression test: when the primary market's own order this cycle is just
     # a benign stub (no_overseas_candidate) but the *other* market has a real,

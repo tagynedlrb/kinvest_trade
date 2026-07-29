@@ -115,9 +115,15 @@ class KisRestClient:
     # existing conservative 0.7s floor.
     _rate_limit_lock: "asyncio.Lock | None" = None
     _last_response_completed_at_by_profile: dict[str, float] = {}
+    _last_response_path_by_profile: dict[str, str] = {}
     _adaptive_rate_limit_until_by_profile: dict[str, float] = {}
     _min_request_interval_sec: float = 0.7
     _vps_min_request_interval_sec: float = 1.05
+    # Timed VPS lineage found every consecutive overseas-balance rate-limit
+    # response below 826ms of post-response quiet time. Keep a narrow 850ms
+    # preventive floor for that pair only; all other error-free paths retain
+    # request-start pacing.
+    _vps_balance_pair_response_interval_sec: float = 0.85
     # Timed VPS evidence showed no rate-limit response when the next dispatch
     # followed the previous response completion by at least 950ms. Activate
     # this second boundary only briefly after a natural rate-limit response;
@@ -139,10 +145,37 @@ class KisRestClient:
     def _rate_limit_profile_key(self) -> str:
         return str(self.credentials.token_cache_path)
 
-    def _record_response_completion(self) -> None:
-        KisRestClient._last_response_completed_at_by_profile[
-            self._rate_limit_profile_key()
-        ] = time.monotonic()
+    def _record_response_completion(self, path: str = "") -> None:
+        key = self._rate_limit_profile_key()
+        KisRestClient._last_response_completed_at_by_profile[key] = time.monotonic()
+        KisRestClient._last_response_path_by_profile[key] = str(path)
+
+    def _balance_pair_pacing_state(
+        self,
+        *,
+        path: str,
+        attempt_no: int,
+        now: float,
+    ) -> tuple[bool, float]:
+        if (
+            str(self.credentials.env).strip().lower() != "vps"
+            or path != self.OVERSEAS_BALANCE_PATH
+            or attempt_no != 1
+        ):
+            return False, 0.0
+        key = self._rate_limit_profile_key()
+        if (
+            KisRestClient._last_response_path_by_profile.get(key, "")
+            != self.OVERSEAS_BALANCE_PATH
+        ):
+            return False, 0.0
+        completed_at = KisRestClient._last_response_completed_at_by_profile.get(
+            key,
+            0.0,
+        )
+        if completed_at <= 0.0 or completed_at > now:
+            return False, 0.0
+        return True, completed_at + self._vps_balance_pair_response_interval_sec
 
     def _activate_adaptive_rate_limit_pacing(self) -> None:
         if str(self.credentials.env).strip().lower() != "vps":
@@ -213,13 +246,27 @@ class KisRestClient:
             return
         await asyncio.sleep(self._vps_overseas_history_continuation_delay_sec)
 
-    async def _throttle(self) -> tuple[bool, int]:
+    async def _throttle(
+        self,
+        *,
+        path: str = "",
+        attempt_no: int = 1,
+    ) -> tuple[bool, int, bool, int]:
         if KisRestClient._rate_limit_lock is None:
             KisRestClient._rate_limit_lock = asyncio.Lock()
         async with KisRestClient._rate_limit_lock:
-            return await asyncio.to_thread(self._throttle_across_processes)
+            return await asyncio.to_thread(
+                self._throttle_across_processes,
+                path=path,
+                attempt_no=attempt_no,
+            )
 
-    def _throttle_across_processes(self) -> tuple[bool, int]:
+    def _throttle_across_processes(
+        self,
+        *,
+        path: str = "",
+        attempt_no: int = 1,
+    ) -> tuple[bool, int, bool, int]:
         interval_sec = self._request_interval_sec()
         state_path = self.credentials.token_cache_path.with_suffix(
             f"{self.credentials.token_cache_path.suffix}.rate_limit"
@@ -251,22 +298,46 @@ class KisRestClient:
                     )
                     adaptive_active = False
                     adaptive_ready_at = 0.0
+                    balance_pair_active = False
+                    balance_pair_ready_at = 0.0
                     while True:
                         now = time.monotonic()
                         adaptive_active, adaptive_ready_at = (
                             self._adaptive_rate_limit_state(now=now)
                         )
+                        balance_pair_active, balance_pair_ready_at = (
+                            self._balance_pair_pacing_state(
+                                path=path,
+                                attempt_no=attempt_no,
+                                now=now,
+                            )
+                        )
                         ready_at = max(
                             request_start_ready_at,
                             adaptive_ready_at,
+                            balance_pair_ready_at,
                         )
                         if ready_at <= now:
                             break
                         time.sleep(ready_at - now)
                     dispatched_at = time.monotonic()
                     baseline_ready_at = max(started_at, request_start_ready_at)
+                    balance_pair_wait_ms = int(
+                        max(
+                            0.0,
+                            balance_pair_ready_at - baseline_ready_at,
+                        )
+                        * 1000
+                        if balance_pair_active
+                        else 0
+                    )
                     adaptive_wait_ms = int(
-                        max(0.0, adaptive_ready_at - baseline_ready_at) * 1000
+                        max(
+                            0.0,
+                            adaptive_ready_at
+                            - max(baseline_ready_at, balance_pair_ready_at),
+                        )
+                        * 1000
                         if adaptive_active
                         else 0
                     )
@@ -274,7 +345,12 @@ class KisRestClient:
                     state_file.truncate()
                     state_file.write(f"{dispatched_at:.9f}")
                     state_file.flush()
-                    return adaptive_active, adaptive_wait_ms
+                    return (
+                        adaptive_active,
+                        adaptive_wait_ms,
+                        balance_pair_active,
+                        balance_pair_wait_ms,
+                    )
                 finally:
                     fcntl.flock(state_file.fileno(), fcntl.LOCK_UN)
         finally:
@@ -303,6 +379,8 @@ class KisRestClient:
         network_elapsed_ms: int | None = None,
         adaptive_pacing_active: bool = False,
         adaptive_wait_ms: int | None = None,
+        balance_pair_pacing_active: bool = False,
+        balance_pair_wait_ms: int | None = None,
     ) -> None:
         if self._on_api_call is None:
             return
@@ -328,6 +406,8 @@ class KisRestClient:
                     "network_elapsed_ms": network_elapsed_ms,
                     "adaptive_pacing_active": adaptive_pacing_active,
                     "adaptive_wait_ms": adaptive_wait_ms,
+                    "balance_pair_pacing_active": balance_pair_pacing_active,
+                    "balance_pair_wait_ms": balance_pair_wait_ms,
                 }
             )
         except Exception:  # noqa: BLE001
@@ -469,7 +549,15 @@ class KisRestClient:
             if extra_headers:
                 headers.update(extra_headers)
             throttle_started_at = time.monotonic()
-            adaptive_pacing_active, adaptive_wait_ms = await self._throttle()
+            (
+                adaptive_pacing_active,
+                adaptive_wait_ms,
+                balance_pair_pacing_active,
+                balance_pair_wait_ms,
+            ) = await self._throttle(
+                path=path,
+                attempt_no=attempt_no,
+            )
             throttle_wait_ms = int(
                 (time.monotonic() - throttle_started_at) * 1000
             )
@@ -487,7 +575,7 @@ class KisRestClient:
                 network_elapsed_ms = int(
                     (time.monotonic() - network_started_at) * 1000
                 )
-                self._record_response_completion()
+                self._record_response_completion(path)
                 self._log_api_call(
                     method=method,
                     path=path,
@@ -506,6 +594,8 @@ class KisRestClient:
                     network_elapsed_ms=network_elapsed_ms,
                     adaptive_pacing_active=adaptive_pacing_active,
                     adaptive_wait_ms=adaptive_wait_ms,
+                    balance_pair_pacing_active=balance_pair_pacing_active,
+                    balance_pair_wait_ms=balance_pair_wait_ms,
                 )
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(1.0)
@@ -514,7 +604,7 @@ class KisRestClient:
             network_elapsed_ms = int(
                 (time.monotonic() - network_started_at) * 1000
             )
-            self._record_response_completion()
+            self._record_response_completion(path)
             try:
                 payload = response.json()
             except json.JSONDecodeError:
@@ -535,6 +625,8 @@ class KisRestClient:
                     network_elapsed_ms=network_elapsed_ms,
                     adaptive_pacing_active=adaptive_pacing_active,
                     adaptive_wait_ms=adaptive_wait_ms,
+                    balance_pair_pacing_active=balance_pair_pacing_active,
+                    balance_pair_wait_ms=balance_pair_wait_ms,
                 )
                 response.raise_for_status()
                 raise
@@ -569,6 +661,8 @@ class KisRestClient:
                     network_elapsed_ms=network_elapsed_ms,
                     adaptive_pacing_active=adaptive_pacing_active,
                     adaptive_wait_ms=adaptive_wait_ms,
+                    balance_pair_pacing_active=balance_pair_pacing_active,
+                    balance_pair_wait_ms=balance_pair_wait_ms,
                 )
                 if retry_reason:
                     if retry_reason == "token_expired":
@@ -604,6 +698,8 @@ class KisRestClient:
                     network_elapsed_ms=network_elapsed_ms,
                     adaptive_pacing_active=adaptive_pacing_active,
                     adaptive_wait_ms=adaptive_wait_ms,
+                    balance_pair_pacing_active=balance_pair_pacing_active,
+                    balance_pair_wait_ms=balance_pair_wait_ms,
                 )
                 if include_response_headers:
                     response_headers = getattr(response, "headers", {}) or {}
@@ -640,6 +736,8 @@ class KisRestClient:
                 network_elapsed_ms=network_elapsed_ms,
                 adaptive_pacing_active=adaptive_pacing_active,
                 adaptive_wait_ms=adaptive_wait_ms,
+                balance_pair_pacing_active=balance_pair_pacing_active,
+                balance_pair_wait_ms=balance_pair_wait_ms,
             )
             if retry_reason:
                 if retry_reason == "token_expired":

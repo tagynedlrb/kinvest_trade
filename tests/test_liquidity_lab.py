@@ -11,6 +11,7 @@ import httpx
 import kinvest_trade.lab_overseas_orders as lab_overseas_orders_module
 import kinvest_trade.lab_risk as lab_risk_module
 import kinvest_trade.liquidity_lab as liquidity_lab_module
+import pytest
 from kinvest_trade.config import load_app_config
 from kinvest_trade.lab_positions import VirtualPosition
 from kinvest_trade.liquidity_lab import (
@@ -28,6 +29,17 @@ from kinvest_trade.client import KisApiError
 from kinvest_trade.execution_reconciler import BrokerExecutionReconciler
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.technical_signals import MovingAverageSnapshot
+
+
+@pytest.fixture(autouse=True)
+def _stabilize_us_session_transition_distance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        liquidity_lab_module,
+        "seconds_until_us_session_transition",
+        lambda _now: 3_600,
+    )
 
 
 def test_select_primary_target_reports_mock_daytime_limit() -> None:

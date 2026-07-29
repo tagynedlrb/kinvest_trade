@@ -66,6 +66,18 @@
   guarantee: all 15 dispatch-timed rate-limit responses had less than 950ms
   of estimated post-response quiet time, while 4,084 first attempts at
   950-999ms had none. Reassess with natural active-window results.
+- Consecutive VPS overseas-balance first attempts also use a narrowly scoped
+  preventive response-completion floor of 850ms. It applies only when the
+  immediately preceding completed request used the exact same balance path;
+  production, domestic, quote/order paths, interrupted lineages, and retries
+  keep their existing pacing. In 215 naturally observed balance pairs, all
+  19 recovered rate-limit attempts occurred below 826ms of post-response
+  quiet time. The 850ms counterfactual added about 10.55 seconds across all
+  pairs, versus 23.69 seconds of observed retry recovery delay. This is a
+  bounded VPS experiment, not a causal result or broker guarantee: 191 pairs
+  below 950ms also succeeded. Persist pair activation and incremental wait
+  separately from adaptive pacing, and do not count overlapping readiness
+  boundaries twice.
 - Reconsider the current VPS pacing when a tracked rate-limit request ends in
   terminal failure, recovered rate-limit requests exceed 1% for three
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry

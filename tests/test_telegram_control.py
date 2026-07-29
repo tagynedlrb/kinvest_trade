@@ -1813,6 +1813,8 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
             "network_elapsed_ms": 85,
             "adaptive_pacing_active": True,
             "adaptive_wait_ms": 123,
+            "balance_pair_pacing_active": True,
+            "balance_pair_wait_ms": 45,
         }
     )
 
@@ -1832,6 +1834,8 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert rows[0]["network_elapsed_ms"] == 85
     assert rows[0]["adaptive_pacing_active"] == 1
     assert rows[0]["adaptive_wait_ms"] == 123
+    assert rows[0]["balance_pair_pacing_active"] == 1
+    assert rows[0]["balance_pair_wait_ms"] == 45
 
 
 def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:

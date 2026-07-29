@@ -469,6 +469,10 @@ class TelegramLiquidityLabController:
                     info.get("adaptive_pacing_active", False)
                 ),
                 adaptive_wait_ms=info.get("adaptive_wait_ms"),
+                balance_pair_pacing_active=bool(
+                    info.get("balance_pair_pacing_active", False)
+                ),
+                balance_pair_wait_ms=info.get("balance_pair_wait_ms"),
             )
         except Exception:  # noqa: BLE001
             pass

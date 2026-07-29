@@ -556,7 +556,9 @@ class SqliteRepository:
                     throttle_wait_ms INTEGER,
                     network_elapsed_ms INTEGER,
                     adaptive_pacing_active INTEGER NOT NULL DEFAULT 0,
-                    adaptive_wait_ms INTEGER
+                    adaptive_wait_ms INTEGER,
+                    balance_pair_pacing_active INTEGER NOT NULL DEFAULT 0,
+                    balance_pair_wait_ms INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at
                     ON api_call_log(created_at);
@@ -755,6 +757,18 @@ class SqliteRepository:
                 conn,
                 "api_call_log",
                 "adaptive_wait_ms",
+                "INTEGER",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "balance_pair_pacing_active",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "balance_pair_wait_ms",
                 "INTEGER",
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
@@ -2600,6 +2614,8 @@ class SqliteRepository:
         network_elapsed_ms: int | None = None,
         adaptive_pacing_active: bool = False,
         adaptive_wait_ms: int | None = None,
+        balance_pair_pacing_active: bool = False,
+        balance_pair_wait_ms: int | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -2609,9 +2625,11 @@ class SqliteRepository:
                     msg_cd, msg1, elapsed_ms, logical_request_id, attempt_no,
                     max_attempts, retry_scheduled, retry_reason, logical_terminal,
                     dispatched_at, throttle_wait_ms, network_elapsed_ms,
-                    adaptive_pacing_active, adaptive_wait_ms
+                    adaptive_pacing_active, adaptive_wait_ms,
+                    balance_pair_pacing_active, balance_pair_wait_ms
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?
                 )
                 """,
                 (
@@ -2635,6 +2653,8 @@ class SqliteRepository:
                     network_elapsed_ms,
                     1 if adaptive_pacing_active else 0,
                     adaptive_wait_ms,
+                    1 if balance_pair_pacing_active else 0,
+                    balance_pair_wait_ms,
                 ),
             )
 
@@ -2732,7 +2752,29 @@ class SqliteRepository:
                             THEN COALESCE(adaptive_wait_ms, 0)
                             ELSE 0
                         END
-                    ) AS adaptive_pacing_wait_ms
+                    ) AS adaptive_pacing_wait_ms,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND balance_pair_pacing_active = 1
+                            THEN 1 ELSE 0
+                        END
+                    ) AS balance_pair_pacing_attempt_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND balance_pair_pacing_active = 1
+                             AND COALESCE(balance_pair_wait_ms, 0) > 0
+                            THEN 1 ELSE 0
+                        END
+                    ) AS balance_pair_pacing_wait_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                            THEN COALESCE(balance_pair_wait_ms, 0)
+                            ELSE 0
+                        END
+                    ) AS balance_pair_pacing_wait_ms
                 FROM api_call_log
                 WHERE {" AND ".join(where)}
                 """,
@@ -2752,6 +2794,9 @@ class SqliteRepository:
                 "adaptive_pacing_attempt_count",
                 "adaptive_pacing_wait_count",
                 "adaptive_pacing_wait_ms",
+                "balance_pair_pacing_attempt_count",
+                "balance_pair_pacing_wait_count",
+                "balance_pair_pacing_wait_ms",
             )
         }
         tracked = result["tracked_request_count"]

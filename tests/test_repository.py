@@ -504,6 +504,8 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
         network_elapsed_ms=42,
         adaptive_pacing_active=True,
         adaptive_wait_ms=125,
+        balance_pair_pacing_active=True,
+        balance_pair_wait_ms=45,
     )
 
     rows = repository.list_api_calls(limit=5)
@@ -521,6 +523,8 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
     assert rows[0]["network_elapsed_ms"] == 42
     assert rows[0]["adaptive_pacing_active"] == 1
     assert rows[0]["adaptive_wait_ms"] == 125
+    assert rows[0]["balance_pair_pacing_active"] == 1
+    assert rows[0]["balance_pair_wait_ms"] == 45
 
 
 def test_api_call_health_separates_recovered_retry_from_terminal_failure(
@@ -555,6 +559,8 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         logical_terminal=True,
         adaptive_pacing_active=True,
         adaptive_wait_ms=125,
+        balance_pair_pacing_active=True,
+        balance_pair_wait_ms=45,
     )
     repository.save_api_call(
         created_at="2026-07-29T00:00:04+00:00",
@@ -610,6 +616,9 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         "adaptive_pacing_attempt_count": 1,
         "adaptive_pacing_wait_count": 1,
         "adaptive_pacing_wait_ms": 125,
+        "balance_pair_pacing_attempt_count": 1,
+        "balance_pair_pacing_wait_count": 1,
+        "balance_pair_pacing_wait_ms": 45,
         "attempt_failure_rate": pytest.approx(3 / 5),
         "terminal_failure_rate": pytest.approx(1 / 3),
     }
@@ -655,6 +664,8 @@ def test_api_call_lineage_columns_migrate_legacy_table(tmp_path) -> None:
     assert row["network_elapsed_ms"] is None
     assert row["adaptive_pacing_active"] == 0
     assert row["adaptive_wait_ms"] is None
+    assert row["balance_pair_pacing_active"] == 0
+    assert row["balance_pair_wait_ms"] is None
     summary = repository.summarize_api_call_health(
         since="2026-07-28T00:00:00+00:00"
     )

@@ -3320,12 +3320,10 @@ def test_auto_cancel_overseas_uses_new_york_date_for_holiday_check(tmp_path) -> 
     assert seen_dates == [date(2026, 7, 10)]
 
 
-def test_load_live_open_overseas_orders_queries_per_symbol_for_mock_env_too(tmp_path) -> None:
-    # Regression test for the CRAN incident: the vps/mock branch used to fetch
-    # ALL symbols in one unfiltered query (symbol="", fill_filter="00"), which
-    # the KIS mock caps at ~15 unpaginated rows -- once enough history piled
-    # up, a symbol's own open order fell off the page. Now both envs reuse the
-    # per-symbol loop (already fixed to always filter by symbol + fill_filter=02).
+def test_load_live_open_overseas_orders_uses_one_official_vps_snapshot(tmp_path) -> None:
+    # The VPS API only documents all-symbol/all-fill parameters. Pagination
+    # now prevents the old CRAN truncation incident, so one snapshot can serve
+    # every locally filtered bot symbol.
     repository = SqliteRepository(tmp_path / "telegram_load_live_overseas.db")
     controller = TelegramLiquidityLabController(
         config=SimpleNamespace(
@@ -3389,8 +3387,11 @@ def test_load_live_open_overseas_orders_queries_per_symbol_for_mock_env_too(tmp_
         telegram_control_module.KisRestClient = original_client
 
     assert len(calls) == 1
-    assert calls[0]["symbol"] == "CRAN"
-    assert calls[0]["fill_filter"] == "02"
+    assert calls[0]["symbol"] == ""
+    assert calls[0]["side_filter"] == "00"
+    assert calls[0]["fill_filter"] == "00"
+    assert calls[0]["exchange_code"] == ""
+    assert calls[0]["start_date"] == calls[0]["end_date"]
     assert len(results) == 1
     assert results[0]["order_no"] == "41501"
     assert results[0]["open_qty"] == 4

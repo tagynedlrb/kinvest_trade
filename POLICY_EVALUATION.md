@@ -108,6 +108,22 @@
 - Position completeness is an exit-safety contract, not a trading-frequency
   parameter. A balance transport or pagination fix does not justify changing
   entry formulas, market-specific limits, or candidate frequency.
+- VPS current open-order maintenance follows the documented
+  `inquire-ccnl` demo contract. Use the current local-market date, empty
+  `PDNO/OVRS_EXCG_CD/ORD_DT/ORD_GNO_BRNO/ODNO`, `00` for side and fill,
+  and KIS continuation keys; derive open rows locally from `nccs_qty > 0`
+  ([KIS overseas order-history sample](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/inquire_ccnl/inquire_ccnl.py)).
+  The demo API does not document per-symbol, side-specific, fill-specific or
+  exchange-specific lookup. One paginated snapshot is reused for the service
+  cycle and invalidated after the bot records a real overseas submit or
+  cancel. Production continues to use its dedicated open-order endpoint.
+- Current orderability and historical execution accounting are distinct.
+  The VPS snapshot uses the current New York date so prior-session rows that
+  the broker can no longer cancel do not trigger maintenance. This does not
+  prove whether an ambiguous old execution filled, expired or was canceled;
+  its execution row remains unfinalized until independent order-history,
+  balance or broker evidence resolves it. A snapshot lookup failure still
+  fails closed and blocks a new order.
 - A fully virtual-closed overseas holding needs live quotes, broker balance,
   and settlement reconciliation but no fresh strategy exit chart. When
   deduplicated real quantity is fully covered by `virtual_sell_pending` and no

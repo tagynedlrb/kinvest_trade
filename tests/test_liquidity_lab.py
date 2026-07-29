@@ -3134,14 +3134,9 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
 
 
 def test_list_open_overseas_orders_routes_vps_and_prod_to_distinct_apis() -> None:
-    # Regression test: for env != "prod" (mock/paper), this used to query with
-    # symbol="" and fill_filter="00" (all statuses across all symbols). The KIS
-    # mock order-history endpoint returns only ~15 rows with no pagination, so
-    # once enough unrelated history accumulated for the day, a symbol's own
-    # still-open order scrolled off the page and _find_open_overseas_order
-    # wrongly returned None -> the duplicate-order-dedup check silently broke,
-    # letting the same symbol be bought over and over (CRAN incident,
-    # 2026-07-13: 60+ duplicate BUY orders for one symbol in 30 minutes).
+    # VPS must use the official all-symbol/all-fill query and filter the
+    # paginated snapshot locally. Production keeps its dedicated open-order
+    # endpoint.
     history_calls: list[dict] = []
     open_order_calls: list[dict] = []
 
@@ -3171,9 +3166,18 @@ def test_list_open_overseas_orders_routes_vps_and_prod_to_distinct_apis() -> Non
 
         if env == "vps":
             assert len(history_calls) == 1
-            assert history_calls[0]["symbol"] == "CRAN"
-            assert history_calls[0]["fill_filter"] == "02"
+            assert history_calls[0]["symbol"] == ""
+            assert history_calls[0]["side_filter"] == "00"
+            assert history_calls[0]["fill_filter"] == "00"
             assert history_calls[0]["exchange_code"] == ""
+            assert history_calls[0]["order_date"] == ""
+            assert history_calls[0]["order_branch_no"] == ""
+            assert history_calls[0]["order_no"] == ""
+            expected_date = datetime.now(timezone.utc).astimezone(
+                liquidity_lab_module.NEW_YORK
+            ).strftime("%Y%m%d")
+            assert history_calls[0]["start_date"] == expected_date
+            assert history_calls[0]["end_date"] == expected_date
             assert history_calls[0]["paginate"] is True
             assert open_order_calls == []
         else:
@@ -3181,6 +3185,170 @@ def test_list_open_overseas_orders_routes_vps_and_prod_to_distinct_apis() -> Non
             assert len(open_order_calls) == 1
             assert open_order_calls[0]["exchange_code"] == "NASD"
             assert open_order_calls[0]["paginate"] is True
+
+
+def test_vps_open_overseas_order_snapshot_is_reused_per_cycle_and_invalidated(
+    tmp_path: Path,
+) -> None:
+    history_calls: list[dict] = []
+
+    class CapturingClient:
+        async def get_overseas_order_history(self, **kwargs):
+            history_calls.append(kwargs)
+            return {
+                "orders": [
+                    {
+                        "pdno": "CRAN",
+                        "ovrs_excg_cd": "NASD",
+                        "sll_buy_dvsn_cd": "02",
+                        "nccs_qty": "4",
+                        "odno": "41501",
+                        "ft_ord_unpr3": "10.20",
+                        "dmst_ord_dt": "20260729",
+                        "thco_ord_tmd": "153721",
+                    },
+                    {
+                        "pdno": "AAPL",
+                        "ovrs_excg_cd": "NASD",
+                        "sll_buy_dvsn_cd": "01",
+                        "nccs_qty": "2",
+                        "odno": "41502",
+                        "ft_ord_unpr3": "210.50",
+                        "dmst_ord_dt": "20260729",
+                        "thco_ord_tmd": "153722",
+                    },
+                    {
+                        "pdno": "MSFT",
+                        "ovrs_excg_cd": "NASD",
+                        "sll_buy_dvsn_cd": "02",
+                        "nccs_qty": "0",
+                        "odno": "41503",
+                        "ft_ord_unpr3": "510.25",
+                        "dmst_ord_dt": "20260729",
+                        "thco_ord_tmd": "153723",
+                    },
+                ]
+            }
+
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(env="vps"),
+    )
+    service.client = CapturingClient()
+    service.repository = SqliteRepository(tmp_path / "open_order_snapshot.db")
+    service._cycle_count = 7
+
+    cran = asyncio.run(
+        service._list_open_overseas_orders(
+            symbol="CRAN",
+            exchange_code="NASD",
+        )
+    )
+    aapl = asyncio.run(
+        service._list_open_overseas_orders(
+            symbol="AAPL",
+            exchange_code="NASD",
+        )
+    )
+    msft = asyncio.run(
+        service._list_open_overseas_orders(
+            symbol="MSFT",
+            exchange_code="NASD",
+        )
+    )
+
+    assert len(history_calls) == 1
+    assert cran[0]["order_no"] == "41501"
+    assert aapl[0]["order_no"] == "41502"
+    assert aapl[0]["exchange_code"] == "NASD"
+    assert msft == []
+
+    service._cycle_count = 8
+    asyncio.run(
+        service._list_open_overseas_orders(
+            symbol="CRAN",
+            exchange_code="NASD",
+        )
+    )
+    assert len(history_calls) == 2
+
+    service._invalidate_vps_open_overseas_order_snapshot()
+    asyncio.run(
+        service._list_open_overseas_orders(
+            symbol="CRAN",
+            exchange_code="NASD",
+        )
+    )
+    assert len(history_calls) == 3
+
+    service._record_broker_order_event(
+        market="overseas",
+        symbol="CRAN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=1,
+        requested_price=10.2,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        payload={"output": {"ODNO": "41503"}},
+    )
+    assert service._vps_open_overseas_order_snapshot_key is None
+
+    asyncio.run(
+        service._list_open_overseas_orders(
+            symbol="CRAN",
+            exchange_code="NASD",
+        )
+    )
+    assert len(history_calls) == 4
+    service._record_broker_order_event(
+        market="overseas",
+        symbol="CRAN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=1,
+        requested_price=10.2,
+        status="CANCELED",
+        reason="stale_order_canceled",
+        payload={"output": {"ODNO": "41504"}},
+    )
+    assert service._vps_open_overseas_order_snapshot_key is None
+
+
+def test_overseas_session_date_uses_new_york_calendar_boundary() -> None:
+    before_new_york_midnight = datetime(
+        2026,
+        7,
+        29,
+        3,
+        59,
+        59,
+        tzinfo=timezone.utc,
+    )
+    at_new_york_midnight = datetime(
+        2026,
+        7,
+        29,
+        4,
+        0,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    assert (
+        LiquidityLabService._overseas_session_date(
+            before_new_york_midnight,
+        )
+        == "20260728"
+    )
+    assert (
+        LiquidityLabService._overseas_session_date(
+            at_new_york_midnight,
+        )
+        == "20260729"
+    )
 
 
 def test_overseas_buy_fails_closed_when_open_order_lookup_fails() -> None:

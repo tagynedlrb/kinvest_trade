@@ -276,6 +276,8 @@ class LiquidityLabService:
         self._overseas_scan_cycle_count: int = 0
         self._overseas_balance_cache: dict = {}
         self._domestic_balance_cache: dict = {}
+        self._vps_open_overseas_order_snapshot_key: tuple[str, int] | None = None
+        self._vps_open_overseas_order_snapshot: list[dict] = []
         self._domestic_quote_cache: dict[str, DomesticScanResult] = {}
         self._domestic_quote_cache_cycle: int = -1
         self._domestic_minute_chart_cache: dict[str, list[dict]] = {}
@@ -2413,6 +2415,13 @@ class LiquidityLabService:
         execution_context: dict | None = None,
         replacement_for_order_no: str = "",
     ) -> dict | None:
+        if (
+            str(market).strip().lower() == "overseas"
+            and not is_virtual
+            and str(status).strip().upper()
+            in {"SUBMITTED", "CANCELED", "CANCELLED"}
+        ):
+            self._invalidate_vps_open_overseas_order_snapshot()
         repository = getattr(self, "repository", None)
         if repository is None:
             return None
@@ -2620,6 +2629,84 @@ class LiquidityLabService:
             return None
         return parsed.replace(tzinfo=KST).astimezone(timezone.utc)
 
+    def _invalidate_vps_open_overseas_order_snapshot(self) -> None:
+        self._vps_open_overseas_order_snapshot_key = None
+        self._vps_open_overseas_order_snapshot = []
+
+    @staticmethod
+    def _overseas_session_date(now_utc: datetime | None = None) -> str:
+        current = now_utc or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.astimezone(NEW_YORK).strftime("%Y%m%d")
+
+    async def _load_vps_open_overseas_order_snapshot(self) -> list[dict]:
+        session_date = self._overseas_session_date()
+        cache_key = (
+            session_date,
+            int(getattr(self, "_cycle_count", 0) or 0),
+        )
+        if (
+            getattr(
+                self,
+                "_vps_open_overseas_order_snapshot_key",
+                None,
+            )
+            == cache_key
+        ):
+            return list(
+                getattr(
+                    self,
+                    "_vps_open_overseas_order_snapshot",
+                    [],
+                )
+            )
+
+        history = await self.client.get_overseas_order_history(
+            symbol="",
+            start_date=session_date,
+            end_date=session_date,
+            side_filter="00",
+            fill_filter="00",
+            exchange_code="",
+            sort_sqn="DS",
+            order_date="",
+            order_branch_no="",
+            order_no="",
+            paginate=True,
+            max_pages=10,
+        )
+        results: list[dict] = []
+        for row in history.get("orders", []):
+            row_symbol = str(
+                row.get("pdno") or row.get("ovrs_pdno") or ""
+            ).strip().upper()
+            open_qty = parse_kis_number(row.get("nccs_qty"))
+            if not row_symbol or open_qty <= 0:
+                continue
+            result = dict(row)
+            result["symbol"] = row_symbol
+            result["exchange_code"] = str(
+                row.get("ovrs_excg_cd") or ""
+            ).strip().upper()
+            result["open_qty"] = open_qty
+            result["order_no"] = str(row.get("odno") or "").strip()
+            result["order_price"] = self._parse_float(
+                row.get("ft_ord_unpr3")
+            )
+            result["created_at"] = (
+                self._parse_overseas_order_history_timestamp(row)
+            )
+            results.append(result)
+        results.sort(
+            key=lambda item: item.get("created_at")
+            or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        self._vps_open_overseas_order_snapshot_key = cache_key
+        self._vps_open_overseas_order_snapshot = results
+        return list(results)
+
     async def _list_open_overseas_orders(
         self,
         *,
@@ -2636,20 +2723,13 @@ class LiquidityLabService:
                     max_pages=10,
                 )
             else:
-                now_kst = datetime.now(timezone.utc).astimezone(KST)
-                start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
-                end_date = now_kst.strftime("%Y%m%d")
-                history = await self.client.get_overseas_order_history(
-                    symbol=symbol.upper(),
-                    start_date=start_date,
-                    end_date=end_date,
-                    side_filter="00",
-                    fill_filter="02",
-                    exchange_code="",
-                    sort_sqn="DS",
-                    paginate=True,
-                    max_pages=10,
-                )
+                rows = await self._load_vps_open_overseas_order_snapshot()
+                return [
+                    row
+                    for row in rows
+                    if str(row.get("symbol") or "").strip().upper()
+                    == symbol.upper()
+                ]
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "[ORDERS] 해외 미체결 조회 실패 - 주문 보류 (symbol=%s, error=%s)",

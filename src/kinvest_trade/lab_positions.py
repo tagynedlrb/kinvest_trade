@@ -101,6 +101,8 @@ class VirtualTradeManager:
         created_at: str,
         seed_avg_price: float | None = None,
         seed_qty: int | None = None,
+        excluded_from_performance: bool = False,
+        exclude_reason: str = "",
     ) -> tuple[float, float]:
         if qty <= 0 or fill_price <= 0:
             return 0.0, 0.0
@@ -156,6 +158,9 @@ class VirtualTradeManager:
             reason=reason,
             realized_pnl=realized_pnl,
             realized_pnl_pct=realized_pnl_pct,
+            excluded_from_performance=excluded_from_performance,
+            exclude_reason=exclude_reason,
+            excluded_at=created_at if excluded_from_performance else None,
         )
         return realized_pnl, realized_pnl_pct
 

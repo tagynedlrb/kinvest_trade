@@ -338,6 +338,11 @@ DRY_RUN=false python3 main.py overseas-order-test sell <종목코드> --exchange
 `OverseasMomentumPolicy`가 별도 설정 객체를 보유하고, 전략 관리자는 `market:symbol` 키로
 분리된다. 미장 고정종목 모드인 `auto-run`도 미장 정책 파일을 사용한다.
 
+미장 정책의 `corporate_actions`는 거래가 끝난 기업행동을 공식 출처와 함께 명시하는
+별도 수명주기 레지스트리다. 현재 지원 유형은 현금합병(`cash_merger`)이며, 효력일,
+최종거래일, 주당 현금대가, 통화, 상태와 근거 URL을 모두 검증한다. 국장 정책에는
+별도 정의가 없으므로 미장 기업행동이 국장 종목이나 공식에 전파되지 않는다.
+
 연속손실 카운터와 쿨다운은 시장별로 동작하므로 국장 연속손실이 미장 신규 진입을 멈추지 않는다.
 반면 계좌 단위 안전장치인 `daily_loss_limit_pct`와 `max_concurrent_total_positions`는 두 시장에
 공통 적용된다. 계좌 일일손익은 KST 자정이 아니라 `account_risk_day_rollover_hour_kst`
@@ -794,6 +799,16 @@ Net은 현재 미장 정책의 매수·매도 수수료와 매도 SEC fee를 적
 
 ### 가상(virtual) 거래
 모의투자 환경에서 미국 시장이 열려 있지만 주문이 거부되는 세션(데이타임/프리마켓/애프터마켓)에는 실제 브로커 잔고와 분리된 `virtual_positions`, `virtual_orders` 테이블에 가상 체결을 기록한다. 실제 보유분을 거래불가 세션에 먼저 가상 매도한 경우에는 `virtual_sell_pending`에 정산 대기 수량이 음수 성격으로 따로 쌓인다. 이 포트폴리오는 실제 `liquidity_lab`의 진입/청산 신호를 그대로 따르지만, `get_overseas_balance` 등 실제 잔고와는 섞이지 않는다. 거래 가능 시간이 되면 정산 대기 매도는 실제 매도로 맞춰지고 `[KIS][VIRTUAL_SETTLED]` 알림이 전송된다. 텔레그램 알림은 종목명 뒤에 `(virtual)`이 붙고, 누적 성과와 정산 대기 상태는 `/lab_portfolio` 명령으로 확인할 수 있다.
+- 미장 정책에 효력 발생한 현금합병이 등록돼 있으면, 새 사이클의 최신 KIS 잔고에서
+  해당 거래소와 종목의 실제 보유가 없음을 확인한 가상 포지션만 공식 주당 현금대가로
+  정산한다. 실제 보유가 있거나 잔고 캐시가 오래됐거나 실정산 대기 수량이 있으면
+  자동정산하지 않고 검토 이벤트를 남긴다.
+- 기업행동 정산은 전략이 선택한 시장 매도가 아니므로
+  `excluded_from_performance=1`,
+  `exclude_reason=corporate_action_cash_settlement`로 저장한다. 이후 후보 스캔은
+  해당 종목을 호가 호출 전에 제외하고 주문 직전에도
+  `corporate_action_effective`로 재차 차단한다. 거래량 0이나 반복된 동일 가격만으로
+  합병·상장폐지를 추정하지 않는다.
 - 가상매도 수량이 실제 보유 전량을 덮으면 전략 노출은 이미 닫힌
   것이므로 `/lab_watchlist`와 사이클 원장에는 반복 매도신호가 아니라
   `가상청산 후 실정산 대기`로 표시한다. 단, 실제 체결 전까지 해당

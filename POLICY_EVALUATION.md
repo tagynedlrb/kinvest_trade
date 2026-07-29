@@ -880,6 +880,34 @@ the current direction is wrong.
 
 ## Current decision checkpoint (2026-07-30 KST)
 
+- CPRX is not an ordinary `time_exit_cost_floor_hold` sample. The virtual
+  position has 118 shares at $31.48, 10,135 cycle observations confined to
+  $31.48-$31.49, and no matching real broker holding. Nasdaq states that the
+  merger closed before the July 15 open, July 14 was the last trading date,
+  suspension became effective July 16, and consideration is $31.50 cash per
+  share. The SEC filing independently states that each ordinary share converts
+  into the right to receive $31.50 cash.
+- Deploy an official-source corporate-action registry in the US policy only.
+  Reconcile after a fresh same-cycle broker balance, auto-settle only a
+  virtual-only position at the configured cash consideration, preserve any
+  real or pending-settlement position for review, and block an effective,
+  unheld symbol before quote retrieval and again before order submission.
+  Domestic policy has an independent empty registry.
+- Record the CPRX cash conversion at +$2.36 gross but exclude it from strategy
+  performance. It is a merger conversion, not a discretionary market exit,
+  and applying the ordinary round-trip commission model would misstate both
+  the exit decision and its economics.
+- Reject zero-volume inference, manual row deletion, real-holding
+  auto-settlement, and a new generic maximum hold. Those alternatives would
+  respectively create halt/illiquidity false positives, destroy auditability,
+  outrun the broker cash ledger, or fit an exit rule to the wrong failure
+  class. Removing dead-symbol API work and a stale virtual slot improves
+  capacity hygiene but does not justify looser gates or higher turnover while
+  US after-cost expectancy remains negative.
+- The corporate-action implementation passed all 807 repository tests,
+  `compileall`, and diff checks. Evaluation row 88 records the official
+  evidence, alternatives, and rollback conditions. Its comparative status is
+  deployment pending with no direct smaller-model A/B run or inferred.
 - Three-day confirmed frequency is 11 domestic buys/11 exits and 53 US
   buys/46 strategy-owned exits. Account-wide confirmed outcomes are 12
   domestic exits, 17% wins, -0.785% average net and -83,147 KRW; and 52 US

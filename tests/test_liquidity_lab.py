@@ -6097,6 +6097,297 @@ def _build_run_service() -> LiquidityLabService:
     return service
 
 
+def _configure_test_corporate_action_service(
+    service: LiquidityLabService,
+) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    service.config = load_app_config(
+        project_root / "config" / "fixed_config.json"
+    )
+    service.market_policy_registry = None
+    service._cycle_count = 7
+    service._session_id = "corporate-test"
+    service._corporate_action_notice_keys = set()
+    service._signal_cache_updated_at = {}
+    service._overseas_signal_failures = {}
+    service._overseas_signal_suppressed_until = {}
+    service._overseas_signal_unavailable_details = {}
+    service._no_orderable_retry = {}
+    service._exit_price_shock_guard = {}
+    service._stop_loss_confirm_guard = {}
+    service._cycle_exit_reference_prices = {}
+    service._persisted_symbol_state = {}
+    service._strategy_managers = {}
+
+
+def test_virtual_corporate_action_settles_once_with_fresh_no_real_balance() -> None:
+    service = _build_run_service()
+    _configure_test_corporate_action_service(service)
+    service._overseas_balance_cache = {
+        "cycle": 7,
+        "data": {
+            "NASD": {"positions": []},
+        },
+    }
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        qty=118,
+        fill_price=31.48,
+        currency="USD",
+        session="after_hours",
+        reason="strategy_buy_signal",
+        created_at="2026-07-15 05:55:58 KST",
+    )
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="time_exit_cost_floor_hold",
+        strategy_flag="VOL",
+        entry_by="VOL",
+        holding_qty=118,
+        last_price=31.49,
+        pnl_pct=0.0003,
+        entry_price=31.48,
+        entry_time="2026-07-15 05:55:58 KST",
+        peak_price=31.49,
+        has_position=1,
+        snapshot_json={"price": 31.49},
+        updated_at="2026-07-29 06:00:00 KST",
+    )
+    service._signal_cache["CPRX"] = _snapshot()
+    service._signal_cache_updated_at["CPRX"] = datetime.now(timezone.utc)
+    service._wait_cycles["overseas:CPRX"] = 123
+    service._exit_price_shock_guard["overseas:CPRX"] = {"price": 31.49}
+
+    now = datetime(2026, 7, 29, 22, 0, tzinfo=timezone.utc)
+    first = asyncio.run(
+        service._reconcile_effective_overseas_corporate_actions(now=now)
+    )
+    second = asyncio.run(
+        service._reconcile_effective_overseas_corporate_actions(now=now)
+    )
+
+    assert first == ["CPRX"]
+    assert second == []
+    assert service.virtual_trades.get_position("overseas", "CPRX") is None
+    sells = [
+        row
+        for row in service.repository.list_virtual_orders(limit=20)
+        if row["symbol"] == "CPRX" and row["side"] == "sell"
+    ]
+    assert len(sells) == 1
+    assert sells[0]["fill_price"] == 31.50
+    assert sells[0]["excluded_from_performance"] == 1
+    assert sells[0]["exclude_reason"] == "corporate_action_cash_settlement"
+    assert round(float(sells[0]["realized_pnl"]), 8) == 2.36
+    events = service.repository.list_event_log(
+        event_type="virtual_corporate_action_settled",
+        limit=10,
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["performance_excluded"] is True
+    assert detail["broker_real_qty"] == 0
+    assert detail["action"]["effective_date"] == "2026-07-15"
+    assert detail["action"]["reference_urls"][0].startswith(
+        "https://www.nasdaqtrader.com/"
+    )
+    state = service.repository.get_lab_symbol_state("overseas", "CPRX")
+    assert state is not None
+    assert state["has_position"] == 0
+    assert state["holding_qty"] == 0
+    assert state["last_price"] is None
+    assert state["entry_price"] is None
+    assert state["snapshot_json"] is None
+    assert "CPRX" not in service._signal_cache
+    assert "overseas:CPRX" not in service._wait_cycles
+    assert "overseas:CPRX" not in service._exit_price_shock_guard
+    assert len(service.notifier.messages) == 1
+    assert "성과 집계에서 제외" in service.notifier.messages[0]
+
+
+def test_corporate_action_real_position_requires_review_without_settlement() -> None:
+    service = _build_run_service()
+    _configure_test_corporate_action_service(service)
+    service._overseas_balance_cache = {
+        "cycle": 7,
+        "data": {
+            "NASD": {
+                "positions": [
+                    {
+                        "ovrs_pdno": "CPRX",
+                        "ovrs_excg_cd": "NASD",
+                        "ovrs_cblc_qty": "118",
+                    }
+                ]
+            },
+        },
+    }
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        qty=118,
+        fill_price=31.48,
+        currency="USD",
+        session="after_hours",
+        reason="strategy_buy_signal",
+        created_at="2026-07-15 05:55:58 KST",
+    )
+
+    now = datetime(2026, 7, 29, 22, 0, tzinfo=timezone.utc)
+    first = asyncio.run(
+        service._reconcile_effective_overseas_corporate_actions(now=now)
+    )
+    second = asyncio.run(
+        service._reconcile_effective_overseas_corporate_actions(now=now)
+    )
+
+    assert first == second == []
+    assert service.virtual_trades.get_position("overseas", "CPRX") is not None
+    sells = [
+        row
+        for row in service.repository.list_virtual_orders(limit=20)
+        if row["symbol"] == "CPRX" and row["side"] == "sell"
+    ]
+    assert sells == []
+    events = service.repository.list_event_log(
+        event_type="corporate_action_real_position_review_required",
+        limit=10,
+    )
+    assert len(events) == 1
+    assert json.loads(events[0]["detail"])["real_qty"] == 118
+    assert len(service.notifier.messages) == 1
+    assert "자동정산하지 않음" in service.notifier.messages[0]
+
+
+def test_corporate_action_reconcile_defers_on_stale_balance_cache() -> None:
+    service = _build_run_service()
+    _configure_test_corporate_action_service(service)
+    service._overseas_balance_cache = {
+        "cycle": 6,
+        "data": {
+            "NASD": {"positions": []},
+        },
+    }
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        qty=118,
+        fill_price=31.48,
+        currency="USD",
+        session="after_hours",
+        reason="strategy_buy_signal",
+        created_at="2026-07-15 05:55:58 KST",
+    )
+
+    result = asyncio.run(
+        service._reconcile_effective_overseas_corporate_actions(
+            now=datetime(2026, 7, 29, 22, 0, tzinfo=timezone.utc)
+        )
+    )
+
+    assert result == []
+    assert service.virtual_trades.get_position("overseas", "CPRX") is not None
+    events = service.repository.list_event_log(
+        event_type="corporate_action_reconcile_deferred",
+        limit=10,
+    )
+    assert len(events) == 1
+    assert (
+        json.loads(events[0]["detail"])["reason"]
+        == "fresh_broker_balance_required"
+    )
+
+
+def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
+    service = _build_run_service()
+    _configure_test_corporate_action_service(service)
+    service._overseas_scan_scope = "full"
+    service._dynamic_overseas_pool = [
+        {"symbol": "CPRX", "exchange_code": "NASD"},
+        {"symbol": "AAPL", "exchange_code": "NASD"},
+    ]
+    service._overseas_scan_cycle_count = 1
+    service._overseas_balance_cache = {
+        "cycle": 7,
+        "data": {
+            "NASD": {"positions": []},
+        },
+    }
+    scanned: list[str] = []
+
+    async def fake_held_map():
+        return {}
+
+    async def fake_scan(candidate):
+        scanned.append(candidate.symbol)
+        return OverseasScanResult(
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            last_price=200.0,
+            bid=199.9,
+            ask=200.1,
+            spread_pct=0.001,
+            change_rate_pct=1.0,
+            volume=1_000_000,
+            orderable_qty=0,
+            fx_rate_krw=0.0,
+            activity_score=10.0,
+        )
+
+    async def fake_signal(_candidate):
+        return _snapshot()
+
+    service._get_held_symbol_map = fake_held_map
+    service._scan_single_overseas = fake_scan
+    service._get_overseas_signal_for_candidate = fake_signal
+
+    ranked, held = asyncio.run(service.scan_overseas())
+
+    assert scanned == ["AAPL"]
+    assert [row.symbol for row in ranked] == ["AAPL"]
+    assert held == set()
+    excluded = next(
+        row for row in service._overseas_excluded if row.code == "CPRX"
+    )
+    assert excluded.reasons == ["corporate_action_effective"]
+    assert (
+        excluded.snapshot["corporate_action"]["cash_consideration"]
+        == 31.50
+    )
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="CPRX",
+            signal_snapshot=None,
+        )
+        == "corporate_action_effective"
+    )
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="AAPL",
+            signal_snapshot=None,
+        )
+        == ""
+    )
+    assert (
+        service._entry_formula_block_reason(
+            market="domestic",
+            symbol="CPRX",
+            signal_snapshot=None,
+        )
+        == ""
+    )
+
+
 def test_reconcile_confirmed_risk_day_pnl_rebuilds_shared_account_loss(
     save_confirmed_sell,
 ) -> None:

@@ -29,6 +29,20 @@
       "reference_url": "https://www.direxion.com/product/daily-semiconductor-bull-bear-3x-etfs"
     }
   },
+  "corporate_actions": {
+    "CPRX": {
+      "action_type": "cash_merger",
+      "effective_date": "2026-07-15",
+      "last_trading_date": "2026-07-14",
+      "cash_consideration": 31.50,
+      "currency": "USD",
+      "status": "effective",
+      "reference_urls": [
+        "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-485",
+        "https://www.sec.gov/Archives/edgar/data/1369568/000119312526210587/d90722ddefa14a.htm"
+      ]
+    }
+  },
   "parameters": {
     "enabled": true,
     "mode": "FIXED_SYMBOL_MOMENTUM",

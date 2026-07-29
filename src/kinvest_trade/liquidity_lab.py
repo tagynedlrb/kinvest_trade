@@ -18,7 +18,7 @@ from .auto_trade_math import (
     estimate_domestic_trade_costs,
 )
 from .client import KisApiError, KisRestClient, parse_kis_number
-from .config import AppConfig, OverseasCandidateConfig
+from .config import AppConfig, CorporateActionDefinition, OverseasCandidateConfig
 from .execution_reconciler import BrokerExecutionReconciler
 from .inverse_policy import (
     INVERSE_BENCHMARK_ALIGNMENT_VERSION,
@@ -396,6 +396,7 @@ class LiquidityLabService:
         ] = set()
         self._post_fill_balance_notice_keys: set[str] = set()
         self._post_submit_balance_notice_keys: set[str] = set()
+        self._corporate_action_notice_keys: set[tuple[str, str, str]] = set()
 
     def _get_circuit_breaker(self) -> CircuitBreakerManager:
         cb = getattr(self, "cb", None)
@@ -2123,6 +2124,355 @@ class LiquidityLabService:
     def _get_market_policy(self, market: str) -> MomentumMarketPolicy:
         return self._get_market_policy_registry().for_market(market)
 
+    def _effective_corporate_action(
+        self,
+        market: str,
+        symbol: str,
+        *,
+        now: datetime | None = None,
+    ) -> CorporateActionDefinition | None:
+        if not hasattr(self, "config"):
+            return None
+        market_key = normalize_market_name(market)
+        action = self._get_market_policy(market_key).corporate_actions.get(
+            symbol.strip().upper()
+        )
+        if action is None or action.status != "effective":
+            return None
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        local_timezone = KST if market_key == "domestic" else NEW_YORK
+        if current.astimezone(local_timezone).date() < date.fromisoformat(
+            action.effective_date
+        ):
+            return None
+        return action
+
+    @staticmethod
+    def _corporate_action_snapshot(
+        action: CorporateActionDefinition,
+    ) -> dict:
+        return asdict(action)
+
+    def _fresh_overseas_real_quantities(
+        self,
+    ) -> tuple[dict[str, int], set[str]] | None:
+        cache = getattr(self, "_overseas_balance_cache", {})
+        cycle = int(getattr(self, "_cycle_count", 0) or 0)
+        data = cache.get("data")
+        if (
+            cache.get("cycle") != cycle
+            or not isinstance(data, dict)
+            or not data
+        ):
+            return None
+
+        quantities_by_key: dict[tuple[str, str], int] = {}
+        covered_exchanges: set[str] = set()
+        for requested_exchange, balance in data.items():
+            exchange_key = str(requested_exchange or "").strip().upper()
+            if exchange_key:
+                covered_exchanges.add(exchange_key)
+            if not isinstance(balance, dict):
+                continue
+            for row in balance.get("positions", []):
+                quantity = int(parse_kis_number(row.get("ovrs_cblc_qty")))
+                if quantity <= 0:
+                    continue
+                symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                if not symbol:
+                    continue
+                exchange_code = (
+                    str(row.get("ovrs_excg_cd", "")).strip().upper()
+                    or exchange_key
+                )
+                key = (symbol, exchange_code)
+                quantities_by_key[key] = max(
+                    quantities_by_key.get(key, 0),
+                    quantity,
+                )
+
+        quantities_by_symbol: dict[str, int] = {}
+        for (symbol, _), quantity in quantities_by_key.items():
+            quantities_by_symbol[symbol] = (
+                quantities_by_symbol.get(symbol, 0) + quantity
+            )
+        return quantities_by_symbol, covered_exchanges
+
+    def _record_corporate_action_notice_once(
+        self,
+        *,
+        notice_type: str,
+        symbol: str,
+        action: CorporateActionDefinition,
+        event_type: str,
+        detail: dict,
+    ) -> bool:
+        keys = getattr(self, "_corporate_action_notice_keys", None)
+        if keys is None:
+            keys = set()
+            self._corporate_action_notice_keys = keys
+        key = (notice_type, symbol.strip().upper(), action.effective_date)
+        if key in keys:
+            return False
+        keys.add(key)
+        self._save_event(
+            event_type=event_type,
+            market="overseas",
+            symbol=symbol,
+            detail=detail,
+        )
+        return True
+
+    async def _send_corporate_action_notification(self, message: str) -> None:
+        notifier = getattr(self, "notifier", None)
+        if notifier is None or not getattr(notifier, "enabled", True):
+            return
+        try:
+            await notifier.send(message)
+        except Exception:  # noqa: BLE001
+            _logger.warning(
+                "corporate_action_notification_failed",
+                exc_info=True,
+            )
+
+    def _clear_corporate_action_symbol_state(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        updated_at: str,
+    ) -> None:
+        market_key = normalize_market_name(market)
+        symbol_key = symbol.strip().upper()
+        prefixed_key = f"{market_key}:{symbol_key}"
+        for attribute, keys in (
+            ("_signal_cache", (symbol_key,)),
+            ("_signal_cache_updated_at", (symbol_key,)),
+            ("_overseas_signal_failures", (symbol_key,)),
+            ("_overseas_signal_suppressed_until", (symbol_key,)),
+            ("_overseas_signal_unavailable_details", (symbol_key,)),
+            ("_wait_cycles", (prefixed_key, symbol_key)),
+            ("_exit_cooldown", (prefixed_key, symbol_key)),
+            ("_no_orderable_retry", (prefixed_key, symbol_key)),
+            ("_exit_price_shock_guard", (prefixed_key, symbol_key)),
+            ("_stop_loss_confirm_guard", (prefixed_key, symbol_key)),
+            ("_cycle_exit_reference_prices", (prefixed_key, symbol_key)),
+        ):
+            mapping = getattr(self, attribute, None)
+            if not isinstance(mapping, dict):
+                continue
+            for key in keys:
+                mapping.pop(key, None)
+        persisted = getattr(self, "_persisted_symbol_state", None)
+        if isinstance(persisted, dict):
+            persisted.pop((market_key, symbol_key), None)
+        last_held = getattr(self, "_last_held_symbols", None)
+        if isinstance(last_held, set):
+            last_held.discard(symbol_key)
+        repository = getattr(self, "repository", None)
+        clear_state = getattr(
+            repository,
+            "clear_lab_symbol_position_state",
+            None,
+        )
+        if callable(clear_state):
+            clear_state(
+                market=market_key,
+                symbol=symbol_key,
+                note="corporate_action_cash_settlement",
+                updated_at=updated_at,
+            )
+        self._reset_strategy_position(symbol_key, market_key)
+
+    async def _reconcile_effective_overseas_corporate_actions(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> list[str]:
+        policy = self._get_market_policy("overseas")
+        if not policy.corporate_actions:
+            return []
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        actions = {
+            symbol: action
+            for symbol, action in policy.corporate_actions.items()
+            if self._effective_corporate_action(
+                "overseas",
+                symbol,
+                now=current,
+            )
+            is not None
+        }
+        if not actions:
+            return []
+
+        fresh_balances = self._fresh_overseas_real_quantities()
+        if fresh_balances is None:
+            for symbol, action in actions.items():
+                virtual_position = self.virtual_trades.get_position(
+                    "overseas",
+                    symbol,
+                )
+                if virtual_position is None:
+                    continue
+                self._record_corporate_action_notice_once(
+                    notice_type="deferred_stale_balance",
+                    symbol=symbol,
+                    action=action,
+                    event_type="corporate_action_reconcile_deferred",
+                    detail={
+                        "reason": "fresh_broker_balance_required",
+                        "action": self._corporate_action_snapshot(action),
+                        "virtual_qty": virtual_position.qty,
+                    },
+                )
+            return []
+
+        real_quantities, covered_exchanges = fresh_balances
+        settled_symbols: list[str] = []
+        for symbol, action in actions.items():
+            real_qty = int(real_quantities.get(symbol, 0) or 0)
+            virtual_position = self.virtual_trades.get_position(
+                "overseas",
+                symbol,
+            )
+            if real_qty > 0:
+                is_new_notice = self._record_corporate_action_notice_once(
+                    notice_type="real_position_review",
+                    symbol=symbol,
+                    action=action,
+                    event_type="corporate_action_real_position_review_required",
+                    detail={
+                        "reason": "broker_cash_settlement_requires_reconciliation",
+                        "real_qty": real_qty,
+                        "virtual_qty": (
+                            0
+                            if virtual_position is None
+                            else virtual_position.qty
+                        ),
+                        "auto_settled": False,
+                        "action": self._corporate_action_snapshot(action),
+                    },
+                )
+                if is_new_notice:
+                    await self._send_corporate_action_notification(
+                        "\n".join(
+                            [
+                                "[KIS] 미국장 기업행동 실보유 검토 필요",
+                                (
+                                    f"종목={symbol} 실보유={real_qty}주 "
+                                    f"유형={action.action_type}"
+                                ),
+                                (
+                                    f"공식 현금대가=${action.cash_consideration:.2f} "
+                                    f"효력일={action.effective_date}"
+                                ),
+                                "자동정산하지 않음: 증권사 현금입금과 잔고변경을 별도 대조해야 합니다.",
+                            ]
+                        )
+                    )
+                continue
+            if virtual_position is None or virtual_position.qty <= 0:
+                continue
+
+            exchange_code = str(
+                virtual_position.exchange_code or "NASD"
+            ).strip().upper()
+            if exchange_code not in covered_exchanges:
+                self._record_corporate_action_notice_once(
+                    notice_type="deferred_exchange_balance",
+                    symbol=symbol,
+                    action=action,
+                    event_type="corporate_action_reconcile_deferred",
+                    detail={
+                        "reason": "listing_exchange_balance_not_refreshed",
+                        "required_exchange": exchange_code,
+                        "covered_exchanges": sorted(covered_exchanges),
+                        "virtual_qty": virtual_position.qty,
+                        "action": self._corporate_action_snapshot(action),
+                    },
+                )
+                continue
+            pending = self.repository.get_virtual_sell_pending(
+                "overseas",
+                symbol,
+            )
+            if pending is not None and int(pending.get("qty", 0) or 0) > 0:
+                self._record_corporate_action_notice_once(
+                    notice_type="pending_sell_review",
+                    symbol=symbol,
+                    action=action,
+                    event_type="corporate_action_pending_sell_review_required",
+                    detail={
+                        "reason": "existing_virtual_sell_pending",
+                        "pending_qty": int(pending.get("qty", 0) or 0),
+                        "virtual_qty": virtual_position.qty,
+                        "auto_settled": False,
+                        "action": self._corporate_action_snapshot(action),
+                    },
+                )
+                continue
+
+            created_at = format_kst(current) or current.isoformat()
+            realized_pnl, realized_pnl_pct = self.virtual_trades.record_sell(
+                market="overseas",
+                symbol=symbol,
+                exchange_code=exchange_code,
+                qty=virtual_position.qty,
+                fill_price=action.cash_consideration,
+                currency=action.currency,
+                session="corporate_action",
+                reason="corporate_action_cash_settlement",
+                created_at=created_at,
+                excluded_from_performance=True,
+                exclude_reason="corporate_action_cash_settlement",
+            )
+            self._clear_corporate_action_symbol_state(
+                market="overseas",
+                symbol=symbol,
+                updated_at=created_at,
+            )
+            detail = {
+                "action": self._corporate_action_snapshot(action),
+                "qty": virtual_position.qty,
+                "avg_price": round(virtual_position.avg_price, 8),
+                "cash_consideration": action.cash_consideration,
+                "gross_cash_value": round(
+                    action.cash_consideration * virtual_position.qty,
+                    8,
+                ),
+                "realized_pnl": round(realized_pnl, 8),
+                "realized_pnl_pct": round(realized_pnl_pct, 8),
+                "broker_real_qty": 0,
+                "performance_excluded": True,
+                "exclude_reason": "corporate_action_cash_settlement",
+                "auto_settled": True,
+            }
+            self._save_event(
+                event_type="virtual_corporate_action_settled",
+                market="overseas",
+                symbol=symbol,
+                detail=detail,
+            )
+            settled_symbols.append(symbol)
+            await self._send_corporate_action_notification(
+                "\n".join(
+                    [
+                        "[KIS] 미국장 기업행동 가상포지션 정산",
+                        (
+                            f"종목={symbol} 수량={virtual_position.qty}주 "
+                            f"평단=${virtual_position.avg_price:.2f}"
+                        ),
+                        (
+                            f"공식 현금대가=${action.cash_consideration:.2f} "
+                            f"손익=${realized_pnl:+.2f}"
+                        ),
+                        "전략매도 아님: 정책 성과 집계에서 제외했습니다.",
+                    ]
+                )
+            )
+        return settled_symbols
+
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
         if tracker is not None:
@@ -2635,6 +2985,8 @@ class LiquidityLabService:
         signal_snapshot: MovingAverageSnapshot | None,
         strategy_flag: str = "",
     ) -> str:
+        if self._effective_corporate_action(market, symbol) is not None:
+            return "corporate_action_effective"
         if not hasattr(self, "config"):
             return ""
         market_key = normalize_market_name(market)
@@ -6497,6 +6849,8 @@ class LiquidityLabService:
                 await self._refresh_overseas_dynamic_pool()
 
         held_symbol_map = await self._get_held_symbol_map()
+        await self._reconcile_effective_overseas_corporate_actions()
+        held_symbol_map = await self._get_held_symbol_map()
         virtual_symbols = self._get_virtual_held_symbols()
         fully_pending_signal_symbols = (
             self._fully_pending_overseas_signal_symbols(
@@ -6589,6 +6943,31 @@ class LiquidityLabService:
         monitored_symbols = held_symbols | open_inverse_shadow_symbols
         for candidate in active_overseas_pool:
             symbol = candidate.symbol.strip().upper()
+            corporate_action = self._effective_corporate_action(
+                "overseas",
+                symbol,
+            )
+            if (
+                symbol not in monitored_symbols
+                and corporate_action is not None
+            ):
+                excluded.append(
+                    ExcludedCandidate(
+                        market="overseas",
+                        code=symbol,
+                        reasons=["corporate_action_effective"],
+                        snapshot={
+                            "symbol": symbol,
+                            "exchange_code": candidate.exchange_code,
+                            "corporate_action": (
+                                self._corporate_action_snapshot(
+                                    corporate_action
+                                )
+                            ),
+                        },
+                    )
+                )
+                continue
             if symbol not in monitored_symbols:
                 suppression_reason = self._overseas_signal_suppression_reason(symbol)
                 if suppression_reason:

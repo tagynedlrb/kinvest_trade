@@ -149,6 +149,48 @@ def test_record_sell_full_deletes_position(tmp_path) -> None:
     assert manager.get_position("overseas", "SOXL") is None
 
 
+def test_record_sell_can_exclude_corporate_action_from_performance(tmp_path) -> None:
+    manager = _build_manager(tmp_path)
+    manager.record_buy(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        qty=118,
+        fill_price=31.48,
+        currency="USD",
+        session="after_hours",
+        reason="strategy_buy_signal",
+        created_at="2026-07-15 05:55:58 KST",
+    )
+
+    realized_pnl, realized_pnl_pct = manager.record_sell(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        qty=118,
+        fill_price=31.50,
+        currency="USD",
+        session="corporate_action",
+        reason="corporate_action_cash_settlement",
+        created_at="2026-07-30 07:00:00 KST",
+        excluded_from_performance=True,
+        exclude_reason="corporate_action_cash_settlement",
+    )
+
+    assert round(realized_pnl, 8) == 2.36
+    assert round(realized_pnl_pct, 8) == round(0.02 / 31.48, 8)
+    assert manager.get_position("overseas", "CPRX") is None
+    sell = next(
+        row
+        for row in manager.repository.list_virtual_orders(limit=10)
+        if row["side"] == "sell"
+    )
+    assert sell["excluded_from_performance"] == 1
+    assert sell["exclude_reason"] == "corporate_action_cash_settlement"
+    assert sell["excluded_at"] == "2026-07-30 07:00:00 KST"
+    assert manager.performance_summary() == {}
+
+
 def test_performance_summary_aggregates_by_market_currency(tmp_path) -> None:
     manager = _build_manager(tmp_path)
     manager.record_buy(

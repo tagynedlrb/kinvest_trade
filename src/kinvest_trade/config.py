@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field, fields, replace
+from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -267,6 +270,19 @@ class InverseBenchmarkDefinition:
 
 
 @dataclass(slots=True)
+class CorporateActionDefinition:
+    market: str
+    symbol: str
+    action_type: str
+    effective_date: str
+    last_trading_date: str
+    cash_consideration: float
+    currency: str
+    status: str
+    reference_urls: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class MarketPolicyDefinition:
     policy_id: str
     engine: str
@@ -278,6 +294,9 @@ class MarketPolicyDefinition:
     post_cb_max_fires_per_session: int | None = None
     inverse_require_symbol_benchmark: bool = False
     inverse_benchmarks: dict[str, InverseBenchmarkDefinition] = field(
+        default_factory=dict
+    )
+    corporate_actions: dict[str, CorporateActionDefinition] = field(
         default_factory=dict
     )
     source_path: Path | None = None
@@ -422,6 +441,132 @@ def _coerce_market_policy_value(base_value: object, raw_value: object) -> object
             raise ValueError(f"expected list, got {type(raw_value).__name__}")
         return list(raw_value)
     return raw_value
+
+
+def _load_corporate_actions(
+    *,
+    market: str,
+    raw_actions: object,
+) -> dict[str, CorporateActionDefinition]:
+    if not isinstance(raw_actions, dict):
+        raise ValueError(f"{market} corporate_actions must be a JSON object")
+
+    allowed_fields = {
+        "action_type",
+        "effective_date",
+        "last_trading_date",
+        "cash_consideration",
+        "currency",
+        "status",
+        "reference_urls",
+    }
+    supported_statuses = {"announced", "effective", "cancelled"}
+    actions: dict[str, CorporateActionDefinition] = {}
+    for raw_symbol, raw_action in raw_actions.items():
+        symbol = str(raw_symbol).strip().upper()
+        if not symbol:
+            raise ValueError(f"{market} corporate action symbol must not be empty")
+        if not isinstance(raw_action, dict):
+            raise ValueError(
+                f"{market} corporate action for {symbol} must be a JSON object"
+            )
+        unknown_fields = sorted(set(raw_action) - allowed_fields)
+        if unknown_fields:
+            raise ValueError(
+                f"unknown {market} corporate action fields for {symbol}: "
+                f"{', '.join(unknown_fields)}"
+            )
+
+        action_type = str(raw_action.get("action_type", "") or "").strip().lower()
+        if action_type != "cash_merger":
+            raise ValueError(
+                f"unsupported {market} corporate action type for "
+                f"{symbol}: {action_type}"
+            )
+
+        parsed_dates: dict[str, str] = {}
+        for field_name in ("effective_date", "last_trading_date"):
+            raw_date = str(raw_action.get(field_name, "") or "").strip()
+            try:
+                parsed_date = date.fromisoformat(raw_date)
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid {market} corporate action {field_name} "
+                    f"for {symbol}: {raw_date}"
+                ) from exc
+            if parsed_date.isoformat() != raw_date:
+                raise ValueError(
+                    f"invalid {market} corporate action {field_name} "
+                    f"for {symbol}: {raw_date}"
+                )
+            parsed_dates[field_name] = raw_date
+        if (
+            date.fromisoformat(parsed_dates["last_trading_date"])
+            > date.fromisoformat(parsed_dates["effective_date"])
+        ):
+            raise ValueError(
+                f"{market} corporate action last_trading_date for {symbol} "
+                "must not be after effective_date"
+            )
+
+        raw_consideration = raw_action.get("cash_consideration")
+        if (
+            isinstance(raw_consideration, bool)
+            or not isinstance(raw_consideration, (int, float))
+        ):
+            raise ValueError(
+                f"{market} corporate action cash_consideration for {symbol} "
+                "must be a positive number"
+            )
+        cash_consideration = float(raw_consideration)
+        if not math.isfinite(cash_consideration) or cash_consideration <= 0:
+            raise ValueError(
+                f"{market} corporate action cash_consideration for {symbol} "
+                "must be a positive number"
+            )
+
+        currency = str(raw_action.get("currency", "") or "").strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            raise ValueError(
+                f"{market} corporate action currency for {symbol} "
+                "must be a three-letter code"
+            )
+        status = str(raw_action.get("status", "") or "").strip().lower()
+        if status not in supported_statuses:
+            raise ValueError(
+                f"unsupported {market} corporate action status for "
+                f"{symbol}: {status}"
+            )
+
+        raw_reference_urls = raw_action.get("reference_urls")
+        if not isinstance(raw_reference_urls, list) or not raw_reference_urls:
+            raise ValueError(
+                f"{market} corporate action reference_urls for {symbol} "
+                "must be a non-empty list"
+            )
+        reference_urls: list[str] = []
+        for raw_url in raw_reference_urls:
+            url = str(raw_url or "").strip()
+            parsed_url = urlparse(url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                raise ValueError(
+                    f"invalid {market} corporate action reference URL "
+                    f"for {symbol}: {url}"
+                )
+            reference_urls.append(url)
+
+        actions[symbol] = CorporateActionDefinition(
+            market=market,
+            symbol=symbol,
+            action_type=action_type,
+            effective_date=parsed_dates["effective_date"],
+            last_trading_date=parsed_dates["last_trading_date"],
+            cash_consideration=cash_consideration,
+            currency=currency,
+            status=status,
+            reference_urls=reference_urls,
+        )
+    return actions
 
 
 def _load_market_policy_definition(
@@ -612,6 +757,10 @@ def _load_market_policy_definition(
         raise ValueError(
             f"{market} inverse_require_symbol_benchmark must be a boolean"
         )
+    corporate_actions = _load_corporate_actions(
+        market=market,
+        raw_actions=definition.get("corporate_actions", {}),
+    )
 
     return MarketPolicyDefinition(
         policy_id=str(
@@ -648,6 +797,7 @@ def _load_market_policy_definition(
         ),
         inverse_require_symbol_benchmark=inverse_require_symbol_benchmark,
         inverse_benchmarks=inverse_benchmarks,
+        corporate_actions=corporate_actions,
         source_path=source_path,
     )
 

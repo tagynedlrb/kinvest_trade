@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from kinvest_trade.config import (
     _load_market_policies,
     _normalize_kis_env,
@@ -160,6 +162,18 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         overseas.inverse_benchmarks["SOXS"].unavailable_reason
         == "inverse_exact_benchmark_unavailable"
     )
+    assert domestic.corporate_actions == {}
+    assert domestic.corporate_actions is not overseas.corporate_actions
+    cprx_action = overseas.corporate_actions["CPRX"]
+    assert cprx_action.market == "overseas"
+    assert cprx_action.symbol == "CPRX"
+    assert cprx_action.action_type == "cash_merger"
+    assert cprx_action.effective_date == "2026-07-15"
+    assert cprx_action.last_trading_date == "2026-07-14"
+    assert cprx_action.cash_consideration == 31.50
+    assert cprx_action.currency == "USD"
+    assert cprx_action.status == "effective"
+    assert len(cprx_action.reference_urls) == 2
     assert domestic.auto_trade.strategy_guard_lookback_hours == 48
     assert overseas.auto_trade.strategy_guard_lookback_hours == 48
     assert domestic.auto_trade.strategy_guard_min_trades == 3
@@ -244,6 +258,91 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert domestic.source_path.name == "domestic.json"
     assert overseas.source_path is not None
     assert overseas.source_path.name == "overseas.json"
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {
+            "action_type": "cash_merger",
+            "effective_date": "2026-07-15",
+            "last_trading_date": "2026-07-14",
+            "cash_consideration": 31.50,
+            "currency": "USD",
+            "status": "effective",
+            "reference_urls": ["https://example.com/action"],
+            "unexpected": True,
+        },
+        {
+            "action_type": "cash_merger",
+            "effective_date": "2026/07/15",
+            "last_trading_date": "2026-07-14",
+            "cash_consideration": 31.50,
+            "currency": "USD",
+            "status": "effective",
+            "reference_urls": ["https://example.com/action"],
+        },
+        {
+            "action_type": "cash_merger",
+            "effective_date": "2026-07-15",
+            "last_trading_date": "2026-07-16",
+            "cash_consideration": 31.50,
+            "currency": "USD",
+            "status": "effective",
+            "reference_urls": ["https://example.com/action"],
+        },
+        {
+            "action_type": "cash_merger",
+            "effective_date": "2026-07-15",
+            "last_trading_date": "2026-07-14",
+            "cash_consideration": 0,
+            "currency": "USD",
+            "status": "effective",
+            "reference_urls": ["https://example.com/action"],
+        },
+        {
+            "action_type": "cash_merger",
+            "effective_date": "2026-07-15",
+            "last_trading_date": "2026-07-14",
+            "cash_consideration": 31.50,
+            "currency": "USD",
+            "status": "effective",
+            "reference_urls": ["file:///tmp/action"],
+        },
+        {
+            "action_type": "stock_split",
+            "effective_date": "2026-07-15",
+            "last_trading_date": "2026-07-14",
+            "cash_consideration": 31.50,
+            "currency": "USD",
+            "status": "effective",
+            "reference_urls": ["https://example.com/action"],
+        },
+    ],
+)
+def test_market_policy_rejects_invalid_corporate_actions(
+    monkeypatch,
+    action,
+) -> None:
+    monkeypatch.setenv("KIS_ENV", "vps")
+    monkeypatch.setenv("KIS_VPS_APPKEY", "paper-key")
+    monkeypatch.setenv("KIS_VPS_APPSECRET", "paper-secret")
+    monkeypatch.setenv("KIS_VPS_ACCOUNT_NO", "8765432101")
+    config = load_app_config()
+
+    with pytest.raises(ValueError):
+        _load_market_policies(
+            project_root=Path(__file__).resolve().parents[1],
+            raw_definitions={
+                "overseas": {
+                    "corporate_actions": {
+                        "CPRX": action,
+                    }
+                }
+            },
+            base_auto_trade=config.auto_trade,
+            base_risk=config.risk,
+        )
 
 
 def test_market_policy_fallback_preserves_legacy_leveraged_pool_approval(

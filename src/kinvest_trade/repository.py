@@ -3571,6 +3571,48 @@ class SqliteRepository:
                 result["snapshot_json"] = None
         return result
 
+    def clear_lab_symbol_position_state(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        note: str,
+        updated_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO lab_symbol_state (
+                    market, symbol, action_bias, signal_state, note,
+                    strategy_flag, entry_by, exit_by, holding_qty,
+                    has_position, updated_at
+                )
+                VALUES (?, ?, 'HOLD', 'HOLD', ?, '', '', '', 0, 0, ?)
+                ON CONFLICT(market, symbol) DO UPDATE SET
+                    action_bias = 'HOLD',
+                    signal_state = 'HOLD',
+                    note = excluded.note,
+                    strategy_flag = '',
+                    entry_by = '',
+                    exit_by = '',
+                    holding_qty = 0,
+                    last_price = NULL,
+                    pnl_pct = NULL,
+                    entry_price = NULL,
+                    entry_time = NULL,
+                    peak_price = NULL,
+                    has_position = 0,
+                    snapshot_json = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    market.strip().lower(),
+                    symbol.strip().upper(),
+                    note,
+                    updated_at,
+                ),
+            )
+
     def get_latest_position_entry_time(self, market: str, symbol: str) -> str | None:
         """Recover the active entry time from immutable fill/position ledgers."""
         market_key = str(market).strip().lower()

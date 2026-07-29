@@ -223,6 +223,12 @@ class MomentumMarketPolicy:
             return {}
         return self.definition.inverse_benchmarks
 
+    @property
+    def corporate_actions(self) -> dict:
+        if self.definition is None:
+            return {}
+        return self.definition.corporate_actions
+
     def evaluate_entry(
         self,
         snapshot: MovingAverageSnapshot,

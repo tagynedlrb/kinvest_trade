@@ -5688,6 +5688,11 @@ class LiquidityLabService:
 
         held_symbol_map = await self._get_held_symbol_map()
         virtual_symbols = self._get_virtual_held_symbols()
+        fully_pending_signal_symbols = (
+            self._fully_pending_overseas_signal_symbols(
+                virtual_symbols=virtual_symbols,
+            )
+        )
         open_inverse_shadow_symbols = self._open_inverse_shadow_symbols(
             "overseas"
         )
@@ -5713,6 +5718,39 @@ class LiquidityLabService:
             if full_scan
             else set(open_inverse_shadow_symbols)
         )
+        fully_pending_signal_symbols.difference_update(
+            active_inverse_symbols
+        )
+        previous_pending_signal_symbols = set(
+            getattr(
+                self,
+                "_last_fully_pending_signal_symbols",
+                set(),
+            )
+        )
+        if (
+            fully_pending_signal_symbols
+            != previous_pending_signal_symbols
+            and (
+                fully_pending_signal_symbols
+                or previous_pending_signal_symbols
+            )
+        ):
+            self._last_fully_pending_signal_symbols = set(
+                fully_pending_signal_symbols
+            )
+            self._save_event(
+                event_type="overseas_pending_signal_scan_scope",
+                market="overseas",
+                detail={
+                    "symbols": sorted(fully_pending_signal_symbols),
+                    "minute_chart_slots_skipped_per_refresh": len(
+                        fully_pending_signal_symbols
+                    ),
+                    "quotes_preserved": True,
+                    "settlement_monitoring_preserved": True,
+                },
+            )
         cycle_inverse_symbols = getattr(
             self,
             "_cycle_active_inverse_symbols",
@@ -5856,25 +5894,39 @@ class LiquidityLabService:
         signal_symbols: set[str] = set()
         for result in quote_results:
             symbol = result.symbol.upper()
-            if symbol in held_symbols:
+            if (
+                symbol in held_symbols
+                and symbol not in fully_pending_signal_symbols
+            ):
                 signal_symbols.add(symbol)
 
         passing_symbols = {
             result.symbol.upper()
             for result in quote_results
         }
+        skipped_pending_signal_count = len(
+            fully_pending_signal_symbols & passing_symbols
+        )
         signal_symbols.update(
             symbol
             for symbol in active_inverse_symbols
             if symbol in passing_symbols
         )
 
-        remaining_slots = max(0, top_n - len(signal_symbols))
+        remaining_slots = max(
+            0,
+            top_n
+            - len(signal_symbols)
+            - skipped_pending_signal_count,
+        )
         for result in quote_results:
             if remaining_slots <= 0:
                 break
             symbol = result.symbol.upper()
-            if symbol in signal_symbols:
+            if (
+                symbol in signal_symbols
+                or symbol in fully_pending_signal_symbols
+            ):
                 continue
             signal_symbols.add(symbol)
             remaining_slots -= 1
@@ -5983,6 +6035,79 @@ class LiquidityLabService:
         for symbol in self._get_virtual_held_symbols():
             result.setdefault(symbol.strip().upper(), "NASD")
         return result
+
+    def _fully_pending_overseas_signal_symbols(
+        self,
+        *,
+        virtual_symbols: set[str] | None = None,
+    ) -> set[str]:
+        repository = getattr(self, "repository", None)
+        if repository is None or not hasattr(
+            repository,
+            "list_virtual_sell_pending",
+        ):
+            return set()
+        try:
+            pending_rows = repository.list_virtual_sell_pending(
+                market="overseas",
+            )
+        except Exception:  # noqa: BLE001
+            _logger.warning(
+                "fully_pending_overseas_signal_lookup_failed",
+                exc_info=True,
+            )
+            return set()
+        if not pending_rows:
+            return set()
+
+        quantities_by_key: dict[tuple[str, str], int] = {}
+        cache = getattr(self, "_overseas_balance_cache", {})
+        for requested_exchange, balance in (cache.get("data", {}) or {}).items():
+            for row in (balance or {}).get("positions", []):
+                quantity = int(parse_kis_number(row.get("ovrs_cblc_qty")))
+                if quantity <= 0:
+                    continue
+                symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                if not symbol:
+                    continue
+                exchange_code = (
+                    str(row.get("ovrs_excg_cd", "")).strip().upper()
+                    or str(requested_exchange).strip().upper()
+                )
+                key = (symbol, exchange_code)
+                quantities_by_key[key] = max(
+                    quantities_by_key.get(key, 0),
+                    quantity,
+                )
+
+        real_qty_by_symbol: dict[str, int] = {}
+        for (symbol, _), quantity in quantities_by_key.items():
+            real_qty_by_symbol[symbol] = (
+                real_qty_by_symbol.get(symbol, 0) + quantity
+            )
+
+        virtual_held = {
+            str(symbol).strip().upper()
+            for symbol in (
+                virtual_symbols
+                if virtual_symbols is not None
+                else self._get_virtual_held_symbols()
+            )
+            if str(symbol).strip()
+        }
+        fully_pending: set[str] = set()
+        for row in pending_rows:
+            symbol = str(row.get("symbol", "")).strip().upper()
+            pending_qty = int(row.get("qty", 0) or 0)
+            real_qty = real_qty_by_symbol.get(symbol, 0)
+            if (
+                symbol
+                and symbol not in virtual_held
+                and real_qty > 0
+                and pending_qty >= real_qty
+            ):
+                fully_pending.add(symbol)
+        return fully_pending
 
     def _get_virtual_held_symbols(self) -> set[str]:
         manager = getattr(self, "virtual_trades", None)

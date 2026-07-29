@@ -22,12 +22,20 @@ class DummyWatchTarget:
 class DummyRepository:
     def __init__(self) -> None:
         self.heartbeats: list[tuple[str, str]] = []
+        self.pending_sells: list[dict] = []
 
     def save_heartbeat(self, status: str, message: str) -> None:
         self.heartbeats.append((status, message))
 
     def get_lab_symbol_state(self, market: str, symbol: str):
         return None
+
+    def list_virtual_sell_pending(self, market: str | None = None):
+        return [
+            dict(row)
+            for row in self.pending_sells
+            if market is None or row.get("market") == market
+        ]
 
 
 class DummyClient:
@@ -386,6 +394,143 @@ def test_held_symbol_in_signal_cache_even_if_low_score() -> None:
     assert [item.symbol for item in ranked[:2]] == ["AAA", "BBB"]
     assert held_symbols == {"FFF"}
     assert set(service._signal_cache.keys()) == {"AAA", "FFF"}
+
+
+def test_fully_pending_held_symbol_skips_signal_without_refilling_slot() -> None:
+    service = _build_service()
+    duplicated_position = {
+        "ovrs_cblc_qty": "3",
+        "ovrs_pdno": "AAA",
+        "ovrs_excg_cd": "NYSE",
+    }
+    service.client.positions_by_exchange = {
+        "NASD": [dict(duplicated_position)],
+        "NYSE": [dict(duplicated_position)],
+    }
+    service.repository.pending_sells = [
+        {
+            "market": "overseas",
+            "symbol": "AAA",
+            "qty": 3,
+        }
+    ]
+    score_map = {
+        "AAA": 10.0,
+        "BBB": 9.0,
+        "CCC": 8.0,
+        "DDD": 7.0,
+        "EEE": 6.0,
+        "FFF": 5.0,
+    }
+    loaded_symbols: list[str] = []
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        loaded_symbols.append(candidate.symbol)
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    ranked, held_symbols = asyncio.run(service.scan_overseas())
+
+    assert held_symbols == {"AAA"}
+    assert "AAA" in [item.symbol for item in ranked]
+    assert loaded_symbols == ["BBB"]
+    assert set(service._signal_cache) == {"BBB"}
+
+
+def test_partial_pending_held_symbol_keeps_signal_refresh() -> None:
+    service = _build_service()
+    service.client.positions_by_exchange = {
+        "NASD": [
+            {
+                "ovrs_cblc_qty": "3",
+                "ovrs_pdno": "AAA",
+                "ovrs_excg_cd": "NASD",
+            }
+        ],
+    }
+    service.repository.pending_sells = [
+        {
+            "market": "overseas",
+            "symbol": "AAA",
+            "qty": 2,
+        }
+    ]
+    score_map = {
+        "AAA": 1.0,
+        "BBB": 10.0,
+        "CCC": 9.0,
+        "DDD": 8.0,
+        "EEE": 7.0,
+        "FFF": 6.0,
+    }
+    loaded_symbols: list[str] = []
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        loaded_symbols.append(candidate.symbol)
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    asyncio.run(service.scan_overseas())
+
+    assert set(loaded_symbols) == {"AAA", "BBB"}
+    assert "AAA" in service._signal_cache
+
+
+def test_active_inverse_signal_is_not_hidden_by_pending_real_position() -> None:
+    service = _build_service()
+    service.client.positions_by_exchange = {
+        "NASD": [
+            {
+                "ovrs_cblc_qty": "3",
+                "ovrs_pdno": "SQQQ",
+                "ovrs_excg_cd": "NASD",
+            }
+        ],
+    }
+    service.repository.pending_sells = [
+        {
+            "market": "overseas",
+            "symbol": "SQQQ",
+            "qty": 3,
+        }
+    ]
+    service._active_inverse_symbols = lambda market: {"SQQQ"}
+    service._open_inverse_shadow_symbols = lambda market: set()
+    score_map = {
+        "AAA": 10.0,
+        "BBB": 9.0,
+        "CCC": 8.0,
+        "DDD": 7.0,
+        "EEE": 6.0,
+        "FFF": 5.0,
+        "SQQQ": 1.0,
+    }
+    loaded_symbols: list[str] = []
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        loaded_symbols.append(candidate.symbol)
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    asyncio.run(service.scan_overseas())
+
+    assert "SQQQ" in loaded_symbols
+    assert "SQQQ" in service._signal_cache
 
 
 def test_held_symbol_exempt_from_speculative_liquidity_filter() -> None:

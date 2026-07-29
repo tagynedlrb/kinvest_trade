@@ -316,11 +316,13 @@
   that the market state which produced the losses has changed. After the first
   overseas breaker released at 16:33:32 UTC on July 29, the latest provisional
   NASDAQ return was still -1.049%. LXFR entered four seconds later and closed
-  at -0.502% net; FVRR entered while the benchmark was -1.224% and remains an
-  open, non-independent observation. Once the benchmark recovered to -0.987%,
-  later entries were admitted. MAS and EVR still lost and triggered a second
-  breaker at 17:20:44, so the recovery gate is not a profitability claim or a
-  substitute for the ordinary entry formula.
+  at -0.502% net; FVRR entered while the benchmark was -1.224% and later closed
+  at approximately -0.694% net. Both below-floor entries lost, but they remain
+  retrospective, non-independent observations from the same provisional
+  session. Once the benchmark recovered to -0.987%, later entries were
+  admitted. MAS and EVR still lost and triggered a second breaker at 17:20:44,
+  so the recovery gate is not a profitability claim or a substitute for the
+  ordinary entry formula.
 - For overseas only, a released consecutive-loss breaker now requires a fresh
   same-New-York-session NASDAQ observation with return at or above -1.0% before
   another ordinary long entry. The observation may be at most 600 seconds old;
@@ -333,6 +335,12 @@
   risk-adjusted outcomes supports the direction of a bounded risk reduction,
   but does not validate this exact threshold
   ([NBER Working Paper 22208](https://www.nber.org/papers/w22208)).
+- The first deployed recovery path restored the actual 17:51:28 UTC overseas
+  release and captured NASDAQ at -0.537% 47 seconds later. Ordinary-long WSO
+  and TEVA orders passed the gate, while an ASH exit remained eligible. This
+  confirms state restoration, fresh-data admission, and the exit exemption;
+  it does not establish the admitted trades' profitability or the threshold's
+  superiority.
 - Re-evaluate the US post-breaker floor after at least five admitted and five
   blocked completed outcomes across three final US sessions. Revert or revise
   it if recovered entries systematically underperform blocked counterfactuals,

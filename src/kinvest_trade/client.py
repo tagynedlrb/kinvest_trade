@@ -116,6 +116,7 @@ class KisRestClient:
     _rate_limit_lock: "asyncio.Lock | None" = None
     _min_request_interval_sec: float = 0.7
     _vps_min_request_interval_sec: float = 1.05
+    _vps_overseas_balance_request_interval_sec: float = 1.10
     # KIS's official inquire_ccnl example pauses before each continuation page.
     # Live VPS logs showed that the existing request-start throttle alone was
     # insufficient, while every one-second rate-limit retry succeeded.
@@ -123,8 +124,13 @@ class KisRestClient:
     _RATE_LIMIT_MSG_CODES = frozenset({"EGW00201", "EGW00215"})
     _VPS_TRANSIENT_READ_MSG_CODES = frozenset({"90020000"})
 
-    def _request_interval_sec(self) -> float:
+    def _request_interval_sec(self, path: str = "") -> float:
         if str(self.credentials.env).strip().lower() == "vps":
+            if path == self.OVERSEAS_BALANCE_PATH:
+                return max(
+                    self._vps_min_request_interval_sec,
+                    self._vps_overseas_balance_request_interval_sec,
+                )
             return self._vps_min_request_interval_sec
         return self._min_request_interval_sec
 
@@ -165,14 +171,14 @@ class KisRestClient:
             return
         await asyncio.sleep(self._vps_overseas_history_continuation_delay_sec)
 
-    async def _throttle(self) -> None:
+    async def _throttle(self, *, path: str = "") -> None:
         if KisRestClient._rate_limit_lock is None:
             KisRestClient._rate_limit_lock = asyncio.Lock()
         async with KisRestClient._rate_limit_lock:
-            await asyncio.to_thread(self._throttle_across_processes)
+            await asyncio.to_thread(self._throttle_across_processes, path)
 
-    def _throttle_across_processes(self) -> None:
-        interval_sec = self._request_interval_sec()
+    def _throttle_across_processes(self, path: str = "") -> None:
+        interval_sec = self._request_interval_sec(path)
         state_path = self.credentials.token_cache_path.with_suffix(
             f"{self.credentials.token_cache_path.suffix}.rate_limit"
         )
@@ -391,7 +397,7 @@ class KisRestClient:
             if extra_headers:
                 headers.update(extra_headers)
             throttle_started_at = time.monotonic()
-            await self._throttle()
+            await self._throttle(path=path)
             throttle_wait_ms = int(
                 (time.monotonic() - throttle_started_at) * 1000
             )

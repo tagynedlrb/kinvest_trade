@@ -128,6 +128,58 @@ def test_circuit_breaker_auto_releases_after_cooldown() -> None:
     asyncio.run(run_case())
 
 
+def test_triggered_consecutive_breaker_stays_latched_after_profit() -> None:
+    events: list[tuple[str, dict]] = []
+    manager = CircuitBreakerManager(
+        _build_config(),
+        event_hook=lambda event_type, detail: events.append(
+            (event_type, detail)
+        ),
+    )
+
+    for _ in range(3):
+        manager.on_realised(
+            market="overseas",
+            realized_pnl_krw=-1_000,
+            pnl_pct=-0.01,
+        )
+    assert manager.is_halted("overseas") is True
+    halted_at = manager.snapshot()["halted_at_by_market"]["overseas"]
+
+    manager.on_realised(
+        market="overseas",
+        realized_pnl_krw=10_000,
+        pnl_pct=0.01,
+    )
+
+    assert manager.snapshot()["consecutive_losses_by_market"]["overseas"] == 0
+    assert manager.is_halted("overseas") is True
+    assert manager.snapshot()["halted_at_by_market"]["overseas"] == halted_at
+    assert [event_type for event_type, _ in events] == ["cb_fired"]
+
+
+def test_latched_consecutive_breaker_releases_with_reset_streak() -> None:
+    events: list[tuple[str, dict]] = []
+    manager = CircuitBreakerManager(
+        _build_config(),
+        event_hook=lambda event_type, detail: events.append(
+            (event_type, detail)
+        ),
+    )
+    manager.load_state(
+        consecutive_losses_by_market={"overseas": 0},
+        halted_at_by_market={
+            "overseas": datetime.now(timezone.utc) - timedelta(minutes=31)
+        },
+    )
+
+    assert manager.is_halted("overseas") is False
+    assert manager.snapshot()["halted_at_by_market"] == {}
+    assert manager.last_cb_released_at is not None
+    assert events[0][0] == "cb_released"
+    assert events[0][1]["market"] == "overseas"
+
+
 def test_circuit_breaker_daily_limit_keeps_block_after_consecutive_release() -> None:
     manager = CircuitBreakerManager(_build_config())
     manager.load_state(

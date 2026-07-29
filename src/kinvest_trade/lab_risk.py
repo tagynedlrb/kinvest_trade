@@ -387,7 +387,7 @@ class CircuitBreakerManager:
             if market is None
             else self._consecutive_losses_by_market.get(market, 0)
         )
-        if max_consecutive <= 0 or consecutive_losses < max_consecutive:
+        if max_consecutive <= 0:
             return False
 
         fallback_cooldown = int(
@@ -398,63 +398,70 @@ class CircuitBreakerManager:
             "circuit_breaker_cooldown_minutes",
             fallback_cooldown,
         )
-        if cooldown_minutes <= 0:
-            return True
-
         now = datetime.now(timezone.utc)
         halted_at = (
             self._halted_at
             if market is None
             else self._halted_at_by_market.get(market)
         )
-        if halted_at is None:
+        if halted_at is not None:
+            if cooldown_minutes <= 0:
+                return True
+
+            elapsed_minutes = (
+                now - ensure_timezone(halted_at)
+            ).total_seconds() / 60
+            if elapsed_minutes < cooldown_minutes:
+                return True
+
+            _logger.info(
+                "[CB] 서킷브레이커 자동 해제 market=%s (%.0f분 경과)",
+                market or "all",
+                elapsed_minutes,
+            )
             if market is None:
-                self._halted_at = now
+                self.consecutive_losses = 0
+                self._halted_at = None
             else:
-                self._halted_at_by_market[market] = now
+                self._consecutive_losses_by_market[market] = 0
+                self._halted_at_by_market.pop(market, None)
+                self._last_cb_released_at_by_market[market] = now
+                self._sync_aggregate_consecutive_losses()
                 self._sync_aggregate_halted_at()
+            self._last_cb_released_at = now
             detail = {
-                "consecutive_losses": consecutive_losses,
+                "elapsed_min": round(elapsed_minutes, 1),
+                "trigger": "auto_cooldown",
                 "type": "consecutive",
             }
             if market is not None:
                 detail["market"] = market
-            self._emit_event("cb_fired", detail)
+            self._emit_event("cb_released", detail)
+            market_line = f"시장={market} " if market is not None else ""
+            self._schedule_notification(
+                f"✅ 서킷브레이커 자동 해제\n"
+                f"{market_line}쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
+            )
+            return False
+
+        if consecutive_losses < max_consecutive:
+            return False
+        if cooldown_minutes <= 0:
             return True
 
-        elapsed_minutes = (now - ensure_timezone(halted_at)).total_seconds() / 60
-        if elapsed_minutes < cooldown_minutes:
-            return True
-
-        _logger.info(
-            "[CB] 서킷브레이커 자동 해제 market=%s (%.0f분 경과)",
-            market or "all",
-            elapsed_minutes,
-        )
         if market is None:
-            self.consecutive_losses = 0
-            self._halted_at = None
+            self._halted_at = now
         else:
-            self._consecutive_losses_by_market[market] = 0
-            self._halted_at_by_market.pop(market, None)
-            self._last_cb_released_at_by_market[market] = now
-            self._sync_aggregate_consecutive_losses()
+            self._halted_at_by_market[market] = now
             self._sync_aggregate_halted_at()
-        self._last_cb_released_at = now
         detail = {
-            "elapsed_min": round(elapsed_minutes, 1),
-            "trigger": "auto_cooldown",
+            "consecutive_losses": consecutive_losses,
             "type": "consecutive",
         }
         if market is not None:
             detail["market"] = market
-        self._emit_event("cb_released", detail)
-        market_line = f"시장={market} " if market is not None else ""
-        self._schedule_notification(
-            f"✅ 서킷브레이커 자동 해제\n"
-            f"{market_line}쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
-        )
-        return False
+        self._emit_event("cb_fired", detail)
+        return True
 
     def _check_daily(
         self,

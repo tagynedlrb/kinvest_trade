@@ -365,6 +365,17 @@ Circuit-breaker daily PnL and consecutive-loss direction use confirmed net PnL,
 not submitted-price or pre-cost PnL. A positive gross move that fails to clear
 round-trip costs is still a loss for risk control.
 
+Once a market-specific consecutive-loss breaker fires, its cooldown is latched
+to the original fire time. Later confirmation of a profitable exit may reset
+the trailing loss count and must still update account PnL, but it cannot
+silently reopen entries before that cooldown expires. Only the recorded
+automatic expiry or an explicit operator reset may release the latch. This
+rule is market-local: a KRX latch cannot block US entries and a US latch cannot
+block KRX entries. KIS overseas aggregate history exposes an order time rather
+than a distinct fill time, so delayed confirmation can make the exact economic
+outcome order unknowable; that uncertainty favors preserving an already-fired
+safety interval, not moving its start or declaring the trigger erroneous.
+
 Domestic costs are product-aware. The domestic policy charges its configured
 round-trip commission to every KRX fill and a 0.20% sell tax to ordinary KOSPI
 and KOSDAQ shares. ETF, ETN, and ELW rows are exempt only when the structured

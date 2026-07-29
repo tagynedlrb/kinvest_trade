@@ -6385,6 +6385,37 @@ def test_build_unified_watch_targets_merges_domestic_and_overseas() -> None:
     ]
 
 
+def test_build_unified_watch_targets_keeps_active_inverse_inside_limit() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 2
+    service._cycle_active_inverse_symbols = {
+        "domestic": {"252670"},
+    }
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+        DomesticScanResult("D2", 9900, 9910, 9890, 0.001, 0.008, 8_000_000_000, 90_000, 40.0),
+        DomesticScanResult("252670", 2500, 2510, 2490, 0.001, 0.005, 7_000_000_000, 80_000, 1.0),
+    ]
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=[],
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=True,
+            us_open=False,
+        )
+    )
+
+    assert [item.code for item in watch_targets] == ["252670", "D1"]
+
+
 def test_cycle_log_saved_per_watch_target() -> None:
     service = _build_run_service()
     service._cycle_count = 9

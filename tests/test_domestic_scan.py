@@ -82,3 +82,23 @@ def test_held_domestic_symbol_exempt_from_speculative_liquidity_filter() -> None
 
     assert "042660" in [item.stock_code for item in ranked]
     assert "042660" not in [item.code for item in service._domestic_excluded]
+
+
+def test_open_inverse_shadow_exempt_from_speculative_liquidity_filter() -> None:
+    service = _build_service()
+    service._active_inverse_symbols = lambda market: ["042660"]
+    service._open_inverse_shadow_symbols = lambda market: {"042660"}
+
+    async def fake_quote(stock_code):
+        return _quote(stock_code, thin=(stock_code == "042660"))
+
+    async def fake_full(stock_code):
+        return _quote(stock_code, thin=(stock_code == "042660"))
+
+    service._scan_single_domestic_quote = fake_quote
+    service._scan_single_domestic = fake_full
+
+    ranked = asyncio.run(service.scan_domestic())
+
+    assert "042660" in [item.stock_code for item in ranked]
+    assert "042660" not in [item.code for item in service._domestic_excluded]

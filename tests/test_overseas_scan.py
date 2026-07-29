@@ -208,6 +208,36 @@ def test_signal_cache_populated_after_scan() -> None:
     assert set(service._signal_cache.keys()) == {"AAA", "BBB"}
 
 
+def test_active_inverse_uses_limited_overseas_signal_slot() -> None:
+    service = _build_service()
+    score_map = {
+        "AAA": 10.0,
+        "BBB": 9.0,
+        "CCC": 8.0,
+        "DDD": 7.0,
+        "EEE": 6.0,
+        "FFF": 5.0,
+        "SQQQ": 1.0,
+    }
+    loaded_symbols: list[str] = []
+
+    async def fake_scan(candidate):
+        return _result(candidate.symbol, score_map[candidate.symbol])
+
+    async def fake_load_signal(candidate):
+        loaded_symbols.append(candidate.symbol)
+        return _snapshot(price=candidate.last_price)
+
+    service._active_inverse_symbols = lambda market: ["SQQQ"]
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    asyncio.run(service.scan_overseas())
+
+    assert set(loaded_symbols) == {"AAA", "SQQQ"}
+    assert set(service._signal_cache) == {"AAA", "SQQQ"}
+
+
 def test_signal_cache_cleared_for_non_signal_symbols() -> None:
     service = _build_service()
     service._signal_cache = {
@@ -389,6 +419,40 @@ def test_held_symbol_exempt_from_speculative_liquidity_filter() -> None:
     assert "FFF" in [item.symbol for item in ranked]
     assert "FFF" not in [item.code for item in service._overseas_excluded]
     assert "FFF" in service._signal_cache
+
+
+def test_open_inverse_shadow_exempt_from_speculative_liquidity_filter() -> None:
+    service = _build_service()
+    score_map = {
+        "AAA": 10.0,
+        "BBB": 9.0,
+        "CCC": 8.0,
+        "DDD": 7.0,
+        "EEE": 6.0,
+        "FFF": 5.0,
+        "SQQQ": 1.0,
+    }
+    service._active_inverse_symbols = lambda market: ["SQQQ"]
+    service._open_inverse_shadow_symbols = lambda market: {"SQQQ"}
+
+    async def fake_scan(candidate):
+        return _result(
+            candidate.symbol,
+            score_map[candidate.symbol],
+            volume=10 if candidate.symbol == "SQQQ" else 1000,
+        )
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    ranked, _ = asyncio.run(service.scan_overseas())
+
+    assert "SQQQ" in [item.symbol for item in ranked]
+    assert "SQQQ" not in [item.code for item in service._overseas_excluded]
+    assert "SQQQ" in service._signal_cache
 
 
 def test_build_watch_targets_uses_cache_not_api() -> None:

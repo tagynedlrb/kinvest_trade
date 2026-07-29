@@ -203,6 +203,36 @@ def test_collector_persists_both_market_benchmarks(tmp_path) -> None:
     assert len(repository.list_market_regimes(final_only=True)) == 3
 
 
+def test_collector_refreshes_open_session_regime_every_five_minutes(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "regime.db")
+    captured_at = datetime(2026, 7, 28, 0, 30, tzinfo=timezone.utc)
+    records = build_regime_records(
+        "domestic",
+        [
+            _domestic_row("20260727", 100.0),
+            _domestic_row("20260728", 98.0),
+        ],
+        captured_at=captured_at,
+    )
+    for record in records:
+        repository.upsert_market_regime(record)
+    collector = MarketRegimeCollector(object(), repository)
+    collector._last_attempt["domestic"] = captured_at
+
+    assert not collector._is_due(
+        "domestic",
+        captured_at + timedelta(minutes=4, seconds=59),
+        force=False,
+    )
+    assert collector._is_due(
+        "domestic",
+        captured_at + timedelta(minutes=5),
+        force=False,
+    )
+
+
 def test_collector_retries_incomplete_final_overseas_activity(
     tmp_path,
 ) -> None:

@@ -203,6 +203,16 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   at least 1%, its benchmark trend is down, and the inverse product itself has
   a rising intraday trend, positive current momentum, and market-specific
   volume confirmation.
+- During an open session, refresh the provisional benchmark regime every five
+  minutes so a threshold crossing is not hidden behind the normal 30-minute
+  history refresh. Provisional rows may activate shadow observation but remain
+  excluded from performance-based policy changes until the close is final.
+- An eligible inverse symbol or an already-open inverse shadow trade has
+  priority inside the existing signal and unified-watch limits. It replaces a
+  generic candidate rather than expanding the normal signal-call budget.
+- Speculative liquidity filters still apply to every new inverse candidate.
+  Only an already-open shadow trade bypasses those entry filters so its price,
+  stop, benchmark recovery, and session rollover can continue to be observed.
 - Eligibility does not authorize a broker order. The current execution mode is
   `shadow`; defensive order checks reject inverse products unless that market's
   policy is explicitly changed to `live`.

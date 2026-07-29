@@ -1173,6 +1173,33 @@ class LiquidityLabService:
             )
         return exit_reason
 
+    def _open_inverse_shadow_symbols(
+        self,
+        market: str,
+    ) -> set[str]:
+        market_key = normalize_market_name(market)
+        list_open = getattr(
+            getattr(self, "repository", None),
+            "list_open_inverse_shadow_trades",
+            None,
+        )
+        if not callable(list_open):
+            return set()
+        try:
+            rows = list_open(market=market_key)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[INVERSE] open_shadow_lookup_failed market=%s error=%s",
+                market_key,
+                exc,
+            )
+            return set()
+        return {
+            str(row.get("symbol") or "").strip().upper()
+            for row in rows
+            if str(row.get("symbol") or "").strip()
+        }
+
     def _active_inverse_symbols(
         self,
         market: str,
@@ -1180,17 +1207,7 @@ class LiquidityLabService:
         now: datetime | None = None,
     ) -> list[str]:
         market_key = normalize_market_name(market)
-        list_open = getattr(
-            getattr(self, "repository", None),
-            "list_open_inverse_shadow_trades",
-            None,
-        )
-        open_rows = list_open(market=market_key) if callable(list_open) else []
-        open_symbols = [
-            str(row.get("symbol") or "").strip().upper()
-            for row in open_rows
-            if str(row.get("symbol") or "").strip()
-        ]
+        open_symbols = sorted(self._open_inverse_shadow_symbols(market_key))
         decision = self._inverse_regime_decision(market_key, now=now)
         if decision is None or not decision.eligible:
             return open_symbols
@@ -3319,6 +3336,7 @@ class LiquidityLabService:
     async def _run_cycle(self) -> LiquidityLabReport:
         now = datetime.now(timezone.utc)
         self._cycle_count = getattr(self, "_cycle_count", 0) + 1
+        self._cycle_active_inverse_symbols = {}
         if not getattr(self, "_session_start_logged", False):
             self._session_start_logged = True
             self._save_event(
@@ -3918,10 +3936,26 @@ class LiquidityLabService:
             if getattr(self, "_dynamic_domestic_codes", None)
             else list(config.domestic_candidates)
         )
-        for inverse_symbol in self._active_inverse_symbols("domestic"):
+        active_inverse_symbols = self._active_inverse_symbols("domestic")
+        cycle_inverse_symbols = getattr(
+            self,
+            "_cycle_active_inverse_symbols",
+            None,
+        )
+        if cycle_inverse_symbols is None:
+            cycle_inverse_symbols = {}
+            self._cycle_active_inverse_symbols = cycle_inverse_symbols
+        cycle_inverse_symbols.setdefault("domestic", set()).update(
+            active_inverse_symbols
+        )
+        open_inverse_shadow_symbols = self._open_inverse_shadow_symbols(
+            "domestic"
+        )
+        for inverse_symbol in active_inverse_symbols:
             if inverse_symbol not in active_codes:
                 active_codes.append(inverse_symbol)
         held_codes = self._held_domestic_codes()
+        monitored_codes = held_codes | open_inverse_shadow_symbols
         quote_results: list[DomesticScanResult] = []
         excluded: list[ExcludedCandidate] = []
         for stock_code in active_codes:
@@ -3947,7 +3981,7 @@ class LiquidityLabService:
             # hold from getting a fresh quote/signal this cycle.
             reasons = (
                 []
-                if candidate.stock_code in held_codes
+                if candidate.stock_code in monitored_codes
                 else self._domestic_quote_speculative_reasons(candidate)
             )
             if reasons:
@@ -4017,7 +4051,7 @@ class LiquidityLabService:
                 continue
             reasons = (
                 []
-                if full_candidate.stock_code in held_codes
+                if full_candidate.stock_code in monitored_codes
                 else self._domestic_speculative_reasons(full_candidate)
             )
             if reasons:
@@ -4104,6 +4138,9 @@ class LiquidityLabService:
 
         held_symbol_map = await self._get_held_symbol_map()
         virtual_symbols = self._get_virtual_held_symbols()
+        open_inverse_shadow_symbols = self._open_inverse_shadow_symbols(
+            "overseas"
+        )
         active_overseas_pool = self._active_overseas_pool(
             held_symbol_map=held_symbol_map,
             held_symbols=set(held_symbol_map.keys()) | virtual_symbols,
@@ -4112,12 +4149,24 @@ class LiquidityLabService:
             candidate.symbol.strip().upper()
             for candidate in active_overseas_pool
         }
+        active_inverse_symbols = self._active_inverse_symbols("overseas")
+        cycle_inverse_symbols = getattr(
+            self,
+            "_cycle_active_inverse_symbols",
+            None,
+        )
+        if cycle_inverse_symbols is None:
+            cycle_inverse_symbols = {}
+            self._cycle_active_inverse_symbols = cycle_inverse_symbols
+        cycle_inverse_symbols.setdefault("overseas", set()).update(
+            active_inverse_symbols
+        )
         inverse_exchange_codes = {
             "SQQQ": "NASD",
             "SOXS": "AMEX",
             "SPXU": "AMEX",
         }
-        for inverse_symbol in self._active_inverse_symbols("overseas"):
+        for inverse_symbol in active_inverse_symbols:
             if inverse_symbol in active_overseas_symbols:
                 continue
             active_overseas_pool.append(
@@ -4131,9 +4180,10 @@ class LiquidityLabService:
             )
             active_overseas_symbols.add(inverse_symbol)
         held_symbols = set(held_symbol_map.keys()) | virtual_symbols
+        monitored_symbols = held_symbols | open_inverse_shadow_symbols
         for candidate in active_overseas_pool:
             symbol = candidate.symbol.strip().upper()
-            if symbol not in held_symbols:
+            if symbol not in monitored_symbols:
                 suppression_reason = self._overseas_signal_suppression_reason(symbol)
                 if suppression_reason:
                     excluded.append(
@@ -4184,7 +4234,11 @@ class LiquidityLabService:
             # this cycle and the exit decision silently falls back to whatever
             # signal was last cached (surfaced to the user as "stale_signal_cache"),
             # even while its price keeps moving.
-            reasons = [] if symbol in held_symbols else self._overseas_speculative_reasons(scan_result)
+            reasons = (
+                []
+                if symbol in monitored_symbols
+                else self._overseas_speculative_reasons(scan_result)
+            )
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
@@ -4215,7 +4269,7 @@ class LiquidityLabService:
             # Keep held symbols and existing cached signals alive when quote fetches
             # temporarily fail so exit/watch logic can continue using last-good
             # balance data and persisted signal context.
-            if not held_symbols:
+            if not monitored_symbols:
                 self._signal_cache.clear()
                 updated_map = getattr(self, "_signal_cache_updated_at", None)
                 if updated_map is not None:
@@ -4247,6 +4301,16 @@ class LiquidityLabService:
             if symbol in held_symbols:
                 signal_symbols.add(symbol)
 
+        passing_symbols = {
+            result.symbol.upper()
+            for result in quote_results
+        }
+        signal_symbols.update(
+            symbol
+            for symbol in active_inverse_symbols
+            if symbol in passing_symbols
+        )
+
         remaining_slots = max(0, top_n - len(signal_symbols))
         for result in quote_results:
             if remaining_slots <= 0:
@@ -4266,7 +4330,7 @@ class LiquidityLabService:
             self._record_overseas_signal_result(
                 result,
                 signal_snapshot,
-                is_held=symbol in held_symbols,
+                is_held=symbol in monitored_symbols,
             )
             await asyncio.sleep(0.05)
 
@@ -5272,6 +5336,25 @@ class LiquidityLabService:
                 selected_keys.add(pair)
 
         remaining_slots = max(0, self.config.liquidity_lab.unified_watch_top_n)
+        active_inverse_symbols = getattr(
+            self,
+            "_cycle_active_inverse_symbols",
+            {},
+        )
+        for item in unified:
+            market_inverse_symbols = active_inverse_symbols.get(
+                item.market,
+                set(),
+            )
+            if item.code.upper() not in market_inverse_symbols:
+                continue
+            pair = (item.market, item.code.upper())
+            if pair in selected_keys:
+                continue
+            selected.append(item)
+            selected_keys.add(pair)
+            remaining_slots = max(0, remaining_slots - 1)
+
         for item in unified:
             if remaining_slots <= 0:
                 break

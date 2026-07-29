@@ -299,12 +299,16 @@ class MarketRegimeCollector:
         *,
         backfill_days: int = 150,
         refresh_minutes: int = 30,
+        intraday_refresh_minutes: int = 5,
         incomplete_final_retry_minutes: int = 10,
     ) -> None:
         self.client = client
         self.repository = repository
         self.backfill_days = max(45, int(backfill_days))
         self.refresh_interval = timedelta(minutes=max(5, int(refresh_minutes)))
+        self.intraday_refresh_interval = timedelta(
+            minutes=max(5, int(intraday_refresh_minutes))
+        )
         self.incomplete_final_retry_interval = timedelta(
             minutes=max(5, int(incomplete_final_retry_minutes))
         )
@@ -426,14 +430,23 @@ class MarketRegimeCollector:
             market,
             today_record,
         )
-        retry_interval = (
-            min(
+        open_session_incomplete = (
+            self._is_trading_day(market, local_now.date())
+            and local_now.time() >= config["open_time"]
+            and (
+                today_record is None
+                or int(today_record.get("is_final") or 0) == 0
+            )
+        )
+        if needs_final_refresh:
+            retry_interval = min(
                 self.refresh_interval,
                 self.incomplete_final_retry_interval,
             )
-            if needs_final_refresh
-            else self.refresh_interval
-        )
+        elif open_session_incomplete:
+            retry_interval = self.intraday_refresh_interval
+        else:
+            retry_interval = self.refresh_interval
         last_attempt = self._last_attempt.get(market)
         if last_attempt is not None and now_utc - last_attempt < retry_interval:
             return False

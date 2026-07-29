@@ -3361,6 +3361,8 @@ class SqliteRepository:
         include_virtual: bool = True,
         after_logged_at: str = "",
         include_non_session_real: bool = False,
+        virtual_overseas_commission_rate: float = 0.0,
+        virtual_overseas_sec_fee_rate: float = 0.0,
     ) -> dict:
         after_dt = parse_datetime(after_logged_at)
         with self._connect() as conn:
@@ -3482,6 +3484,98 @@ class SqliteRepository:
             del stats["_sum_pnl_pct"]
 
         virtual_summary: dict[str, dict[str, float | int | str]] = {}
+        virtual_by_exit_session: dict[str, dict[str, float | int | str]] = {}
+        overseas_commission_rate = max(
+            float(virtual_overseas_commission_rate or 0.0),
+            0.0,
+        )
+        overseas_sec_fee_rate = max(
+            float(virtual_overseas_sec_fee_rate or 0.0),
+            0.0,
+        )
+
+        def _accumulate_virtual(
+            target: dict[str, dict[str, float | int | str]],
+            key: str,
+            row: dict,
+            *,
+            exit_session: str = "",
+        ) -> None:
+            market = str(row.get("market") or "unknown")
+            currency = str(row.get("currency") or "USD")
+            stats = target.setdefault(
+                key,
+                {
+                    "market": market,
+                    "currency": currency,
+                    "exit_session": exit_session,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "net_win_count": 0,
+                    "net_loss_count": 0,
+                    "avg_pnl_pct": 0.0,
+                    "avg_estimated_net_pnl_pct": 0.0,
+                    "_sum_pnl_pct": 0.0,
+                    "_sum_estimated_net_pnl_pct": 0.0,
+                    "total_pnl": 0.0,
+                    "total_gross_pnl": 0.0,
+                    "total_estimated_cost": 0.0,
+                    "total_estimated_net_pnl": 0.0,
+                    "cost_model": (
+                        "round_trip_commission_plus_sell_sec_fee"
+                        if market.lower() == "overseas"
+                        else "gross_only"
+                    ),
+                },
+            )
+            pnl = float(row.get("realized_pnl") or 0.0)
+            pnl_pct = float(row.get("realized_pnl_pct") or 0.0)
+            estimated_cost = 0.0
+            estimated_net_pnl = pnl
+            estimated_net_pnl_pct = pnl_pct
+            qty = max(int(row.get("qty") or 0), 0)
+            exit_price = max(float(row.get("fill_price") or 0.0), 0.0)
+            if market.lower() == "overseas" and qty > 0 and exit_price > 0:
+                entry_price = exit_price - (pnl / qty)
+                if entry_price > 0:
+                    estimated_cost = qty * (
+                        entry_price * overseas_commission_rate
+                        + exit_price
+                        * (
+                            overseas_commission_rate
+                            + overseas_sec_fee_rate
+                        )
+                    )
+                    estimated_net_pnl = pnl - estimated_cost
+                    estimated_net_pnl_pct = estimated_net_pnl / (
+                        entry_price * qty
+                    )
+
+            stats["trade_count"] = int(stats["trade_count"]) + 1
+            if pnl > 0:
+                stats["win_count"] = int(stats["win_count"]) + 1
+            else:
+                stats["loss_count"] = int(stats["loss_count"]) + 1
+            if estimated_net_pnl > 0:
+                stats["net_win_count"] = int(stats["net_win_count"]) + 1
+            else:
+                stats["net_loss_count"] = int(stats["net_loss_count"]) + 1
+            stats["_sum_pnl_pct"] = float(stats["_sum_pnl_pct"]) + pnl_pct
+            stats["_sum_estimated_net_pnl_pct"] = (
+                float(stats["_sum_estimated_net_pnl_pct"])
+                + estimated_net_pnl_pct
+            )
+            stats["total_pnl"] = float(stats["total_pnl"]) + pnl
+            stats["total_gross_pnl"] = float(stats["total_gross_pnl"]) + pnl
+            stats["total_estimated_cost"] = (
+                float(stats["total_estimated_cost"]) + estimated_cost
+            )
+            stats["total_estimated_net_pnl"] = (
+                float(stats["total_estimated_net_pnl"])
+                + estimated_net_pnl
+            )
+
         for row in virtual_rows:
             created_at_dt = parse_datetime(row.get("created_at"))
             if after_dt is not None and created_at_dt is not None and created_at_dt < after_dt:
@@ -3489,38 +3583,37 @@ class SqliteRepository:
             market = str(row.get("market") or "unknown")
             currency = str(row.get("currency") or "USD")
             key = f"{market}_{currency}"
-            stats = virtual_summary.setdefault(
-                key,
-                {
-                    "market": market,
-                    "currency": currency,
-                    "trade_count": 0,
-                    "win_count": 0,
-                    "loss_count": 0,
-                    "avg_pnl_pct": 0.0,
-                    "_sum_pnl_pct": 0.0,
-                    "total_pnl": 0.0,
-                },
+            exit_session = str(row.get("session") or "unknown").strip().lower()
+            _accumulate_virtual(virtual_summary, key, row)
+            _accumulate_virtual(
+                virtual_by_exit_session,
+                f"{key}_{exit_session}",
+                row,
+                exit_session=exit_session,
             )
-            pnl = float(row.get("realized_pnl") or 0.0)
-            pnl_pct = float(row.get("realized_pnl_pct") or 0.0)
-            stats["trade_count"] = int(stats["trade_count"]) + 1
-            if pnl > 0:
-                stats["win_count"] = int(stats["win_count"]) + 1
-            else:
-                stats["loss_count"] = int(stats["loss_count"]) + 1
-            stats["_sum_pnl_pct"] = float(stats["_sum_pnl_pct"]) + pnl_pct
-            stats["total_pnl"] = float(stats["total_pnl"]) + pnl
 
-        for stats in virtual_summary.values():
-            trade_count = int(stats["trade_count"])
-            stats["avg_pnl_pct"] = (float(stats["_sum_pnl_pct"]) / trade_count) if trade_count else 0.0
-            del stats["_sum_pnl_pct"]
+        for summary in (virtual_summary, virtual_by_exit_session):
+            for stats in summary.values():
+                trade_count = int(stats["trade_count"])
+                stats["avg_pnl_pct"] = (
+                    float(stats["_sum_pnl_pct"]) / trade_count
+                    if trade_count
+                    else 0.0
+                )
+                stats["avg_estimated_net_pnl_pct"] = (
+                    float(stats["_sum_estimated_net_pnl_pct"])
+                    / trade_count
+                    if trade_count
+                    else 0.0
+                )
+                del stats["_sum_pnl_pct"]
+                del stats["_sum_estimated_net_pnl_pct"]
 
         return {
             "real": real_summary,
             "real_by_symbol": real_by_symbol,
             "virtual": virtual_summary,
+            "virtual_by_exit_session": virtual_by_exit_session,
         }
 
     def get_realized_strategy_performance(

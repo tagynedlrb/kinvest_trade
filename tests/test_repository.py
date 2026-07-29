@@ -1713,7 +1713,7 @@ def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
         qty=1,
         fill_price=199.0,
         currency="USD",
-        session="regular",
+        session="aftermarket",
         reason="stop_loss",
         realized_pnl=-2.0,
         realized_pnl_pct=-0.01,
@@ -1725,6 +1725,33 @@ def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:
     assert summary["virtual"]["overseas_USD"]["trade_count"] == 2
     assert summary["virtual"]["overseas_USD"]["win_count"] == 1
     assert summary["virtual"]["overseas_USD"]["total_pnl"] == -1.0
+    assert set(summary["virtual_by_exit_session"]) == {
+        "overseas_USD_regular",
+        "overseas_USD_aftermarket",
+    }
+
+    cost_summary = repository.get_session_pnl_summary(
+        include_virtual=True,
+        virtual_overseas_commission_rate=0.0025,
+        virtual_overseas_sec_fee_rate=0.0000206,
+    )
+    aggregate = cost_summary["virtual"]["overseas_USD"]
+    assert aggregate["net_win_count"] == 1
+    assert round(aggregate["total_gross_pnl"], 6) == -1.0
+    assert round(aggregate["total_estimated_cost"], 6) == 1.107032
+    assert round(aggregate["total_estimated_net_pnl"], 6) == -2.107032
+    assert round(
+        cost_summary["virtual_by_exit_session"]["overseas_USD_regular"][
+            "total_estimated_net_pnl"
+        ],
+        6,
+    ) == 0.897067
+    assert round(
+        cost_summary["virtual_by_exit_session"]["overseas_USD_aftermarket"][
+            "total_estimated_net_pnl"
+        ],
+        6,
+    ) == -3.004099
 
 
 def test_virtual_performance_summary_excludes_flagged_orders(tmp_path) -> None:

@@ -2735,10 +2735,28 @@ class TelegramLiquidityLabController:
     ) -> str:
         is_prod = self.config.credentials.env == "prod"
         include_virtual = not is_prod
+        overseas_policy = get_market_auto_trade_config(
+            self.config,
+            "overseas",
+        )
+        virtual_commission_rate = float(
+            getattr(
+                overseas_policy,
+                "overseas_commission_rate",
+                getattr(overseas_policy, "commission_rate", 0.0025),
+            )
+            or 0.0
+        )
+        virtual_sec_fee_rate = float(
+            getattr(overseas_policy, "sec_fee_rate", 0.0000206)
+            or 0.0
+        )
         summary = self.repository.get_session_pnl_summary(
             session_id=session_id,
             include_virtual=include_virtual,
             after_logged_at=started_at,
+            virtual_overseas_commission_rate=virtual_commission_rate,
+            virtual_overseas_sec_fee_rate=virtual_sec_fee_rate,
         )
         parsed_started = parse_datetime(started_at)
         period_label = (format_kst(parsed_started) or "")[:16] if parsed_started else "전체"
@@ -2759,8 +2777,10 @@ class TelegramLiquidityLabController:
             lines.append("─── 세션소유 KIS 체결확정 기준 ───")
             lines.append(f"거래={total_real_trades}건 (승률 {win_rate:.0f}%)")
             if abs(total_pnl_usd) > 1e-9:
-                usd_sign = "+" if total_pnl_usd >= 0 else ""
-                lines.append(f"해외손익={usd_sign}${total_pnl_usd:,.2f}")
+                usd_sign = "+" if total_pnl_usd >= 0 else "-"
+                lines.append(
+                    f"해외손익={usd_sign}${abs(total_pnl_usd):,.2f}"
+                )
             krw_sign = "+" if total_pnl_krw >= 0 else ""
             lines.append(f"환산손익={krw_sign}{int(round(total_pnl_krw)):,}원")
             lines.append("검증=주문번호별 체결원장")
@@ -2776,17 +2796,115 @@ class TelegramLiquidityLabController:
             virtual = summary.get("virtual", {})
             total_virtual_trades = sum(int(item.get("trade_count", 0) or 0) for item in virtual.values())
             if total_virtual_trades > 0:
-                lines.append("─── 가상거래(virtual) ───")
+                lines.append("─── 가상거래(virtual, 비용추정) ───")
+
+                def _format_virtual_amount(
+                    value: float,
+                    currency: str,
+                    *,
+                    signed: bool = True,
+                ) -> str:
+                    sign = ""
+                    if signed:
+                        sign = "+" if value >= 0 else "-"
+                    amount = abs(value)
+                    if currency.upper() == "KRW":
+                        return f"{sign}{int(round(amount)):,}원"
+                    return f"{sign}${amount:,.2f}"
+
                 for key, stats in sorted(virtual.items()):
                     trade_count = int(stats.get("trade_count", 0) or 0)
-                    win_count = int(stats.get("win_count", 0) or 0)
-                    pnl = float(stats.get("total_pnl") or 0.0)
-                    currency_suffix = "원" if "KRW" in key else "$"
-                    sign = "+" if pnl >= 0 else ""
-                    win_rate = (win_count / trade_count * 100.0) if trade_count else 0.0
-                    lines.append(
-                        f"{key}: {trade_count}건 승률{win_rate:.0f}% 손익{sign}{pnl:,.2f}{currency_suffix}"
+                    gross_win_count = int(stats.get("win_count", 0) or 0)
+                    net_win_count = int(stats.get("net_win_count", 0) or 0)
+                    currency = str(stats.get("currency") or "USD")
+                    gross_pnl = float(
+                        stats.get("total_gross_pnl")
+                        or stats.get("total_pnl")
+                        or 0.0
                     )
+                    estimated_net_pnl = float(
+                        stats.get("total_estimated_net_pnl")
+                        if stats.get("total_estimated_net_pnl") is not None
+                        else gross_pnl
+                    )
+                    estimated_cost = float(
+                        stats.get("total_estimated_cost") or 0.0
+                    )
+                    gross_win_rate = (
+                        gross_win_count / trade_count * 100.0
+                        if trade_count
+                        else 0.0
+                    )
+                    net_win_rate = (
+                        net_win_count / trade_count * 100.0
+                        if trade_count
+                        else 0.0
+                    )
+                    lines.append(
+                        f"{key}: {trade_count}건 "
+                        f"Gross승률{gross_win_rate:.0f}% "
+                        f"Net승률{net_win_rate:.0f}% "
+                        f"Gross{_format_virtual_amount(gross_pnl, currency)} "
+                        f"추정Net{_format_virtual_amount(estimated_net_pnl, currency)} "
+                        f"비용{_format_virtual_amount(estimated_cost, currency, signed=False)}"
+                    )
+                session_labels = {
+                    "regular": "정규장",
+                    "premarket": "프리마켓",
+                    "aftermarket": "애프터마켓",
+                    "daytime": "주간거래",
+                    "overnight": "오버나이트",
+                    "unknown": "세션미상",
+                }
+                session_order = {
+                    "regular": 0,
+                    "premarket": 1,
+                    "aftermarket": 2,
+                    "daytime": 3,
+                    "overnight": 4,
+                    "unknown": 5,
+                }
+                virtual_by_exit_session = summary.get(
+                    "virtual_by_exit_session",
+                    {},
+                )
+                for _, stats in sorted(
+                    virtual_by_exit_session.items(),
+                    key=lambda item: (
+                        str(item[1].get("market") or ""),
+                        str(item[1].get("currency") or ""),
+                        session_order.get(
+                            str(item[1].get("exit_session") or "unknown"),
+                            99,
+                        ),
+                    ),
+                ):
+                    trade_count = int(stats.get("trade_count", 0) or 0)
+                    currency = str(stats.get("currency") or "USD")
+                    exit_session = str(
+                        stats.get("exit_session") or "unknown"
+                    )
+                    gross_pnl = float(
+                        stats.get("total_gross_pnl")
+                        or stats.get("total_pnl")
+                        or 0.0
+                    )
+                    estimated_net_pnl = float(
+                        stats.get("total_estimated_net_pnl")
+                        if stats.get("total_estimated_net_pnl") is not None
+                        else gross_pnl
+                    )
+                    lines.append(
+                        "청산세션 "
+                        f"{session_labels.get(exit_session, exit_session)}: "
+                        f"{trade_count}건 "
+                        f"Gross{_format_virtual_amount(gross_pnl, currency)} "
+                        f"추정Net{_format_virtual_amount(estimated_net_pnl, currency)}"
+                    )
+                lines.append(
+                    "비용기준=매수·매도 수수료+매도 SEC fee; "
+                    "세션=청산시점"
+                )
             else:
                 lines.append("가상거래 내역 없음")
         return "\n".join(lines)

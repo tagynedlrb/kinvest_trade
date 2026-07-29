@@ -7,6 +7,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from kinvest_trade.config import load_app_config
+from kinvest_trade.market_policy import get_market_auto_trade_config
 from kinvest_trade.repository import (
     CONFIRMED_BUY_CYCLE_PREDICATE,
     CONFIRMED_SELL_CYCLE_PREDICATE,
@@ -34,6 +36,11 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="거래 내역 분석")
     parser.add_argument("db_path", help="SQLite DB 파일 경로")
+    parser.add_argument(
+        "--settings",
+        default="config/fixed_config.json",
+        help="가상 해외거래 비용 추정에 사용할 설정 파일",
+    )
     parser.add_argument("--days", type=int, default=0, help="최근 N일 분석 (0=전체)")
     parser.add_argument(
         "--compare-date",
@@ -119,6 +126,45 @@ def main() -> None:
     has_strategy_flag = _has_column(conn, "cycle_log", "strategy_flag")
     has_exit_by = _has_column(conn, "cycle_log", "exit_by")
     has_virtual_excluded = _has_column(conn, "virtual_orders", "excluded_from_performance")
+    app_config = load_app_config(args.settings)
+    overseas_policy = get_market_auto_trade_config(app_config, "overseas")
+    overseas_commission_rate = max(
+        float(
+            getattr(
+                overseas_policy,
+                "overseas_commission_rate",
+                getattr(overseas_policy, "commission_rate", 0.0025),
+            )
+            or 0.0
+        ),
+        0.0,
+    )
+    overseas_sec_fee_rate = max(
+        float(
+            getattr(overseas_policy, "sec_fee_rate", 0.0000206)
+            or 0.0
+        ),
+        0.0,
+    )
+    virtual_entry_price_expr = (
+        "(fill_price - COALESCE(realized_pnl, 0) / NULLIF(qty, 0))"
+    )
+    virtual_cost_expr = f"""
+        CASE
+            WHEN LOWER(market) = 'overseas'
+                 AND qty > 0
+                 AND fill_price > 0
+                 AND {virtual_entry_price_expr} > 0
+            THEN qty * (
+                {virtual_entry_price_expr} * {overseas_commission_rate}
+                + fill_price * (
+                    {overseas_commission_rate}
+                    + {overseas_sec_fee_rate}
+                )
+            )
+            ELSE 0
+        END
+    """
     net_pct_expr = _net_pnl_pct_expr(conn)
     krw_expr = (
         "SUM(COALESCE(net_pnl_krw, realized_pnl_krw, 0))"
@@ -140,6 +186,10 @@ def main() -> None:
     print("주의: 실거래 성과/빈도는 KIS 체결확정 원장 중 세션소유 cycle_log만 포함")
     print("주의: 계좌 손익 통계는 외부 보유를 포함한 모든 KIS 확정 청산")
     print("주의: virtual_orders 통계는 excluded_from_performance=0 항목만 포함")
+    print(
+        "주의: 해외 가상 Net은 설정의 매수·매도 수수료와 매도 SEC fee를 "
+        "적용한 추정치"
+    )
 
     rows = conn.execute(
         f"""
@@ -414,8 +464,18 @@ def main() -> None:
         SELECT market, currency,
                COUNT(*) AS trade_count,
                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS win_count,
+               SUM(
+                   CASE
+                       WHEN COALESCE(realized_pnl, 0) - ({virtual_cost_expr}) > 0
+                       THEN 1 ELSE 0
+                   END
+               ) AS net_win_count,
                AVG(realized_pnl_pct) * 100 AS avg_pnl_pct,
-               SUM(realized_pnl) AS total_pnl
+               SUM(realized_pnl) AS total_pnl,
+               SUM({virtual_cost_expr}) AS estimated_cost,
+               SUM(
+                   COALESCE(realized_pnl, 0) - ({virtual_cost_expr})
+               ) AS estimated_net_pnl
         FROM virtual_orders
         WHERE side = 'sell'
         {virtual_extra_filter}
@@ -426,10 +486,59 @@ def main() -> None:
     ).fetchall()
     print("\n[가상거래 손익 통계]")
     for row in rows:
-        win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
+        gross_win_rate = (
+            row["win_count"] / row["trade_count"] * 100
+            if row["trade_count"]
+            else 0
+        )
+        net_win_rate = (
+            row["net_win_count"] / row["trade_count"] * 100
+            if row["trade_count"]
+            else 0
+        )
         print(
-            f"  {row['market']:10s}/{row['currency']:3s} 거래={row['trade_count']}건 승률={win_rate:.0f}% "
-            f"평균={row['avg_pnl_pct']:.3f}% 누적={row['total_pnl']:.2f}{row['currency']}"
+            f"  {row['market']:10s}/{row['currency']:3s} "
+            f"거래={row['trade_count']}건 "
+            f"Gross승률={gross_win_rate:.0f}% Net승률={net_win_rate:.0f}% "
+            f"평균Gross={row['avg_pnl_pct']:.3f}% "
+            f"Gross={row['total_pnl']:.2f}{row['currency']} "
+            f"비용={row['estimated_cost']:.2f}{row['currency']} "
+            f"추정Net={row['estimated_net_pnl']:.2f}{row['currency']}"
+        )
+
+    rows = conn.execute(
+        f"""
+        SELECT market, currency, COALESCE(NULLIF(session, ''), 'unknown') AS exit_session,
+               COUNT(*) AS trade_count,
+               SUM(realized_pnl) AS total_pnl,
+               SUM({virtual_cost_expr}) AS estimated_cost,
+               SUM(
+                   COALESCE(realized_pnl, 0) - ({virtual_cost_expr})
+               ) AS estimated_net_pnl
+        FROM virtual_orders
+        WHERE side = 'sell'
+        {virtual_extra_filter}
+        {'AND created_at >= ?' if since else ''}
+        GROUP BY market, currency, exit_session
+        ORDER BY market, currency,
+                 CASE exit_session
+                     WHEN 'regular' THEN 1
+                     WHEN 'premarket' THEN 2
+                     WHEN 'aftermarket' THEN 3
+                     ELSE 4
+                 END
+        """,
+        virtual_params,
+    ).fetchall()
+    print("\n[가상거래 청산 세션별 비용추정 손익]")
+    for row in rows:
+        print(
+            f"  {row['market']:10s}/{row['currency']:3s} "
+            f"청산세션={row['exit_session']:11s} "
+            f"거래={row['trade_count']:3d} "
+            f"Gross={row['total_pnl']:9.2f} "
+            f"비용={row['estimated_cost']:9.2f} "
+            f"추정Net={row['estimated_net_pnl']:9.2f}"
         )
 
     rows = conn.execute(
@@ -438,7 +547,11 @@ def main() -> None:
                COUNT(*) AS trade_count,
                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS win_count,
                AVG(realized_pnl_pct) * 100 AS avg_pnl_pct,
-               SUM(realized_pnl) AS total_pnl
+               SUM(realized_pnl) AS total_pnl,
+               SUM({virtual_cost_expr}) AS estimated_cost,
+               SUM(
+                   COALESCE(realized_pnl, 0) - ({virtual_cost_expr})
+               ) AS estimated_net_pnl
         FROM virtual_orders
         WHERE side = 'sell'
         {virtual_extra_filter}
@@ -454,7 +567,10 @@ def main() -> None:
         win_rate = (row["win_count"] / row["trade_count"] * 100) if row["trade_count"] else 0
         print(
             f"  {row['reason']:30s} 거래={row['trade_count']:3d} 승률={win_rate:3.0f}% "
-            f"평균={row['avg_pnl_pct']:7.3f}% 누적={row['total_pnl']:.2f}"
+            f"평균Gross={row['avg_pnl_pct']:7.3f}% "
+            f"Gross={row['total_pnl']:.2f} "
+            f"비용={row['estimated_cost']:.2f} "
+            f"추정Net={row['estimated_net_pnl']:.2f}"
         )
 
     rows = conn.execute(

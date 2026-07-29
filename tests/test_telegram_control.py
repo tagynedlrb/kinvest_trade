@@ -3448,7 +3448,11 @@ def test_pnl_summary_includes_virtual_for_paper(tmp_path) -> None:
 
     message = controller._build_session_pnl_message(started_at="2026-07-01T00:00:00+00:00")
 
-    assert "가상거래(virtual)" in message
+    assert "가상거래(virtual, 비용추정)" in message
+    assert "Gross+$1.00" in message
+    assert "추정Net+$0.90" in message
+    assert "청산세션 정규장: 1건" in message
+    assert "비용기준=매수·매도 수수료+매도 SEC fee" in message
 
 
 def test_format_watch_target_line_includes_pnl_when_holding() -> None:

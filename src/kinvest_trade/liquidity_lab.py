@@ -368,7 +368,7 @@ class LiquidityLabService:
         self._execution_reconcile_interval_sec = 20
         self._inverse_regime_notice_keys: set[tuple[str, str, str]] = set()
         self._inverse_observation_keys: set[
-            tuple[str, str, str, str, str]
+            tuple[str, str, str, str, str, str]
         ] = set()
         self._post_fill_balance_notice_keys: set[str] = set()
         self._post_submit_balance_notice_keys: set[str] = set()
@@ -1212,12 +1212,18 @@ class LiquidityLabService:
         market_key = normalize_market_name(market)
         symbol_key = str(symbol).strip().upper()
         expected_session_date = self._market_session_date(market_key, now)
+        observation_version = str(
+            (detail or {}).get("observation_version")
+            or (detail or {}).get("entry_formula")
+            or ""
+        )
         observation_key = (
             expected_session_date,
             str(event_type),
             market_key,
             symbol_key,
             str(reason),
+            observation_version,
         )
         observation_keys = getattr(self, "_inverse_observation_keys", None)
         if observation_keys is None:
@@ -1236,6 +1242,7 @@ class LiquidityLabService:
                     symbol=symbol_key,
                     expected_session_date=expected_session_date,
                     reason=reason,
+                    observation_version=observation_version,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -1253,6 +1260,7 @@ class LiquidityLabService:
             **(detail or {}),
             "reason": str(reason),
             "expected_session_date": expected_session_date,
+            "observation_version": observation_version,
         }
         try:
             self._save_event(

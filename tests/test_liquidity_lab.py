@@ -5947,6 +5947,54 @@ def test_inverse_regime_observation_is_deduplicated_across_service_restart() -> 
     assert summary[0]["observation_count"] == 1
 
 
+def test_inverse_product_observation_dedup_includes_formula_version() -> None:
+    service = _build_run_service()
+    now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+
+    assert service._record_inverse_observation(
+        event_type="inverse_product_blocked",
+        market="domestic",
+        symbol="114800",
+        reason="inverse_product_intraday_not_up",
+        now=now,
+        detail={"entry_formula": "strategy_consensus_v1"},
+    )
+    assert service._record_inverse_observation(
+        event_type="inverse_product_blocked",
+        market="domestic",
+        symbol="114800",
+        reason="inverse_product_intraday_not_up",
+        now=now,
+        detail={"entry_formula": "regime_trend_breakout_v1"},
+    )
+    assert not service._record_inverse_observation(
+        event_type="inverse_product_blocked",
+        market="domestic",
+        symbol="114800",
+        reason="inverse_product_intraday_not_up",
+        now=now,
+        detail={"entry_formula": "regime_trend_breakout_v1"},
+    )
+
+    events = service.repository.list_event_log(
+        event_type="inverse_product_blocked",
+    )
+    assert len(events) == 2
+    versions = {
+        json.loads(event["detail"])["observation_version"]
+        for event in events
+    }
+    assert versions == {
+        "strategy_consensus_v1",
+        "regime_trend_breakout_v1",
+    }
+    summary = service.repository.get_inverse_policy_observation_summary()
+    assert {
+        row["observation_version"]
+        for row in summary
+    } == versions
+
+
 def test_inverse_product_observations_record_blocked_and_ready_states() -> None:
     service = _build_run_service()
     loaded = load_app_config(

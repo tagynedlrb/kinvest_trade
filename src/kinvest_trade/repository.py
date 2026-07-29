@@ -1508,6 +1508,7 @@ class SqliteRepository:
         symbol: str,
         expected_session_date: str,
         reason: str,
+        observation_version: str = "",
     ) -> bool:
         """Return whether one durable observation key was already recorded."""
         with self._connect() as conn:
@@ -1535,6 +1536,12 @@ class SqliteRepository:
                 str(detail.get("expected_session_date") or "")
                 == str(expected_session_date)
                 and str(detail.get("reason") or "") == str(reason)
+                and str(
+                    detail.get("observation_version")
+                    or detail.get("entry_formula")
+                    or ""
+                )
+                == str(observation_version or "")
             ):
                 return True
         return False
@@ -1570,7 +1577,7 @@ class SqliteRepository:
                 params,
             ).fetchall()
 
-        grouped: dict[tuple[str, str, str], dict] = {}
+        grouped: dict[tuple[str, str, str, str], dict] = {}
         for row in rows:
             try:
                 detail = json.loads(str(row["detail"] or "{}"))
@@ -1579,13 +1586,19 @@ class SqliteRepository:
             event_type = str(row["event_type"] or "")
             market = str(row["market"] or "").strip().lower()
             reason = str(detail.get("reason") or "unknown")
-            key = (market, event_type, reason)
+            observation_version = str(
+                detail.get("observation_version")
+                or detail.get("entry_formula")
+                or ""
+            )
+            key = (market, event_type, reason, observation_version)
             bucket = grouped.setdefault(
                 key,
                 {
                     "market": market,
                     "event_type": event_type,
                     "reason": reason,
+                    "observation_version": observation_version,
                     "observation_count": 0,
                     "latest_logged_at": str(row["logged_at"] or ""),
                     "symbols": set(),
@@ -1609,6 +1622,7 @@ class SqliteRepository:
                     "market": bucket["market"],
                     "event_type": bucket["event_type"],
                     "reason": bucket["reason"],
+                    "observation_version": bucket["observation_version"],
                     "observation_count": bucket["observation_count"],
                     "latest_logged_at": bucket["latest_logged_at"],
                     "symbols": sorted(bucket["symbols"]),

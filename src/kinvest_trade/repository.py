@@ -2321,6 +2321,41 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_inverse_shadow_trades(
+        self,
+        *,
+        after_opened_at: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        where = ["1 = 1"]
+        params: list[object] = []
+        if after_opened_at:
+            where.append("opened_at >= ?")
+            params.append(str(after_opened_at))
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM inverse_shadow_trades
+                WHERE {' AND '.join(where)}
+                ORDER BY opened_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["context_json"] = json.loads(
+                    str(item.get("context_json") or "{}")
+                )
+            except json.JSONDecodeError:
+                item["context_json"] = {}
+            result.append(item)
+        return result
+
     def update_inverse_shadow_trade(
         self,
         trade_id: int,
@@ -2335,8 +2370,14 @@ class SqliteRepository:
         gross_pnl_pct: float | None = None,
         net_pnl_pct: float | None = None,
         exit_reason: str = "",
+        context: dict | None = None,
     ) -> bool:
         status = "CLOSED" if closed_at else "OPEN"
+        context_json = (
+            json.dumps(context, ensure_ascii=False, default=str)
+            if context is not None
+            else None
+        )
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -2351,7 +2392,8 @@ class SqliteRepository:
                     exit_price = ?,
                     gross_pnl_pct = ?,
                     net_pnl_pct = ?,
-                    exit_reason = ?
+                    exit_reason = ?,
+                    context_json = COALESCE(?, context_json)
                 WHERE id = ?
                   AND status = 'OPEN'
                 """,
@@ -2367,6 +2409,7 @@ class SqliteRepository:
                     gross_pnl_pct,
                     net_pnl_pct,
                     str(exit_reason),
+                    context_json,
                     int(trade_id),
                 ),
             )

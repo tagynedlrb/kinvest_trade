@@ -475,6 +475,19 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   and exit. It closes on take-profit, stop, hard stop, time limit, benchmark
   recovery, or session rollover. Daily-reset inverse products are never carried
   into the next session by this policy.
+- Every inverse shadow entry freezes the same-session benchmark snapshot,
+  including observation lineage, return, session-low return, rebound from that
+  low, current position inside the intraday high-low range, and minutes until
+  the regular close. A closed row also freezes the exit benchmark snapshot and
+  signal snapshot. `/lab_performance` displays these path fields for the three
+  most recent rows; final-session regime aggregation remains a separate
+  evaluation dimension.
+- A late-session loss after a large rebound from the session low is a
+  `late_rebound_whipsaw` hypothesis, not proof that the RSI ceiling, entry
+  cutoff, or benchmark decline gate is wrong. Segment later samples by
+  rebound-from-low and minutes-to-close, then require the same five exits,
+  three final sessions, and positive after-cost expectancy before changing a
+  formula.
 - Consider a small live pilot only after broker-quality shadow observations
   include at least five exits across three final benchmark sessions, net
   expectancy after costs is positive, and drawdown/tracking behavior remains
@@ -572,9 +585,15 @@ the current direction is wrong.
   domestic formula opened and closed its first `114800` shadow observation
   during the final KOSPI strong-down/normal-activity/extreme-volatility
   session. It stopped after eight hold cycles at -0.899% gross and -0.928%
-  after modeled costs. One losing exit is evidence that the pipeline ran, not
-  enough evidence to reject or activate the formula; keep the five-exit,
-  three-final-session, positive-net gate. The final NASDAQ return of -0.22%
+  after modeled costs. The benchmark had been observed at -11.72% at 13:22 KST
+  and had recovered to -6.48% when the trade opened at 15:02 KST, about 28
+  minutes before the regular close; this supports a late-rebound-whipsaw
+  hypothesis but is only one path. Preserve entry/exit market-path context
+  from the next observation onward and keep the formula, five-exit,
+  three-final-session, positive-net gate unchanged. FINRA notes that most
+  geared ETP objectives reset daily, can deviate over shorter or longer
+  periods, and require close monitoring; that supports path measurement rather
+  than threshold fitting from one loss. The final NASDAQ return of -0.22%
   remained above the overseas -1% gate, so no US inverse trade is expected.
   Durable regime and product-stage observations make each zero-sample reason
   auditable.

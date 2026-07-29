@@ -30,6 +30,7 @@ from .market_sessions import (
     is_us_execution_reconcile_window,
     is_us_orderable_session_for_env,
     is_us_regular_session,
+    minutes_until_regular_session_close,
     seconds_until_us_session_transition,
     us_holiday_date_for_kis_session,
 )
@@ -1245,6 +1246,44 @@ class LiquidityLabService:
             ):
                 observation_id = int(observation.get("id") or 0) or None
 
+        high_price = self._parse_optional_float(regime.get("high_price"))
+        low_price = self._parse_optional_float(regime.get("low_price"))
+        close_price = self._parse_optional_float(regime.get("close_price"))
+        previous_close = self._parse_optional_float(
+            regime.get("previous_close")
+        )
+        session_low_return_pct = None
+        benchmark_rebound_from_low_pct = None
+        session_range_position = None
+        if (
+            previous_close is not None
+            and previous_close > 0
+            and low_price is not None
+            and low_price > 0
+        ):
+            session_low_return_pct = round(
+                (low_price / previous_close - 1.0) * 100.0,
+                8,
+            )
+            if close_price is not None and close_price > 0:
+                benchmark_rebound_from_low_pct = round(
+                    (close_price - low_price) / previous_close * 100.0,
+                    8,
+                )
+        if (
+            high_price is not None
+            and low_price is not None
+            and close_price is not None
+            and high_price > low_price
+        ):
+            session_range_position = round(
+                min(
+                    1.0,
+                    max(0.0, (close_price - low_price) / (high_price - low_price)),
+                ),
+                8,
+            )
+
         return {
             "available": True,
             "market": market_key,
@@ -1282,6 +1321,15 @@ class LiquidityLabService:
             "calculation_version": str(
                 regime.get("calculation_version") or ""
             ),
+            "minutes_to_regular_close": minutes_until_regular_session_close(
+                market_key,
+                current,
+            ),
+            "session_low_return_pct": session_low_return_pct,
+            "benchmark_rebound_from_low_pct": (
+                benchmark_rebound_from_low_pct
+            ),
+            "session_range_position": session_range_position,
         }
 
     def _inverse_regime_decision(
@@ -1515,6 +1563,10 @@ class LiquidityLabService:
             if market_key == "domestic"
             else self._overseas_commission_rate()
         )
+        entry_market_regime = self._market_regime_context(
+            market_key,
+            now=current,
+        )
         inserted = self.repository.open_inverse_shadow_trade(
             opened_at=current.astimezone(timezone.utc).isoformat(),
             market=market_key,
@@ -1536,6 +1588,7 @@ class LiquidityLabService:
                 "reference_price": float(price),
                 "execution_mode": "shadow",
                 "entry_formula": self._inverse_entry_formula(market_key),
+                "entry_market_regime": entry_market_regime,
                 "etf_metadata": (
                     self._cached_domestic_inverse_etf_metadata(symbol)
                     if market_key == "domestic"
@@ -1554,6 +1607,15 @@ class LiquidityLabService:
                     "benchmark": decision.benchmark_name,
                     "benchmark_return_pct": decision.benchmark_return_pct,
                     "entry_reason": entry_reason,
+                    "minutes_to_regular_close": entry_market_regime.get(
+                        "minutes_to_regular_close"
+                    ),
+                    "benchmark_rebound_from_low_pct": entry_market_regime.get(
+                        "benchmark_rebound_from_low_pct"
+                    ),
+                    "session_range_position": entry_market_regime.get(
+                        "session_range_position"
+                    ),
                 },
             )
         return inserted
@@ -1656,6 +1718,22 @@ class LiquidityLabService:
                 exit_reason = "inverse_benchmark_recovered"
 
         now_iso = current.astimezone(timezone.utc).isoformat()
+        updated_context = None
+        if exit_reason:
+            existing_context = trade.get("context_json")
+            updated_context = (
+                dict(existing_context)
+                if isinstance(existing_context, dict)
+                else {}
+            )
+            updated_context["exit_market_regime"] = self._market_regime_context(
+                market_key,
+                now=current,
+            )
+            if signal_snapshot is not None:
+                updated_context["exit_signal_snapshot"] = asdict(
+                    signal_snapshot
+                )
         updated = self.repository.update_inverse_shadow_trade(
             int(trade["id"]),
             updated_at=now_iso,
@@ -1668,6 +1746,7 @@ class LiquidityLabService:
             gross_pnl_pct=gross_pnl_pct if exit_reason else None,
             net_pnl_pct=net_pnl_pct if exit_reason else None,
             exit_reason=exit_reason,
+            context=updated_context,
         )
         if updated and exit_reason:
             self._save_event(

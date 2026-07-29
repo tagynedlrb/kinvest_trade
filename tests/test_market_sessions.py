@@ -8,6 +8,7 @@ from kinvest_trade.market_sessions import (
     is_us_execution_reconcile_window,
     is_us_orderable_session_for_env,
     is_us_regular_session,
+    minutes_until_regular_session_close,
     minutes_until_next_tradeable_session,
     seconds_until_us_session_transition,
     us_holiday_date_for_kis_session,
@@ -51,6 +52,34 @@ def test_us_premarket_not_orderable_in_mock_profile() -> None:
 def test_us_regular_session_is_orderable_in_mock_profile() -> None:
     now = datetime(2026, 6, 25, 14, 0, tzinfo=timezone.utc)
     assert is_us_orderable_session_for_env(now, "vps")
+
+
+def test_minutes_until_krx_regular_close_preserves_partial_minute() -> None:
+    now = datetime(2026, 7, 29, 6, 2, 8, tzinfo=timezone.utc)
+
+    assert minutes_until_regular_session_close("domestic", now) == 27.87
+
+
+def test_minutes_until_us_regular_close_uses_new_york_clock() -> None:
+    now = datetime(2026, 7, 29, 19, 0, 0, tzinfo=timezone.utc)
+
+    assert minutes_until_regular_session_close("overseas", now) == 60.0
+
+
+def test_minutes_until_regular_close_is_none_outside_regular_clock() -> None:
+    before_krx = datetime(2026, 7, 29, 23, 0, 0, tzinfo=timezone.utc)
+    after_us = datetime(2026, 7, 29, 21, 0, 0, tzinfo=timezone.utc)
+
+    assert minutes_until_regular_session_close("domestic", before_krx) is None
+    assert minutes_until_regular_session_close("overseas", after_us) is None
+
+
+def test_minutes_until_regular_close_is_none_on_weekend() -> None:
+    krx_saturday = datetime(2026, 7, 25, 4, 0, 0, tzinfo=timezone.utc)
+    us_saturday = datetime(2026, 7, 25, 17, 0, 0, tzinfo=timezone.utc)
+
+    assert minutes_until_regular_session_close("domestic", krx_saturday) is None
+    assert minutes_until_regular_session_close("overseas", us_saturday) is None
 
 
 def test_us_regular_session_false_before_kis_day_session() -> None:

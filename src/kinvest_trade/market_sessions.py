@@ -79,6 +79,33 @@ def is_us_orderable_session_for_env(now_utc: datetime | None, env: str) -> bool:
     return session == "regular"
 
 
+def minutes_until_regular_session_close(
+    market: str,
+    now_utc: datetime | None = None,
+) -> float | None:
+    """Return minutes left in the market's regular session clock."""
+
+    current = now_utc or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    market_key = str(market).strip().lower()
+    if market_key in {"domestic", "krx", "korea"}:
+        local = current.astimezone(KST)
+        session_start = local.replace(hour=9, minute=0, second=0, microsecond=0)
+        session_end = local.replace(hour=15, minute=30, second=0, microsecond=0)
+    elif market_key in {"overseas", "us", "usa"}:
+        local = current.astimezone(NEW_YORK)
+        session_start = local.replace(hour=9, minute=30, second=0, microsecond=0)
+        session_end = local.replace(hour=16, minute=0, second=0, microsecond=0)
+    else:
+        return None
+    if not _is_weekday(local):
+        return None
+    if not session_start <= local <= session_end:
+        return None
+    return round(max(0.0, (session_end - local).total_seconds() / 60.0), 2)
+
+
 def seconds_until_us_session_transition(now_utc: datetime) -> int | None:
     """Return whole seconds until the current open KIS US session changes."""
 

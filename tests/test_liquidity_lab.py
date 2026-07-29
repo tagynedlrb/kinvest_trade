@@ -5804,6 +5804,10 @@ def test_market_regime_context_uses_same_session_observation_lineage() -> None:
     assert regime is not None
     captured_at = now - timedelta(minutes=5)
     regime["captured_at"] = captured_at.isoformat()
+    regime["high_price"] = 110.0
+    regime["low_price"] = 80.0
+    regime["close_price"] = 90.0
+    regime["previous_close"] = 100.0
     regime["volume_ratio_20"] = 1.4
     regime["range_ratio_20"] = 2.2
     service.repository.upsert_market_regime(regime)
@@ -5820,6 +5824,10 @@ def test_market_regime_context_uses_same_session_observation_lineage() -> None:
     assert context["volume_ratio_20"] == 1.4
     assert context["range_ratio_20"] == 2.2
     assert context["regime_key"] == "strong_down|active|high"
+    assert context["minutes_to_regular_close"] == 85.0
+    assert context["session_low_return_pct"] == -20.0
+    assert context["benchmark_rebound_from_low_pct"] == 10.0
+    assert abs(context["session_range_position"] - (1 / 3)) < 1e-8
 
 
 def test_market_regime_context_does_not_substitute_prior_session() -> None:
@@ -6366,6 +6374,12 @@ def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
         "252670",
     )
     assert abs(open_trade["entry_price"] - 100.1) < 1e-9
+    assert (
+        open_trade["context_json"]["entry_market_regime"][
+            "minutes_to_regular_close"
+        ]
+        == 90.0
+    )
 
     exit_reason = service._update_inverse_shadow_trade(
         market="domestic",
@@ -6387,6 +6401,15 @@ def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
     assert performance[0]["closed_count"] == 1
     assert performance[0]["win_count"] == 1
     assert performance[0]["avg_net_pnl_pct"] > 0.025
+    closed_trade = service.repository.list_inverse_shadow_trades(limit=1)[0]
+    assert closed_trade["context_json"]["entry_market_regime"]["available"] is True
+    assert closed_trade["context_json"]["exit_market_regime"]["available"] is True
+    assert (
+        closed_trade["context_json"]["exit_market_regime"][
+            "minutes_to_regular_close"
+        ]
+        == 89.0
+    )
 
 
 def test_market_regime_collector_rebinds_to_each_cycle_client() -> None:

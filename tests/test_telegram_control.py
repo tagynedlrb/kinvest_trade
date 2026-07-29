@@ -18,6 +18,7 @@ from kinvest_trade.telegram_control import (
     SessionPerformance,
     TelegramLiquidityLabController,
 )
+from kinvest_trade.time_utils import KST
 
 
 def test_parse_command() -> None:
@@ -1941,6 +1942,86 @@ def test_lab_performance_command_reports_realized_strategy_only(
     assert "─── 역방향 shadow ───" in message
     assert "종료=0 진행=0 진입표본=없음" in message
     assert "관측=없음(해당 기간 영구 로그 없음)" in message
+
+
+def test_lab_performance_command_reports_inverse_entry_market_path(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_inverse_path.db")
+    opened_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    assert repository.open_inverse_shadow_trade(
+        opened_at=opened_at.isoformat(),
+        market="domestic",
+        symbol="114800",
+        exchange_code="KRX",
+        entry_session_date=opened_at.astimezone(KST).date().isoformat(),
+        policy_id="domestic_momentum_v3",
+        entry_price=1335.5,
+        entry_spread_pct=0.00075,
+        commission_rate=0.00015,
+        benchmark_name="KOSPI",
+        benchmark_return_pct=-6.48,
+        benchmark_regime_key="strong_down|normal|extreme",
+        entry_reason="inverse_regime_trend_breakout_entry",
+        strategy_flag="INV",
+        entry_by="INV",
+        context={
+            "entry_market_regime": {
+                "minutes_to_regular_close": 27.87,
+                "benchmark_rebound_from_low_pct": 6.15,
+                "session_range_position": 0.38,
+            }
+        },
+    )
+    trade = repository.list_inverse_shadow_trades(limit=1)[0]
+    assert repository.update_inverse_shadow_trade(
+        int(trade["id"]),
+        updated_at=(opened_at + timedelta(minutes=15)).isoformat(),
+        hold_cycles=8,
+        peak_price=1348.5,
+        trough_price=1323.5,
+        last_price=1323.5,
+        closed_at=(opened_at + timedelta(minutes=15)).isoformat(),
+        exit_price=1323.5,
+        gross_pnl_pct=-0.00899,
+        net_pnl_pct=-0.00928,
+        exit_reason="inverse_stop_loss",
+        context={
+            **trade["context_json"],
+            "exit_market_regime": {"return_pct": -5.5},
+        },
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_performance 720",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "종료=1 진행=0 승률=0% 평균순수익=-0.93%" in message
+    assert (
+        "최근 국내 114800 종료 진입지수=-6.48% "
+        "저점반등=+6.15%p 범위위치=38% 마감잔여=28분 "
+        "지수변화=+0.98%p 순수익=-0.93% 청산=인버스 손절"
+        in message
+    )
 
 
 def test_lab_performance_command_explains_inverse_zero_sample(tmp_path) -> None:

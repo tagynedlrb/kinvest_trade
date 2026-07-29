@@ -12,6 +12,7 @@ from .liquidity_lab import VirtualTradeManager
 from .market_policy import get_market_auto_trade_config
 from .market_sessions import (
     determine_loop_interval_sec,
+    minutes_until_regular_session_close,
     minutes_until_next_tradeable_session,
     us_holiday_date_for_kis_session,
 )
@@ -1836,6 +1837,66 @@ class ReportHelper:
             f"평균={format_pct(avg_pnl)} 손익={pnl_label}"
         )
 
+    @staticmethod
+    def format_inverse_shadow_trade(row: dict) -> str:
+        market = str(row.get("market") or "")
+        symbol = str(row.get("symbol") or "-")
+        status = str(row.get("status") or "").upper()
+        context = row.get("context_json")
+        context = context if isinstance(context, dict) else {}
+        entry_regime = context.get("entry_market_regime")
+        entry_regime = entry_regime if isinstance(entry_regime, dict) else {}
+        exit_regime = context.get("exit_market_regime")
+        exit_regime = exit_regime if isinstance(exit_regime, dict) else {}
+
+        def optional_float(value: object) -> float | None:
+            try:
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        minutes_to_close = optional_float(
+            entry_regime.get("minutes_to_regular_close")
+        )
+        if minutes_to_close is None:
+            opened_at = parse_datetime(row.get("opened_at"))
+            if opened_at is not None:
+                minutes_to_close = minutes_until_regular_session_close(
+                    market,
+                    opened_at,
+                )
+        entry_return = optional_float(row.get("benchmark_return_pct"))
+        rebound_from_low = optional_float(
+            entry_regime.get("benchmark_rebound_from_low_pct")
+        )
+        range_position = optional_float(
+            entry_regime.get("session_range_position")
+        )
+        exit_return = optional_float(exit_regime.get("return_pct"))
+
+        parts = [
+            f"최근 {format_market_korean(market)} {symbol}",
+            "진행" if status == "OPEN" else "종료",
+        ]
+        if entry_return is not None:
+            parts.append(f"진입지수={entry_return:+.2f}%")
+        if rebound_from_low is not None:
+            parts.append(f"저점반등={rebound_from_low:+.2f}%p")
+        if range_position is not None:
+            parts.append(f"범위위치={range_position * 100:.0f}%")
+        if minutes_to_close is not None:
+            parts.append(f"마감잔여={minutes_to_close:.0f}분")
+        if entry_return is not None and exit_return is not None:
+            parts.append(f"지수변화={exit_return - entry_return:+.2f}%p")
+        if status == "CLOSED":
+            parts.append(
+                f"순수익={format_pct(float(row.get('net_pnl_pct') or 0.0))}"
+            )
+            parts.append(
+                f"청산={format_reason_korean(str(row.get('exit_reason') or '-'))}"
+            )
+        return " ".join(parts)
+
     def build_performance_message(self, hours_text: str | None = None) -> str:
         controller = self.controller
         hours = controller._parse_performance_hours(hours_text)
@@ -1847,6 +1908,17 @@ class ReportHelper:
         )
         shadow_rows = controller.repository.get_inverse_shadow_performance(
             after_opened_at=after_logged_at,
+        )
+        recent_shadow_rows = (
+            controller.repository.list_inverse_shadow_trades(
+                after_opened_at=after_logged_at,
+                limit=3,
+            )
+            if hasattr(
+                controller.repository,
+                "list_inverse_shadow_trades",
+            )
+            else []
         )
         inverse_observations = (
             controller.repository.get_inverse_policy_observation_summary(
@@ -1900,6 +1972,8 @@ class ReportHelper:
                     f"승률={win_rate * 100:.0f}% "
                     f"평균순수익={format_pct(float(row.get('avg_net_pnl_pct') or 0.0))}"
                 )
+            for row in recent_shadow_rows:
+                lines.append(self.format_inverse_shadow_trade(row))
         else:
             lines.append("종료=0 진행=0 진입표본=없음")
         lines.append("─── 역방향 관측 ───")

@@ -906,6 +906,20 @@ the current direction is wrong.
   while `VWAP+VOL`, `VOL+RSI`, and `VWAP+VOL+RSI` were negative. Preserve
   market-specific labels and the existing rolling US guard rather than impose
   a broad crash-day long ban.
+- The US `trend_filter_lost` count is 27 confirmed session-owned exits; the
+  broader reason count of 29 includes two domestic exits. In the final
+  strong-down regime, delaying those 17 US exits by 5/15/30/60 minutes changes
+  the observable sale price by -0.163%/-0.299%/-0.197%/-0.137% on average.
+  In the final sideways regime, ten exits show -0.047%/-0.110%/+0.021%/-0.061%;
+  30-minute coverage is only 43%. Keep the current exit timing. Neither bucket
+  spans three final sessions, and the isolated +0.021% does not support a
+  delay or frequency increase.
+- `/lab_report exit-forward` makes this audit repeatable. It includes only
+  broker-confirmed, session-owned strategy exits, stays within the same
+  orderable session, uses the last observation at or before each target, and
+  reports missing post-exit prices instead of substituting the exit price.
+  It groups by final market regime and requires five exits across three final
+  sessions before a timing policy can be reconsidered.
 - Inverse execution remains shadow-only. Every completed inverse observation
   predates `product_exact_v1` benchmark alignment; there is no exact-alignment
   entry sample yet. SQQQ now uses NDX, SPXU uses SPX, domestic inverse products

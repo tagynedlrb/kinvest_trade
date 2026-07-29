@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.analyze_trades import (
     compare_before_after,
     main,
+    summarize_exit_forward_performance,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
     summarize_wait_forward_performance,
@@ -406,6 +412,90 @@ def test_wait_forward_performance_deduplicates_scans_and_uses_market_cost_floor(
     assert "양수=50%" in output
     assert "최소비용Net=+0.470%" in output
     assert "국장 0.03%·미장 0.50%" in output
+
+
+def test_exit_forward_performance_uses_confirmed_exits_and_final_regime(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "exit_forward.db")
+    _save_final_domestic_regime(repository, "2026-07-29")
+    for symbol, exit_price, price_5m, price_15m in (
+        ("AAA", 100.0, 99.0, 97.0),
+        ("BBB", 200.0, 198.0, 194.0),
+    ):
+        save_confirmed_sell(
+            repository,
+            logged_at="2026-07-29T00:00:00+00:00",
+            market="domestic",
+            symbol=symbol,
+            exchange_code="KRX",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP",
+            price=exit_price,
+            qty_executed=1,
+        )
+        repository.save_cycle_log(
+            logged_at="2026-07-29T00:05:00+00:00",
+            market="domestic",
+            symbol=symbol,
+            exchange_code="KRX",
+            action_bias="WAIT",
+            action_reason="watch",
+            strategy_flag="VWAP",
+            price=price_5m,
+        )
+        repository.save_cycle_log(
+            logged_at="2026-07-29T00:15:00+00:00",
+            market="domestic",
+            symbol=symbol,
+            exchange_code="KRX",
+            action_bias="WAIT",
+            action_reason="watch",
+            strategy_flag="VWAP",
+            price=price_15m,
+        )
+    repository.save_cycle_log(
+        logged_at="2026-07-29T00:00:00+00:00",
+        market="domestic",
+        symbol="UNCONFIRMED",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP",
+        price=100.0,
+        qty_executed=1,
+    )
+    repository.save_cycle_log(
+        logged_at="2026-07-29T00:15:00+00:00",
+        market="domestic",
+        symbol="UNCONFIRMED",
+        exchange_code="KRX",
+        action_bias="WAIT",
+        action_reason="watch",
+        strategy_flag="VWAP",
+        price=200.0,
+    )
+
+    output = summarize_exit_forward_performance(
+        repository.db_path,
+        hours=24,
+        market="domestic",
+        reason="trend_filter_lost",
+        horizons=(5, 15),
+        now=datetime(2026, 7, 29, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert "[청산 후행성과]" in output
+    assert "주문가능세션=vps" in output
+    assert "급락/매우활발/극단변동·확정" in output
+    assert "exit=2 2종목/1일 전략=VWAP:2" in output
+    assert "5m n=2/2(100%) 지연차이=-1.000%" in output
+    assert "15m n=2/2(100%) 지연차이=-3.000%" in output
+    assert "지연우위=0%" in output
+    assert "정책표본=관찰계속(2/5건,1/3일)" in output
+    assert "UNCONFIRMED" not in output
 
 
 def test_compare_before_after_uses_market_specific_fallback_costs(

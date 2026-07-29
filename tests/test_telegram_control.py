@@ -2347,6 +2347,84 @@ def test_lab_report_wait_forward_command_reports_deduplicated_returns(tmp_path) 
     assert "최소비용Net=+0.500%" in message
 
 
+def test_lab_report_exit_forward_command_reports_confirmed_exit_paths(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_exit_forward_report.db")
+    now = datetime.now(timezone.utc)
+    regular_time = next(
+        candidate
+        for minutes_ago in range(20, 7 * 24 * 60)
+        if (
+            candidate := now - timedelta(minutes=minutes_ago)
+        ).weekday()
+        < 5
+        and telegram_control_module.is_us_orderable_session_for_env(
+            candidate,
+            "vps",
+        )
+        and telegram_control_module.is_us_orderable_session_for_env(
+            candidate + timedelta(minutes=15),
+            "vps",
+        )
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at=regular_time.isoformat(),
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP+VOL",
+        price=100.0,
+        qty_executed=1,
+    )
+    repository.save_cycle_log(
+        logged_at=(regular_time + timedelta(minutes=15)).isoformat(),
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="WAIT",
+        action_reason="watch",
+        strategy_flag="VWAP+VOL",
+        price=99.0,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_report exit-forward 168",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][전략리포트]" in message
+    assert "기준=체결확정 전략청산·마감 시장레짐" in message
+    assert "[청산 후행성과] 범위=최근 168시간" in message
+    assert "trend_filter_lost" in message
+    assert "exit=1 1종목/1일 전략=VWAP+VOL:1" in message
+    assert "5m 표본=0/1(관측누락)" in message
+    assert "15m n=1/1(100%) 지연차이=-1.000%" in message
+    assert "동일 거래비용은 재차감하지 않음" in message
+
+
 def test_lab_guard_command_reports_current_strategy_guard_state(
     tmp_path,
     save_confirmed_sell,

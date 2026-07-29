@@ -537,6 +537,12 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 - `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 세션소유 KIS 체결확정 성과 비교
 - `/lab_report wait [시간]`: 최근 N시간(기본 72시간)의 `WAIT` 병목을 시장·전략·사유별로 요약
 - `/lab_report wait-forward [시간]`: 현재 프로필의 주문가능 세션만 대상으로, 동일 사유가 5분 이상 끊긴 경우만 새 에피소드로 세어 마감 시장 레짐별 15/30/60분 선행수익률과 시장별 최소비용 차감치를 요약
+- `/lab_report exit-forward [시간]`: 세션소유 KIS 체결확정 청산만 대상으로,
+  같은 주문가능 세션의 5/15/30/60분 목표시각 직전 가격을 5분 허용오차
+  안에서 연결해 마감 시장 레짐별 지연 청산 가격 차이를 요약한다. 청산 뒤
+  새 관측이 없으면 청산가를 0% 표본으로 재사용하지 않고 관측누락으로 남긴다.
+  음수는 기존 청산이 추가 하락을 피했다는 뜻이고 양수는 지연 가격 우위다.
+  매수·매도 비용은 어느 쪽에도 동일하므로 이 증분 비교에서는 중복 차감하지 않는다.
 - `/lab_report regime [일수]`: KOSPI·NASDAQ Composite 마감 환경과 시장 레짐별 전략 순손익을 요약
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
 - `/lab_gitlog`: 당일 거래/이벤트/주문/텔레그램/API 호출 로그를 CSV 5종으로 정리해 GitHub 저장소에 업로드

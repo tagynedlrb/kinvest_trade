@@ -17,6 +17,7 @@ from kinvest_trade.repository import (
 from kinvest_trade.trade_analysis import (
     _net_pnl_pct_expr,
     compare_before_after,
+    summarize_exit_forward_performance,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
     summarize_wait_forward_performance,
@@ -70,6 +71,35 @@ def main() -> None:
         default="vps",
         help="WAIT 선행성과 주문가능 세션 프로필",
     )
+    parser.add_argument(
+        "--exit-forward-hours",
+        type=int,
+        default=0,
+        help="최근 N시간 체결확정 청산의 5/15/30/60분 후행성과",
+    )
+    parser.add_argument(
+        "--exit-forward-market",
+        choices=("domestic", "overseas"),
+        default="",
+        help="청산 후행성과 시장 필터",
+    )
+    parser.add_argument(
+        "--exit-forward-reason",
+        default="trend_filter_lost",
+        help="청산 후행성과 사유 필터 (빈 문자열=전체)",
+    )
+    parser.add_argument(
+        "--exit-forward-env",
+        choices=("vps", "prod"),
+        default="vps",
+        help="청산 후행성과 주문가능 세션 프로필",
+    )
+    parser.add_argument(
+        "--exit-forward-limit",
+        type=int,
+        default=8,
+        help="청산 후행성과 출력 버킷 수",
+    )
     parser.add_argument("--wait-limit", type=int, default=12, help="WAIT 병목 출력 행 수")
     parser.add_argument("--regime-limit", type=int, default=12, help="시장 레짐 성과 출력 행 수")
     args = parser.parse_args()
@@ -102,6 +132,18 @@ def main() -> None:
                 market=args.wait_forward_market,
                 reason=args.wait_forward_reason,
                 orderable_env=args.wait_forward_env,
+            )
+        )
+        return
+    if args.exit_forward_hours > 0:
+        print(
+            summarize_exit_forward_performance(
+                db_path,
+                hours=args.exit_forward_hours,
+                limit=args.exit_forward_limit,
+                market=args.exit_forward_market,
+                reason=args.exit_forward_reason,
+                orderable_env=args.exit_forward_env,
             )
         )
         return

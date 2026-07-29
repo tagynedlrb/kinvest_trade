@@ -606,6 +606,325 @@ def summarize_wait_forward_performance(
         conn.close()
 
 
+def summarize_exit_forward_performance(
+    db_path: Path | str,
+    *,
+    hours: int = 168,
+    limit: int = 8,
+    market: str = "",
+    reason: str = "trend_filter_lost",
+    price_tolerance_minutes: int = 5,
+    horizons: tuple[int, ...] = (5, 15, 30, 60),
+    orderable_env: str = "vps",
+    now: datetime | None = None,
+) -> str:
+    """Measure whether confirmed strategy exits avoided or preceded price moves."""
+    lookback_hours = max(1, int(hours or 168))
+    row_limit = max(1, int(limit or 8))
+    tolerance_minutes = max(1, int(price_tolerance_minutes or 5))
+    normalized_market = str(market or "").strip().lower()
+    if normalized_market and normalized_market not in {"domestic", "overseas"}:
+        raise ValueError("market must be domestic or overseas")
+    normalized_reason = str(reason or "").strip()
+    normalized_env = str(orderable_env or "vps").strip().lower()
+    if normalized_env not in {"vps", "prod"}:
+        raise ValueError("orderable_env must be vps or prod")
+    horizon_values = tuple(
+        sorted({max(1, int(value)) for value in horizons if int(value) > 0})
+    )
+    if not horizon_values:
+        raise ValueError("at least one positive horizon is required")
+
+    analysis_now = now or datetime.now(timezone.utc)
+    if analysis_now.tzinfo is None:
+        analysis_now = analysis_now.replace(tzinfo=timezone.utc)
+    analysis_now = analysis_now.astimezone(timezone.utc)
+    cutoff = analysis_now - timedelta(hours=lookback_hours)
+
+    conn = sqlite3.connect(Path(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        row_where = [
+            "logged_at >= ?",
+            "logged_at <= ?",
+            "COALESCE(price, 0) > 0",
+        ]
+        row_params: list[object] = [
+            cutoff.isoformat(),
+            analysis_now.isoformat(),
+        ]
+        if normalized_market:
+            row_where.append("LOWER(market) = ?")
+            row_params.append(normalized_market)
+        raw_rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT
+                    id, logged_at, market, symbol, action_bias,
+                    action_reason, price, strategy_flag
+                FROM cycle_log
+                WHERE {" AND ".join(row_where)}
+                ORDER BY logged_at ASC, id ASC
+                """,
+                row_params,
+            ).fetchall()
+        ]
+
+        parsed_rows: list[dict[str, object]] = []
+        for row in raw_rows:
+            logged_at = _parse_logged_at(row.get("logged_at"))
+            if logged_at is None:
+                continue
+            market_name = str(row.get("market") or "").strip().lower()
+            if market_name == "domestic":
+                if not is_krx_regular_session(logged_at):
+                    continue
+            elif market_name == "overseas":
+                if not is_us_orderable_session_for_env(logged_at, normalized_env):
+                    continue
+            else:
+                continue
+            row["_logged_at"] = logged_at
+            row["_session_date"] = _cycle_session_date(row)
+            parsed_rows.append(row)
+
+        exit_where = [
+            "logged_at >= ?",
+            "logged_at <= ?",
+            "action_bias = 'SELL_REAL'",
+            "COALESCE(qty_executed, 0) > 0",
+            CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
+        ]
+        exit_params: list[object] = [
+            cutoff.isoformat(),
+            analysis_now.isoformat(),
+        ]
+        if normalized_market:
+            exit_where.append("LOWER(market) = ?")
+            exit_params.append(normalized_market)
+        if normalized_reason:
+            exit_where.append("COALESCE(action_reason, '') = ?")
+            exit_params.append(normalized_reason)
+        confirmed_exit_ids = {
+            int(row["id"])
+            for row in conn.execute(
+                f"""
+                SELECT id
+                FROM cycle_log
+                WHERE {" AND ".join(exit_where)}
+                """,
+                exit_params,
+            ).fetchall()
+        }
+
+        regime_map: dict[tuple[str, str], dict[str, object]] = {}
+        if _has_table(conn, "market_regimes"):
+            regime_map = {
+                (
+                    str(row["market"] or "").strip().lower(),
+                    str(row["session_date"] or ""),
+                ): dict(row)
+                for row in conn.execute("SELECT * FROM market_regimes").fetchall()
+            }
+
+        sequence_rows: dict[
+            tuple[str, str, str],
+            list[dict[str, object]],
+        ] = defaultdict(list)
+        session_latest: dict[tuple[str, str], datetime] = {}
+        for row in parsed_rows:
+            market_name = str(row.get("market") or "").strip().lower()
+            symbol = str(row.get("symbol") or "").strip()
+            session_date = str(row.get("_session_date") or "")
+            logged_at = row.get("_logged_at")
+            if not symbol or not session_date or not isinstance(logged_at, datetime):
+                continue
+            sequence_rows[(market_name, symbol, session_date)].append(row)
+            session_key = (market_name, session_date)
+            previous_latest = session_latest.get(session_key)
+            if previous_latest is None or logged_at > previous_latest:
+                session_latest[session_key] = logged_at
+        sequences = {
+            key: (
+                [
+                    row["_logged_at"]
+                    for row in grouped_rows
+                    if isinstance(row.get("_logged_at"), datetime)
+                ],
+                grouped_rows,
+            )
+            for key, grouped_rows in sequence_rows.items()
+        }
+
+        buckets: dict[
+            tuple[str, str, str, int],
+            dict[str, object],
+        ] = defaultdict(
+            lambda: {
+                "exits": [],
+                "dates": set(),
+                "symbols": set(),
+                "strategies": defaultdict(int),
+            }
+        )
+        for row in parsed_rows:
+            if int(row.get("id") or 0) not in confirmed_exit_ids:
+                continue
+            market_name = str(row.get("market") or "").strip().lower()
+            session_date = str(row.get("_session_date") or "")
+            exit_reason = str(row.get("action_reason") or "N/A").strip() or "N/A"
+            regime = regime_map.get((market_name, session_date), {})
+            regime_key = str(regime.get("regime_key") or "unknown")
+            is_final = int(regime.get("is_final") or 0)
+            bucket = buckets[(market_name, exit_reason, regime_key, is_final)]
+            exits = bucket["exits"]
+            if isinstance(exits, list):
+                exits.append(row)
+            dates = bucket["dates"]
+            if isinstance(dates, set):
+                dates.add(session_date)
+            symbols = bucket["symbols"]
+            if isinstance(symbols, set):
+                symbols.add(str(row.get("symbol") or "").strip())
+            strategies = bucket["strategies"]
+            if isinstance(strategies, defaultdict):
+                strategy = str(row.get("strategy_flag") or "N/A").strip() or "N/A"
+                strategies[strategy] += 1
+
+        result = [
+            (
+                f"[청산 후행성과] 범위=최근 {lookback_hours}시간 "
+                f"주문가능세션={normalized_env} "
+                f"가격허용오차={tolerance_minutes}분"
+            ),
+            (
+                "  정의=세션소유 KIS 체결확정 SELL_REAL 뒤 "
+                "동일 세션 목표시각 직전 관측가"
+            ),
+        ]
+        if not buckets:
+            result.append("  표본=없음")
+            return "\n".join(result)
+
+        sorted_buckets = sorted(
+            buckets.items(),
+            key=lambda item: (
+                -len(item[1]["exits"]),
+                item[0][0],
+                item[0][1],
+                item[0][2],
+            ),
+        )
+        for (market_name, exit_reason, regime_key, is_final), bucket in (
+            sorted_buckets[:row_limit]
+        ):
+            exits = bucket["exits"] if isinstance(bucket["exits"], list) else []
+            dates = bucket["dates"] if isinstance(bucket["dates"], set) else set()
+            symbols = (
+                bucket["symbols"]
+                if isinstance(bucket["symbols"], set)
+                else set()
+            )
+            strategies = bucket["strategies"]
+            strategy_text = "-"
+            if isinstance(strategies, defaultdict):
+                strategy_text = ",".join(
+                    f"{name}:{count}"
+                    for name, count in sorted(
+                        strategies.items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:3]
+                )
+            finality = "확정" if is_final else "임시"
+            result.append(
+                f"  {market_name:<8} {exit_reason:<24} "
+                f"{_regime_key_label(regime_key)}·{finality} "
+                f"exit={len(exits)} {len(symbols)}종목/{len(dates)}일 "
+                f"전략={strategy_text}"
+            )
+            for horizon in horizon_values:
+                delayed_returns: list[float] = []
+                mature = 0
+                for exit_row in exits:
+                    exited_at = exit_row.get("_logged_at")
+                    if not isinstance(exited_at, datetime):
+                        continue
+                    session_date = str(exit_row.get("_session_date") or "")
+                    session_key = (market_name, session_date)
+                    target = exited_at + timedelta(minutes=horizon)
+                    if target > session_latest.get(session_key, exited_at):
+                        continue
+                    mature += 1
+                    sequence_key = (
+                        market_name,
+                        str(exit_row.get("symbol") or "").strip(),
+                        session_date,
+                    )
+                    times, session_rows = sequences.get(sequence_key, ([], []))
+                    index = bisect_right(times, target) - 1
+                    if index < 0:
+                        continue
+                    future_row = session_rows[index]
+                    future_at = future_row.get("_logged_at")
+                    if (
+                        not isinstance(future_at, datetime)
+                        or future_at <= exited_at
+                        or target - future_at
+                        > timedelta(minutes=tolerance_minutes)
+                    ):
+                        continue
+                    exit_price = float(exit_row.get("price") or 0.0)
+                    future_price = float(future_row.get("price") or 0.0)
+                    if exit_price <= 0 or future_price <= 0:
+                        continue
+                    delayed_returns.append(future_price / exit_price - 1.0)
+                if not mature:
+                    result.append(f"    {horizon:>2}m 표본=성숙대기")
+                    continue
+                if not delayed_returns:
+                    result.append(f"    {horizon:>2}m 표본=0/{mature}(관측누락)")
+                    continue
+                average = statistics.fmean(delayed_returns)
+                median = statistics.median(delayed_returns)
+                delayed_better_rate = (
+                    sum(value > 0 for value in delayed_returns)
+                    / len(delayed_returns)
+                    * 100.0
+                )
+                coverage = len(delayed_returns) / mature * 100.0
+                result.append(
+                    f"    {horizon:>2}m n={len(delayed_returns)}/{mature}"
+                    f"({coverage:.0f}%) 지연차이={average * 100:+.3f}% "
+                    f"중앙={median * 100:+.3f}% "
+                    f"지연우위={delayed_better_rate:.0f}%"
+                )
+            readiness = (
+                "평가가능"
+                if (
+                    is_final
+                    and len(exits) >= MIN_REGIME_TRADES
+                    and len(dates) >= MIN_REGIME_DAYS
+                )
+                else (
+                    f"관찰계속({len(exits)}/{MIN_REGIME_TRADES}건,"
+                    f"{len(dates)}/{MIN_REGIME_DAYS}일)"
+                )
+            )
+            result.append(f"    정책표본={readiness}")
+        result.append(
+            "  해석=지연차이 음수면 기존 청산이 추가하락 회피, "
+            "양수면 지연 청산 가격 우위; 동일 거래비용은 재차감하지 않음"
+        )
+        result.append(
+            "  정책변경조건=확정 동일 레짐 5청산·3거래일 이상; "
+            "단일 세션 또는 관측누락 표본으로 청산 지연 금지"
+        )
+        return "\n".join(result)
+    finally:
+        conn.close()
+
+
 def _cycle_session_date(row: dict[str, object]) -> str | None:
     try:
         logged_at = datetime.fromisoformat(

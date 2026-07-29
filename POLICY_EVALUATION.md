@@ -40,6 +40,14 @@
   Do not globally slow every market scan from recovered attempts alone.
   Compare terminal failures, recovery latency, sustained retry ratio and the
   opportunity cost of slower scans first.
+- Attribute API latency before changing pacing. For every new attempt, retain
+  total elapsed time and also record the UTC time immediately before HTTP
+  dispatch, time spent waiting for the shared host pacer, and HTTP network
+  elapsed time. Completion timestamps do not establish request-start spacing.
+  Wall-clock dispatch deltas can also include event-loop resumption order, so
+  pair them with the failed attempt's logical lineage. Never persist query/body
+  parameters, account numbers, credentials, authorization headers or tokens
+  for this diagnosis.
 - Reconsider the current VPS pacing when a tracked rate-limit request ends in
   terminal failure, recovered rate-limit requests exceed 1% for three
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry

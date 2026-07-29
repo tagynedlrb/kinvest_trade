@@ -554,21 +554,47 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         max_attempts=3,
         logical_terminal=True,
     )
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:06+00:00",
+        method="GET",
+        tr_id="BALANCE",
+        success=False,
+        http_status=200,
+        msg_cd="90020000",
+        logical_request_id="service-delay-recovered",
+        attempt_no=1,
+        max_attempts=3,
+        retry_scheduled=True,
+        retry_reason="service_delay",
+        logical_terminal=False,
+    )
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:08+00:00",
+        method="GET",
+        tr_id="BALANCE",
+        success=True,
+        http_status=200,
+        logical_request_id="service-delay-recovered",
+        attempt_no=2,
+        max_attempts=3,
+        logical_terminal=True,
+    )
 
     summary = repository.summarize_api_call_health(
         since="2026-07-29T00:00:00+00:00"
     )
 
     assert summary == {
-        "attempt_count": 3,
-        "attempt_failure_count": 2,
-        "tracked_request_count": 2,
+        "attempt_count": 5,
+        "attempt_failure_count": 3,
+        "tracked_request_count": 3,
         "terminal_failure_count": 1,
-        "recovered_request_count": 1,
-        "retry_scheduled_count": 1,
+        "recovered_request_count": 2,
+        "retry_scheduled_count": 2,
         "rate_limit_retry_count": 1,
-        "attempt_failure_rate": pytest.approx(2 / 3),
-        "terminal_failure_rate": pytest.approx(1 / 2),
+        "service_delay_retry_count": 1,
+        "attempt_failure_rate": pytest.approx(3 / 5),
+        "terminal_failure_rate": pytest.approx(1 / 3),
     }
 
 

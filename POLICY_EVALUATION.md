@@ -23,6 +23,17 @@
 - Legacy rows with no logical request ID remain available for historical raw
   attempt analysis but are excluded from tracked terminal-request metrics.
   One logical request must produce exactly one terminal row.
+- KIS VPS returned `90020000` with an explicit request to retry the delayed
+  mock service six times on the overseas-balance GET between July 15 and
+  July 29. Every case was followed by a successful same-endpoint read within
+  37.7 to 70.2 seconds. Treat this code as a transient response only for
+  idempotent VPS GETs: retry after two and four seconds, persist
+  `service_delay` on each nonterminal attempt, and retain one final logical
+  outcome.
+- Never apply the `90020000` rule to POST. A delayed order response does not
+  establish whether the broker accepted the first request, so replay could
+  duplicate an order. Production GETs also remain unchanged until that
+  environment supplies its own evidence.
 - KIS's official flow notice states that the virtual REST environment allows
   one request per second per account as of April 20, 2026
   ([KIS API flow notice](https://apiportal.koreainvestment.com/community/10000000-0000-0011-0000-000000000001/post/d0d1a83f-6f8d-4437-9700-6d26702fd989)).
@@ -557,12 +568,16 @@ the current direction is wrong.
   system frequency ceiling. Do not loosen entry gates while after-cost
   expectancy remains negative and regime coverage is this narrow.
 - Both markets: inverse trading remains shadow-only. Current evidence justifies
-  testing a separate down-market formula, but not risking broker capital. The
-  first deployment occurred after the observed KOSPI crash session had closed,
-  and the final NASDAQ return of -0.22% was above the -1% gate, so zero shadow
-  exits is currently "not observed", not evidence of failure or success.
-  Durable regime and product-stage observations now make each zero-sample
-  reason auditable.
+  testing separate down-market formulas, but not risking broker capital. The
+  domestic formula opened and closed its first `114800` shadow observation
+  during the final KOSPI strong-down/normal-activity/extreme-volatility
+  session. It stopped after eight hold cycles at -0.899% gross and -0.928%
+  after modeled costs. One losing exit is evidence that the pipeline ran, not
+  enough evidence to reject or activate the formula; keep the five-exit,
+  three-final-session, positive-net gate. The final NASDAQ return of -0.22%
+  remained above the overseas -1% gate, so no US inverse trade is expected.
+  Durable regime and product-stage observations make each zero-sample reason
+  auditable.
 - Performance now uses the broker execution ledger. Submission rows, canceled
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.

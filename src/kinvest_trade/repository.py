@@ -2554,7 +2554,14 @@ class SqliteRepository:
                              AND retry_reason = 'rate_limit'
                             THEN 1 ELSE 0
                         END
-                    ) AS rate_limit_retry_count
+                    ) AS rate_limit_retry_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND retry_reason = 'service_delay'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS service_delay_retry_count
                 FROM api_call_log
                 WHERE {" AND ".join(where)}
                 """,
@@ -2570,6 +2577,7 @@ class SqliteRepository:
                 "recovered_request_count",
                 "retry_scheduled_count",
                 "rate_limit_retry_count",
+                "service_delay_retry_count",
             )
         }
         tracked = result["tracked_request_count"]

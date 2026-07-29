@@ -121,11 +121,44 @@ class KisRestClient:
     # insufficient, while every one-second rate-limit retry succeeded.
     _vps_overseas_history_continuation_delay_sec: float = 1.0
     _RATE_LIMIT_MSG_CODES = frozenset({"EGW00201", "EGW00215"})
+    _VPS_TRANSIENT_READ_MSG_CODES = frozenset({"90020000"})
 
     def _request_interval_sec(self) -> float:
         if str(self.credentials.env).strip().lower() == "vps":
             return self._vps_min_request_interval_sec
         return self._min_request_interval_sec
+
+    def _response_retry_reason(
+        self,
+        *,
+        method: str,
+        msg_cd: str,
+        attempt_no: int,
+        max_attempts: int,
+    ) -> str:
+        if attempt_no >= max_attempts:
+            return ""
+        if msg_cd == "EGW00123":
+            return "token_expired"
+        if msg_cd in self._RATE_LIMIT_MSG_CODES:
+            return "rate_limit"
+        if (
+            str(self.credentials.env).strip().lower() == "vps"
+            and method.upper() == "GET"
+            and msg_cd in self._VPS_TRANSIENT_READ_MSG_CODES
+        ):
+            return "service_delay"
+        return ""
+
+    @staticmethod
+    def _response_retry_delay_sec(*, retry_reason: str, attempt_no: int) -> float:
+        if retry_reason == "token_expired":
+            return 0.2
+        if retry_reason == "rate_limit":
+            return 1.0
+        if retry_reason == "service_delay":
+            return min(2.0**attempt_no, 4.0)
+        return 0.0
 
     async def _pace_overseas_history_continuation(self) -> None:
         if str(self.credentials.env).strip().lower() != "vps":
@@ -398,14 +431,14 @@ class KisRestClient:
                 response.raise_for_status()
                 raise
 
-            token_expired = payload.get("msg_cd") == "EGW00123"
+            msg_cd = str(payload.get("msg_cd") or "")
             if response.status_code >= 400:
-                rate_limited = payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES
-                retry_reason = ""
-                if token_expired and attempt < max_attempts - 1:
-                    retry_reason = "token_expired"
-                elif rate_limited and attempt < max_attempts - 1:
-                    retry_reason = "rate_limit"
+                retry_reason = self._response_retry_reason(
+                    method=method,
+                    msg_cd=msg_cd,
+                    attempt_no=attempt_no,
+                    max_attempts=max_attempts,
+                )
                 self._log_api_call(
                     method=method,
                     path=path,
@@ -413,7 +446,7 @@ class KisRestClient:
                     started_at=started_at,
                     success=False,
                     http_status=response.status_code,
-                    msg_cd=str(payload.get("msg_cd") or ""),
+                    msg_cd=msg_cd,
                     msg1=str(payload.get("msg1") or ""),
                     logical_request_id=logical_request_id,
                     attempt_no=attempt_no,
@@ -422,12 +455,15 @@ class KisRestClient:
                     retry_reason=retry_reason,
                     logical_terminal=not bool(retry_reason),
                 )
-                if token_expired and attempt < max_attempts - 1:
-                    self._invalidate_token()
-                    await asyncio.sleep(0.2)
-                    continue
-                if rate_limited and attempt < max_attempts - 1:
-                    await asyncio.sleep(1.0)
+                if retry_reason:
+                    if retry_reason == "token_expired":
+                        self._invalidate_token()
+                    await asyncio.sleep(
+                        self._response_retry_delay_sec(
+                            retry_reason=retry_reason,
+                            attempt_no=attempt_no,
+                        )
+                    )
                     continue
                 raise KisApiError(
                     f"{tr_id} http_error={response.status_code} "
@@ -458,12 +494,12 @@ class KisRestClient:
                     }
                 return payload
 
-            rate_limited = payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES
-            retry_reason = ""
-            if token_expired and attempt < max_attempts - 1:
-                retry_reason = "token_expired"
-            elif rate_limited and attempt < max_attempts - 1:
-                retry_reason = "rate_limit"
+            retry_reason = self._response_retry_reason(
+                method=method,
+                msg_cd=msg_cd,
+                attempt_no=attempt_no,
+                max_attempts=max_attempts,
+            )
             self._log_api_call(
                 method=method,
                 path=path,
@@ -471,7 +507,7 @@ class KisRestClient:
                 started_at=started_at,
                 success=False,
                 http_status=response.status_code,
-                msg_cd=str(payload.get("msg_cd") or ""),
+                msg_cd=msg_cd,
                 msg1=str(payload.get("msg1") or ""),
                 logical_request_id=logical_request_id,
                 attempt_no=attempt_no,
@@ -480,12 +516,15 @@ class KisRestClient:
                 retry_reason=retry_reason,
                 logical_terminal=not bool(retry_reason),
             )
-            if token_expired and attempt < max_attempts - 1:
-                self._invalidate_token()
-                await asyncio.sleep(0.2)
-                continue
-            if rate_limited and attempt < max_attempts - 1:
-                await asyncio.sleep(1.0)
+            if retry_reason:
+                if retry_reason == "token_expired":
+                    self._invalidate_token()
+                await asyncio.sleep(
+                    self._response_retry_delay_sec(
+                        retry_reason=retry_reason,
+                        attempt_no=attempt_no,
+                    )
+                )
                 continue
 
             raise KisApiError(

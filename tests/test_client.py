@@ -242,6 +242,210 @@ def test_request_marks_exhausted_rate_limit_as_terminal_failure(
     ]
 
 
+def test_request_retries_vps_get_after_service_delay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    fake_http = FakeAsyncClient(
+        [
+            FakeResponse(
+                200,
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "90020000",
+                    "msg1": "모의투자 서비스가 지연되고 있습니다. 잠시후 재시도 바랍니다.",
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "rt_cd": "0",
+                    "msg_cd": "20310000",
+                    "msg1": "모의투자 조회가 완료되었습니다.",
+                    "output": {"value": "ok"},
+                },
+            ),
+        ]
+    )
+    client._client = fake_http
+    delays: list[float] = []
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_throttle() -> None:
+        return None
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_throttle  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", capture_sleep)
+
+    payload = asyncio.run(client._request("GET", "/balance", "BALANCE"))
+
+    assert payload["output"]["value"] == "ok"
+    assert len(fake_http.calls) == 2
+    assert delays == [2.0]
+    assert [call["retry_scheduled"] for call in calls] == [True, False]
+    assert [call["retry_reason"] for call in calls] == ["service_delay", ""]
+    assert [call["logical_terminal"] for call in calls] == [False, True]
+    assert len({call["logical_request_id"] for call in calls}) == 1
+
+
+def test_request_marks_exhausted_service_delay_as_terminal_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    client._client = FakeAsyncClient(
+        [
+            FakeResponse(
+                200,
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "90020000",
+                    "msg1": "모의투자 서비스가 지연되고 있습니다. 잠시후 재시도 바랍니다.",
+                },
+            )
+            for _ in range(3)
+        ]
+    )
+    delays: list[float] = []
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_throttle() -> None:
+        return None
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_throttle  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", capture_sleep)
+
+    with pytest.raises(KisApiError, match="90020000"):
+        asyncio.run(client._request("GET", "/balance", "BALANCE"))
+
+    assert delays == [2.0, 4.0]
+    assert [call["retry_scheduled"] for call in calls] == [True, True, False]
+    assert [call["retry_reason"] for call in calls] == [
+        "service_delay",
+        "service_delay",
+        "",
+    ]
+    assert [call["logical_terminal"] for call in calls] == [
+        False,
+        False,
+        True,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("env", "method"),
+    [
+        ("vps", "POST"),
+        ("prod", "GET"),
+    ],
+)
+def test_request_retries_service_delay_only_for_vps_get(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env: str,
+    method: str,
+) -> None:
+    credentials = KisCredentials(
+        env=env,
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    fake_http = FakeAsyncClient(
+        [
+            FakeResponse(
+                200,
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "90020000",
+                    "msg1": "모의투자 서비스가 지연되고 있습니다. 잠시후 재시도 바랍니다.",
+                },
+            )
+        ]
+    )
+    client._client = fake_http
+    delays: list[float] = []
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_throttle() -> None:
+        return None
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_throttle  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", capture_sleep)
+
+    with pytest.raises(KisApiError, match="90020000"):
+        asyncio.run(
+            client._request(
+                method,
+                "/order",
+                "ORDER",
+                body={"symbol": "TEST", "qty": 1},
+            )
+        )
+
+    assert len(fake_http.calls) == 1
+    assert delays == []
+    assert calls[0]["retry_scheduled"] is False
+    assert calls[0]["retry_reason"] == ""
+    assert calls[0]["logical_terminal"] is True
+
+
 def _make_paced_test_client(credentials: KisCredentials) -> KisRestClient:
     client = KisRestClient(credentials)
     client.ensure_token = lambda: asyncio.sleep(0, result="tok")  # type: ignore[method-assign]

@@ -55,6 +55,10 @@ def test_format_side_market_and_reason_korean() -> None:
         format_reason_korean("overseas_circuit_breaker_halted")
         == "미장 연속손실 서킷브레이커 활성"
     )
+    assert (
+        format_reason_korean("post_cb_session_loss_limit_reached")
+        == "동일 미장 세션 반복손실 한도 도달"
+    )
     assert format_reason_korean("stale_live_overseas_order_cancel") == "해외 장기미체결 취소"
     assert format_reason_korean("stale_live_overseas_order_cancel_failed") == "해외 장기미체결 취소거부"
     assert format_reason_korean("virtual_sell_pending") == "가상청산 후 실정산 대기"

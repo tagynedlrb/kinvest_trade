@@ -113,6 +113,7 @@ REASON_KOREAN_MAP = {
     "total_position_cap_reached": "국내+해외 합산 한도 도달(정상)",
     "domestic_circuit_breaker_halted": "국장 연속손실 서킷브레이커 활성",
     "overseas_circuit_breaker_halted": "미장 연속손실 서킷브레이커 활성",
+    "post_cb_session_loss_limit_reached": "동일 미장 세션 반복손실 한도 도달",
     "domestic_order_reject_halted": "국장 매수 주문거부 차단 활성",
     "overseas_order_reject_halted": "미장 매수 주문거부 차단 활성",
     "inverse_market_closed": "시장 마감",

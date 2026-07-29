@@ -259,6 +259,7 @@ class MarketPolicyDefinition:
     circuit_breaker_cooldown_minutes: int
     post_cb_reentry_benchmark_floor_pct: float | None = None
     post_cb_reentry_regime_max_age_sec: int = 600
+    post_cb_max_fires_per_session: int | None = None
     source_path: Path | None = None
 
 
@@ -454,6 +455,7 @@ def _load_market_policy_definition(
         "circuit_breaker_cooldown_minutes",
         "post_cb_reentry_benchmark_floor_pct",
         "post_cb_reentry_regime_max_age_sec",
+        "post_cb_max_fires_per_session",
     }
     unknown_risk_fields = sorted(set(raw_risk) - allowed_risk_fields)
     if unknown_risk_fields:
@@ -496,6 +498,11 @@ def _load_market_policy_definition(
         post_cb_reentry_regime_max_age_sec=max(
             1,
             int(raw_risk.get("post_cb_reentry_regime_max_age_sec", 600)),
+        ),
+        post_cb_max_fires_per_session=(
+            None
+            if raw_risk.get("post_cb_max_fires_per_session") is None
+            else max(1, int(raw_risk["post_cb_max_fires_per_session"]))
         ),
         source_path=source_path,
     )

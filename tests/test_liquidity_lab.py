@@ -6279,6 +6279,73 @@ def test_post_cb_reentry_gate_waits_for_fresh_benchmark_recovery() -> None:
     assert domestic_detail["enabled"] is False
 
 
+def test_post_cb_reentry_gate_stops_long_entries_after_two_session_fires() -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc) + timedelta(seconds=2)
+    _configure_overseas_post_cb_reentry_gate(
+        service,
+        now=now,
+        return_pct=-0.5,
+    )
+    for _ in range(2):
+        service.repository.save_event(
+            event_type="cb_fired",
+            detail={
+                "type": "consecutive",
+                "market": "overseas",
+                "consecutive_losses": 3,
+            },
+        )
+
+    reason, detail = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now,
+    )
+    next_session_reason, _ = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now + timedelta(days=1),
+    )
+
+    assert reason == "post_cb_session_loss_limit_reached"
+    assert detail["max_fires_per_session"] == 2
+    assert detail["breaker_session"]["fire_count"] == 2
+    assert len(detail["breaker_session"]["event_ids"]) == 2
+    assert "market_regime" not in detail
+    assert next_session_reason == ""
+
+
+def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service._post_cb_reentry_regime_gate = (
+        lambda *_args, **_kwargs: (
+            "post_cb_session_loss_limit_reached",
+            {},
+        )
+    )
+    service._is_inverse_symbol = (
+        lambda market, symbol: market == "overseas" and symbol == "SQQQ"
+    )
+
+    ordinary_reason = service._entry_formula_block_reason(
+        market="overseas",
+        symbol="NVDA",
+        signal_snapshot=None,
+    )
+    inverse_reason = service._entry_formula_block_reason(
+        market="overseas",
+        symbol="SQQQ",
+        signal_snapshot=None,
+    )
+
+    assert ordinary_reason == "post_cb_session_loss_limit_reached"
+    assert inverse_reason == ""
+
+
 def test_post_cb_reentry_gate_fails_closed_without_same_session_regime() -> None:
     service = _build_run_service()
     now = datetime.now(timezone.utc)

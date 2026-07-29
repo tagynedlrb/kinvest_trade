@@ -341,6 +341,27 @@
   confirms state restoration, fresh-data admission, and the exit exemption;
   it does not establish the admitted trades' profitability or the threshold's
   superiority.
+- The same New York session then supplied a second, distinct consecutive-loss
+  breaker fire. All eleven strategy exits confirmed after the first fire were
+  after-cost losses, totaling USD -404.175456 and KRW -545,636.85, with
+  individual net returns from -0.4050% to -1.3653%. These are correlated
+  same-session observations and do not justify deleting an entry formula, but
+  two separate three-loss trigger events are sufficient to stop adding
+  ordinary-long exposure for the remainder of that session.
+- The overseas policy therefore sets `post_cb_max_fires_per_session=2`.
+  After the second same-session consecutive-loss breaker actually releases,
+  ordinary-long entries remain blocked until the next New York session.
+  Durable `cb_fired` events are re-counted by market and local session after a
+  restart. Existing exits and inverse candidates remain exempt. The domestic
+  field stays disabled because no domestic repeated-fire evidence exists.
+  This is a bounded risk response, not a profitability claim, and it does not
+  loosen or tighten normal-session frequency.
+- Reassess the two-fire limit over at least three final US sessions containing
+  a repeated trigger. Record blocked-long counterfactual net outcomes and
+  admitted inverse outcomes. Relax or return the rule to shadow if blocked
+  longs have positive after-cost expectancy and their opportunity cost exceeds
+  avoided losses, if event replay mixes markets or sessions, if the next
+  session remains blocked, or if any exit or inverse candidate is affected.
 - Re-evaluate the US post-breaker floor after at least five admitted and five
   blocked completed outcomes across three final US sessions. Revert or revise
   it if recovered entries systematically underperform blocked counterfactuals,

@@ -125,6 +125,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
+    assert domestic.post_cb_max_fires_per_session is None
+    assert overseas.post_cb_max_fires_per_session == 2
     assert domestic.auto_trade.strategy_guard_lookback_hours == 48
     assert overseas.auto_trade.strategy_guard_lookback_hours == 48
     assert domestic.auto_trade.strategy_guard_min_trades == 3

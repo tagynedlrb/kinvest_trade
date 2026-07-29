@@ -2512,7 +2512,12 @@ class LiquidityLabService:
             "post_cb_reentry_benchmark_floor_pct",
             None,
         )
-        if floor_value is None:
+        max_fires_value = getattr(
+            definition,
+            "post_cb_max_fires_per_session",
+            None,
+        )
+        if floor_value is None and max_fires_value is None:
             return "", {"enabled": False, "market": market_key}
 
         current = ensure_timezone(now or datetime.now(timezone.utc))
@@ -2544,7 +2549,12 @@ class LiquidityLabService:
             if cached.get("released_at") == released_at_text:
                 return str(cached.get("reason") or ""), cached
 
-        floor_pct = float(floor_value)
+        floor_pct = None if floor_value is None else float(floor_value)
+        max_fires = (
+            None
+            if max_fires_value is None
+            else max(1, int(max_fires_value))
+        )
         max_age_sec = max(
             1,
             int(
@@ -2562,6 +2572,7 @@ class LiquidityLabService:
             "reason": "",
             "benchmark_floor_pct": floor_pct,
             "regime_max_age_sec": max_age_sec,
+            "max_fires_per_session": max_fires,
             "released_at": released_at_text,
         }
         if not isinstance(released_at, datetime):
@@ -2572,23 +2583,36 @@ class LiquidityLabService:
         ) != self._market_session_date(market_key, current):
             result = ("", detail)
         else:
-            regime = self._market_regime_context(
-                market_key,
-                now=current,
+            breaker_session = (
+                self._same_session_consecutive_breaker_fire_summary(
+                    market_key,
+                    now=current,
+                )
             )
-            detail["market_regime"] = regime
-            age_sec = regime.get("observation_age_sec")
-            benchmark_return_pct = self._parse_optional_float(
-                regime.get("return_pct")
-            )
-            if not bool(regime.get("available")):
-                detail["reason"] = "post_cb_regime_unavailable"
-            elif age_sec is None or int(age_sec) > max_age_sec:
-                detail["reason"] = "post_cb_regime_stale"
-            elif benchmark_return_pct is None:
-                detail["reason"] = "post_cb_regime_unavailable"
-            elif benchmark_return_pct < floor_pct:
-                detail["reason"] = "post_cb_benchmark_not_recovered"
+            detail["breaker_session"] = breaker_session
+            if (
+                max_fires is not None
+                and int(breaker_session["fire_count"]) >= max_fires
+            ):
+                detail["reason"] = "post_cb_session_loss_limit_reached"
+            elif floor_pct is not None:
+                regime = self._market_regime_context(
+                    market_key,
+                    now=current,
+                )
+                detail["market_regime"] = regime
+                age_sec = regime.get("observation_age_sec")
+                benchmark_return_pct = self._parse_optional_float(
+                    regime.get("return_pct")
+                )
+                if not bool(regime.get("available")):
+                    detail["reason"] = "post_cb_regime_unavailable"
+                elif age_sec is None or int(age_sec) > max_age_sec:
+                    detail["reason"] = "post_cb_regime_stale"
+                elif benchmark_return_pct is None:
+                    detail["reason"] = "post_cb_regime_unavailable"
+                elif benchmark_return_pct < floor_pct:
+                    detail["reason"] = "post_cb_benchmark_not_recovered"
             result = (str(detail["reason"]), detail)
 
         if use_cache:
@@ -2597,6 +2621,60 @@ class LiquidityLabService:
             cache.setdefault("markets", {})[market_key] = dict(result[1])
             self._post_cb_reentry_gate_cache = cache
         return result
+
+    def _same_session_consecutive_breaker_fire_summary(
+        self,
+        market: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict:
+        market_key = normalize_market_name(market)
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        session_date = self._market_session_date(market_key, current)
+        fired_at: list[str] = []
+        event_ids: list[int] = []
+        list_events = getattr(self.repository, "list_event_log", None)
+        if callable(list_events):
+            for row in list_events(event_type="cb_fired", limit=1000):
+                detail = row.get("detail")
+                if isinstance(detail, str):
+                    try:
+                        detail = json.loads(detail)
+                    except (TypeError, ValueError):
+                        continue
+                if not isinstance(detail, dict):
+                    continue
+                if str(detail.get("type") or "") != "consecutive":
+                    continue
+                if (
+                    str(detail.get("market") or "").strip().lower()
+                    != market_key
+                ):
+                    continue
+                occurred_at = parse_datetime(str(row.get("logged_at") or ""))
+                if occurred_at is None:
+                    continue
+                timestamp = ensure_timezone(occurred_at)
+                if timestamp > current:
+                    continue
+                if (
+                    self._market_session_date(market_key, timestamp)
+                    != session_date
+                ):
+                    continue
+                fired_at.append(timestamp.isoformat())
+                event_id = int(row.get("id") or 0)
+                if event_id > 0:
+                    event_ids.append(event_id)
+        fired_at.sort()
+        event_ids.sort()
+        return {
+            "market": market_key,
+            "session_date": session_date,
+            "fire_count": len(fired_at),
+            "fired_at": fired_at,
+            "event_ids": event_ids,
+        }
 
     def _entry_liquidity_block_reason(
         self,

@@ -6406,6 +6406,114 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade["policy_id"] == "domestic_momentum_v4"
 
 
+def test_overseas_dedicated_inverse_formula_replays_selective_soxs_setup() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    now = datetime.now(timezone.utc)
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date=service._market_session_date("overseas", now),
+        return_pct=-1.1346666446918063,
+        trend_regime="down",
+    )
+    soxs_snapshot = _snapshot(
+        price=69.54,
+        spread_pct=0.0,
+        minute_ma_fast=67.1477888888889,
+        minute_ma_slow=65.2806238095238,
+        rsi14=61.3049960191283,
+        intraday_momentum=0.020813414723836233,
+        intraday_bar_return=0.01387874360847338,
+        volume_ratio=1.7008574051552356,
+        breakout_level=68.82,
+        breakout_distance_pct=0.010463543248391848,
+    )
+
+    ready, decision, entry_formula, _ = service._entry_setup_for_policy(
+        soxs_snapshot,
+        "SOXS",
+        "overseas",
+        now=now,
+    )
+    low_volume, _, _, _ = service._entry_setup_for_policy(
+        replace(soxs_snapshot, volume_ratio=1.2328811729889535),
+        "SQQQ",
+        "overseas",
+        now=now,
+    )
+    reversal, _, _, _ = service._entry_setup_for_policy(
+        replace(
+            soxs_snapshot,
+            volume_ratio=1.5459357054422562,
+            intraday_bar_return=-0.002899780748284862,
+        ),
+        "SOXS",
+        "overseas",
+        now=now,
+    )
+
+    assert entry_formula == "us_regime_trend_breakout_v1"
+    assert decision is not None and decision.eligible is True
+    assert ready.ready is True
+    assert ready.reason == "inverse_regime_trend_breakout_entry"
+    assert low_volume.ready is False
+    assert low_volume.reason == "inverse_product_volume_low"
+    assert reversal.ready is False
+    assert reversal.reason == "inverse_product_momentum_unconfirmed"
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="SOXS",
+        exchange_code="AMEX",
+        price=69.54,
+        activity_score=2497.25,
+        signal_snapshot=soxs_snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.note == "[INV] inverse_shadow_mode"
+    trade = service.repository.get_open_inverse_shadow_trade(
+        "overseas",
+        "SOXS",
+    )
+    assert trade is not None
+    assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
+    assert (
+        trade["context_json"]["entry_formula"]
+        == "us_regime_trend_breakout_v1"
+    )
+
+
+def test_overseas_dedicated_inverse_formula_remains_blocked_in_live_mode() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.config.market_policies.overseas.auto_trade.inverse_execution_mode = (
+        "live"
+    )
+    now = datetime(2026, 7, 29, 14, 28, 51, tzinfo=timezone.utc)
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date="2026-07-29",
+        return_pct=-1.1346666446918063,
+        trend_regime="down",
+    )
+
+    assert (
+        service._inverse_entry_block_reason("overseas", "SOXS", now=now)
+        == "inverse_dedicated_live_unvalidated"
+    )
+
+
 def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products() -> None:
     service = _build_run_service()
     loaded = load_app_config(

@@ -234,9 +234,7 @@
   ([KRX ETF price and liquidity](https://open.krx.co.kr/contents/OPN/01/01030204/OPN01030204T8.jsp)).
 - The domestic dedicated formula remains shadow-only even if an operator
   changes the inverse execution mode to `live`; a separate code and evidence
-  change is required to remove that block. The overseas policy remains
-  `overseas_momentum_v2/strategy_consensus_v1` until US-specific down-regime
-  observations support its own revision. KODEX states that `114800` targets
+  change is required to remove that block. KODEX states that `114800` targets
   the inverse of the F-KOSPI200 **daily** return and that longer or more
   volatile holding periods can diverge
   ([KODEX Inverse](https://www.samsungfund.com/etf/product/view.do?id=2ETF20));
@@ -244,6 +242,23 @@
   ([KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)).
   Therefore one entry per symbol/session, intraday exits, conservative spread
   simulation and no live promotion from one crash-day replay remain mandatory.
+- US inverse entries independently use
+  `overseas_momentum_v2/us_regime_trend_breakout_v1`. The formula requires a
+  same-session NASDAQ decline of at least 1%, an inverse-product price above
+  its rising fast minute average, positive multi-bar and current-bar returns,
+  projected relative volume of at least 1.3, price no more than 0.5% below
+  the recent breakout level, RSI no higher than 85, and the existing spread
+  and extension limits. It remains shadow-only and retains the dedicated
+  `live` hard block.
+- The US formula change is an observation-path correction, not a profitability
+  claim. On 2026-07-29, `event_log.id=4556` recorded SOXS at 69.54 with NASDAQ
+  at -1.135%, relative volume 1.70, positive momentum and a 1.05% breakout,
+  yet the generic consensus returned `setup_not_ready`. A later 70.35 price
+  implies about +0.66% after the configured round-trip cost, but this is an
+  unexecuted counterfactual. In the same snapshot, SQQQ and SPXU remained
+  below the 1.3 volume floor, and a later SOXS reversal had negative current
+  momentum. Preserve those selective controls and require completed
+  out-of-sample shadow paths before any economic conclusion.
 - Evaluate inverse exits with price-path attribution before changing their
   thresholds. For closed shadow rows, report maximum favorable excursion as
   `(peak-entry)/entry`, maximum adverse excursion as
@@ -643,6 +658,11 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   at least 1%, its benchmark trend is down, and the inverse product itself has
   a rising intraday trend, positive current momentum, and market-specific
   volume confirmation.
+- Eligibility and entry formulas are independently owned. Domestic
+  `regime_trend_breakout_v1` uses its KOSPI crash threshold, projected-volume
+  floor and KIS ETF/NAV validation. US `us_regime_trend_breakout_v1` uses its
+  NASDAQ threshold and US product-volume floor. The shared evaluator is code
+  reuse only; neither market reads the other market's parameters or evidence.
 - During an open session, refresh the provisional benchmark regime every five
   minutes so a threshold crossing is not hidden behind the normal 30-minute
   history refresh. Provisional rows may activate shadow observation but remain
@@ -654,8 +674,9 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   Only an already-open shadow trade bypasses those entry filters so its price,
   stop, benchmark recovery, and session rollover can continue to be observed.
 - Eligibility does not authorize a broker order. The current execution mode is
-  `shadow`; defensive order checks reject inverse products unless that market's
-  policy is explicitly changed to `live`.
+  `shadow`; the dedicated formulas also reject broker orders if an operator
+  merely changes that setting to `live`. Removing the second block requires a
+  separate reviewed code change.
 - The shadow ledger charges both sides' commissions and half-spread on entry
   and exit. It closes on take-profit, stop, hard stop, time limit, benchmark
   recovery, or session rollover. Daily-reset inverse products are never carried
@@ -677,7 +698,8 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   include at least five exits across three final benchmark sessions, net
   expectancy after costs is positive, and drawdown/tracking behavior remains
   within the predeclared risk limit. This is an evaluation floor, not automatic
-  approval.
+  approval. The new US formula has a stricter initial floor of ten completed
+  exits across at least three sessions.
 - Reject live activation when product/benchmark tracking diverges materially,
   gains are concentrated in one shock session, or net expectancy is nonpositive.
   Daily leverage, compounding, volatility drag, and sharp bear-market rallies
@@ -693,6 +715,8 @@ Official product/risk references:
 - [ProShares SQQQ](https://www.proshares.com/our-etfs/leveraged-and-inverse/sqqq?gad=1)
 - [Direxion SOXS](https://www.direxion.com/product/daily-semiconductor-bull-bear-3x-etfs)
 - [FINRA leveraged/inverse ETP guidance](https://www.finra.org/investors/insights/lowdown-leveraged-and-inverse-exchange-traded-products)
+- [FINRA non-traditional ETF FAQ](https://www.finra.org/rules-guidance/key-topics/etf/non-traditional-etf-faq)
+- [Gao et al., Market intraday momentum](https://doi.org/10.1016/j.jfineco.2018.05.009)
 - [KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)
 - [KODEX Inverse](https://www.samsungfund.com/etf/product/view.do?id=2ETF20)
 
@@ -790,9 +814,13 @@ the current direction is wrong.
   geared ETP objectives reset daily, can deviate over shorter or longer
   periods, and require close monitoring; that supports path measurement rather
   than threshold fitting from one loss. The final NASDAQ return of -0.22%
-  remained above the overseas -1% gate, so no US inverse trade is expected.
-  Durable regime and product-stage observations make each zero-sample reason
-  auditable.
+  remained above the overseas -1% gate, so no US inverse trade was expected in
+  that session. On 2026-07-29 the provisional NASDAQ return crossed -1% and
+  exposed a different zero-sample cause: the generic formula rejected a liquid,
+  rising SOXS setup. Route future US observations through the separately named
+  shadow formula, but treat the later favorable price as counterfactual only.
+  There are still zero completed US inverse samples. Durable regime and
+  product-stage observations make each zero-sample reason auditable.
 - Performance now uses the broker execution ledger. Submission rows, canceled
   orders, and replacement attempts are excluded; partial/replacement fills in
   one execution group produce one confirmed trade.

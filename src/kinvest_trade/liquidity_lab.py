@@ -81,6 +81,12 @@ _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _MIN_VPS_US_FULL_SCAN_WINDOW_SEC = 120
 _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN = 30
 _VIRTUAL_SELL_SETTLEMENT_ROLE = "virtual_sell_settlement"
+_DEDICATED_INVERSE_ENTRY_FORMULAS = frozenset(
+    {
+        "regime_trend_breakout_v1",
+        "us_regime_trend_breakout_v1",
+    }
+)
 
 
 def _fallback_runtime_config() -> SimpleNamespace:
@@ -1043,7 +1049,7 @@ class LiquidityLabService:
         return (
             self._is_inverse_symbol(market, code)
             and self._inverse_entry_formula(market)
-            == "regime_trend_breakout_v1"
+            in _DEDICATED_INVERSE_ENTRY_FORMULAS
         )
 
     def _cached_domestic_inverse_etf_metadata(
@@ -1090,7 +1096,7 @@ class LiquidityLabService:
             else {}
         )
         if self._is_inverse_symbol(market, code):
-            if entry_formula == "regime_trend_breakout_v1":
+            if entry_formula in _DEDICATED_INVERSE_ENTRY_FORMULAS:
                 result = evaluate_inverse_regime_trend_breakout_setup(
                     policy.auto_trade,
                     signal_snapshot,

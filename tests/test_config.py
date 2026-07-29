@@ -152,7 +152,15 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         domestic.auto_trade.inverse_entry_formula
         == "regime_trend_breakout_v1"
     )
-    assert overseas.auto_trade.inverse_entry_formula == "strategy_consensus_v1"
+    assert (
+        overseas.auto_trade.inverse_entry_formula
+        == "us_regime_trend_breakout_v1"
+    )
+    assert (
+        overseas.auto_trade.inverse_trend_breakout_benchmark_threshold_pct
+        == -1.0
+    )
+    assert overseas.auto_trade.inverse_trend_breakout_min_volume_ratio == 1.3
     assert domestic.auto_trade.inverse_require_nav_validation is True
     assert overseas.auto_trade.inverse_require_nav_validation is False
     assert domestic.auto_trade.domestic_sell_tax_rate == 0.002

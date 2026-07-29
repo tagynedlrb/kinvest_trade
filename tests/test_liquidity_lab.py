@@ -10736,6 +10736,73 @@ def test_overseas_buy_stays_skipped_when_market_closed() -> None:
     assert service.virtual_trades.list_positions("overseas") == []
 
 
+def test_closed_market_cycle_bootstraps_strategy_guard_state(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
+    service.config.liquidity_lab.strategy_guard_markets = ["domestic"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["VWAP"]
+    logged_at = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=logged_at,
+            market="domestic",
+            symbol=f"LOSS{idx}",
+            exchange_code="KRX",
+            action_reason="atr_hard_stop",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+            entry_price=10_000.0,
+            qty_executed=1,
+            net_pnl_krw=-100.0,
+        )
+    original_is_krx_regular_session = (
+        liquidity_lab_module.is_krx_regular_session
+    )
+    original_is_us_regular_session = (
+        liquidity_lab_module.is_us_regular_session
+    )
+    original_is_us_orderable_session_for_env = (
+        liquidity_lab_module.is_us_orderable_session_for_env
+    )
+    original_get_us_trading_session = (
+        liquidity_lab_module.get_us_trading_session
+    )
+    liquidity_lab_module.is_krx_regular_session = lambda now: False
+    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_orderable_session_for_env = (
+        lambda now, env: False
+    )
+    liquidity_lab_module.get_us_trading_session = lambda now: "closed"
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = (
+            original_is_krx_regular_session
+        )
+        liquidity_lab_module.is_us_regular_session = (
+            original_is_us_regular_session
+        )
+        liquidity_lab_module.is_us_orderable_session_for_env = (
+            original_is_us_orderable_session_for_env
+        )
+        liquidity_lab_module.get_us_trading_session = (
+            original_get_us_trading_session
+        )
+
+    assert report.primary_selection_reason == "no_supported_market_open"
+    states = service.repository.list_active_strategy_guard_states()
+    assert len(states) == 1
+    assert states[0]["market"] == "domestic"
+    assert states[0]["strategy_flag"] == "VWAP"
+    assert states[0]["trigger_trade_count"] == 3
+
+
 def test_run_skips_full_vps_scan_near_us_session_transition() -> None:
     service = _build_run_service()
     scan_calls = []

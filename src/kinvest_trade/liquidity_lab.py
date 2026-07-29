@@ -4804,6 +4804,7 @@ class LiquidityLabService:
                 restored.get("reconciled")
             )
         await self._refresh_market_regimes(now)
+        self._strategy_guard_blocked_keys()
         now = datetime.now(timezone.utc)
         await self._reconcile_broker_executions(now)
         await self._ensure_tv_diagnostics()

@@ -26,6 +26,12 @@
 - Overseas performance is joined to the final NASDAQ Composite session regime.
 - Provisional benchmark rows are stored for monitoring but excluded from policy
   evaluation until the market close is final.
+- An approved domestic inverse symbol whose KIS product type is `ETF` or `ETN`
+  is not rejected solely by the generic low-share-price filter. That filter is
+  a speculative-stock proxy, not an ETF liquidity measure. Intraday turnover,
+  recent volume, spread, same-session benchmark decline, product direction and
+  volume confirmation remain mandatory. Unapproved symbols and an approved
+  code returned as an ordinary stock receive no exemption.
 - Volatility uses percentage True Range: the maximum of the session high-low
   range and each absolute high/low distance from the prior close. This captures
   close-to-open gaps while normalizing domestic and overseas markets against

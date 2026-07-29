@@ -97,6 +97,64 @@ def test_domestic_speculative_reasons_flag_low_price_and_turnover() -> None:
     ]
 
 
+def test_approved_domestic_inverse_uses_liquidity_instead_of_generic_price_floor() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config = loaded
+    liquid_inverse = DomesticScanResult(
+        stock_code="114800",
+        current_price=1_258,
+        best_ask=1_258,
+        best_bid=1_257,
+        spread_pct=0.000795,
+        minute_change_pct=0.0,
+        intraday_turnover_krw=533_361_513_086,
+        volume_sum=435_463_463,
+        activity_score=95.4305,
+        product_type="ETF",
+    )
+    wide_inverse = replace(
+        liquid_inverse,
+        stock_code="252670",
+        current_price=126,
+        best_ask=127,
+        best_bid=126,
+        spread_pct=0.007905,
+    )
+    ordinary_low_price = replace(
+        liquid_inverse,
+        stock_code="123456",
+        product_type="STOCK",
+    )
+    wrong_product_type = replace(
+        liquid_inverse,
+        product_type="STOCK",
+    )
+
+    assert service._domestic_quote_speculative_reasons(liquid_inverse) == []
+    assert service._domestic_speculative_reasons(liquid_inverse) == []
+    assert service._domestic_quote_speculative_reasons(wide_inverse) == [
+        "wide_spread"
+    ]
+    assert service._domestic_speculative_reasons(wide_inverse) == [
+        "wide_spread"
+    ]
+    assert service._domestic_quote_speculative_reasons(ordinary_low_price) == [
+        "low_price_krw"
+    ]
+    assert service._domestic_speculative_reasons(ordinary_low_price) == [
+        "low_price_krw"
+    ]
+    assert service._domestic_quote_speculative_reasons(wrong_product_type) == [
+        "low_price_krw"
+    ]
+    assert service._domestic_speculative_reasons(wrong_product_type) == [
+        "low_price_krw"
+    ]
+
+
 def test_overseas_speculative_reasons_flag_low_volume_and_spread() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(
@@ -5459,6 +5517,77 @@ def test_inverse_candidates_reject_stale_benchmark_regime() -> None:
         service._inverse_regime_decision("domestic", "252670", now=now).reason
         == "inverse_benchmark_regime_stale"
     )
+
+
+def test_domestic_scan_routes_liquid_low_price_inverse_to_signal_stage() -> None:
+    service = _build_run_service()
+    service.config = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.liquidity_lab.domestic_dynamic_scan = False
+    service.config.liquidity_lab.domestic_candidates = []
+    service._active_inverse_symbols = lambda market, now=None: [  # type: ignore[method-assign]
+        "114800",
+        "252670",
+    ]
+    liquid_inverse = DomesticScanResult(
+        stock_code="114800",
+        current_price=1_258,
+        best_ask=1_258,
+        best_bid=1_257,
+        spread_pct=0.000795,
+        minute_change_pct=0.0,
+        intraday_turnover_krw=533_361_513_086,
+        volume_sum=435_463_463,
+        activity_score=95.4305,
+        product_type="ETF",
+    )
+    wide_inverse = replace(
+        liquid_inverse,
+        stock_code="252670",
+        current_price=126,
+        best_ask=127,
+        best_bid=126,
+        spread_pct=0.007905,
+    )
+    by_symbol = {
+        "114800": liquid_inverse,
+        "252670": wide_inverse,
+    }
+
+    async def fake_balance():
+        service._domestic_balance_cache = {"cycle": 0, "data": {}}
+        return {}
+
+    async def fake_quote(symbol):
+        return by_symbol[symbol]
+
+    async def fake_signal(symbol):
+        return by_symbol[symbol]
+
+    service._get_domestic_balance_for_cycle = fake_balance  # type: ignore[method-assign]
+    service._scan_single_domestic_quote = fake_quote  # type: ignore[method-assign]
+    service._scan_single_domestic = fake_signal  # type: ignore[method-assign]
+
+    ranked = asyncio.run(service.scan_domestic())
+
+    assert [candidate.stock_code for candidate in ranked] == ["114800"]
+    assert [(row.code, row.reasons) for row in service._domestic_excluded] == [
+        ("252670", ["wide_spread"])
+    ]
+    events = service.repository.list_event_log(
+        event_type="inverse_price_floor_exempted",
+    )
+    assert [event["symbol"] for event in reversed(events)] == [
+        "114800",
+        "252670",
+    ]
+    details = {
+        event["symbol"]: json.loads(event["detail"])
+        for event in events
+    }
+    assert details["114800"]["remaining_reasons"] == []
+    assert details["252670"]["remaining_reasons"] == ["wide_spread"]
 
 
 def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products() -> None:

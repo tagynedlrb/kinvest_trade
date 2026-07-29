@@ -4340,6 +4340,25 @@ class LiquidityLabService:
                 if candidate.stock_code in monitored_codes
                 else self._domestic_quote_speculative_reasons(candidate)
             )
+            if (
+                candidate.current_price
+                < self.config.liquidity_lab.domestic_min_price_krw
+                and self._is_approved_domestic_inverse_product(candidate)
+            ):
+                self._record_inverse_observation(
+                    event_type="inverse_price_floor_exempted",
+                    market="domestic",
+                    symbol=stock_code,
+                    reason="approved_inverse_liquidity_routing",
+                    detail={
+                        "stage": "quote_filter",
+                        "generic_min_price_krw": (
+                            self.config.liquidity_lab.domestic_min_price_krw
+                        ),
+                        "remaining_reasons": reasons,
+                        "snapshot": asdict(candidate),
+                    },
+                )
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
@@ -5195,7 +5214,10 @@ class LiquidityLabService:
     def _domestic_speculative_reasons(self, candidate: DomesticScanResult) -> list[str]:
         config = self.config.liquidity_lab
         reasons: list[str] = []
-        if candidate.current_price < config.domestic_min_price_krw:
+        if (
+            candidate.current_price < config.domestic_min_price_krw
+            and not self._is_approved_domestic_inverse_product(candidate)
+        ):
             reasons.append("low_price_krw")
         if candidate.intraday_turnover_krw < config.domestic_min_intraday_turnover_krw:
             reasons.append("thin_intraday_turnover")
@@ -5208,13 +5230,29 @@ class LiquidityLabService:
     def _domestic_quote_speculative_reasons(self, candidate: DomesticScanResult) -> list[str]:
         config = self.config.liquidity_lab
         reasons: list[str] = []
-        if candidate.current_price < config.domestic_min_price_krw:
+        if (
+            candidate.current_price < config.domestic_min_price_krw
+            and not self._is_approved_domestic_inverse_product(candidate)
+        ):
             reasons.append("low_price_krw")
         if candidate.intraday_turnover_krw < config.domestic_min_intraday_turnover_krw:
             reasons.append("thin_intraday_turnover")
         if candidate.spread_pct > config.domestic_max_spread_pct:
             reasons.append("wide_spread")
         return reasons
+
+    def _is_approved_domestic_inverse_product(
+        self,
+        candidate: DomesticScanResult,
+    ) -> bool:
+        symbol = str(getattr(candidate, "stock_code", "") or "").strip()
+        if not symbol:
+            return False
+        return (
+            self._is_inverse_symbol("domestic", symbol)
+            and str(getattr(candidate, "product_type", "") or "").strip().upper()
+            in {"ETF", "ETN"}
+        )
 
     def _overseas_speculative_reasons(self, candidate: OverseasScanResult) -> list[str]:
         config = self.config.liquidity_lab

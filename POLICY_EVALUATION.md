@@ -48,6 +48,14 @@
   pair them with the failed attempt's logical lineage. Never persist query/body
   parameters, account numbers, credentials, authorization headers or tokens
   for this diagnosis.
+- Do not use a fixed 1.10-second VPS overseas-balance request-start floor.
+  A natural `VTTS3012R` pair reproduced `EGW00201` at a measured
+  1.100416-second gap, then recovered on the same logical request without a
+  terminal failure. The narrow-boundary hypothesis is falsified. Keep the
+  shared 1.05-second floor and bounded retry until the existing sustained or
+  terminal-failure thresholds are met. A response-completion delay must also
+  justify its certain per-cycle opportunity cost against measured retry cost
+  before deployment.
 - Reconsider the current VPS pacing when a tracked rate-limit request ends in
   terminal failure, recovered rate-limit requests exceed 1% for three
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry

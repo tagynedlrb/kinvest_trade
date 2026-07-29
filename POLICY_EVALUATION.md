@@ -48,6 +48,19 @@
 - Overseas performance is joined to the final NASDAQ Composite session regime.
 - Provisional benchmark rows are stored for monitoring but excluded from policy
   evaluation until the market close is final.
+- `market_regimes` remains the authoritative latest/final daily row. Intraday
+  changes are append-only in `market_regime_observations`; only the market's
+  current local session is appended, and historical recalculation rows are
+  never presented as observations that happened in real time.
+- Every submitted BUY keeps a same-session entry-regime snapshot in the broker
+  event and execution context. Missing current-session data is recorded as
+  unavailable; a prior session must never be substituted. Final-session regime
+  performance and entry-time regime performance are separate evaluation
+  dimensions.
+- Current regime context may accompany a strategy-guard audit, but it does not
+  release the global emergency guard. Regime-specific loosening still requires
+  at least five confirmed exits across three final benchmark sessions and
+  positive net expectancy after costs.
 - An approved domestic inverse symbol whose KIS product type is `ETF` or `ETN`
   is not rejected solely by the generic low-share-price filter. That filter is
   a speculative-stock proxy, not an ETF liquidity measure. Intraday turnover,

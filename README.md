@@ -84,6 +84,12 @@
     상품구분이 비어 있으면 면세로 추정하지 않고 보수적으로 일반주식 세율을 쓴다.
     계산식은 `cost_calculation_version`으로 식별하며, 기존 확정 체결 보정은 KIS
     상품구분을 다시 조회하고 온라인 백업을 만든 뒤에만 수행한다.
+15. **최종 시장환경과 진입 시점 시장환경은 서로 다른 증거다.**
+    `market_regimes`는 KOSPI/NASDAQ의 세션별 최신·최종 상태를 유지하고,
+    장중 변화는 `market_regime_observations`에 현재 현지 세션만 append-only로
+    저장한다. 실제 BUY 접수에는 같은 세션의 레짐 스냅샷을 실행 문맥에 고정하며,
+    자료가 없을 때 이전 거래일로 대체하지 않는다. 과거 일봉 재계산을 장중
+    관측처럼 백필하거나, 한 급락일의 진입 레짐만으로 전략을 완화해서는 안 된다.
 
 ## 현재 구조
 - `config/fixed_config.json`: 고정 설정
@@ -103,6 +109,10 @@
 - `src/kinvest_trade/execution_reconciler.py`: KIS 주문체결 이력과 제출 원장을 대조해
   부분체결·정정 주문을 실행 그룹별 한 건의 체결로 확정
 - `src/kinvest_trade/inverse_policy.py`: 시장별 하락 레짐과 역방향 상품 실행모드 게이트
+- `src/kinvest_trade/market_regime.py`: KOSPI/NASDAQ 최종 일별 레짐과 현재
+  세션 장중 관측 계보 수집
+- `src/kinvest_trade/repository.py`: 주문·체결·성과 원장과
+  `market_regime_observations` 시점 조회/중복 방지
 - `src/kinvest_trade/lab_notify.py`: 거래 알림 큐/배치 전송
   - (위 `lab_*.py`는 원래 `liquidity_lab.py` 한 파일이었으나, 8,700줄을 넘기며 유지보수가
     어려워져 성격별로 분리했다. 각 파일은 `LiquidityLabService` 인스턴스를 `service`로 받아

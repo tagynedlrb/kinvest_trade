@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import kinvest_trade.notifier as notifier_module
 from kinvest_trade.notifier import TelegramNotifier
 from kinvest_trade.repository import SqliteRepository
@@ -33,6 +34,71 @@ class FakeAsyncClient:
     async def post(self, url: str, json: dict):
         self.calls.append((url, json))
         return FakeResponse(self.payload)
+
+
+class FakeGetUpdatesClient:
+    def __init__(
+        self,
+        *,
+        timeout: object,
+        calls: list[tuple[str, dict]],
+        captured_timeouts: list[object],
+    ) -> None:
+        self.calls = calls
+        captured_timeouts.append(timeout)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get(self, url: str, params: dict):
+        self.calls.append((url, params))
+        return FakeResponse(
+            {
+                "ok": True,
+                "result": [{"update_id": 42}],
+            }
+        )
+
+
+def test_get_updates_separates_long_poll_read_timeout() -> None:
+    calls: list[tuple[str, dict]] = []
+    captured_timeouts: list[object] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeGetUpdatesClient(  # type: ignore[assignment]
+        timeout=timeout,
+        calls=calls,
+        captured_timeouts=captured_timeouts,
+    )
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    try:
+        result = asyncio.run(notifier.get_updates(offset=41))
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert result == [{"update_id": 42}]
+    assert calls == [
+        (
+            "https://api.telegram.org/bottoken123/getUpdates",
+            {"timeout": 30, "offset": 41},
+        )
+    ]
+    assert len(captured_timeouts) == 1
+    timeout = captured_timeouts[0]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == 5.0
+    assert timeout.read == 40.0
+    assert timeout.write == 5.0
+    assert timeout.pool == 5.0
 
 
 def test_set_commands_returns_false_when_disabled() -> None:

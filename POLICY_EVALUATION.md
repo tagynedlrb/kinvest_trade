@@ -34,6 +34,33 @@
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry
   delay causes an orderable policy bar to be missed.
 
+## Telegram command channel reliability
+
+- Telegram `getUpdates` is a positive-timeout long poll. Its HTTP read timeout
+  must exceed the declared server poll timeout, while connect, write and pool
+  timeouts remain independently bounded. Telegram documents that pending
+  updates are retained for no more than 24 hours and that advancing
+  `offset` prevents duplicate delivery
+  ([Telegram Bot API](https://core.telegram.org/bots/api)).
+- A transport failure in the command listener must not terminate the trading
+  scheduler. Retry after 3, 6, 12, 24 and at most 30 seconds; reset the streak
+  on the first successful response. This backoff affects command reception,
+  never market scanning, position monitoring or exit execution.
+- Persist one `telegram_poll_outage_started` event for the first failure and
+  one `telegram_poll_outage_recovered` event after recovery. The pair records
+  safe exception type, optional HTTP status, failure count and duration so
+  outage frequency can be evaluated without counting every retry as an
+  independent incident.
+- Bot API URLs contain the bot token. Poll diagnostics must never persist or
+  print the request URL, exception message, headers, traceback or credentials.
+  Safe exception class names and HTTP status codes retain enough distinction
+  for transient transport, authentication and duplicate-poller failures.
+- Do not switch to a webhook from a small number of recovered long-poll
+  timeouts alone. Reconsider the reception architecture only when outages
+  cause a confirmed command to exceed the declared response objective,
+  pending updates approach Telegram's retention boundary, or recovery events
+  remain sustained across independent network windows.
+
 ## Market separation
 
 - Domestic and overseas policies are independently owned and versioned.

@@ -597,6 +597,14 @@ TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events
 - 거래 가능 세션은 `20초`, 미장 pre/after는 `30초`, 양쪽 장이 모두 닫혔고 다음 장이 멀면 `120초`까지 늘려 불필요한 호출을 줄인다.
 - 다음 실행 시점은 `이전 사이클 종료 후 추가 대기`가 아니라 `이전 사이클 시작 시점 기준`으로 계산해 감시 간격이 불필요하게 늘어지지 않도록 했다.
 - 텔레그램 long polling 시간은 `notifications.telegram_command_poll_timeout_sec`으로 조절한다.
+- `getUpdates`의 HTTP 읽기 제한은 Telegram 서버 long-poll 시간보다
+  10초 길게 두고 연결·쓰기 제한은 5초로 분리한다. 연속 통신 오류는
+  `3/6/12/24/30초`로 백오프하며 정상 응답이 오면 즉시 초기화한다.
+  첫 장애와 복구는 `telegram_poll_outage_started/recovered` 이벤트로
+  한 번씩 남긴다.
+- Telegram Bot API 요청 URL에는 봇 토큰이 포함되므로 poll 오류 로그와
+  이벤트에는 traceback·URL·예외 메시지를 저장하지 않는다. 안전한
+  예외 유형, HTTP 상태코드, 연속횟수, 지속시간만 기록한다.
 - 서비스 로그는 `journalctl --user -u kinvest-telegram-control.service -f`로 확인할 수 있다.
 - `WAIT` 상태는 더 이상 텔레그램으로 매 사이클 전송하지 않는다. 텔레그램 알림은 실제 `매수/매도 제출` 또는 `주문 오류` 중심으로만 보낸다.
 - `/lab_status`에는 현재 장 상태, 다음 루프 간격, 연속 오류 횟수, 가상 노출, 최근 12시간 반복 매도장애(`매도가능0`, `주문거부`)가 함께 표시된다.

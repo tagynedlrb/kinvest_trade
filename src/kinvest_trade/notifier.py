@@ -140,7 +140,13 @@ class TelegramNotifier:
         if offset is not None:
             params["offset"] = offset
 
-        async with httpx.AsyncClient(timeout=max(params["timeout"] + 5, 10)) as client:
+        request_timeout = httpx.Timeout(
+            connect=5.0,
+            read=max(float(params["timeout"]) + 10.0, 15.0),
+            write=5.0,
+            pool=5.0,
+        )
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
             response = await client.get(self._api_url("getUpdates"), params=params)
             response.raise_for_status()
             payload = response.json()

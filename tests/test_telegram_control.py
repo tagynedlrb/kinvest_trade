@@ -3775,6 +3775,7 @@ class DummyNotifier:
 class DummyRepository:
     def __init__(self) -> None:
         self.db_path = Path("/tmp/kinvest_trade_test.db")
+        self.events: list[dict] = []
 
     def save_telegram_control_session(self, **kwargs) -> int:
         return 1
@@ -3799,6 +3800,9 @@ class DummyRepository:
 
     def list_event_log(self, **kwargs) -> list[dict]:
         return []
+
+    def save_event(self, **kwargs) -> None:
+        self.events.append(kwargs)
 
 
 class DummyAsyncClient:
@@ -5237,6 +5241,99 @@ def test_command_loop_survives_get_updates_network_error() -> None:
         asyncio.sleep = real_sleep  # type: ignore[assignment]
 
     assert calls["count"] == 2
+
+
+def test_command_loop_backs_off_and_records_poll_recovery() -> None:
+    controller = _build_async_controller()
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller.update_offset = 0
+    outcomes = [
+        httpx.ReadTimeout("read timeout"),
+        httpx.ConnectError("connect error"),
+        [],
+        asyncio.CancelledError(),
+    ]
+
+    async def flaky_get_updates(*, offset):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    controller.notifier.get_updates = flaky_get_updates  # type: ignore[method-assign]
+    sleeps: list[float] = []
+
+    async def fast_sleep(seconds):
+        sleeps.append(seconds)
+
+    real_sleep = asyncio.sleep
+    asyncio.sleep = fast_sleep  # type: ignore[assignment]
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(controller._command_loop())
+    finally:
+        asyncio.sleep = real_sleep  # type: ignore[assignment]
+
+    assert sleeps == [3.0, 6.0, 0.2]
+    assert controller._telegram_poll_error_streak == 0
+    assert [event["event_type"] for event in controller.repository.events] == [
+        "telegram_poll_outage_started",
+        "telegram_poll_outage_recovered",
+    ]
+    recovery = controller.repository.events[-1]["detail"]
+    assert recovery["failure_count"] == 2
+    assert recovery["duration_sec"] >= 0
+
+
+def test_telegram_poll_retry_delay_is_capped() -> None:
+    assert [
+        TelegramLiquidityLabController._telegram_poll_retry_delay(streak)
+        for streak in range(1, 7)
+    ] == [3.0, 6.0, 12.0, 24.0, 30.0, 30.0]
+
+
+def test_command_loop_records_http_status_without_request_url() -> None:
+    controller = _build_async_controller()
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+    request = httpx.Request(
+        "GET",
+        "https://api.telegram.org/botsecret-token/getUpdates",
+    )
+    response = httpx.Response(409, request=request)
+    conflict = httpx.HTTPStatusError(
+        "conflict at secret URL",
+        request=request,
+        response=response,
+    )
+    outcomes = [conflict, [], asyncio.CancelledError()]
+
+    async def flaky_get_updates(*, offset):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    controller.notifier.get_updates = flaky_get_updates  # type: ignore[method-assign]
+
+    async def fast_sleep(_seconds):
+        return None
+
+    real_sleep = asyncio.sleep
+    asyncio.sleep = fast_sleep  # type: ignore[assignment]
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(controller._command_loop())
+    finally:
+        asyncio.sleep = real_sleep  # type: ignore[assignment]
+
+    started = controller.repository.events[0]["detail"]
+    recovered = controller.repository.events[1]["detail"]
+    serialized = json.dumps(controller.repository.events)
+    assert started["status_code"] == 409
+    assert recovered["first_status_code"] == 409
+    assert recovered["last_status_code"] == 409
+    assert "secret-token" not in serialized
+    assert "conflict at secret URL" not in serialized
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

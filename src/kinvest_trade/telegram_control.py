@@ -303,6 +303,12 @@ class TelegramLiquidityLabController:
         self._last_auto_stale_domestic_cancel_at: datetime | None = None
         self._last_auto_stale_overseas_cancel_at: datetime | None = None
         self._last_startup_notification_at: datetime | None = None
+        self._telegram_poll_error_streak = 0
+        self._telegram_poll_outage_started_at: datetime | None = None
+        self._telegram_poll_first_error_type = ""
+        self._telegram_poll_last_error_type = ""
+        self._telegram_poll_first_status_code: int | None = None
+        self._telegram_poll_last_status_code: int | None = None
         self.order_admin = OrderAdminHelper(self)
         self.reports = ReportHelper(self)
 
@@ -553,22 +559,132 @@ class TelegramLiquidityLabController:
             with contextlib.suppress(Exception):
                 await self.notifier.answer_callback_query(callback_id)
 
+    @staticmethod
+    def _telegram_poll_retry_delay(streak: int) -> float:
+        exponent = max(0, min(int(streak) - 1, 4))
+        return min(30.0, 3.0 * (2**exponent))
+
+    def _save_telegram_poll_event(
+        self,
+        event_type: str,
+        detail: dict,
+    ) -> None:
+        save_event = getattr(self.repository, "save_event", None)
+        if not callable(save_event):
+            return
+        try:
+            save_event(
+                event_type=event_type,
+                detail=detail,
+                session_id=self.active_session_id,
+                cycle_no=self.current_cycle_no,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[TELEGRAM] poll event 저장 실패 type=%s",
+                type(exc).__name__,
+            )
+
+    def _record_telegram_poll_failure(self, exc: Exception) -> float:
+        now = datetime.now(timezone.utc)
+        self._telegram_poll_error_streak += 1
+        error_type = type(exc).__name__
+        response = getattr(exc, "response", None)
+        raw_status_code = getattr(response, "status_code", None)
+        try:
+            status_code = (
+                int(raw_status_code)
+                if raw_status_code is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            status_code = None
+        self._telegram_poll_last_error_type = error_type
+        self._telegram_poll_last_status_code = status_code
+        retry_delay = self._telegram_poll_retry_delay(
+            self._telegram_poll_error_streak
+        )
+        if self._telegram_poll_outage_started_at is None:
+            self._telegram_poll_outage_started_at = now
+            self._telegram_poll_first_error_type = error_type
+            self._telegram_poll_first_status_code = status_code
+            notifications = getattr(self.config, "notifications", None)
+            detail = {
+                "error_type": error_type,
+                "retry_delay_sec": retry_delay,
+                "poll_timeout_sec": int(
+                    getattr(
+                        notifications,
+                        "telegram_command_poll_timeout_sec",
+                        20,
+                    )
+                    or 20
+                ),
+            }
+            if status_code is not None:
+                detail["status_code"] = status_code
+            self._save_telegram_poll_event(
+                "telegram_poll_outage_started",
+                detail,
+            )
+        _logger.warning(
+            "[TELEGRAM] getUpdates 통신 오류 type=%s status=%s 연속=%d 재시도=%.0f초",
+            error_type,
+            status_code if status_code is not None else "-",
+            self._telegram_poll_error_streak,
+            retry_delay,
+        )
+        return retry_delay
+
+    def _record_telegram_poll_recovery(self) -> None:
+        failure_count = self._telegram_poll_error_streak
+        if failure_count <= 0:
+            return
+        now = datetime.now(timezone.utc)
+        started_at = self._telegram_poll_outage_started_at or now
+        duration_sec = round(
+            max((now - started_at).total_seconds(), 0.0),
+            3,
+        )
+        detail = {
+            "failure_count": failure_count,
+            "duration_sec": duration_sec,
+            "first_error_type": self._telegram_poll_first_error_type,
+            "last_error_type": self._telegram_poll_last_error_type,
+            "first_status_code": self._telegram_poll_first_status_code,
+            "last_status_code": self._telegram_poll_last_status_code,
+        }
+        self._save_telegram_poll_event(
+            "telegram_poll_outage_recovered",
+            detail,
+        )
+        _logger.info(
+            "[TELEGRAM] getUpdates 통신 복구 오류=%d 지속=%.1f초",
+            failure_count,
+            duration_sec,
+        )
+        self._telegram_poll_error_streak = 0
+        self._telegram_poll_outage_started_at = None
+        self._telegram_poll_first_error_type = ""
+        self._telegram_poll_last_error_type = ""
+        self._telegram_poll_first_status_code = None
+        self._telegram_poll_last_status_code = None
+
     async def _command_loop(self) -> None:
         while True:
             try:
                 updates = await self.notifier.get_updates(offset=self.update_offset)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 # A transient network blip on the long-poll request (seen in
                 # production as httpx.ReadError/anyio.BrokenResourceError) must
                 # never be able to crash the whole service -- that also kills
                 # the scheduler loop and stops all trading/exit monitoring.
-                # Log it, back off briefly, and retry instead of propagating.
-                _logger.warning(
-                    "[TELEGRAM] getUpdates 통신 오류 - 잠시 대기 후 재시도",
-                    exc_info=True,
-                )
-                await asyncio.sleep(3.0)
+                # Avoid logging the request URL because it contains the bot
+                # token; durable events retain only safe error metadata.
+                retry_delay = self._record_telegram_poll_failure(exc)
+                await asyncio.sleep(retry_delay)
                 continue
+            self._record_telegram_poll_recovery()
             for update in updates:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):

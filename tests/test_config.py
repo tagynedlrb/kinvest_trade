@@ -165,6 +165,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "VWAP",
         "RSI",
         "VOL",
+        "VWAP+VOL",
     ]
     assert domestic.engine == overseas.engine == "momentum_v1"
     assert domestic.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct

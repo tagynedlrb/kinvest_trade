@@ -926,18 +926,28 @@ the current direction is wrong.
   entry expectancy until a valid signal exists. The final NASDAQ regime is
   still sideways/normal-activity/normal-volatility; do not transfer this
   US-data observation to the domestic formula.
-- Do not extend the aggregate standalone-strategy guard to combination labels
-  from the current 48-hour average alone. Under True Range, the eleven
-  `VWAP+VOL` exits belong to the same sideways/normal-activity/normal-volatility
-  bucket but span only two final sessions; the minimum is three. Re-evaluate
-  after the declared regime sample matures instead of converting one crash
-  episode into a permanent entry block.
+- Overseas `VWAP+VOL` now enters the dynamic guard's observed label set. Its
+  48-hour broker-confirmed, session-owned sample has 20 exits, two after-cost
+  wins, +0.0284% average gross return, -0.4737% average net return and
+  -805,736.39 KRW total net. The three final sessions are independently
+  negative: -0.3918% on July 27, -0.6243% on July 28 and -0.4105% on July 29.
+  July 27 and 28 were sideways/normal-activity/normal-volatility; July 29
+  finalized at -1.7445% in a strong-down/high-volatility regime, while its
+  activity remains unknown pending positive KIS index volume. Add only the
+  exact `VWAP+VOL` label to the overseas scope. Keep domestic and other
+  combinations unchanged. This is a reversible rolling guard, not formula
+  deletion or threshold fitting.
 - Frequency: the seven-day confirmed ledger contains eleven domestic and
   thirty-five overseas entries, followed by eleven and twenty-four exits. The
   largest raw WAIT bucket shrinks from 1,251 to 178 domestic episodes and from
   5,143 to 247 overseas episodes after deduplication. This is not evidence of a
   system frequency ceiling. Do not loosen entry gates while after-cost
   expectancy remains negative and regime coverage is this narrow.
+- Reject an overseas frequency increase for `VWAP+VOL`. Its gross edge is
+  approximately flat and does not clear the observed round-trip cost in any of
+  three final sessions. More executions would increase expected cost-adjusted
+  loss. Revisit only with blocked-signal forward evidence and later
+  out-of-sample final sessions.
 - Both markets: inverse trading remains shadow-only. Current evidence justifies
   testing separate down-market formulas, but not risking broker capital. The
   domestic formula opened and closed its first `114800` shadow observation

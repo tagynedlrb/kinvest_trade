@@ -502,6 +502,8 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
         dispatched_at="2026-07-13T00:00:00.100000+00:00",
         throttle_wait_ms=1010,
         network_elapsed_ms=42,
+        adaptive_pacing_active=True,
+        adaptive_wait_ms=125,
     )
 
     rows = repository.list_api_calls(limit=5)
@@ -517,6 +519,8 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
     assert rows[0]["dispatched_at"] == "2026-07-13T00:00:00.100000+00:00"
     assert rows[0]["throttle_wait_ms"] == 1010
     assert rows[0]["network_elapsed_ms"] == 42
+    assert rows[0]["adaptive_pacing_active"] == 1
+    assert rows[0]["adaptive_wait_ms"] == 125
 
 
 def test_api_call_health_separates_recovered_retry_from_terminal_failure(
@@ -536,6 +540,8 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         retry_scheduled=True,
         retry_reason="rate_limit",
         logical_terminal=False,
+        adaptive_pacing_active=False,
+        adaptive_wait_ms=0,
     )
     repository.save_api_call(
         created_at="2026-07-29T00:00:02+00:00",
@@ -547,6 +553,8 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         attempt_no=2,
         max_attempts=3,
         logical_terminal=True,
+        adaptive_pacing_active=True,
+        adaptive_wait_ms=125,
     )
     repository.save_api_call(
         created_at="2026-07-29T00:00:04+00:00",
@@ -599,6 +607,9 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         "retry_scheduled_count": 2,
         "rate_limit_retry_count": 1,
         "service_delay_retry_count": 1,
+        "adaptive_pacing_attempt_count": 1,
+        "adaptive_pacing_wait_count": 1,
+        "adaptive_pacing_wait_ms": 125,
         "attempt_failure_rate": pytest.approx(3 / 5),
         "terminal_failure_rate": pytest.approx(1 / 3),
     }
@@ -642,6 +653,8 @@ def test_api_call_lineage_columns_migrate_legacy_table(tmp_path) -> None:
     assert row["dispatched_at"] == ""
     assert row["throttle_wait_ms"] is None
     assert row["network_elapsed_ms"] is None
+    assert row["adaptive_pacing_active"] == 0
+    assert row["adaptive_wait_ms"] is None
     summary = repository.summarize_api_call_health(
         since="2026-07-28T00:00:00+00:00"
     )

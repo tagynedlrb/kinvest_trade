@@ -18,8 +18,12 @@ def _reset_client_rate_limit_state():
     # The asyncio lock is shared across clients in one process. Reset it so an
     # event loop created by one test cannot leak into another test.
     KisRestClient._rate_limit_lock = None
+    KisRestClient._last_response_completed_at_by_profile = {}
+    KisRestClient._adaptive_rate_limit_until_by_profile = {}
     yield
     KisRestClient._rate_limit_lock = None
+    KisRestClient._last_response_completed_at_by_profile = {}
+    KisRestClient._adaptive_rate_limit_until_by_profile = {}
 
 
 class FakeResponse:
@@ -169,6 +173,8 @@ def test_request_reports_api_calls_via_on_api_call_hook(
     assert calls[0]["dispatched_at"].endswith("+00:00")
     assert calls[0]["throttle_wait_ms"] >= 0
     assert calls[0]["network_elapsed_ms"] >= 0
+    assert calls[0]["adaptive_pacing_active"] is False
+    assert calls[0]["adaptive_wait_ms"] == 0
     assert calls[1]["success"] is True
     assert calls[1]["http_status"] == 200
     assert calls[1]["logical_request_id"] == calls[0]["logical_request_id"]
@@ -180,6 +186,8 @@ def test_request_reports_api_calls_via_on_api_call_hook(
     assert calls[1]["dispatched_at"].endswith("+00:00")
     assert calls[1]["throttle_wait_ms"] >= 0
     assert calls[1]["network_elapsed_ms"] >= 0
+    assert calls[1]["adaptive_pacing_active"] is True
+    assert calls[1]["adaptive_wait_ms"] >= 0
     # None of the logged fields ever carry account number or credentials.
     for call in calls:
         serialized = str(call)
@@ -223,8 +231,8 @@ def test_request_marks_exhausted_rate_limit_as_terminal_failure(
     async def token() -> str:
         return "tok"
 
-    async def no_wait(*_args, **_kwargs) -> None:
-        return None
+    async def no_wait(*_args, **_kwargs) -> tuple[bool, int]:
+        return False, 0
 
     client.ensure_token = token  # type: ignore[method-assign]
     client._throttle = no_wait  # type: ignore[method-assign]
@@ -294,8 +302,8 @@ def test_request_retries_vps_get_after_service_delay(
     async def token() -> str:
         return "tok"
 
-    async def no_throttle() -> None:
-        return None
+    async def no_throttle() -> tuple[bool, int]:
+        return False, 0
 
     async def capture_sleep(delay: float) -> None:
         delays.append(delay)
@@ -352,8 +360,8 @@ def test_request_marks_exhausted_service_delay_as_terminal_failure(
     async def token() -> str:
         return "tok"
 
-    async def no_throttle() -> None:
-        return None
+    async def no_throttle() -> tuple[bool, int]:
+        return False, 0
 
     async def capture_sleep(delay: float) -> None:
         delays.append(delay)
@@ -425,8 +433,8 @@ def test_request_retries_service_delay_only_for_vps_get(
     async def token() -> str:
         return "tok"
 
-    async def no_throttle() -> None:
-        return None
+    async def no_throttle() -> tuple[bool, int]:
+        return False, 0
 
     async def capture_sleep(delay: float) -> None:
         delays.append(delay)
@@ -597,6 +605,87 @@ def test_pacing_file_coordinates_separate_clients(tmp_path: Path) -> None:
     assert state_path.exists()
     assert state_path.stat().st_mode & 0o777 == 0o600
     float(state_path.read_text(encoding="ascii"))
+
+
+def test_vps_rate_limit_temporarily_adds_response_completion_floor(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    client._vps_min_request_interval_sec = 0.05
+    client._vps_adaptive_response_interval_sec = 0.08
+    client._vps_adaptive_window_sec = 1.0
+
+    active, adaptive_wait_ms = client._throttle_across_processes()
+    assert active is False
+    assert adaptive_wait_ms == 0
+
+    client._record_response_completion()
+    client._activate_adaptive_rate_limit_pacing()
+    started_at = time.monotonic()
+    active, adaptive_wait_ms = client._throttle_across_processes()
+    elapsed = time.monotonic() - started_at
+
+    assert active is True
+    assert elapsed >= 0.07
+    assert adaptive_wait_ms >= 20
+
+
+def test_adaptive_rate_limit_pacing_is_vps_profile_local(tmp_path: Path) -> None:
+    base = dict(
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+    )
+    vps_a = KisRestClient(
+        KisCredentials(
+            env="vps",
+            token_cache_path=tmp_path / "a.json",
+            **base,
+        )
+    )
+    vps_b = KisRestClient(
+        KisCredentials(
+            env="vps",
+            token_cache_path=tmp_path / "b.json",
+            **base,
+        )
+    )
+    prod = KisRestClient(
+        KisCredentials(
+            env="prod",
+            token_cache_path=tmp_path / "prod.json",
+            **base,
+        )
+    )
+
+    vps_a._record_response_completion()
+    vps_a._activate_adaptive_rate_limit_pacing()
+    now = time.monotonic()
+
+    assert vps_a._adaptive_rate_limit_state(now=now)[0] is True
+    assert vps_b._adaptive_rate_limit_state(now=now)[0] is False
+    prod._record_response_completion()
+    prod._activate_adaptive_rate_limit_pacing()
+    assert prod._adaptive_rate_limit_state(now=time.monotonic())[0] is False
 
 
 def test_pacing_file_serializes_concurrent_processes(tmp_path: Path) -> None:

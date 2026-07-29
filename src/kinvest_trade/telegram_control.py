@@ -465,6 +465,10 @@ class TelegramLiquidityLabController:
                 dispatched_at=str(info.get("dispatched_at", "")),
                 throttle_wait_ms=info.get("throttle_wait_ms"),
                 network_elapsed_ms=info.get("network_elapsed_ms"),
+                adaptive_pacing_active=bool(
+                    info.get("adaptive_pacing_active", False)
+                ),
+                adaptive_wait_ms=info.get("adaptive_wait_ms"),
             )
         except Exception:  # noqa: BLE001
             pass

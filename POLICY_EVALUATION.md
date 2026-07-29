@@ -56,10 +56,22 @@
   terminal-failure thresholds are met. A response-completion delay must also
   justify its certain per-cycle opportunity cost against measured retry cost
   before deployment.
+- A natural VPS `EGW00201` or `EGW00215` now activates a profile-local,
+  120-second adaptive response-completion floor. During that window the next
+  dispatch waits for both the existing 1.05-second request-start floor and
+  0.95 seconds after the preceding response completed. Production profiles
+  and an error-free VPS path remain unchanged. Persist whether the adaptive
+  mode was active and only the incremental wait beyond the request-start
+  floor. The 0.95-second value is an empirical boundary, not a broker
+  guarantee: all 15 dispatch-timed rate-limit responses had less than 950ms
+  of estimated post-response quiet time, while 4,084 first attempts at
+  950-999ms had none. Reassess with natural active-window results.
 - Reconsider the current VPS pacing when a tracked rate-limit request ends in
   terminal failure, recovered rate-limit requests exceed 1% for three
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry
-  delay causes an orderable policy bar to be missed.
+  or adaptive delay causes an orderable policy bar to be missed. Also revert
+  or shorten the adaptive window if its measured incremental wait persistently
+  exceeds the avoided retry latency without reducing clustered responses.
 - KIS overseas-balance exchange scope is environment-specific. The official
   sample defines demo `NASD`, `NYSE`, and `AMEX` as separate US exchanges,
   while production `NASD` means all US markets and production `NAS` means

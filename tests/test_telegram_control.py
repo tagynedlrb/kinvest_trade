@@ -1811,6 +1811,8 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
             "dispatched_at": "2026-07-29T10:45:00.123000+00:00",
             "throttle_wait_ms": 1049,
             "network_elapsed_ms": 85,
+            "adaptive_pacing_active": True,
+            "adaptive_wait_ms": 123,
         }
     )
 
@@ -1828,6 +1830,8 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert rows[0]["dispatched_at"] == "2026-07-29T10:45:00.123000+00:00"
     assert rows[0]["throttle_wait_ms"] == 1049
     assert rows[0]["network_elapsed_ms"] == 85
+    assert rows[0]["adaptive_pacing_active"] == 1
+    assert rows[0]["adaptive_wait_ms"] == 123
 
 
 def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:

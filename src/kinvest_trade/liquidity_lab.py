@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import uuid
@@ -562,10 +563,33 @@ class LiquidityLabService:
         base_threshold = int(
             getattr(self.config.risk, "max_consecutive_losses", 0) or 0
         )
+        base_cooldown = int(
+            getattr(
+                self.config.risk,
+                "circuit_breaker_cooldown_minutes",
+                0,
+            )
+            or 0
+        )
         for row in reversed(outcomes):
             market = str(row.get("market") or "").strip().lower()
             if not market:
                 continue
+            occurred_at = parse_datetime(str(row.get("logged_at") or ""))
+            active_since = trigger_at.get(market)
+            if active_since is not None and occurred_at is not None:
+                cooldown_minutes = self._market_risk_value(
+                    market,
+                    "circuit_breaker_cooldown_minutes",
+                    base_cooldown,
+                )
+                if (
+                    cooldown_minutes > 0
+                    and ensure_timezone(occurred_at)
+                    >= active_since + timedelta(minutes=cooldown_minutes)
+                ):
+                    streaks[market] = 0
+                    trigger_at.pop(market, None)
             net_pnl_pct = float(row.get("net_pnl_pct") or 0.0)
             if net_pnl_pct >= 0:
                 streaks[market] = 0
@@ -578,19 +602,10 @@ class LiquidityLabService:
                 base_threshold,
             )
             if threshold > 0 and streaks[market] == threshold:
-                parsed = parse_datetime(str(row.get("logged_at") or ""))
-                if parsed is not None:
-                    trigger_at[market] = ensure_timezone(parsed)
+                if occurred_at is not None:
+                    trigger_at[market] = ensure_timezone(occurred_at)
 
         active_halts: dict[str, datetime] = {}
-        base_cooldown = int(
-            getattr(
-                self.config.risk,
-                "circuit_breaker_cooldown_minutes",
-                0,
-            )
-            or 0
-        )
         for market, count in list(streaks.items()):
             threshold = self._market_risk_value(
                 market,
@@ -613,7 +628,71 @@ class LiquidityLabService:
                 streaks[market] = 0
                 continue
             active_halts[market] = started_at
+        for market, (count, started_at) in (
+            self._persisted_active_consecutive_halts(current).items()
+        ):
+            streaks[market] = count
+            active_halts[market] = started_at
         return streaks, active_halts
+
+    def _persisted_active_consecutive_halts(
+        self,
+        current: datetime,
+    ) -> dict[str, tuple[int, datetime]]:
+        list_events = getattr(self.repository, "list_event_log", None)
+        if not callable(list_events):
+            return {}
+        latest: dict[str, tuple[datetime, str, int]] = {}
+        for event_type in ("cb_fired", "cb_released"):
+            for row in list_events(event_type=event_type, limit=1000):
+                detail = row.get("detail")
+                if isinstance(detail, str):
+                    try:
+                        detail = json.loads(detail)
+                    except (TypeError, ValueError):
+                        continue
+                if not isinstance(detail, dict):
+                    continue
+                if str(detail.get("type") or "") != "consecutive":
+                    continue
+                market = str(detail.get("market") or "").strip().lower()
+                occurred_at = parse_datetime(str(row.get("logged_at") or ""))
+                if not market or occurred_at is None:
+                    continue
+                timestamp = ensure_timezone(occurred_at)
+                previous = latest.get(market)
+                if previous is None or timestamp > previous[0]:
+                    latest[market] = (
+                        timestamp,
+                        event_type,
+                        max(0, int(detail.get("consecutive_losses") or 0)),
+                    )
+
+        active: dict[str, tuple[int, datetime]] = {}
+        base_cooldown = int(
+            getattr(
+                self.config.risk,
+                "circuit_breaker_cooldown_minutes",
+                0,
+            )
+            or 0
+        )
+        for market, (started_at, event_type, count) in latest.items():
+            if event_type != "cb_fired":
+                continue
+            cooldown_minutes = self._market_risk_value(
+                market,
+                "circuit_breaker_cooldown_minutes",
+                base_cooldown,
+            )
+            if (
+                cooldown_minutes > 0
+                and current
+                >= started_at + timedelta(minutes=cooldown_minutes)
+            ):
+                continue
+            active[market] = (count, started_at)
+        return active
 
     async def _send_circuit_breaker_notification(self, message: str) -> None:
         notifier = getattr(self, "notifier", None)

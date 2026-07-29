@@ -5264,6 +5264,44 @@ def test_reconcile_confirmed_risk_day_pnl_restores_consecutive_breaker_after_res
     assert expired_halts == {}
 
 
+def test_confirmed_loss_restore_prefers_unreleased_persisted_breaker_event(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.risk.max_consecutive_losses = 3
+    service.config.risk.circuit_breaker_cooldown_minutes = 30
+    now = datetime.now(timezone.utc)
+    for idx, minutes_ago in enumerate((70, 60, 10, 5, 1)):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=(now - timedelta(minutes=minutes_ago)).isoformat(),
+            market="domestic",
+            symbol=f"LOSS{idx}",
+            exchange_code="KRX",
+            action_reason="atr_hard_stop",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+            entry_price=10_000.0,
+            qty_executed=1,
+            net_pnl_krw=-100.0,
+        )
+    service.repository.save_event(
+        event_type="cb_fired",
+        detail={
+            "type": "consecutive",
+            "market": "domestic",
+            "consecutive_losses": 3,
+        },
+    )
+    current = datetime.now(timezone.utc)
+
+    streaks, active_halts = service._confirmed_consecutive_loss_state(current)
+
+    assert streaks == {"domestic": 3}
+    assert list(active_halts) == ["domestic"]
+    assert current - active_halts["domestic"] < timedelta(seconds=1)
+
+
 def _save_test_regime(
     service: LiquidityLabService,
     *,

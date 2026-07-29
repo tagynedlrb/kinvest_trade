@@ -58,6 +58,38 @@
   변경이다. 하나라도 관측되면 후속 이벤트 적용을 중단하고
   실행행을 브로커 원장과 다시 대조한다.
 
+### 통합배포와 운영 확인
+- 구현 커밋 `b1b33c3`을 `git_token.txt`의 값을 노출하지 않는
+  임시 credential helper로 원격 `master`에 푸시했다. 전체
+  **789개** 테스트, `compileall`, `git diff --check`가
+  통과했다. 판단과 반증조건은 `policy_evaluation_log.id=85`에
+  기록했고, 별도 모델의 결과를 추정하지 않은 채 운영 검증 후
+  `confirmed_production_deploy_no_direct_model_ab`로 갱신했다.
+- 공식 KIS 당일 미체결을 10초 간격으로 두 번 조회해 모두
+  0건임을 확인했다. 이후 온라인 백업
+  `data/trading_backup_20260729_204018_pre_terminal_followup_reconcile_deploy.db`
+  을 만들었고 SHA-256은
+  `41c7b688abdabba827393726925c3a5862fb466ee43725a8cef47e4a8c8cdad6`,
+  무결성 정상, 외래키 위반 0이다.
+- 서비스를 `2026-07-29T20:40:27Z`, PID `1484394`,
+  `NRestarts=0`으로 재시작했다. 첫 자연 사이클은
+  `20:42:17Z`, `last_error=None`으로 끝났다. 현재 시각은
+  미장 종료 후 30분 조회 유예를 지난 `aftermarket`이므로 기존
+  호출보호 정책이 자동 reconciler를 의도대로 보류했고,
+  `execution_reconcile_deferred` 이벤트 `id=4871`을 남겼다.
+- 열린 주문 0건과 프로세스 간 KIS 호출 잠금을 확인한 뒤 배포
+  검증용 `force=True` 유지보수 조회를 한 번 수행했다. 결과는
+  `pending=2, matched=2, missing=0, terminal_followups=2,
+  no_fill=2, failed_markets=0`이다. FSUN/HUBB는 각각 체결 0,
+  잔량 0, 취소수량 157/11, `CANCELED`로 종결됐고 미확정
+  실행은 0건이다. 원장에는 후속 이벤트 `1033/1032`와
+  `execution_no_fill` 두 건을 보존했으며 포지션·손익은 만들지
+  않았다.
+- 종결 뒤 5개 운영 사이클에서 해외 체결이력 `VTTS3035R`
+  반복호출은 0회였다. 같은 창의 전체 API 21회는 시도·종결
+  실패가 모두 0이고 신규 실주문도 0이다. 텔레그램 배포보고
+  `telegram_message_log.id=1398`은 성공했다.
+
 ## [2026-07-30] 미장 VWAP+VOL 동적 손실가드 편입
 
 ### 세 번째 확정 세션과 비용 후 성과

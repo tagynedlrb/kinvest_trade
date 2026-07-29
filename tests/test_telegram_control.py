@@ -1320,7 +1320,8 @@ def _build_portfolio_refresh_controller(tmp_path) -> "telegram_control_module.Te
     controller._load_live_portfolio_positions = lambda lab: asyncio.sleep(0, result=[])  # type: ignore[method-assign]
 
     class FakeKisClient:
-        def __init__(self, credentials) -> None:
+        def __init__(self, credentials, *, on_api_call=None) -> None:
+            del on_api_call
             pass
 
         async def __aenter__(self):
@@ -1815,6 +1816,9 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
             "adaptive_wait_ms": 123,
             "balance_pair_pacing_active": True,
             "balance_pair_wait_ms": 45,
+            "client_source": "lab_cycle",
+            "params": {"CANO": "never-store-account"},
+            "authorization": "never-store-token",
         }
     )
 
@@ -1836,6 +1840,8 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert rows[0]["adaptive_wait_ms"] == 123
     assert rows[0]["balance_pair_pacing_active"] == 1
     assert rows[0]["balance_pair_wait_ms"] == 45
+    assert rows[0]["client_source"] == "lab_cycle"
+    assert "never-store" not in json.dumps(rows[0])
 
 
 def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:
@@ -2742,7 +2748,8 @@ def test_execute_cancel_stale_domestic_orders_records_cancel_event(tmp_path) -> 
     class FakeKisClient:
         calls: list[dict] = []
 
-        def __init__(self, credentials) -> None:
+        def __init__(self, credentials, *, on_api_call=None) -> None:
+            del on_api_call
             self.credentials = credentials
 
         async def __aenter__(self):
@@ -2823,7 +2830,8 @@ def test_execute_cancel_stale_domestic_orders_records_rejected_event(tmp_path) -
     controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
 
     class FakeKisClient:
-        def __init__(self, credentials) -> None:
+        def __init__(self, credentials, *, on_api_call=None) -> None:
+            del on_api_call
             self.credentials = credentials
 
         async def __aenter__(self):
@@ -3352,10 +3360,13 @@ def test_load_live_open_overseas_orders_uses_one_official_vps_snapshot(tmp_path)
     )
 
     calls: list[dict] = []
+    telemetry_hooks: list[object] = []
 
     class FakeKisClient:
-        def __init__(self, credentials) -> None:
+        def __init__(self, credentials, *, on_api_call=None) -> None:
             self.credentials = credentials
+            self.on_api_call = on_api_call
+            telemetry_hooks.append(on_api_call)
 
         async def __aenter__(self):
             return self
@@ -3365,6 +3376,15 @@ def test_load_live_open_overseas_orders_uses_one_official_vps_snapshot(tmp_path)
 
         async def get_overseas_order_history(self, **kwargs):
             calls.append(kwargs)
+            if callable(self.on_api_call):
+                self.on_api_call(
+                    {
+                        "method": "GET",
+                        "path": "/uapi/overseas-stock/v1/trading/inquire-ccnl",
+                        "tr_id": "VTTS3035R",
+                        "success": True,
+                    }
+                )
             return {
                 "orders": [
                     {
@@ -3392,6 +3412,11 @@ def test_load_live_open_overseas_orders_uses_one_official_vps_snapshot(tmp_path)
     assert calls[0]["fill_filter"] == "00"
     assert calls[0]["exchange_code"] == ""
     assert calls[0]["start_date"] == calls[0]["end_date"]
+    assert len(telemetry_hooks) == 1
+    assert callable(telemetry_hooks[0])
+    api_rows = repository.list_api_calls(limit=1)
+    assert api_rows[0]["client_source"] == "telegram_open_orders_overseas"
+    assert api_rows[0]["path"].endswith("/inquire-ccnl")
     assert len(results) == 1
     assert results[0]["order_no"] == "41501"
     assert results[0]["open_qty"] == 4
@@ -3423,7 +3448,8 @@ def test_execute_cancel_stale_overseas_orders_records_cancel_event(tmp_path) -> 
     class FakeKisClient:
         calls: list[dict] = []
 
-        def __init__(self, credentials) -> None:
+        def __init__(self, credentials, *, on_api_call=None) -> None:
+            del on_api_call
             self.credentials = credentials
 
         async def __aenter__(self):
@@ -3504,7 +3530,8 @@ def test_execute_cancel_stale_overseas_orders_treats_order_not_found_as_resolved
     }
 
     class FakeKisClient:
-        def __init__(self, credentials) -> None:
+        def __init__(self, credentials, *, on_api_call=None) -> None:
+            del on_api_call
             self.credentials = credentials
 
         async def __aenter__(self):

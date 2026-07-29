@@ -506,6 +506,7 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
         adaptive_wait_ms=125,
         balance_pair_pacing_active=True,
         balance_pair_wait_ms=45,
+        client_source="telegram_open_orders_overseas",
     )
 
     rows = repository.list_api_calls(limit=5)
@@ -525,6 +526,7 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
     assert rows[0]["adaptive_wait_ms"] == 125
     assert rows[0]["balance_pair_pacing_active"] == 1
     assert rows[0]["balance_pair_wait_ms"] == 45
+    assert rows[0]["client_source"] == "telegram_open_orders_overseas"
 
 
 def test_api_call_health_separates_recovered_retry_from_terminal_failure(
@@ -666,6 +668,7 @@ def test_api_call_lineage_columns_migrate_legacy_table(tmp_path) -> None:
     assert row["adaptive_wait_ms"] is None
     assert row["balance_pair_pacing_active"] == 0
     assert row["balance_pair_wait_ms"] is None
+    assert row["client_source"] == ""
     summary = repository.summarize_api_call_health(
         since="2026-07-28T00:00:00+00:00"
     )

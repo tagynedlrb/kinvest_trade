@@ -566,11 +566,11 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 | `events` | `event_log` 전체 (서킷브레이커 발동/해제, 신호실패, 풀 갱신 등 시스템 이벤트) |
 | `orders` | `broker_order_events` 전체 (실제 KIS에 제출된 모든 주문 요청과 응답 — 체결/거부/취소/가상기록 사유 포함) |
 | `telegram` | 그날 수신한 `/lab_*` 명령과 발송한 모든 텔레그램 알림(성공/실패 여부 포함) |
-| `api_calls` | 그날의 모든 KIS API 호출 요약(TR_ID, 경로, 성공여부, 응답코드/메시지, 소요시간) |
+| `api_calls` | 그날의 모든 KIS API 호출 요약(호출주체, TR_ID, 경로, 성공여부, 응답코드/메시지, 시도·재시도 계보, 소요시간) |
 
 **보안 주의**: 이 저장소(`tagynedlrb/kinvest_trade`)는 public이다. 위 5종 로그는 계좌번호(CANO),
 APPKEY/APPSECRET, HTS ID를 **절대 포함하지 않도록** 설계했다 — `api_call_log`는 요청 바디 대신
-TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events.payload_json`은 KIS 응답의
+호출주체/TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events.payload_json`은 KIS 응답의
 주문번호(ODNO)·메시지만 담아(계좌 정보는 KIS 응답 자체에도 없음) 애초에 계좌 식별 정보가 로그에
 쌓이지 않는다. 새로운 로그 필드를 추가할 때는 항상 이 원칙(요청 바디·자격증명 원문을 저장하지
 않음)을 지켜야 한다.

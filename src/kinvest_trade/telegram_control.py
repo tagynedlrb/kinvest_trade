@@ -473,9 +473,21 @@ class TelegramLiquidityLabController:
                     info.get("balance_pair_pacing_active", False)
                 ),
                 balance_pair_wait_ms=info.get("balance_pair_wait_ms"),
+                client_source=str(info.get("client_source", "")),
             )
         except Exception:  # noqa: BLE001
             pass
+
+    def _new_kis_client(self, *, client_source: str) -> KisRestClient:
+        source = str(client_source).strip()[:80]
+
+        def log_with_source(info: dict) -> None:
+            self._log_api_call({**info, "client_source": source})
+
+        return KisRestClient(
+            self.config.credentials,
+            on_api_call=log_with_source,
+        )
 
     def _log_inbound_command(self, text: str) -> None:
         repository = getattr(self, "repository", None)
@@ -842,7 +854,9 @@ class TelegramLiquidityLabController:
 
         code = stock_code.strip().upper()
         try:
-            async with KisRestClient(self.config.credentials) as client:
+            async with self._new_kis_client(
+                client_source="telegram_paper_test",
+            ) as client:
                 service = PaperTradingService(self.config, client, self.repository, self.notifier)
                 state = await service.run(
                     iterations=self.config.liquidity_lab.domestic_paper_iterations,
@@ -1078,7 +1092,9 @@ class TelegramLiquidityLabController:
 
     async def _load_trim_virtual_price_lookup(self) -> dict[tuple[str, str], float]:
         try:
-            async with KisRestClient(self.config.credentials) as client:
+            async with self._new_kis_client(
+                client_source="telegram_trim_virtual",
+            ) as client:
                 lab = self._build_portfolio_lab_service(client)
                 return await self._load_live_virtual_price_lookup(lab)
         except Exception as exc:  # noqa: BLE001
@@ -1462,7 +1478,9 @@ class TelegramLiquidityLabController:
     async def _handle_gitlog(self, date_kst: str | None) -> None:
         await self.notifier.send("📤 GitHub 로그 업로드 중...")
         try:
-            async with KisRestClient(self.config.credentials) as client:
+            async with self._new_kis_client(
+                client_source="telegram_gitlog",
+            ) as client:
                 success, result = await upload_log(
                     client=client._client,
                     db_path=self.repository.db_path,
@@ -1690,8 +1708,8 @@ class TelegramLiquidityLabController:
         Execute a single liquidity-lab cycle without auto-stopping on market close.
         """
         try:
-            async with KisRestClient(
-                self.config.credentials, on_api_call=self._log_api_call
+            async with self._new_kis_client(
+                client_source="lab_cycle",
             ) as client:
                 service = self.lab_service
                 if service is None:

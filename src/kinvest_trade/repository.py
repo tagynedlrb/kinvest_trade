@@ -558,7 +558,8 @@ class SqliteRepository:
                     adaptive_pacing_active INTEGER NOT NULL DEFAULT 0,
                     adaptive_wait_ms INTEGER,
                     balance_pair_pacing_active INTEGER NOT NULL DEFAULT 0,
-                    balance_pair_wait_ms INTEGER
+                    balance_pair_wait_ms INTEGER,
+                    client_source TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at
                     ON api_call_log(created_at);
@@ -770,6 +771,18 @@ class SqliteRepository:
                 "api_call_log",
                 "balance_pair_wait_ms",
                 "INTEGER",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "client_source",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_api_call_log_source_created
+                ON api_call_log(client_source, created_at)
+                """
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_krw", "REAL NOT NULL DEFAULT 0")
@@ -2616,6 +2629,7 @@ class SqliteRepository:
         adaptive_wait_ms: int | None = None,
         balance_pair_pacing_active: bool = False,
         balance_pair_wait_ms: int | None = None,
+        client_source: str = "",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -2626,10 +2640,11 @@ class SqliteRepository:
                     max_attempts, retry_scheduled, retry_reason, logical_terminal,
                     dispatched_at, throttle_wait_ms, network_elapsed_ms,
                     adaptive_pacing_active, adaptive_wait_ms,
-                    balance_pair_pacing_active, balance_pair_wait_ms
+                    balance_pair_pacing_active, balance_pair_wait_ms,
+                    client_source
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?
+                    ?, ?, ?
                 )
                 """,
                 (
@@ -2655,6 +2670,7 @@ class SqliteRepository:
                     adaptive_wait_ms,
                     1 if balance_pair_pacing_active else 0,
                     balance_pair_wait_ms,
+                    str(client_source).strip()[:80],
                 ),
             )
 

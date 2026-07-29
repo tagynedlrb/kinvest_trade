@@ -1333,7 +1333,9 @@ class ReportHelper:
         live_available_usd = None
         skip_live_quote_refresh = self._portfolio_cache_is_fresh()
         try:
-            async with _tc.KisRestClient(controller.config.credentials) as client:
+            async with controller._new_kis_client(
+                client_source="telegram_portfolio",
+            ) as client:
                 portfolio_lab = controller._build_portfolio_lab_service(client)
                 live_real_positions = await controller._load_live_portfolio_positions(portfolio_lab)
                 if not skip_live_quote_refresh:

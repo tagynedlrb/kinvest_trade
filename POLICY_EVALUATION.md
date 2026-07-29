@@ -48,6 +48,14 @@
   pair them with the failed attempt's logical lineage. Never persist query/body
   parameters, account numbers, credentials, authorization headers or tokens
   for this diagnosis.
+- Every KIS client created inside the Telegram daemon must use the controller's
+  telemetry factory. Persist a bounded, non-sensitive `client_source` such as
+  `lab_cycle`, `telegram_open_orders_overseas`, or `telegram_portfolio` on
+  every attempt so scheduler maintenance can be separated from the trading
+  cycle. Legacy rows retain an empty source. A source label does not permit
+  storing query/body parameters, symbols, account identifiers, credentials,
+  authorization headers or tokens, and it must not change request, retry or
+  pacing behavior.
 - Do not use a fixed 1.10-second VPS overseas-balance request-start floor.
   A natural `VTTS3012R` pair reproduced `EGW00201` at a measured
   1.100416-second gap, then recovered on the same logical request without a

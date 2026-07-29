@@ -128,7 +128,9 @@ class OrderAdminHelper:
             f"동작={'자동취소' if source == 'auto' else '확정취소'}",
             f"요청={len(stale_orders)}건",
         ]
-        async with _tc.KisRestClient(controller.config.credentials) as client:
+        async with controller._new_kis_client(
+            client_source=f"telegram_{source}_cancel_domestic",
+        ) as client:
             for row in stale_orders[:10]:
                 symbol = str(row.get("symbol") or row.get("pdno") or "").strip().upper()
                 order_no = str(row.get("order_no") or row.get("odno") or "").strip()
@@ -450,7 +452,9 @@ class OrderAdminHelper:
             f"동작={'자동취소' if source == 'auto' else '확정취소'}",
             f"요청={len(stale_orders)}건",
         ]
-        async with _tc.KisRestClient(controller.config.credentials) as client:
+        async with controller._new_kis_client(
+            client_source=f"telegram_{source}_cancel_overseas",
+        ) as client:
             lab = _tc.LiquidityLabService(controller.config, client, controller.repository, controller.notifier)
             for row in stale_orders[:10]:
                 symbol = str(row.get("symbol") or row.get("pdno") or row.get("ovrs_pdno") or "").strip().upper()
@@ -649,7 +653,9 @@ class OrderAdminHelper:
 
         now_kst = datetime.now(timezone.utc).astimezone(KST)
         trade_date = now_kst.strftime("%Y%m%d")
-        async with _tc.KisRestClient(controller.config.credentials) as client:
+        async with controller._new_kis_client(
+            client_source="telegram_open_orders_domestic",
+        ) as client:
             history = await client.get_domestic_order_history(
                 symbol="",
                 start_date=trade_date,
@@ -749,7 +755,9 @@ class OrderAdminHelper:
         controller = self.controller
         from . import telegram_control as _tc
 
-        async with _tc.KisRestClient(controller.config.credentials) as client:
+        async with controller._new_kis_client(
+            client_source="telegram_open_orders_overseas",
+        ) as client:
             service = _tc.LiquidityLabService(controller.config, client, controller.repository, controller.notifier)
             results: list[dict] = []
             seen: set[tuple[str, str]] = set()

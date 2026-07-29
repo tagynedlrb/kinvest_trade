@@ -61,6 +61,17 @@
 - Position completeness is an exit-safety contract, not a trading-frequency
   parameter. A balance transport or pagination fix does not justify changing
   entry formulas, market-specific limits, or candidate frequency.
+- A fully virtual-closed overseas holding needs live quotes, broker balance,
+  and settlement reconciliation but no fresh strategy exit chart. When
+  deduplicated real quantity is fully covered by `virtual_sell_pending` and no
+  same-symbol virtual exposure remains, omit that symbol from daily/minute
+  signal refreshes and do not refill its signal-budget slot with a new
+  candidate. Partial pending quantities and active inverse observations remain
+  eligible. Persist scope changes in
+  `overseas_pending_signal_scan_scope`. KIS notes that VPS REST limits are
+  lower and repeated parameter calls can trigger `EGW00201`
+  ([KIS Open API repository](https://github.com/koreainvestment/open-trading-api));
+  remove non-executable calls before slowing every safety-critical request.
 
 ## Telegram command channel reliability
 

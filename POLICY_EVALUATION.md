@@ -89,6 +89,15 @@ performance, strategy guards, exit-reason warnings, before/after comparisons,
 and market-regime evaluation. Legacy rows remain available for audit but
 cannot train or score policy.
 
+Fill confirmation and strategy ownership are separate boundaries. Strategy
+performance, entry guards, exit-reason diagnostics, before/after comparisons,
+and regime attribution accept a confirmed sell only when either the cycle is
+marked `is_session_trade=1`, or a confirmed `is_session_trade=1` buy for the
+same non-empty session, market, and symbol precedes the sell. The latter
+recovers legacy sell flags without discarding genuine bot trades. A confirmed
+exit from an imported holding with no such buy remains in account-wide PnL,
+daily-loss and consecutive-loss controls, but cannot train or score a formula.
+
 For a confirmed exit, `action_reason` is the canonical decision cause used in
 reason-level performance and operator alerts. `exit_by` is the strategy
 manager's exit-signal attribution and remains a separate diagnostic dimension.

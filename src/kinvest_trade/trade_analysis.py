@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .repository import CONFIRMED_SELL_CYCLE_PREDICATE
+from .repository import CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE
 
 DEFAULT_COST_PCT = 0.005
 MIN_REGIME_TRADES = 5
@@ -124,7 +124,7 @@ def _net_pnl_pct_expr(conn: sqlite3.Connection) -> str:
 
 def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
     """
-    Compare SELL_REAL strategy performance before and after a KST cutoff date.
+    Compare session-owned SELL_REAL strategy performance around a KST cutoff.
 
     Prefer actual net PnL columns when cycle_log has enough notional data.
     Otherwise fall back to the legacy 0.5 percentage point cost adjustment.
@@ -150,7 +150,7 @@ def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
                     FROM cycle_log
                     WHERE action_bias = 'SELL_REAL'
                       AND COALESCE(qty_executed, 0) > 0
-                      AND {CONFIRMED_SELL_CYCLE_PREDICATE}
+                      AND {CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE}
                       AND logged_at {operator} ?
                 )
                 SELECT
@@ -331,11 +331,11 @@ def summarize_market_regime_performance(
                 f"레짐={_regime_label(latest)}"
             )
 
-        result.append("[시장 레짐별 KIS 체결확정 손익]")
+        result.append("[시장 레짐별 세션소유 KIS 체결확정 손익]")
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
-            CONFIRMED_SELL_CYCLE_PREDICATE,
+            CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
         ]
         params: list[object] = []
         if days > 0:

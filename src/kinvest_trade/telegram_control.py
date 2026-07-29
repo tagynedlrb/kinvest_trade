@@ -2569,7 +2569,7 @@ class TelegramLiquidityLabController:
         total_pnl_usd = sum(float(item.get("total_pnl_usd") or 0.0) for item in real.values())
         if total_real_trades > 0:
             win_rate = (total_real_wins / total_real_trades) * 100.0
-            lines.append("─── KIS 체결확정 기준 ───")
+            lines.append("─── 세션소유 KIS 체결확정 기준 ───")
             lines.append(f"거래={total_real_trades}건 (승률 {win_rate:.0f}%)")
             if abs(total_pnl_usd) > 1e-9:
                 usd_sign = "+" if total_pnl_usd >= 0 else ""

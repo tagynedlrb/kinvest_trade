@@ -1223,6 +1223,7 @@ def test_confirmed_performance_excludes_unverified_rows_and_uses_net_pnl(
 
 def test_get_realized_strategy_performance_excludes_signal_rows(
     tmp_path,
+    save_confirmed_buy,
     save_confirmed_sell,
 ) -> None:
     repository = SqliteRepository(tmp_path / "strategy_performance.db")
@@ -1283,13 +1284,60 @@ def test_get_realized_strategy_performance_excludes_signal_rows(
         qty_executed=1,
         net_pnl_krw=3000.0,
     )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-01T00:03:00+00:00",
+        market="domestic",
+        symbol="IMPORTED",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="atr_hard_stop",
+        strategy_flag="EXTERNAL",
+        entry_by="EXTERNAL",
+        pnl_pct=-0.20,
+        qty_executed=1,
+        net_pnl_krw=-20_000.0,
+        is_session_trade=0,
+    )
+    save_confirmed_buy(
+        repository,
+        logged_at="2026-07-01T00:04:00+00:00",
+        market="overseas",
+        symbol="RECOVERED",
+        exchange_code="NASD",
+        action_bias="BUY_REAL",
+        action_reason="strategy_buy_signal",
+        strategy_flag="VOL",
+        entry_by="VOL",
+        qty_executed=1,
+        session_id="legacy-session",
+        is_session_trade=1,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-01T00:05:00+00:00",
+        market="overseas",
+        symbol="RECOVERED",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VOL",
+        entry_by="VOL",
+        exit_by="trend_filter_lost",
+        pnl_pct=-0.01,
+        qty_executed=1,
+        net_pnl_usd=-1.0,
+        net_pnl_krw=-1350.0,
+        session_id="legacy-session",
+        is_session_trade=0,
+    )
 
     rows = repository.get_realized_strategy_performance(
         after_logged_at="2026-07-01T00:00:00+00:00",
         limit=10,
     )
 
-    assert len(rows) == 3
+    assert len(rows) == 4
     by_key = {(row["market"], row["strategy_flag"], row["exit_by"]): row for row in rows}
     assert by_key[("overseas", "VWAP", "stop_loss")]["trade_count"] == 1
     assert by_key[("overseas", "VWAP", "stop_loss")]["total_qty"] == 2
@@ -1299,6 +1347,8 @@ def test_get_realized_strategy_performance_excludes_signal_rows(
     assert by_key[("overseas", "VWAP", "take_profit")]["trade_count"] == 1
     assert by_key[("overseas", "VWAP", "take_profit")]["win_rate"] == 1.0
     assert by_key[("domestic", "RSI", "take_profit")]["win_rate"] == 1.0
+    assert by_key[("overseas", "VOL", "trend_filter_lost")]["trade_count"] == 1
+    assert not any(row["strategy_flag"] == "EXTERNAL" for row in rows)
 
 
 def test_get_sell_reason_counts_groups_recent_sell_real_only(
@@ -1341,6 +1391,16 @@ def test_get_sell_reason_counts_groups_recent_sell_real_only(
         exchange_code="KRX",
         action_bias="SELL_REAL",
         action_reason="trend_filter_lost",
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-02T00:01:45+00:00",
+        market="domestic",
+        symbol="IMPORTED",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="stop_loss",
+        is_session_trade=0,
     )
     repository.save_cycle_log(
         logged_at="2026-07-02T00:02:00+00:00",
@@ -1406,6 +1466,20 @@ def test_get_recent_strategy_guard_performance_groups_executed_sell_real(
         pnl_pct=0.02,
         qty_executed=1,
         net_pnl_krw=2000.0,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-02T00:01:30+00:00",
+        market="overseas",
+        symbol="IMPORTED",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="atr_hard_stop",
+        strategy_flag="RSI",
+        pnl_pct=-0.50,
+        qty_executed=1,
+        net_pnl_krw=-50_000.0,
+        is_session_trade=0,
     )
     repository.save_cycle_log(
         logged_at="2026-07-02T00:02:00+00:00",

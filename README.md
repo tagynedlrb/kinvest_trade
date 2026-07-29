@@ -471,8 +471,8 @@ systemctl --user status kinvest-telegram-control.service --no-pager
 
 **📜 로그 및 성과**
 - `/lab_log`: `/lab_start` 이후 세션 기준 실거래/가상거래 손익 요약 조회
-- `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 KIS 체결확정 `SELL_REAL`만 전략별로 집계. 감시 신호와 주문 접수 행은 제외하며, 역방향 섀도 0건도 레짐/상품 단계 차단 사유와 함께 표시
-- `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 KIS 체결확정 성과 비교
+- `/lab_performance [시간]`: 최근 N시간(기본 24시간)의 세션소유 KIS 체결확정 `SELL_REAL`만 전략별로 집계. 외부 보유 청산, 감시 신호와 주문 접수 행은 제외하며, 역방향 섀도 0건도 레짐/상품 단계 차단 사유와 함께 표시
+- `/lab_report compare <YYYY-MM-DD|YYYY-MM-DDTHH:MM>`: 기준일/시각 전후 전략별 세션소유 KIS 체결확정 성과 비교
 - `/lab_report wait [시간]`: 최근 N시간(기본 72시간)의 `WAIT` 병목을 시장·전략·사유별로 요약
 - `/lab_report regime [일수]`: KOSPI·NASDAQ Composite 마감 환경과 시장 레짐별 전략 순손익을 요약
 - `/lab_orders`: 최근 주문 접수/취소/거부 기록, KIS 실시간 미체결 주문, 접수 후 체결확정 추적 필요 주문 조회
@@ -624,7 +624,10 @@ TR_ID/경로/응답코드/메시지 요약만 저장하고, `broker_order_events
 - `/lab_guard`는 `strategy_guard_lookback_hours` 기간의 체결확정 `SELL_REAL`을
   시장·전략별로 나눠 평균 순손익을 보여준다. 차단 기준은
   `strategy_guard_min_trades`와 `strategy_guard_max_avg_net_pnl_pct`를 따르며,
-  표본 미달 전략과 다른 시장의 같은 이름 전략은 차단하지 않는다.
+  표본 미달 전략과 다른 시장의 같은 이름 전략은 차단하지 않는다. 전략 집계는
+  명시적 세션소유 행 또는 같은 비어 있지 않은 세션의 선행 봇 매수 체결이 있는
+  청산만 포함한다. 외부 보유 청산은 이 공식 평가에서는 제외하지만 계좌 위험일
+  손익·연속손실·서킷브레이커에는 계속 포함한다.
 - 200사이클마다 점검하는 `trend_filter_lost` 비율은 국장·미장을 합산하지 않는다. 시장별 KIS 확정 청산이 6건 이상이고 해당 사유가 50%를 초과할 때만 그 시장의 `min_hold_before_trend_exit` 값과 함께 경고·이벤트를 남긴다.
 - `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 내부 `SUBMITTED` 기록은 체결 확정이 아니므로, `접수 후 체결확정 추적 필요` 섹션에서 `확인필요=MTS/잔고`로 따로 표시한다. live 미체결 조회가 성공하면 `브로커상태=미체결` 또는 `브로커상태=미체결목록없음`도 함께 표시한다.
 - **동일한 스킵 이유로 인한 무주문 알림은 30분에 한 번만 보낸다** (2026-07-14, `repeated_skip_notify_cooldown_minutes`). 실제로 주문이 제출되지 않은 채 매 사이클 같은 이유(`net_profit_below_cost` 등)로 계속 대기 상태만 반복되는 경우 텔레그램 알림이 무한히 반복 발송되는 것을 막는다. 실제 매수/매도 체결·주문 오류 알림에는 영향이 없다.

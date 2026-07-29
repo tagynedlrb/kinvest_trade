@@ -1476,7 +1476,7 @@ class ReportHelper:
                 [
                     "[KIS][전략리포트]",
                     f"시각={format_kst_korean(now)}",
-                    "기준=KIS 체결확정 SELL_REAL",
+                    "기준=세션소유 KIS 체결확정 SELL_REAL",
                     "주의=net은 기록 수수료 우선, 미기록 건은 0.5% 비용 추정",
                     comparison,
                     summarize_market_regime_performance(
@@ -1579,7 +1579,7 @@ class ReportHelper:
                 f"{format_pct(max_avg_net)} 이하"
             ),
             f"감시대상={','.join(sorted(guard_markets))}:{','.join(sorted(guard_flags))}",
-            "기준=KIS 체결확정 SELL_REAL, 미체결 확인=/lab_orders",
+            "기준=세션소유 KIS 체결확정 SELL_REAL, 미체결 확인=/lab_orders",
         ]
         hard_blocks: list[str] = []
         if bool(getattr(config, "overseas_block_standalone_vwap", False)):
@@ -1710,8 +1710,8 @@ class ReportHelper:
             "[KIS][전략성과]",
             f"시각={format_kst_korean(now)}",
             f"범위=최근 {hours}시간",
-            "기준=KIS 체결확정 SELL_REAL만 집계",
-            "제외=감시 신호 BUY/SELL/HOLD",
+            "기준=세션소유 KIS 체결확정 SELL_REAL만 집계",
+            "제외=외부보유·감시 신호 BUY/SELL/HOLD",
             "검증=주문번호별 체결원장, 확인=/lab_orders",
         ]
         if not rows:

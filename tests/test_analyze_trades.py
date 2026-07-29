@@ -50,6 +50,18 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(
         strategy_flag="VOL",
         pnl_pct=0.015,
     )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-09T16:15:00+00:00",
+        market="domestic",
+        symbol="IMPORTED",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="atr_hard_stop",
+        strategy_flag="EXTERNAL",
+        pnl_pct=-0.20,
+        is_session_trade=0,
+    )
     repository.save_cycle_log(
         logged_at="2026-07-09T16:30:00+00:00",
         market="overseas",
@@ -71,6 +83,7 @@ def test_compare_before_after_splits_sell_real_by_kst_cutoff(
     assert "overseas RSI" in output
     assert "net=-2.500%" in output
     assert "domestic VOL" in output
+    assert "EXTERNAL" not in output
     assert "signal_only" not in output
 
 
@@ -264,25 +277,42 @@ def test_main_excludes_unconfirmed_and_wrong_side_real_rows(
         price=1000.0,
         pnl_pct=0.0,
     )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-28T01:05:00+00:00",
+        market="domestic",
+        symbol="IMPORTED",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="external_stop",
+        strategy_flag="EXTERNAL",
+        price=900.0,
+        entry_price=1000.0,
+        qty_executed=1,
+        pnl_pct=-0.1,
+        net_pnl_krw=-100.0,
+        is_session_trade=0,
+    )
 
     monkeypatch.setattr(sys, "argv", ["analyze_trades.py", str(repository.db_path)])
     main()
     output = capsys.readouterr().out
 
     assert "실거래 성과/빈도는 KIS 체결확정 원장" in output
-    assert "BUY_REAL     체결확정=1건 성과제외=2건" in output
-    assert "SELL_REAL    체결확정=1건 성과제외=1건" in output
+    assert "BUY_REAL     체결확정=1건 미체결제외=2건 전략제외=0건" in output
+    assert "SELL_REAL    체결확정=2건 미체결제외=1건 전략제외=1건" in output
     assert "domestic   매수=1건 청산=1건" in output
     assert "confirmed_buy" in output
     assert "confirmed_sell" in output
     assert "unconfirmed_buy" not in output
     assert "unconfirmed_sell" not in output
     assert "wrong_side_execution" not in output
+    assert "external_stop" not in output
     assert "GOODBUY" in output
     assert "NOFILLBUY" not in output
     assert "WRONGSIDE" not in output
-    assert "거래=1건" in output
-    assert "누적=9원" in output
+    assert "거래=2건" in output
+    assert "누적=-91원" in output
 
 
 def test_summarize_wait_bottlenecks_groups_recent_wait_rows(tmp_path) -> None:
@@ -402,14 +432,31 @@ def test_market_regime_performance_requires_multiple_days_before_policy_evaluati
             qty_executed=1,
             net_pnl_krw=1.0,
         )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-07-22T01:09:00+00:00",
+        market="domestic",
+        symbol="IMPORTED",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="atr_hard_stop",
+        strategy_flag="EXTERNAL",
+        pnl_pct=-0.20,
+        entry_price=100.0,
+        qty_executed=1,
+        net_pnl_krw=-20.0,
+        is_session_trade=0,
+    )
 
     output = summarize_market_regime_performance(repository.db_path)
 
     assert "[최근 시장 환경]" in output
     assert "KOSPI=98.00" in output
     assert "레짐=급락/매우활발/극단변동" in output
-    assert "[시장 레짐별 KIS 체결확정 손익]" in output
+    assert "[시장 레짐별 세션소유 KIS 체결확정 손익]" in output
     assert "5건/3일" in output
+    assert "6건/3일" not in output
+    assert "EXTERNAL" not in output
     assert "Net=+1.000%" in output
     assert "평가가능" in output
     assert "단일 장세 결과로 자동변경 금지" in output

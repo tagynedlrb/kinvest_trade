@@ -37,7 +37,8 @@ AND EXISTS (
 """.strip()
 
 CONFIRMED_SESSION_OWNERSHIP_PREDICATE = """
-EXISTS (
+COALESCE(cycle_log.session_id, '') != ''
+AND EXISTS (
     SELECT 1
     FROM broker_order_executions AS session_buy
     WHERE session_buy.session_id = cycle_log.session_id
@@ -47,6 +48,14 @@ EXISTS (
       AND session_buy.filled_qty > 0
       AND session_buy.is_session_trade = 1
       AND session_buy.created_at <= cycle_log.logged_at
+)
+""".strip()
+
+CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE = f"""
+({CONFIRMED_SELL_CYCLE_PREDICATE})
+AND (
+    COALESCE(cycle_log.is_session_trade, 0) = 1
+    OR ({CONFIRMED_SESSION_OWNERSHIP_PREDICATE})
 )
 """.strip()
 
@@ -3120,12 +3129,12 @@ class SqliteRepository:
         after_logged_at: str = "",
         limit: int = 12,
     ) -> list[dict]:
-        """Summarize confirmed fills by canonical reason and strategy exit signal."""
+        """Summarize session-owned confirmed fills by reason and exit signal."""
         params: list[object] = []
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
-            CONFIRMED_SELL_CYCLE_PREDICATE,
+            CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
         ]
         if after_logged_at:
             where.append("logged_at >= ?")
@@ -3218,12 +3227,12 @@ class SqliteRepository:
         return result
 
     def get_sell_reason_counts(self, *, after_logged_at: str = "") -> list[dict]:
-        """Return confirmed sell counts grouped by market and action reason."""
+        """Return session-owned confirmed sell counts by market and reason."""
         params: list[object] = []
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
-            CONFIRMED_SELL_CYCLE_PREDICATE,
+            CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
         ]
         if after_logged_at:
             where.append("logged_at >= ?")
@@ -3249,12 +3258,12 @@ class SqliteRepository:
         after_logged_at: str = "",
         cost_pct: float = 0.005,
     ) -> list[dict]:
-        """Summarize recent SELL_REAL performance by market and strategy for entry guards."""
+        """Summarize session-owned confirmed performance for entry guards."""
         params: list[object] = [float(cost_pct)]
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
-            CONFIRMED_SELL_CYCLE_PREDICATE,
+            CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
         ]
         if after_logged_at:
             where.append("logged_at >= ?")

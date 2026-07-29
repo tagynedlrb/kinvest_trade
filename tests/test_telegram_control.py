@@ -1828,8 +1828,8 @@ def test_lab_performance_command_reports_realized_strategy_only(
 
     message = notifier.messages[-1]
     assert "[KIS][전략성과]" in message
-    assert "기준=KIS 체결확정 SELL_REAL만 집계" in message
-    assert "제외=감시 신호 BUY/SELL/HOLD" in message
+    assert "기준=세션소유 KIS 체결확정 SELL_REAL만 집계" in message
+    assert "제외=외부보유·감시 신호 BUY/SELL/HOLD" in message
     assert "검증=주문번호별 체결원장, 확인=/lab_orders" in message
     assert "전체=1건" in message
     assert "─── 상위 전략 ───" in message
@@ -1943,7 +1943,7 @@ def test_lab_report_compare_command_reports_before_after_strategy(
 
     message = notifier.messages[-1]
     assert "[KIS][전략리포트]" in message
-    assert "기준=KIS 체결확정 SELL_REAL" in message
+    assert "기준=세션소유 KIS 체결확정 SELL_REAL" in message
     assert "[전략 전후 비교] 기준=2026-07-10 00:15 KST" in message
     assert "[이전 2026-07-10 00:15]" in message
     assert "overseas VWAP" in message

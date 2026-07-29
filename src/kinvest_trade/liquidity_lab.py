@@ -2464,12 +2464,21 @@ class LiquidityLabService:
         symbol: str,
         signal_snapshot: MovingAverageSnapshot | None,
     ) -> str:
-        if signal_snapshot is None:
+        if not hasattr(self, "config"):
             return ""
         market_key = normalize_market_name(market)
         policy = self._get_market_policy(market_key)
         auto_trade = policy.auto_trade
         if auto_trade is None:
+            return ""
+
+        if not self._is_inverse_symbol(market_key, symbol):
+            post_cb_reason, _ = self._post_cb_reentry_regime_gate(
+                market_key,
+            )
+            if post_cb_reason:
+                return post_cb_reason
+        if signal_snapshot is None:
             return ""
 
         if (
@@ -2488,6 +2497,106 @@ class LiquidityLabService:
         ):
             return "leveraged_trend_unconfirmed"
         return ""
+
+    def _post_cb_reentry_regime_gate(
+        self,
+        market: str,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[str, dict]:
+        market_key = normalize_market_name(market)
+        policy = self._get_market_policy(market_key)
+        definition = policy.definition
+        floor_value = getattr(
+            definition,
+            "post_cb_reentry_benchmark_floor_pct",
+            None,
+        )
+        if floor_value is None:
+            return "", {"enabled": False, "market": market_key}
+
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        use_cache = now is None
+        cycle_no = int(getattr(self, "_cycle_count", 0) or 0)
+        cb = self._get_circuit_breaker()
+        snapshot = cb.snapshot()
+        released_by_market = snapshot.get(
+            "last_cb_released_at_by_market",
+            {},
+        )
+        released_at = (
+            released_by_market.get(market_key)
+            if isinstance(released_by_market, dict)
+            else None
+        )
+        released_at_text = (
+            ensure_timezone(released_at).isoformat()
+            if isinstance(released_at, datetime)
+            else None
+        )
+        cache = getattr(self, "_post_cb_reentry_gate_cache", {})
+        if (
+            use_cache
+            and cache.get("cycle_no") == cycle_no
+            and market_key in cache.get("markets", {})
+        ):
+            cached = dict(cache["markets"][market_key])
+            if cached.get("released_at") == released_at_text:
+                return str(cached.get("reason") or ""), cached
+
+        floor_pct = float(floor_value)
+        max_age_sec = max(
+            1,
+            int(
+                getattr(
+                    definition,
+                    "post_cb_reentry_regime_max_age_sec",
+                    600,
+                )
+                or 600
+            ),
+        )
+        detail = {
+            "enabled": True,
+            "market": market_key,
+            "reason": "",
+            "benchmark_floor_pct": floor_pct,
+            "regime_max_age_sec": max_age_sec,
+            "released_at": released_at_text,
+        }
+        if not isinstance(released_at, datetime):
+            result = ("", detail)
+        elif self._market_session_date(
+            market_key,
+            ensure_timezone(released_at),
+        ) != self._market_session_date(market_key, current):
+            result = ("", detail)
+        else:
+            regime = self._market_regime_context(
+                market_key,
+                now=current,
+            )
+            detail["market_regime"] = regime
+            age_sec = regime.get("observation_age_sec")
+            benchmark_return_pct = self._parse_optional_float(
+                regime.get("return_pct")
+            )
+            if not bool(regime.get("available")):
+                detail["reason"] = "post_cb_regime_unavailable"
+            elif age_sec is None or int(age_sec) > max_age_sec:
+                detail["reason"] = "post_cb_regime_stale"
+            elif benchmark_return_pct is None:
+                detail["reason"] = "post_cb_regime_unavailable"
+            elif benchmark_return_pct < floor_pct:
+                detail["reason"] = "post_cb_benchmark_not_recovered"
+            result = (str(detail["reason"]), detail)
+
+        if use_cache:
+            if cache.get("cycle_no") != cycle_no:
+                cache = {"cycle_no": cycle_no, "markets": {}}
+            cache.setdefault("markets", {})[market_key] = dict(result[1])
+            self._post_cb_reentry_gate_cache = cache
+        return result
 
     def _entry_liquidity_block_reason(
         self,

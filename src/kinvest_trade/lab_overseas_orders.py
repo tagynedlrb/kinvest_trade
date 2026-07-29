@@ -161,6 +161,12 @@ class OverseasOrderHelper:
             market="overseas",
             strategy_flag=strategy_flag,
         )
+        if not block_reason:
+            block_reason = service._entry_formula_block_reason(
+                market="overseas",
+                symbol=candidate.symbol,
+                signal_snapshot=signal_snapshot,
+            )
         if block_reason:
             service._record_trade_skip(
                 market="overseas",
@@ -1555,6 +1561,12 @@ class OverseasOrderHelper:
             market="overseas",
             strategy_flag=strategy_flag,
         )
+        if not block_reason:
+            block_reason = service._entry_formula_block_reason(
+                market="overseas",
+                symbol=candidate.symbol,
+                signal_snapshot=snapshot,
+            )
         if block_reason:
             service._record_trade_skip(
                 market="overseas",

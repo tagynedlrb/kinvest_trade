@@ -125,6 +125,8 @@
   },
   "risk": {
     "max_consecutive_losses": 3,
-    "circuit_breaker_cooldown_minutes": 30
+    "circuit_breaker_cooldown_minutes": 30,
+    "post_cb_reentry_benchmark_floor_pct": null,
+    "post_cb_reentry_regime_max_age_sec": 600
   }
 }

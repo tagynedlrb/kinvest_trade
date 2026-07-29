@@ -1856,11 +1856,11 @@ class ReportHelper:
                 not guard_policy.strategy_flags
                 or strategy in guard_policy.strategy_flags
             )
-            blocked = (
-                monitored
-                and trade_count >= guard_policy.min_trades
+            threshold_breached = (
+                trade_count >= guard_policy.min_trades
                 and avg_net <= guard_policy.max_avg_net_pnl_pct
             )
+            blocked = monitored and threshold_breached
             persistent_state = active_by_key.get(key)
             if persistent_state is not None:
                 min_final_sessions = guard_policy.min_final_sessions
@@ -1877,6 +1877,8 @@ class ReportHelper:
                 state = "차단"
             elif monitored:
                 state = "감시"
+            elif threshold_breached:
+                state = "참고(범위밖·임계초과)"
             else:
                 state = "참고"
             lines.append(

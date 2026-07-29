@@ -312,6 +312,34 @@
   treating repeated scans from one market path as independent evidence, a
   known source of backtest-selection bias
   ([NBER Working Paper 21329](https://www.nber.org/papers/w21329)).
+- A consecutive-loss breaker cooldown is a minimum time boundary, not evidence
+  that the market state which produced the losses has changed. After the first
+  overseas breaker released at 16:33:32 UTC on July 29, the latest provisional
+  NASDAQ return was still -1.049%. LXFR entered four seconds later and closed
+  at -0.502% net; FVRR entered while the benchmark was -1.224% and remains an
+  open, non-independent observation. Once the benchmark recovered to -0.987%,
+  later entries were admitted. MAS and EVR still lost and triggered a second
+  breaker at 17:20:44, so the recovery gate is not a profitability claim or a
+  substitute for the ordinary entry formula.
+- For overseas only, a released consecutive-loss breaker now requires a fresh
+  same-New-York-session NASDAQ observation with return at or above -1.0% before
+  another ordinary long entry. The observation may be at most 600 seconds old;
+  missing or stale data fails closed. The -1.0% value reuses the independently
+  owned US inverse-regime boundary instead of fitting a new threshold to one
+  path. It does not affect exits or inverse candidates. The domestic field is
+  disabled because that session had no post-release domestic entry and its
+  first stored same-day KOSPI observation arrived hours after the release.
+  Research showing that reducing exposure when volatility is high can improve
+  risk-adjusted outcomes supports the direction of a bounded risk reduction,
+  but does not validate this exact threshold
+  ([NBER Working Paper 22208](https://www.nber.org/papers/w22208)).
+- Re-evaluate the US post-breaker floor after at least five admitted and five
+  blocked completed outcomes across three final US sessions. Revert or revise
+  it if recovered entries systematically underperform blocked counterfactuals,
+  if stale/missing benchmark data prevents otherwise valid entries for more
+  than one refresh interval, if a new breaker release bypasses the gate in its
+  first cycle, or if the gate touches an inverse candidate or any exit. Do not
+  copy the threshold to the domestic policy without domestic evidence.
 - Volatility uses percentage True Range: the maximum of the session high-low
   range and each absolute high/low distance from the prior close. This captures
   close-to-open gaps while normalizing domestic and overseas markets against

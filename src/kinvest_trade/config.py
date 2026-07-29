@@ -257,6 +257,8 @@ class MarketPolicyDefinition:
     auto_trade: AutoTradeConfig
     max_consecutive_losses: int
     circuit_breaker_cooldown_minutes: int
+    post_cb_reentry_benchmark_floor_pct: float | None = None
+    post_cb_reentry_regime_max_age_sec: int = 600
     source_path: Path | None = None
 
 
@@ -450,6 +452,8 @@ def _load_market_policy_definition(
     allowed_risk_fields = {
         "max_consecutive_losses",
         "circuit_breaker_cooldown_minutes",
+        "post_cb_reentry_benchmark_floor_pct",
+        "post_cb_reentry_regime_max_age_sec",
     }
     unknown_risk_fields = sorted(set(raw_risk) - allowed_risk_fields)
     if unknown_risk_fields:
@@ -483,6 +487,15 @@ def _load_market_policy_definition(
                 "circuit_breaker_cooldown_minutes",
                 base_risk.circuit_breaker_cooldown_minutes,
             )
+        ),
+        post_cb_reentry_benchmark_floor_pct=(
+            None
+            if raw_risk.get("post_cb_reentry_benchmark_floor_pct") is None
+            else float(raw_risk["post_cb_reentry_benchmark_floor_pct"])
+        ),
+        post_cb_reentry_regime_max_age_sec=max(
+            1,
+            int(raw_risk.get("post_cb_reentry_regime_max_age_sec", 600)),
         ),
         source_path=source_path,
     )

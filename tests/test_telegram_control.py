@@ -2302,6 +2302,21 @@ def test_lab_guard_command_reports_current_strategy_guard_state(
             net_pnl_usd=-10.0,
             net_pnl_krw=-13500.0,
         )
+        save_confirmed_sell(
+            repository,
+            logged_at=logged_at,
+            market="overseas",
+            symbol=f"COMBO{idx}",
+            exchange_code="NASD",
+            action_bias="SELL_REAL",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP+VOL",
+            entry_by="VWAP",
+            pnl_pct=-0.01,
+            qty_executed=10,
+            net_pnl_usd=-10.0,
+            net_pnl_krw=-13500.0,
+        )
     save_confirmed_sell(
         repository,
         logged_at=logged_at,
@@ -2359,6 +2374,10 @@ def test_lab_guard_command_reports_current_strategy_guard_state(
     assert "감시대상=overseas:RSI,VOL,VWAP" in message
     assert "고정차단=해외 VWAP단독,해외 RSI단독" in message
     assert "해외 VWAP 상태=차단 3건 승률=0% 평균순=-1.50%" in message
+    assert (
+        "해외 VWAP+VOL 상태=참고(범위밖·임계초과) "
+        "3건 승률=0% 평균순=-1.50%"
+    ) in message
     assert "국내 VWAP 상태=참고 1건 승률=100% 평균순=+1.77%" in message
 
 

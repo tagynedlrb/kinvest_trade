@@ -6187,6 +6187,156 @@ def _save_test_regime(
     )
 
 
+def _configure_overseas_post_cb_reentry_gate(
+    service: LiquidityLabService,
+    *,
+    now: datetime,
+    return_pct: float,
+    observation_age_sec: int = 60,
+) -> None:
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    session_date = service._market_session_date("overseas", now)
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date=session_date,
+        return_pct=return_pct,
+        trend_regime="down",
+    )
+    regime = service.repository.get_market_regime(
+        "overseas",
+        session_date,
+    )
+    assert regime is not None
+    regime["captured_at"] = (
+        now - timedelta(seconds=observation_age_sec)
+    ).isoformat()
+    service.repository.upsert_market_regime(regime)
+    service._get_circuit_breaker().load_state(
+        last_cb_released_at_by_market={
+            "overseas": now - timedelta(minutes=1),
+        }
+    )
+
+
+def test_post_cb_reentry_gate_waits_for_fresh_benchmark_recovery() -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc)
+    _configure_overseas_post_cb_reentry_gate(
+        service,
+        now=now,
+        return_pct=-1.05,
+    )
+
+    reason, detail = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now,
+    )
+
+    assert reason == "post_cb_benchmark_not_recovered"
+    assert detail["benchmark_floor_pct"] == -1.0
+    assert detail["market_regime"]["return_pct"] == -1.05
+
+    regime = service.repository.get_market_regime(
+        "overseas",
+        service._market_session_date("overseas", now),
+    )
+    assert regime is not None
+    regime["return_pct"] = -0.95
+    regime["captured_at"] = (now + timedelta(minutes=4)).isoformat()
+    service.repository.upsert_market_regime(regime)
+
+    recovered_reason, recovered_detail = (
+        service._post_cb_reentry_regime_gate(
+            "overseas",
+            now=now + timedelta(minutes=5),
+        )
+    )
+    stale_reason, _ = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now + timedelta(minutes=15),
+    )
+    next_session_reason, _ = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now + timedelta(days=1),
+    )
+    domestic_reason, domestic_detail = (
+        service._post_cb_reentry_regime_gate(
+            "domestic",
+            now=now,
+        )
+    )
+
+    assert recovered_reason == ""
+    assert recovered_detail["market_regime"]["return_pct"] == -0.95
+    assert stale_reason == "post_cb_regime_stale"
+    assert next_session_reason == ""
+    assert domestic_reason == ""
+    assert domestic_detail["enabled"] is False
+
+
+def test_post_cb_reentry_gate_fails_closed_without_same_session_regime() -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc)
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service._get_circuit_breaker().load_state(
+        last_cb_released_at_by_market={
+            "overseas": now - timedelta(minutes=1),
+        }
+    )
+
+    reason, detail = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now,
+    )
+
+    assert reason == "post_cb_regime_unavailable"
+    assert detail["market_regime"]["reason"] == "same_session_regime_missing"
+
+
+def test_post_cb_reentry_gate_invalidates_cache_when_breaker_releases() -> None:
+    service = _build_run_service()
+    service._cycle_count = 77
+    now = datetime.now(timezone.utc)
+    _configure_overseas_post_cb_reentry_gate(
+        service,
+        now=now,
+        return_pct=-1.05,
+    )
+    cb = service._get_circuit_breaker()
+    cb.load_state(
+        last_cb_released_at_by_market={
+            "overseas": now - timedelta(days=1),
+        }
+    )
+
+    before_release_reason, _ = service._post_cb_reentry_regime_gate(
+        "overseas"
+    )
+    cb.load_state(
+        last_cb_released_at_by_market={
+            "overseas": now - timedelta(minutes=1),
+        }
+    )
+    after_release_reason, detail = service._post_cb_reentry_regime_gate(
+        "overseas"
+    )
+
+    assert before_release_reason == ""
+    assert after_release_reason == "post_cb_benchmark_not_recovered"
+    assert detail["released_at"] == (
+        now - timedelta(minutes=1)
+    ).isoformat()
+
+
 def test_market_regime_context_uses_same_session_observation_lineage() -> None:
     service = _build_run_service()
     now = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)
@@ -9245,6 +9395,51 @@ def test_select_overseas_buy_targets_returns_multiple() -> None:
     assert [item.symbol for item in selected] == ["NVDA", "AMD", "AAPL"]
 
 
+def test_select_overseas_buy_targets_rechecks_formula_guard() -> None:
+    service = _build_run_service()
+    service._entry_formula_block_reason = (
+        lambda **_kwargs: "post_cb_benchmark_not_recovered"
+    )
+    overseas_ranked = [
+        OverseasScanResult(
+            "NVDA",
+            "NASD",
+            150.0,
+            149.9,
+            150.1,
+            0.0013,
+            2.0,
+            900_000,
+            10,
+            1350.0,
+            18.0,
+        )
+    ]
+    watch_targets = [
+        WatchTargetStatus(
+            "overseas",
+            "NVDA",
+            "NASD",
+            150.0,
+            18.0,
+            12.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 9>21",
+            "strategy_buy_signal",
+            0,
+        )
+    ]
+
+    selected = service._select_overseas_buy_targets(
+        overseas_ranked,
+        watch_targets,
+        max_concurrent=3,
+    )
+
+    assert selected == []
+
+
 def test_select_overseas_buy_targets_excludes_standalone_vwap_when_blocked() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.overseas_block_standalone_vwap = True
@@ -11872,6 +12067,82 @@ def test_overseas_buy_saves_buy_real_only_after_fill() -> None:
     assert manager.position.entry_time.isoformat() == rows[0]["logged_at"]
 
 
+def test_place_overseas_test_order_rechecks_post_cb_regime_before_submission() -> None:
+    class FailingOverseasClient:
+        async def get_overseas_possible_order(self, **kwargs):
+            raise AssertionError("possible-order API should not be called")
+
+        async def place_overseas_order_for_current_session(self, **kwargs):
+            raise AssertionError("order API should not be called")
+
+    service = _build_run_service()
+    now = datetime.now(timezone.utc)
+    _configure_overseas_post_cb_reentry_gate(
+        service,
+        now=now,
+        return_pct=-1.05,
+    )
+    service.client = FailingOverseasClient()
+    snapshot = _snapshot(
+        price=25.0,
+        vwap=24.9,
+        rsi14=45.0,
+        volume_ratio=1.5,
+    )
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NYSE",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="PLTR",
+        exchange_code="NYSE",
+        price=25.0,
+        activity_score=16.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[VWAP+RSI] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(
+        service._place_overseas_test_order(
+            candidate,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "post_cb_benchmark_not_recovered"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["symbol"] == "PLTR"
+    assert (
+        rows[0]["action_reason"]
+        == "buy:post_cb_benchmark_not_recovered"
+    )
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="SQQQ",
+            signal_snapshot=snapshot,
+        )
+        == ""
+    )
+
+
 def test_place_overseas_test_order_blocks_standalone_vwap_before_submission() -> None:
     class FailingOverseasClient:
         async def get_overseas_possible_order(self, **kwargs):
@@ -12092,6 +12363,60 @@ def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
     assert rows[0]["symbol"] == "PLTR"
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
+
+
+def test_virtual_overseas_buy_rechecks_formula_guard_before_recording() -> None:
+    service = _build_run_service()
+    service._entry_strategy_block_reason = lambda **_kwargs: ""
+    service._entry_formula_block_reason = (
+        lambda **_kwargs: "post_cb_benchmark_not_recovered"
+    )
+    snapshot = _snapshot(
+        price=25.0,
+        vwap=24.9,
+        rsi14=45.0,
+        volume_ratio=1.5,
+    )
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NYSE",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=10,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="PLTR",
+        exchange_code="NYSE",
+        price=25.0,
+        activity_score=16.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[VWAP+RSI] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(
+        service._record_virtual_overseas_buy(
+            candidate,
+            signal_snapshot=snapshot,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "post_cb_benchmark_not_recovered"
+    assert service.virtual_trades.list_positions("overseas") == []
 
 
 def test_virtual_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:

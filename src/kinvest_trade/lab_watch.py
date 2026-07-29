@@ -1255,6 +1255,11 @@ class WatchStateHelper:
                 market=watch_target.market,
                 strategy_flag=watch_target.strategy_flag,
             )
+            and not service._entry_formula_block_reason(
+                market=watch_target.market,
+                symbol=watch_target.code,
+                signal_snapshot=watch_target.signal_snapshot,
+            )
         ]
         if not ready_targets or max_concurrent <= 0:
             return []

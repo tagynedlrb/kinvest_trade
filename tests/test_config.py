@@ -121,6 +121,10 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.policy_id == "overseas_momentum_v2"
     assert domestic.auto_trade.strategy_guard_min_final_sessions == 3
     assert overseas.auto_trade.strategy_guard_min_final_sessions == 3
+    assert domestic.post_cb_reentry_benchmark_floor_pct is None
+    assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
+    assert domestic.post_cb_reentry_regime_max_age_sec == 600
+    assert overseas.post_cb_reentry_regime_max_age_sec == 600
     assert domestic.auto_trade.strategy_guard_lookback_hours == 48
     assert overseas.auto_trade.strategy_guard_lookback_hours == 48
     assert domestic.auto_trade.strategy_guard_min_trades == 3

@@ -440,7 +440,8 @@ class CircuitBreakerManager:
             market_line = f"시장={market} " if market is not None else ""
             self._schedule_notification(
                 f"✅ 서킷브레이커 자동 해제\n"
-                f"{market_line}쿨다운 {cooldown_minutes}분 완료 → 매수 재개"
+                f"{market_line}시간쿨다운 {cooldown_minutes}분 완료 "
+                "→ 시장별 진입조건 재검사"
             )
             return False
 

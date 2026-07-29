@@ -122,7 +122,8 @@ def test_circuit_breaker_auto_releases_after_cooldown() -> None:
         assert manager.halted_at is None
         assert manager.last_cb_released_at is not None
         assert messages == [
-            "✅ 서킷브레이커 자동 해제\n쿨다운 30분 완료 → 매수 재개"
+            "✅ 서킷브레이커 자동 해제\n"
+            "시간쿨다운 30분 완료 → 시장별 진입조건 재검사"
         ]
 
     asyncio.run(run_case())

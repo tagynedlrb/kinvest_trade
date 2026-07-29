@@ -1808,6 +1808,9 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
             "retry_scheduled": True,
             "retry_reason": "rate_limit",
             "logical_terminal": False,
+            "dispatched_at": "2026-07-29T10:45:00.123000+00:00",
+            "throttle_wait_ms": 1049,
+            "network_elapsed_ms": 85,
         }
     )
 
@@ -1822,6 +1825,9 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert rows[0]["retry_scheduled"] == 1
     assert rows[0]["retry_reason"] == "rate_limit"
     assert rows[0]["logical_terminal"] == 0
+    assert rows[0]["dispatched_at"] == "2026-07-29T10:45:00.123000+00:00"
+    assert rows[0]["throttle_wait_ms"] == 1049
+    assert rows[0]["network_elapsed_ms"] == 85
 
 
 def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:

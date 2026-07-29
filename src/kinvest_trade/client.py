@@ -6,7 +6,7 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import httpx
@@ -224,6 +224,9 @@ class KisRestClient:
         retry_scheduled: bool = False,
         retry_reason: str = "",
         logical_terminal: bool = True,
+        dispatched_at: str = "",
+        throttle_wait_ms: int | None = None,
+        network_elapsed_ms: int | None = None,
     ) -> None:
         if self._on_api_call is None:
             return
@@ -244,6 +247,9 @@ class KisRestClient:
                     "retry_scheduled": retry_scheduled,
                     "retry_reason": retry_reason,
                     "logical_terminal": logical_terminal,
+                    "dispatched_at": dispatched_at,
+                    "throttle_wait_ms": throttle_wait_ms,
+                    "network_elapsed_ms": network_elapsed_ms,
                 }
             )
         except Exception:  # noqa: BLE001
@@ -384,7 +390,13 @@ class KisRestClient:
             }
             if extra_headers:
                 headers.update(extra_headers)
+            throttle_started_at = time.monotonic()
             await self._throttle()
+            throttle_wait_ms = int(
+                (time.monotonic() - throttle_started_at) * 1000
+            )
+            dispatched_at = datetime.now(timezone.utc).isoformat()
+            network_started_at = time.monotonic()
             try:
                 response = await self._client.request(
                     method=method,
@@ -394,6 +406,9 @@ class KisRestClient:
                     json=body if method == "POST" else None,
                 )
             except httpx.HTTPError as exc:
+                network_elapsed_ms = int(
+                    (time.monotonic() - network_started_at) * 1000
+                )
                 self._log_api_call(
                     method=method,
                     path=path,
@@ -407,11 +422,17 @@ class KisRestClient:
                     retry_scheduled=attempt < max_attempts - 1,
                     retry_reason="transport_error" if attempt < max_attempts - 1 else "",
                     logical_terminal=attempt >= max_attempts - 1,
+                    dispatched_at=dispatched_at,
+                    throttle_wait_ms=throttle_wait_ms,
+                    network_elapsed_ms=network_elapsed_ms,
                 )
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(1.0)
                     continue
                 raise KisApiError(f"{tr_id} transport_error: {exc}") from exc
+            network_elapsed_ms = int(
+                (time.monotonic() - network_started_at) * 1000
+            )
             try:
                 payload = response.json()
             except json.JSONDecodeError:
@@ -427,6 +448,9 @@ class KisRestClient:
                     attempt_no=attempt_no,
                     max_attempts=max_attempts,
                     logical_terminal=True,
+                    dispatched_at=dispatched_at,
+                    throttle_wait_ms=throttle_wait_ms,
+                    network_elapsed_ms=network_elapsed_ms,
                 )
                 response.raise_for_status()
                 raise
@@ -454,6 +478,9 @@ class KisRestClient:
                     retry_scheduled=bool(retry_reason),
                     retry_reason=retry_reason,
                     logical_terminal=not bool(retry_reason),
+                    dispatched_at=dispatched_at,
+                    throttle_wait_ms=throttle_wait_ms,
+                    network_elapsed_ms=network_elapsed_ms,
                 )
                 if retry_reason:
                     if retry_reason == "token_expired":
@@ -484,6 +511,9 @@ class KisRestClient:
                     attempt_no=attempt_no,
                     max_attempts=max_attempts,
                     logical_terminal=True,
+                    dispatched_at=dispatched_at,
+                    throttle_wait_ms=throttle_wait_ms,
+                    network_elapsed_ms=network_elapsed_ms,
                 )
                 if include_response_headers:
                     response_headers = getattr(response, "headers", {}) or {}
@@ -515,6 +545,9 @@ class KisRestClient:
                 retry_scheduled=bool(retry_reason),
                 retry_reason=retry_reason,
                 logical_terminal=not bool(retry_reason),
+                dispatched_at=dispatched_at,
+                throttle_wait_ms=throttle_wait_ms,
+                network_elapsed_ms=network_elapsed_ms,
             )
             if retry_reason:
                 if retry_reason == "token_expired":

@@ -166,6 +166,9 @@ def test_request_reports_api_calls_via_on_api_call_hook(
     assert calls[0]["retry_scheduled"] is True
     assert calls[0]["retry_reason"] == "rate_limit"
     assert calls[0]["logical_terminal"] is False
+    assert calls[0]["dispatched_at"].endswith("+00:00")
+    assert calls[0]["throttle_wait_ms"] >= 0
+    assert calls[0]["network_elapsed_ms"] >= 0
     assert calls[1]["success"] is True
     assert calls[1]["http_status"] == 200
     assert calls[1]["logical_request_id"] == calls[0]["logical_request_id"]
@@ -174,6 +177,9 @@ def test_request_reports_api_calls_via_on_api_call_hook(
     assert calls[1]["retry_scheduled"] is False
     assert calls[1]["retry_reason"] == ""
     assert calls[1]["logical_terminal"] is True
+    assert calls[1]["dispatched_at"].endswith("+00:00")
+    assert calls[1]["throttle_wait_ms"] >= 0
+    assert calls[1]["network_elapsed_ms"] >= 0
     # None of the logged fields ever carry account number or credentials.
     for call in calls:
         serialized = str(call)

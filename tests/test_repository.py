@@ -499,6 +499,9 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
         msg_cd="IGW00007",
         msg1="MCA 전문바디 구성 중 오류가 발생하였습니다.",
         elapsed_ms=123,
+        dispatched_at="2026-07-13T00:00:00.100000+00:00",
+        throttle_wait_ms=1010,
+        network_elapsed_ms=42,
     )
 
     rows = repository.list_api_calls(limit=5)
@@ -511,6 +514,9 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
     assert rows[0]["logical_request_id"] == ""
     assert rows[0]["attempt_no"] == 1
     assert rows[0]["logical_terminal"] == 1
+    assert rows[0]["dispatched_at"] == "2026-07-13T00:00:00.100000+00:00"
+    assert rows[0]["throttle_wait_ms"] == 1010
+    assert rows[0]["network_elapsed_ms"] == 42
 
 
 def test_api_call_health_separates_recovered_retry_from_terminal_failure(
@@ -633,6 +639,9 @@ def test_api_call_lineage_columns_migrate_legacy_table(tmp_path) -> None:
     assert row["retry_scheduled"] == 0
     assert row["retry_reason"] == ""
     assert row["logical_terminal"] == 1
+    assert row["dispatched_at"] == ""
+    assert row["throttle_wait_ms"] is None
+    assert row["network_elapsed_ms"] is None
     summary = repository.summarize_api_call_health(
         since="2026-07-28T00:00:00+00:00"
     )

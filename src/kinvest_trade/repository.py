@@ -551,7 +551,10 @@ class SqliteRepository:
                     max_attempts INTEGER NOT NULL DEFAULT 1,
                     retry_scheduled INTEGER NOT NULL DEFAULT 0,
                     retry_reason TEXT NOT NULL DEFAULT '',
-                    logical_terminal INTEGER NOT NULL DEFAULT 1
+                    logical_terminal INTEGER NOT NULL DEFAULT 1,
+                    dispatched_at TEXT NOT NULL DEFAULT '',
+                    throttle_wait_ms INTEGER,
+                    network_elapsed_ms INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at
                     ON api_call_log(created_at);
@@ -706,6 +709,24 @@ class SqliteRepository:
                 "api_call_log",
                 "logical_terminal",
                 "INTEGER NOT NULL DEFAULT 1",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "dispatched_at",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "throttle_wait_ms",
+                "INTEGER",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "network_elapsed_ms",
+                "INTEGER",
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_krw", "REAL NOT NULL DEFAULT 0")
@@ -2503,6 +2524,9 @@ class SqliteRepository:
         retry_scheduled: bool = False,
         retry_reason: str = "",
         logical_terminal: bool = True,
+        dispatched_at: str = "",
+        throttle_wait_ms: int | None = None,
+        network_elapsed_ms: int | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -2510,8 +2534,9 @@ class SqliteRepository:
                 INSERT INTO api_call_log (
                     created_at, method, tr_id, path, success, http_status,
                     msg_cd, msg1, elapsed_ms, logical_request_id, attempt_no,
-                    max_attempts, retry_scheduled, retry_reason, logical_terminal
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    max_attempts, retry_scheduled, retry_reason, logical_terminal,
+                    dispatched_at, throttle_wait_ms, network_elapsed_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -2529,6 +2554,9 @@ class SqliteRepository:
                     1 if retry_scheduled else 0,
                     retry_reason,
                     1 if logical_terminal else 0,
+                    dispatched_at,
+                    throttle_wait_ms,
+                    network_elapsed_ms,
                 ),
             )
 

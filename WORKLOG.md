@@ -1,5 +1,63 @@
 # WORKLOG
 
+## [2026-07-30] 미장 과거 무체결 실행의 증거 결합 종결
+
+### 영구 PENDING과 반복 조회 비용
+- FSUN 매수 157주 실행행 `id=66`과 HUBB 매수 11주
+  `id=72`는 2026-07-28 주문이다. KIS 주문체결내역은 다음
+  날에도 두 행을 체결 0·`nccs_qty` 전량으로 반환했고, 현재
+  뉴욕 당일 공식 미체결 조회와 잔고에는 두 종목이 없다.
+- 다음 날 취소 API는 두 주문 모두
+  `40320000 모의투자 원주문번호가 존재하지 않습니다`를
+  반환했다. 이를 `stale_order_already_resolved`,
+  `CANCELED`로 기록한 후속 주문 이벤트가 각각 세 건씩 있지만,
+  체결 reconciler는 KIS 주문이력의 취소행만 읽어 실행행은 계속
+  `PENDING`으로 남겼다.
+- 이 두 행 때문에 서비스가 20초마다 2026-07-28 주문이력을
+  다시 연속조회했다. 최근 2시간 `lab_cycle`의
+  `VTTS3035R inquire-ccnl`은 454회, 분당 3~6회였고 두 행의
+  `last_checked_at`만 계속 갱신됐다. 이는 거래 기회를 늘리지
+  않으면서 VPS 호출예산과 사이클 시간을 소모하는 운영 결함이다.
+
+### 공식 계약과 보수적 종결 경계
+- 2026-07-28 최신 KIS 공식 저장소의 일반 해외주문은
+  `ORD_DVSN` 주문유형만 받고 유효기간·만료 상태를 별도
+  입력하거나 반환하지 않는다. 주문체결내역은 모의투자에서
+  주문번호 직접검색도 지원하지 않으며, 취소 API는 주문 응답
+  또는 미체결내역의 원주문번호를 사용하라고 명시한다.
+  ([일반 해외주문](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/order/order.py),
+  [주문체결내역](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/inquire_ccnl/inquire_ccnl.py),
+  [정정취소](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/order_rvsecncl/order_rvsecncl.py))
+- 따라서 “전일 주문은 당연히 만료”라고 추정하지 않는다.
+  KIS 주문이력에서 같은 현지 주문일·주문번호가 확인되고, 그
+  제출 뒤 같은 종목·원주문번호에 터미널 `CANCELED` 후속
+  이벤트가 있을 때만 취소 증거를 결합한다. 주문이력 자체가
+  없으면 후속 이벤트가 있어도 계속 미확정으로 보존한다.
+- 체결 0이면 잔량 전부를 취소수량으로 바꿔 무체결 종결하고,
+  일부 체결이면 체결분만 회계에 반영한 뒤 부분취소로 닫는다.
+  전량체결 이력이 있으면 취소 이벤트보다 체결을 우선한다.
+  적용한 후속 이벤트 ID·시각·사유는 실행행
+  `history_json._terminal_followup`에 보존한다.
+
+### 주문번호 재사용과 검증
+- KIS 주문번호는 현지 `ord_dt`와 함께 인덱싱한다. 후속 취소는
+  시간순 이벤트에서 같은 종목·정규화 주문번호의 가장 가까운
+  선행 `SUBMITTED`에 연결한다. 같은 번호가 다음 거래일에
+  재사용돼도 과거 취소가 새 제출을 닫지 않는다.
+- 표적·주문감사 회귀 **7개**, 저장소 전체 **40개**,
+  `compileall`, `git diff --check`가 통과했다. 운영 DB의
+  온라인 복제본
+  `trading_backup_20260729_202903_terminal_followup_shadow_validation.db`
+  에 현재 KIS 응답을 적용한 결과
+  `pending=2, matched=2, terminal_followups=2, no_fill=2`였고,
+  FSUN/HUBB만 각각 `CANCELED`, 체결 0, 잔량 0,
+  취소수량 157/11로 종결됐다.
+- 반증조건은 주문이력 없는 실행 종결, 다른 거래일의 재사용
+  주문 종결, 후속 이벤트보다 늦은 제출 종결, 부분체결 손실,
+  현재 미체결 주문의 조기 종결 또는 무관한 시장·매매 공식
+  변경이다. 하나라도 관측되면 후속 이벤트 적용을 중단하고
+  실행행을 브로커 원장과 다시 대조한다.
+
 ## [2026-07-30] 미장 VWAP+VOL 동적 손실가드 편입
 
 ### 세 번째 확정 세션과 비용 후 성과

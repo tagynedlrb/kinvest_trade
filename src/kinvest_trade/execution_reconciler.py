@@ -59,6 +59,7 @@ class BrokerExecutionReconciler:
             "missing": 0,
             "finalized": 0,
             "no_fill": 0,
+            "terminal_followups": 0,
             "failed_markets": 0,
         }
         if not executions:
@@ -90,12 +91,22 @@ class BrokerExecutionReconciler:
                 market,
                 history_rows,
             )
+            terminal_followups = self._terminal_cancel_followups(
+                market,
+                market_executions,
+            )
             checked_at = current.astimezone(timezone.utc).isoformat()
             for execution in market_executions:
                 normalized = repository.normalize_broker_order_no(
                     execution.get("broker_order_no")
                 )
-                history_row = order_rows.get(normalized)
+                order_key = (
+                    str(execution.get("order_date") or ""),
+                    normalized,
+                )
+                history_row = order_rows.get(order_key) or order_rows.get(
+                    ("", normalized)
+                )
                 if history_row is None:
                     repository.mark_broker_execution_checked(
                         int(execution["id"]),
@@ -103,16 +114,34 @@ class BrokerExecutionReconciler:
                     )
                     stats["missing"] += 1
                     continue
+                terminal_followup = terminal_followups.get(
+                    int(execution.get("broker_event_id") or 0)
+                )
                 snapshot = self._execution_snapshot(
                     market,
                     execution,
                     history_row,
-                    canceled=normalized in canceled_originals,
+                    canceled=(
+                        order_key in canceled_originals
+                        or ("", normalized) in canceled_originals
+                        or terminal_followup is not None
+                    ),
                 )
+                stored_history = dict(history_row)
+                if terminal_followup is not None:
+                    stored_history["_terminal_followup"] = {
+                        "event_id": int(terminal_followup.get("id") or 0),
+                        "created_at": str(
+                            terminal_followup.get("created_at") or ""
+                        ),
+                        "status": str(terminal_followup.get("status") or ""),
+                        "reason": str(terminal_followup.get("reason") or ""),
+                    }
+                    stats["terminal_followups"] += 1
                 repository.update_broker_order_execution(
                     int(execution["id"]),
                     **snapshot,
-                    history=history_row,
+                    history=stored_history,
                     checked_at=checked_at,
                 )
                 stats["matched"] += 1
@@ -199,11 +228,12 @@ class BrokerExecutionReconciler:
         self,
         market: str,
         rows: list[dict],
-    ) -> tuple[dict[str, dict], set[str]]:
+    ) -> tuple[dict[tuple[str, str], dict], set[tuple[str, str]]]:
         repository = self.service.repository
-        order_rows: dict[str, dict] = {}
-        canceled_originals: set[str] = set()
+        order_rows: dict[tuple[str, str], dict] = {}
+        canceled_originals: set[tuple[str, str]] = set()
         for row in rows:
+            order_date = self._history_order_date(row)
             revision_code = str(
                 row.get("rvse_cncl_dvsn")
                 or row.get("rvse_cncl_dvsn_cd")
@@ -219,7 +249,7 @@ class BrokerExecutionReconciler:
             )
             if revision_code == "02" or "취소" in revision_name:
                 if original and original != "0":
-                    canceled_originals.add(original)
+                    canceled_originals.add((order_date, original))
                 continue
 
             normalized = repository.normalize_broker_order_no(
@@ -227,15 +257,84 @@ class BrokerExecutionReconciler:
             )
             if not normalized:
                 continue
-            current = order_rows.get(normalized)
+            key = (order_date, normalized)
+            current = order_rows.get(key)
             if current is None:
-                order_rows[normalized] = row
+                order_rows[key] = row
                 continue
             current_filled = self._filled_qty(market, current)
             row_filled = self._filled_qty(market, row)
             if row_filled >= current_filled:
-                order_rows[normalized] = row
+                order_rows[key] = row
         return order_rows, canceled_originals
+
+    def _terminal_cancel_followups(
+        self,
+        market: str,
+        executions: list[dict],
+    ) -> dict[int, dict]:
+        """Associate each terminal cancel with its nearest prior submission."""
+        if market != "overseas" or not executions:
+            return {}
+        repository = self.service.repository
+        loader = getattr(
+            repository,
+            "list_broker_order_events_for_reconcile",
+            None,
+        )
+        if not callable(loader):
+            return {}
+        events = loader(
+            market=market,
+            after_created_at=min(
+                str(row.get("created_at") or "") for row in executions
+            ),
+            limit=5000,
+        )
+        latest_submission: dict[tuple[str, str], dict] = {}
+        terminal_by_submission_id: dict[int, dict] = {}
+        for event in events:
+            if int(event.get("is_virtual") or 0):
+                continue
+            symbol = str(event.get("symbol") or "").strip().upper()
+            order_kind = str(event.get("order_kind") or "").strip().lower()
+            status = str(event.get("status") or "").strip().upper()
+            if order_kind != "cancel" and status == "SUBMITTED":
+                order_no = repository.normalize_broker_order_no(
+                    event.get("broker_order_no")
+                )
+                if symbol and order_no:
+                    latest_submission[(symbol, order_no)] = event
+                continue
+            if order_kind != "cancel" or status not in {
+                "CANCELED",
+                "CANCELLED",
+            }:
+                continue
+            payload = (
+                event.get("payload_json")
+                if isinstance(event.get("payload_json"), dict)
+                else {}
+            )
+            original_order_no = repository.normalize_broker_order_no(
+                payload.get("original_order_no")
+            )
+            submission = latest_submission.get(
+                (symbol, original_order_no)
+            )
+            if submission is None:
+                continue
+            submission_id = int(submission.get("id") or 0)
+            if submission_id > 0:
+                terminal_by_submission_id[submission_id] = event
+        return terminal_by_submission_id
+
+    @staticmethod
+    def _history_order_date(row: dict) -> str:
+        date_text = str(row.get("ord_dt") or "").strip()
+        if len(date_text) == 8 and date_text.isdigit():
+            return f"{date_text[:4]}-{date_text[4:6]}-{date_text[6:8]}"
+        return ""
 
     @staticmethod
     def _filled_qty(market: str, row: dict) -> int:

@@ -3245,6 +3245,42 @@ class SqliteRepository:
             result.append(item)
         return result
 
+    def list_broker_order_events_for_reconcile(
+        self,
+        *,
+        market: str,
+        after_created_at: str,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Return ordered submissions and follow-ups used to prove finality."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM broker_order_events
+                WHERE LOWER(market) = ?
+                  AND julianday(created_at) >= julianday(?)
+                ORDER BY julianday(created_at) ASC, id ASC
+                LIMIT ?
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(after_created_at),
+                    max(1, int(limit)),
+                ),
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["payload_json"] = json.loads(
+                    str(item.get("payload_json") or "{}")
+                )
+            except json.JSONDecodeError:
+                item["payload_json"] = {}
+            result.append(item)
+        return result
+
     def list_broker_order_executions(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(

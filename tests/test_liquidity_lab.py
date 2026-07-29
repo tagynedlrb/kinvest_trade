@@ -2304,6 +2304,239 @@ def test_execution_reconcile_defers_closed_market_until_post_close_grace() -> No
     assert service.repository.list_unfinalized_broker_executions() == []
 
 
+def _save_pending_overseas_execution(
+    service: LiquidityLabService,
+    *,
+    symbol: str,
+    order_no: str,
+    created_at: str,
+    qty: int,
+) -> dict:
+    event_id = service.repository.save_broker_order_event(
+        created_at=created_at,
+        market="overseas",
+        symbol=symbol,
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=qty,
+        requested_price=10.0,
+        status="SUBMITTED",
+        reason="strategy_buy_signal",
+        broker_order_no=order_no,
+        is_virtual=0,
+        payload={},
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at,
+        market="overseas",
+        symbol=symbol,
+        exchange_code="NASD",
+        side="BUY",
+        broker_order_no=order_no,
+        requested_qty=qty,
+        requested_price=10.0,
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        session_id="reconcile-test",
+        is_session_trade=1,
+    )
+    assert execution is not None
+    return execution
+
+
+def _pending_overseas_history_row(
+    *,
+    symbol: str,
+    order_no: str,
+    order_date: str,
+    domestic_order_date: str,
+    qty: int,
+) -> dict:
+    return {
+        "ord_dt": order_date,
+        "dmst_ord_dt": domestic_order_date,
+        "thco_ord_tmd": "042914",
+        "odno": order_no,
+        "orgn_odno": "0",
+        "pdno": symbol,
+        "sll_buy_dvsn_cd": "02",
+        "ft_ord_qty": str(qty),
+        "ft_ccld_qty": "0",
+        "ft_ccld_unpr3": "0",
+        "ft_ccld_amt3": "0",
+        "nccs_qty": str(qty),
+        "rvse_cncl_dvsn": "00",
+        "prcs_stat_name": "",
+    }
+
+
+def test_overseas_reconcile_uses_terminal_followup_with_zero_fill_history() -> None:
+    history_row = _pending_overseas_history_row(
+        symbol="FSUN",
+        order_no="46162",
+        order_date="20260728",
+        domestic_order_date="20260729",
+        qty=157,
+    )
+    service = _build_sell_service(pending_orders=[history_row])
+    execution = _save_pending_overseas_execution(
+        service,
+        symbol="FSUN",
+        order_no="0000046162",
+        created_at="2026-07-28T19:29:14+00:00",
+        qty=157,
+    )
+    cancel_event_id = service.repository.save_broker_order_event(
+        created_at="2026-07-29T13:30:13+00:00",
+        market="overseas",
+        symbol="FSUN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=157,
+        requested_price=10.0,
+        status="CANCELED",
+        reason="stale_order_already_resolved",
+        broker_order_no="46162",
+        is_virtual=0,
+        payload={"original_order_no": "46162", "open_qty": 157},
+    )
+
+    stats = asyncio.run(
+        BrokerExecutionReconciler(service).reconcile(
+            now=datetime(2026, 7, 29, 20, 30, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert stats["matched"] == 1
+    assert stats["terminal_followups"] == 1
+    assert stats["no_fill"] == 1
+    assert service.repository.list_unfinalized_broker_executions() == []
+    updated = service.repository.list_broker_order_executions(limit=10)[0]
+    assert updated["id"] == execution["id"]
+    assert updated["status"] == "CANCELED"
+    assert updated["remaining_qty"] == 0
+    assert updated["canceled_qty"] == 157
+    assert updated["history_json"]["_terminal_followup"] == {
+        "event_id": cancel_event_id,
+        "created_at": "2026-07-29T13:30:13+00:00",
+        "status": "CANCELED",
+        "reason": "stale_order_already_resolved",
+    }
+
+
+def test_overseas_terminal_followup_does_not_finalize_without_history() -> None:
+    service = _build_sell_service(pending_orders=[])
+    _save_pending_overseas_execution(
+        service,
+        symbol="FSUN",
+        order_no="0000046162",
+        created_at="2026-07-28T19:29:14+00:00",
+        qty=157,
+    )
+    service.repository.save_broker_order_event(
+        created_at="2026-07-29T13:30:13+00:00",
+        market="overseas",
+        symbol="FSUN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=157,
+        requested_price=10.0,
+        status="CANCELED",
+        reason="stale_order_already_resolved",
+        broker_order_no="46162",
+        is_virtual=0,
+        payload={"original_order_no": "46162", "open_qty": 157},
+    )
+
+    stats = asyncio.run(
+        BrokerExecutionReconciler(service).reconcile(
+            now=datetime(2026, 7, 29, 20, 30, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert stats["missing"] == 1
+    assert stats["terminal_followups"] == 0
+    assert stats["no_fill"] == 0
+    assert len(service.repository.list_unfinalized_broker_executions()) == 1
+
+
+def test_overseas_reconcile_scopes_reused_order_number_by_order_date() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            _pending_overseas_history_row(
+                symbol="FSUN",
+                order_no="46162",
+                order_date="20260728",
+                domestic_order_date="20260729",
+                qty=157,
+            ),
+            _pending_overseas_history_row(
+                symbol="FSUN",
+                order_no="46162",
+                order_date="20260729",
+                domestic_order_date="20260730",
+                qty=3,
+            ),
+        ]
+    )
+    old_execution = _save_pending_overseas_execution(
+        service,
+        symbol="FSUN",
+        order_no="0000046162",
+        created_at="2026-07-28T19:29:14+00:00",
+        qty=157,
+    )
+    service.repository.save_broker_order_event(
+        created_at="2026-07-28T20:00:00+00:00",
+        market="overseas",
+        symbol="FSUN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=157,
+        requested_price=10.0,
+        status="CANCELED",
+        reason="stale_order_already_resolved",
+        broker_order_no="46162",
+        is_virtual=0,
+        payload={"original_order_no": "46162"},
+    )
+    new_execution = _save_pending_overseas_execution(
+        service,
+        symbol="FSUN",
+        order_no="0000046162",
+        created_at="2026-07-29T19:29:14+00:00",
+        qty=3,
+    )
+
+    stats = asyncio.run(
+        BrokerExecutionReconciler(service).reconcile(
+            now=datetime(2026, 7, 29, 20, 30, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert stats["matched"] == 2
+    assert stats["terminal_followups"] == 1
+    assert stats["no_fill"] == 1
+    pending = service.repository.list_unfinalized_broker_executions()
+    assert [row["id"] for row in pending] == [new_execution["id"]]
+    assert pending[0]["requested_qty"] == 3
+    old = next(
+        row
+        for row in service.repository.list_broker_order_executions(limit=10)
+        if row["id"] == old_execution["id"]
+    )
+    assert old["status"] == "CANCELED"
+    assert old["finalized_at"] is not None
+
+
 def test_execution_reconciler_queries_only_selected_market() -> None:
     class MixedPendingRepository:
         def __init__(self) -> None:
@@ -4495,6 +4728,7 @@ def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> Non
             limit=5,
         )
     ) == 1
+    execution = service.repository.list_unfinalized_broker_executions()[0]
     service.client.pending_orders = [
         {
             "odno": "9201",
@@ -4508,7 +4742,7 @@ def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> Non
             "cncl_cfrm_qty": "0",
             "rjct_qty": "0",
             "cncl_yn": "N",
-            "ord_dt": "20260728",
+            "ord_dt": str(execution["order_date"]).replace("-", ""),
             "ord_tmd": "103000",
         }
     ]
@@ -5362,6 +5596,7 @@ def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
 
     result = asyncio.run(service._place_domestic_test_order(candidate))
     assert service.repository.query_cycle_log(action_bias="BUY_REAL", limit=5) == []
+    execution = service.repository.list_unfinalized_broker_executions()[0]
     service.client.pending_orders = [
         {
             "odno": "9201",
@@ -5375,7 +5610,7 @@ def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
             "cncl_cfrm_qty": "0",
             "rjct_qty": "0",
             "cncl_yn": "N",
-            "ord_dt": "20260728",
+            "ord_dt": str(execution["order_date"]).replace("-", ""),
             "ord_tmd": "100000",
         }
     ]

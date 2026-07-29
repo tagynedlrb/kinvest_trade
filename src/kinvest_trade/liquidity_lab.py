@@ -4350,6 +4350,7 @@ class LiquidityLabService:
                 "missing": 0,
                 "finalized": 0,
                 "no_fill": 0,
+                "terminal_followups": 0,
                 "failed_markets": 0,
             }
         repository = getattr(self, "repository", None)
@@ -4431,6 +4432,7 @@ class LiquidityLabService:
                     "missing": 0,
                     "finalized": 0,
                     "no_fill": 0,
+                    "terminal_followups": 0,
                     "failed_markets": 0,
                 }
         self._last_execution_reconcile_at = now

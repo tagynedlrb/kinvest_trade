@@ -134,6 +134,14 @@
   changes are append-only in `market_regime_observations`; only the market's
   current local session is appended, and historical recalculation rows are
   never presented as observations that happened in real time.
+- Validate anomalous final benchmark moves against a date-bounded historical
+  OHLC source before using them in a policy review. Match the session date,
+  open, high, low and close rather than a search snippet or a dynamic current
+  index page: the latter may display a pre-open/live value under the prior
+  session's data label. Keep the original KIS row and raw payload immutable
+  when sources disagree, record the discrepancy, and defer policy changes
+  until the session attribution is resolved. External validation is an audit
+  input, not a new runtime dependency.
 - Every submitted BUY keeps a same-session entry-regime snapshot in the broker
   event and execution context. Missing current-session data is recorded as
   unavailable; a prior session must never be substituted. Final-session regime
@@ -651,14 +659,16 @@ the current direction is wrong.
   -0.049% at sixty (7), using a five-minute matching tolerance. Coverage is
   incomplete and direction is mixed, so retain the 30-cycle minimum hold and
   reject both a longer exit delay and a frequency increase for now.
-- Overseas capacity/lifecycle review: seven broker-visible holdings plus three
-  virtual-only holdings occupy all ten overseas and account-wide slots. Four
-  broker-visible holdings also have pending virtual sells and correctly retain
-  capacity until KIS settlement. CPRX and FG have been open about 14.4 days;
-  their current gross returns are approximately +0.03% and +0.63%, below the
-  conservative 0.8% policy floor. Keep the cap and exit thresholds unchanged,
-  label the cost-floor hold explicitly, and reassess after additional final
-  NASDAQ sessions and completed outcomes.
+- Overseas capacity/lifecycle review: LFUS and FG have now closed virtually,
+  leaving four strategy-open positions and four broker-settlement exposures,
+  or eight of ten overseas and account-wide slots. The four pending virtual
+  sells correctly retain capacity until KIS settlement. FG's
+  `time_exit_profit` produced +0.958% gross and approximately +$16.89 after
+  modeled costs; CPRX remains near flat after about 14.6 days. Natural entries
+  may use the two released slots, but the cap and entry thresholds remain
+  unchanged because recent three-day virtual performance is still negative
+  after costs. Reassess after additional final NASDAQ sessions and completed
+  outcomes.
 - Overseas signal availability: direct KIS reads on 2026-07-29 returned 50
   daily and 40 intraday rows for recently listed `IPFX`, versus required
   60/21, while `KOYN` returned 100 daily but only 13 intraday rows. These are

@@ -294,7 +294,7 @@ def test_request_retries_vps_get_after_service_delay(
     async def token() -> str:
         return "tok"
 
-    async def no_throttle(*_args, **_kwargs) -> None:
+    async def no_throttle() -> None:
         return None
 
     async def capture_sleep(delay: float) -> None:
@@ -352,7 +352,7 @@ def test_request_marks_exhausted_service_delay_as_terminal_failure(
     async def token() -> str:
         return "tok"
 
-    async def no_throttle(*_args, **_kwargs) -> None:
+    async def no_throttle() -> None:
         return None
 
     async def capture_sleep(delay: float) -> None:
@@ -425,7 +425,7 @@ def test_request_retries_service_delay_only_for_vps_get(
     async def token() -> str:
         return "tok"
 
-    async def no_throttle(*_args, **_kwargs) -> None:
+    async def no_throttle() -> None:
         return None
 
     async def capture_sleep(delay: float) -> None:
@@ -597,45 +597,6 @@ def test_pacing_file_coordinates_separate_clients(tmp_path: Path) -> None:
     assert state_path.exists()
     assert state_path.stat().st_mode & 0o777 == 0o600
     float(state_path.read_text(encoding="ascii"))
-
-
-def test_vps_overseas_balance_uses_endpoint_local_pacing_margin(
-    tmp_path: Path,
-) -> None:
-    credentials = KisCredentials(
-        env="vps",
-        appkey="appkey",
-        appsecret="appsecret",
-        account_no="12345678",
-        account_product_code="01",
-        hts_id="",
-        dry_run=False,
-        live_trading_enabled=False,
-        appkey_path=None,
-        appsecret_path=None,
-        token_cache_path=tmp_path / "token.json",
-    )
-    client = KisRestClient(credentials)
-    client._vps_min_request_interval_sec = 0.01
-    client._vps_overseas_balance_request_interval_sec = 0.05
-
-    client._throttle_across_processes()
-    started_at = time.monotonic()
-    client._throttle_across_processes(client.OVERSEAS_BALANCE_PATH)
-    elapsed = time.monotonic() - started_at
-
-    assert client._request_interval_sec() == 0.01
-    assert (
-        client._request_interval_sec(client.OVERSEAS_BALANCE_PATH)
-        == 0.05
-    )
-    assert elapsed >= 0.045
-
-    credentials.env = "prod"
-    assert (
-        client._request_interval_sec(client.OVERSEAS_BALANCE_PATH)
-        == client._min_request_interval_sec
-    )
 
 
 def test_pacing_file_serializes_concurrent_processes(tmp_path: Path) -> None:

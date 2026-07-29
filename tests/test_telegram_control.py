@@ -2355,7 +2355,7 @@ def test_lab_guard_command_reports_current_strategy_guard_state(
     assert "감시대상=overseas:RSI,VOL,VWAP" in message
     assert "고정차단=해외 VWAP단독,해외 RSI단독" in message
     assert "해외 VWAP 상태=차단 3건 승률=0% 평균순=-1.50%" in message
-    assert "국내 VWAP 상태=참고 1건 승률=100% 평균순=+1.50%" in message
+    assert "국내 VWAP 상태=참고 1건 승률=100% 평균순=+1.77%" in message
 
 
 def test_lab_guard_command_reports_persistent_final_session_hold(
@@ -2429,6 +2429,71 @@ def test_lab_guard_command_reports_persistent_final_session_hold(
         "국내 VWAP 상태=차단(관찰유지) "
         "최종세션=2/3 시작=2026-07-29"
     ) in message
+
+
+def test_lab_guard_command_reports_divergent_market_policies(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_guard_markets.db")
+    notifier = DummyNotifier()
+    domestic = SimpleNamespace(
+        strategy_guard_lookback_hours=24,
+        strategy_guard_min_trades=4,
+        strategy_guard_max_avg_net_pnl_pct=-0.004,
+        strategy_guard_strategy_flags=["VWAP"],
+        strategy_guard_min_final_sessions=2,
+        commission_rate=0.0025,
+        domestic_commission_rate=0.00015,
+        domestic_sell_tax_rate=0.002,
+    )
+    overseas = SimpleNamespace(
+        strategy_guard_lookback_hours=72,
+        strategy_guard_min_trades=5,
+        strategy_guard_max_avg_net_pnl_pct=-0.006,
+        strategy_guard_strategy_flags=["VWAP+RSI"],
+        strategy_guard_min_final_sessions=4,
+        commission_rate=0.0025,
+        overseas_commission_rate=0.0025,
+        sec_fee_rate=0.0000206,
+    )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(
+                loop_interval_sec=20,
+                strategy_guard_enabled=True,
+                strategy_guard_markets=["domestic", "overseas"],
+            ),
+            market_policies=SimpleNamespace(
+                domestic=SimpleNamespace(auto_trade=domestic),
+                overseas=SimpleNamespace(auto_trade=overseas),
+            ),
+            storage=SimpleNamespace(
+                runtime_state_path=tmp_path / "runtime_state.json"
+            ),
+            auto_trade=overseas,
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_guard",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "범위=시장별 정책" in message
+    assert "차단조건=시장별 정책" in message
+    assert "국내정책=24시간/4건/-0.40% 이하/VWAP" in message
+    assert "해외정책=72시간/5건/-0.60% 이하/VWAP+RSI" in message
+    assert "성과=없음" in message
 
 
 def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:

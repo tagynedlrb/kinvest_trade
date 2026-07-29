@@ -273,12 +273,15 @@
   active while the rolling loss condition remains true, and after that
   condition clears, release it only when that market has recorded its
   separately configured minimum number of final benchmark sessions since
-  activation. The initial domestic and overseas values are both three, but
-  they belong to separate policy files and may diverge only on market-specific
-  evidence. Three sessions are a minimum observation hold, not proof of
-  profitability or permission to loosen a formula. Retain legacy unconfirmed
-  rows for diagnostics only and keep the existing five confirmed exits across
-  three final sessions requirement for a permanent change. This avoids
+  activation. Lookback hours, minimum trades, average-net threshold, observed
+  strategy labels, and minimum final sessions all belong to each market policy
+  file. Their initial values are equal clones, but may diverge only on
+  market-specific evidence. The global liquidity-lab settings control only
+  whether the guard is enabled and which markets are in scope. Three sessions
+  are a minimum observation hold, not proof of profitability or permission to
+  loosen a formula. Retain legacy unconfirmed rows for diagnostics only and
+  keep the existing five confirmed exits across three final sessions
+  requirement for a permanent change. This avoids
   treating repeated scans from one market path as independent evidence, a
   known source of backtest-selection bias
   ([NBER Working Paper 21329](https://www.nber.org/papers/w21329)).

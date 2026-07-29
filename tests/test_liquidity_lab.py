@@ -5060,6 +5060,66 @@ def test_strategy_guard_stays_blocked_until_three_final_market_sessions() -> Non
     assert detail["reason"] == "minimum_final_sessions_observed"
 
 
+def test_strategy_guard_uses_independent_market_policy_parameters(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_markets = [
+        "domestic",
+        "overseas",
+    ]
+    assert service.config.market_policies is not None
+    domestic = service.config.market_policies.domestic.auto_trade
+    overseas = service.config.market_policies.overseas.auto_trade
+    domestic.strategy_guard_min_trades = 4
+    domestic.strategy_guard_strategy_flags = ["VWAP"]
+    overseas.strategy_guard_min_trades = 3
+    overseas.strategy_guard_strategy_flags = ["VWAP"]
+
+    now = datetime.now(timezone.utc).isoformat()
+    for market, exchange_code, entry_price in (
+        ("domestic", "KRX", 10_000.0),
+        ("overseas", "NASD", 100.0),
+    ):
+        for idx in range(3):
+            kwargs = {
+                "logged_at": now,
+                "market": market,
+                "symbol": f"{market[:1].upper()}LOSS{idx}",
+                "exchange_code": exchange_code,
+                "action_reason": "stop_loss",
+                "strategy_flag": "VWAP",
+                "pnl_pct": -0.01,
+                "entry_price": entry_price,
+                "qty_executed": 1,
+            }
+            if market == "domestic":
+                kwargs["net_pnl_krw"] = -100.0
+            else:
+                kwargs["net_pnl_usd"] = -1.0
+            save_confirmed_sell(service.repository, **kwargs)
+
+    assert service._strategy_guard_blocked_keys() == {
+        ("overseas", "VWAP")
+    }
+    states = service.repository.list_active_strategy_guard_states()
+    assert [(row["market"], row["strategy_flag"]) for row in states] == [
+        ("overseas", "VWAP")
+    ]
+    events = service.repository.list_event_log(
+        event_type="strategy_guard_active",
+        limit=1,
+    )
+    detail = json.loads(events[0]["detail"])
+    assert detail["market_policies"]["domestic"]["min_trades"] == 4
+    assert detail["market_policies"]["overseas"]["min_trades"] == 3
+
+
 def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission() -> None:
     class FailingDomesticClient:
         async def get_domestic_order_history(self, **_kwargs):

@@ -35,7 +35,12 @@ from .market_sessions import (
     us_holiday_date_for_kis_session,
 )
 from .market_calendar import is_krx_holiday, is_nyse_holiday, market_status_summary
-from .market_policy import MarketPolicyRegistry, MomentumMarketPolicy, normalize_market_name
+from .market_policy import (
+    MarketPolicyRegistry,
+    MomentumMarketPolicy,
+    get_market_strategy_guard_policy,
+    normalize_market_name,
+)
 from .market_regime import MarketRegimeCollector
 from .lab_domestic_orders import DomesticOrderHelper
 from .lab_notify import TradeNotifier
@@ -2032,20 +2037,12 @@ class LiquidityLabService:
 
     def _strategy_guard_min_final_sessions(self, market: str) -> int:
         try:
-            auto_trade = self._get_market_policy(market).auto_trade
+            return get_market_strategy_guard_policy(
+                self.config,
+                market,
+            ).min_final_sessions
         except (AttributeError, KeyError, RuntimeError, ValueError):
-            auto_trade = None
-        return max(
-            0,
-            int(
-                getattr(
-                    auto_trade,
-                    "strategy_guard_min_final_sessions",
-                    3,
-                )
-                or 0
-            ),
-        )
+            return 3
 
     def _strategy_guard_blocked_keys(self) -> set[tuple[str, str]]:
         config = getattr(self.config, "liquidity_lab", object())
@@ -2059,32 +2056,31 @@ class LiquidityLabService:
         if cache.get("cycle_no") == cycle_no:
             return set(cache.get("blocked", set()))
 
-        lookback_hours = max(1, int(getattr(config, "strategy_guard_lookback_hours", 48) or 48))
-        min_trades = max(1, int(getattr(config, "strategy_guard_min_trades", 3) or 3))
-        max_avg_net = float(
-            getattr(config, "strategy_guard_max_avg_net_pnl_pct", -0.003) or -0.003
-        )
         guard_markets = {
             str(market).strip().lower()
             for market in getattr(config, "strategy_guard_markets", ["overseas"])
             if str(market).strip()
         }
-        guard_flags = {
-            str(flag).strip().upper()
-            for flag in getattr(config, "strategy_guard_strategy_flags", ["VWAP", "RSI"])
-            if str(flag).strip()
-        }
-        after_logged_at = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
-        auto_config = self._get_market_policy("overseas").auto_trade
-        cost_pct = max(
-            0.005,
-            float(getattr(auto_config, "overseas_commission_rate", 0.0025) or 0.0025) * 2,
-        )
-        rows = repository.get_recent_strategy_guard_performance(
-            after_logged_at=after_logged_at,
-            cost_pct=cost_pct,
-        )
         now = datetime.now(timezone.utc)
+        evaluation_markets = sorted(
+            guard_markets or {"domestic", "overseas"}
+        )
+        guard_policies = {
+            market: get_market_strategy_guard_policy(self.config, market)
+            for market in evaluation_markets
+        }
+        rows: list[dict] = []
+        for market, guard_policy in guard_policies.items():
+            rows.extend(
+                repository.get_recent_strategy_guard_performance(
+                    after_logged_at=(
+                        now
+                        - timedelta(hours=guard_policy.lookback_hours)
+                    ).isoformat(),
+                    cost_pct=guard_policy.fallback_cost_pct,
+                    market=market,
+                )
+            )
         current_market_regimes = {
             market: self._market_regime_context(market, now=now)
             for market in sorted(guard_markets)
@@ -2097,13 +2093,20 @@ class LiquidityLabService:
             strategy = str(row.get("strategy_flag") or "").strip().upper()
             if not market or not strategy:
                 continue
-            if guard_markets and market not in guard_markets:
+            guard_policy = guard_policies.get(market)
+            if guard_policy is None:
                 continue
-            if guard_flags and strategy not in guard_flags:
+            if (
+                guard_policy.strategy_flags
+                and strategy not in guard_policy.strategy_flags
+            ):
                 continue
             trade_count = int(row.get("trade_count") or 0)
             avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
-            if trade_count < min_trades or avg_net > max_avg_net:
+            if (
+                trade_count < guard_policy.min_trades
+                or avg_net > guard_policy.max_avg_net_pnl_pct
+            ):
                 continue
             rolling_blocked[(market, strategy)] = row
 
@@ -2178,6 +2181,13 @@ class LiquidityLabService:
                     "activation_session_date": activation_session_date,
                     "final_sessions": final_sessions,
                     "min_final_sessions": min_final_sessions,
+                    "lookback_hours": guard_policies[
+                        market
+                    ].lookback_hours,
+                    "min_trades": guard_policies[market].min_trades,
+                    "max_avg_net_pnl_pct": guard_policies[
+                        market
+                    ].max_avg_net_pnl_pct,
                 }
             )
 
@@ -2187,12 +2197,25 @@ class LiquidityLabService:
                 if key in rolling_blocked:
                     continue
                 market, strategy = key
+                guard_policy = guard_policies.get(market)
+                if guard_policy is None:
+                    try:
+                        guard_policy = get_market_strategy_guard_policy(
+                            self.config,
+                            market,
+                        )
+                    except ValueError:
+                        guard_policy = None
                 activation_session_date = str(
                     state.get("activation_session_date") or ""
                 )
                 if (
                     (guard_markets and market not in guard_markets)
-                    or (guard_flags and strategy not in guard_flags)
+                    or guard_policy is None
+                    or (
+                        guard_policy.strategy_flags
+                        and strategy not in guard_policy.strategy_flags
+                    )
                 ):
                     release_reason = "guard_scope_removed"
                     final_sessions = repository.count_final_market_regimes(
@@ -2272,9 +2295,25 @@ class LiquidityLabService:
             self._save_event(
                 event_type="strategy_guard_active",
                 detail={
-                    "lookback_hours": lookback_hours,
-                    "min_trades": min_trades,
-                    "max_avg_net_pnl_pct": max_avg_net,
+                    "market_policies": {
+                        market: {
+                            "lookback_hours": policy.lookback_hours,
+                            "min_trades": policy.min_trades,
+                            "max_avg_net_pnl_pct": (
+                                policy.max_avg_net_pnl_pct
+                            ),
+                            "strategy_flags": sorted(
+                                policy.strategy_flags
+                            ),
+                            "min_final_sessions": (
+                                policy.min_final_sessions
+                            ),
+                            "fallback_cost_pct": (
+                                policy.fallback_cost_pct
+                            ),
+                        }
+                        for market, policy in guard_policies.items()
+                    },
                     "blocked": blocked_detail,
                     "current_market_regimes": current_market_regimes,
                 },

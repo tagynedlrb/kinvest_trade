@@ -4065,6 +4065,7 @@ class SqliteRepository:
         *,
         after_logged_at: str = "",
         cost_pct: float = 0.005,
+        market: str = "",
     ) -> list[dict]:
         """Summarize session-owned confirmed performance for entry guards."""
         params: list[object] = [float(cost_pct)]
@@ -4073,6 +4074,9 @@ class SqliteRepository:
             "COALESCE(qty_executed, 0) > 0",
             CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
         ]
+        if market:
+            where.append("lower(market) = ?")
+            params.append(str(market).strip().lower())
         if after_logged_at:
             where.append("logged_at >= ?")
             params.append(after_logged_at)

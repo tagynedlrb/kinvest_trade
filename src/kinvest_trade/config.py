@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -197,6 +197,12 @@ class AutoTradeConfig:
     inverse_hard_stop_loss_pct: float = 0.012
     inverse_max_hold_cycles: int = 24
     inverse_slot_multiplier: float = 0.25
+    strategy_guard_lookback_hours: int = 48
+    strategy_guard_min_trades: int = 3
+    strategy_guard_max_avg_net_pnl_pct: float = -0.003
+    strategy_guard_strategy_flags: list[str] = field(
+        default_factory=lambda: ["VWAP", "RSI", "VOL"]
+    )
     strategy_guard_min_final_sessions: int = 3
 
 
@@ -455,6 +461,9 @@ def _load_market_policy_definition(
         base_auto_trade,
         inverse_etf_symbols=list(base_auto_trade.inverse_etf_symbols),
         leveraged_etf_symbols=list(base_auto_trade.leveraged_etf_symbols),
+        strategy_guard_strategy_flags=list(
+            base_auto_trade.strategy_guard_strategy_flags
+        ),
     )
     return MarketPolicyDefinition(
         policy_id=str(

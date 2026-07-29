@@ -121,6 +121,22 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.policy_id == "overseas_momentum_v2"
     assert domestic.auto_trade.strategy_guard_min_final_sessions == 3
     assert overseas.auto_trade.strategy_guard_min_final_sessions == 3
+    assert domestic.auto_trade.strategy_guard_lookback_hours == 48
+    assert overseas.auto_trade.strategy_guard_lookback_hours == 48
+    assert domestic.auto_trade.strategy_guard_min_trades == 3
+    assert overseas.auto_trade.strategy_guard_min_trades == 3
+    assert domestic.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.003
+    assert overseas.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.003
+    assert domestic.auto_trade.strategy_guard_strategy_flags == [
+        "VWAP",
+        "RSI",
+        "VOL",
+    ]
+    assert overseas.auto_trade.strategy_guard_strategy_flags == [
+        "VWAP",
+        "RSI",
+        "VOL",
+    ]
     assert domestic.engine == overseas.engine == "momentum_v1"
     assert domestic.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
@@ -143,12 +159,18 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.domestic_sell_tax_rate == 0.0
     assert domestic.auto_trade is not overseas.auto_trade
     assert domestic.auto_trade.inverse_etf_symbols is not overseas.auto_trade.inverse_etf_symbols
+    assert (
+        domestic.auto_trade.strategy_guard_strategy_flags
+        is not overseas.auto_trade.strategy_guard_strategy_flags
+    )
 
     domestic.auto_trade.take_profit_pct = 0.123
     domestic.auto_trade.inverse_etf_symbols.append("KRX_TEST")
+    domestic.auto_trade.strategy_guard_strategy_flags.append("KRX_TEST")
 
     assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert "KRX_TEST" not in overseas.auto_trade.inverse_etf_symbols
+    assert "KRX_TEST" not in overseas.auto_trade.strategy_guard_strategy_flags
     assert domestic.source_path is not None
     assert domestic.source_path.name == "domestic.json"
     assert overseas.source_path is not None

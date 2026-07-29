@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING
 
 from .client import parse_kis_number
 from .liquidity_lab import VirtualTradeManager
-from .market_policy import get_market_auto_trade_config
+from .market_policy import (
+    get_market_auto_trade_config,
+    get_market_strategy_guard_policy,
+)
 from .market_sessions import (
     determine_loop_interval_sec,
     minutes_until_regular_session_close,
@@ -1705,38 +1708,70 @@ class ReportHelper:
         controller = self.controller
         now = datetime.now(timezone.utc)
         config = getattr(controller.config, "liquidity_lab", object())
-        auto_trade = get_market_auto_trade_config(controller.config, "overseas")
         enabled = bool(getattr(config, "strategy_guard_enabled", False))
-        lookback_hours = max(1, int(getattr(config, "strategy_guard_lookback_hours", 48) or 48))
-        min_trades = max(1, int(getattr(config, "strategy_guard_min_trades", 3) or 3))
-        max_avg_net = float(getattr(config, "strategy_guard_max_avg_net_pnl_pct", -0.003) or -0.003)
         guard_markets = {
             str(market).strip().lower()
             for market in getattr(config, "strategy_guard_markets", ["overseas"])
             if str(market).strip()
         }
-        guard_flags = {
-            str(flag).strip().upper()
-            for flag in getattr(config, "strategy_guard_strategy_flags", ["VWAP", "RSI", "VOL"])
-            if str(flag).strip()
+        report_markets = ("domestic", "overseas")
+        guard_policies = {
+            market: get_market_strategy_guard_policy(
+                controller.config,
+                market,
+            )
+            for market in report_markets
         }
-        cost_pct = max(
-            0.005,
-            float(getattr(auto_trade, "overseas_commission_rate", 0.0025) or 0.0025) * 2,
+        in_scope_policies = [
+            guard_policies[market]
+            for market in report_markets
+            if not guard_markets or market in guard_markets
+        ]
+        common_policy = (
+            in_scope_policies[0]
+            if in_scope_policies
+            and all(
+                policy == in_scope_policies[0]
+                for policy in in_scope_policies[1:]
+            )
+            else None
         )
-        after_logged_at = (now - timedelta(hours=lookback_hours)).isoformat()
         lines = [
             "[KIS][전략가드]",
             f"시각={format_kst_korean(now)}",
             f"상태={'활성' if enabled else '비활성'}",
-            f"범위=최근 {lookback_hours}시간",
-            (
-                f"차단조건={min_trades}건 이상, 평균순손익 "
-                f"{format_pct(max_avg_net)} 이하"
-            ),
-            f"감시대상={','.join(sorted(guard_markets))}:{','.join(sorted(guard_flags))}",
-            "기준=세션소유 KIS 체결확정 SELL_REAL, 미체결 확인=/lab_orders",
         ]
+        if common_policy is not None:
+            lines.extend(
+                [
+                    f"범위=최근 {common_policy.lookback_hours}시간",
+                    (
+                        f"차단조건={common_policy.min_trades}건 이상, "
+                        "평균순손익 "
+                        f"{format_pct(common_policy.max_avg_net_pnl_pct)} 이하"
+                    ),
+                    (
+                        f"감시대상={','.join(sorted(guard_markets))}:"
+                        f"{','.join(sorted(common_policy.strategy_flags))}"
+                    ),
+                ]
+            )
+        else:
+            lines.extend(["범위=시장별 정책", "차단조건=시장별 정책"])
+            for market in report_markets:
+                if guard_markets and market not in guard_markets:
+                    continue
+                policy = guard_policies[market]
+                lines.append(
+                    f"{format_market_korean(market)}정책="
+                    f"{policy.lookback_hours}시간/{policy.min_trades}건/"
+                    f"{format_pct(policy.max_avg_net_pnl_pct)} 이하/"
+                    f"{','.join(sorted(policy.strategy_flags))}"
+                )
+        lines.append(
+            "기준=세션소유 KIS 체결확정 SELL_REAL, "
+            "미체결 확인=/lab_orders"
+        )
         hard_blocks: list[str] = []
         if bool(getattr(config, "overseas_block_standalone_vwap", False)):
             hard_blocks.append("해외 VWAP단독")
@@ -1745,7 +1780,18 @@ class ReportHelper:
         if bool(getattr(config, "overseas_block_standalone_vol", False)):
             hard_blocks.append("해외 VOL단독")
         if hard_blocks:
-            lines.insert(6, f"고정차단={','.join(hard_blocks)}")
+            basis_index = next(
+                (
+                    index
+                    for index, line in enumerate(lines)
+                    if line.startswith("기준=")
+                ),
+                len(lines),
+            )
+            lines.insert(
+                basis_index,
+                f"고정차단={','.join(hard_blocks)}",
+            )
         reject_cb = getattr(controller.lab_service, "cb", None)
         reject_status = reject_cb.order_reject_status() if reject_cb is not None else {}
         active_rejects = {key: v for key, v in reject_status.items() if v.get("halted")}
@@ -1758,9 +1804,23 @@ class ReportHelper:
             lines.append("성과=조회불가")
             return "\n".join(lines)
 
-        rows = controller.repository.get_recent_strategy_guard_performance(
-            after_logged_at=after_logged_at,
-            cost_pct=cost_pct,
+        rows: list[dict] = []
+        for market, guard_policy in guard_policies.items():
+            rows.extend(
+                controller.repository.get_recent_strategy_guard_performance(
+                    after_logged_at=(
+                        now
+                        - timedelta(hours=guard_policy.lookback_hours)
+                    ).isoformat(),
+                    cost_pct=guard_policy.fallback_cost_pct,
+                    market=market,
+                )
+            )
+        rows.sort(
+            key=lambda row: (
+                float(row.get("avg_net_pnl_pct") or 0.0),
+                -int(row.get("trade_count") or 0),
+            )
         )
         active_states = (
             controller.repository.list_active_strategy_guard_states()
@@ -1791,27 +1851,19 @@ class ReportHelper:
             win_count = int(row.get("win_count") or 0)
             avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
             win_rate = (win_count / trade_count) if trade_count else 0.0
+            guard_policy = guard_policies[market]
             monitored = (not guard_markets or market in guard_markets) and (
-                not guard_flags or strategy in guard_flags
+                not guard_policy.strategy_flags
+                or strategy in guard_policy.strategy_flags
             )
-            blocked = monitored and trade_count >= min_trades and avg_net <= max_avg_net
+            blocked = (
+                monitored
+                and trade_count >= guard_policy.min_trades
+                and avg_net <= guard_policy.max_avg_net_pnl_pct
+            )
             persistent_state = active_by_key.get(key)
             if persistent_state is not None:
-                market_auto_trade = get_market_auto_trade_config(
-                    controller.config,
-                    market,
-                )
-                min_final_sessions = max(
-                    0,
-                    int(
-                        getattr(
-                            market_auto_trade,
-                            "strategy_guard_min_final_sessions",
-                            3,
-                        )
-                        or 0
-                    ),
-                )
+                min_final_sessions = guard_policy.min_final_sessions
                 final_sessions = controller.repository.count_final_market_regimes(
                     market=market,
                     start_date=str(
@@ -1836,21 +1888,9 @@ class ReportHelper:
             if key in seen_keys:
                 continue
             market, strategy = key
-            market_auto_trade = get_market_auto_trade_config(
-                controller.config,
-                market,
-            )
-            min_final_sessions = max(
-                0,
-                int(
-                    getattr(
-                        market_auto_trade,
-                        "strategy_guard_min_final_sessions",
-                        3,
-                    )
-                    or 0
-                ),
-            )
+            min_final_sessions = guard_policies[
+                market
+            ].min_final_sessions
             final_sessions = controller.repository.count_final_market_regimes(
                 market=market,
                 start_date=str(

@@ -441,8 +441,11 @@ python3 main.py liquidity-lab
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
 - 최근 성과 기준으로 해외 `VWAP` 단독, `RSI` 단독, `VOL` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`, `overseas_block_standalone_vol=true`). 해외에서는 `VWAP+RSI`, `VOL+RSI`처럼 보조 확인이 둘 이상 붙은 신호를 우선한다.
 - 체결확정 기반 동적 전략 가드는 국장·미장을 `(시장, 전략)` 키로 따로 계산한다.
-  현재 초기 임계값은 두 시장에 동일하게 복제했지만 한 시장의 손실이 다른 시장을 막지
-  않는다. 감시대상 선택과 실제 주문 제출 직전에 모두 재검사한다.
+  관찰시간·최소 거래수·평균 순손익 임계값·감시 전략·최소 최종세션은 각
+  `config/market_policies/{domestic,overseas}.json`에 동일한 초기값으로
+  복제했다. `liquidity_lab`은 전체 활성화와 대상 시장 범위만 담당한다.
+  한 시장의 손실이나 이후 임계값 변경이 다른 시장을 막지 않으며, 감시대상
+  선택과 실제 주문 제출 직전에 모두 재검사한다.
 - 해외 신규 진입은 전략 신호가 있어도 `volume_ratio`가 `overseas_min_strategy_volume_ratio`(기본 `0.8`)보다 낮으면 `overseas_volume_floor`로 대기한다.
 - `liquidity_lab`의 매수 수량은 기본적으로 슬롯 기반이다. `use_slot_sizing=true`이면 주문가능 금액에 `slot_entry_pct`를 곱한 예산 안에서 수량을 계산하고, 조회 실패 시에만 `*_test_order_qty` 고정 수량으로 폴백한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.
@@ -690,13 +693,16 @@ Net은 현재 미장 정책의 매수·매도 수수료와 매도 SEC fee를 적
   일반 저가주용 절대가격 하한만 면제한다. 거래대금·거래량·스프레드와 상품 자체 상승·
   거래량비 기준은 그대로 적용하며, 면제와 남은 차단 사유는
   `inverse_price_floor_exempted`에 기록한다.
-- `/lab_guard`는 `strategy_guard_lookback_hours` 기간의 체결확정 `SELL_REAL`을
-  시장·전략별로 나눠 평균 순손익을 보여준다. 차단 기준은
-  `strategy_guard_min_trades`와 `strategy_guard_max_avg_net_pnl_pct`를 따르며,
+- `/lab_guard`는 각 시장 정책의 `strategy_guard_lookback_hours` 기간에
+  체결확정된 `SELL_REAL`을 시장·전략별로 나눠 평균 순손익을 보여준다.
+  차단 기준은 해당 시장의 `strategy_guard_min_trades`와
+  `strategy_guard_max_avg_net_pnl_pct`를 따르며,
   표본 미달 전략과 다른 시장의 같은 이름 전략은 차단하지 않는다. 전략 집계는
   명시적 세션소유 행 또는 같은 비어 있지 않은 세션의 선행 봇 매수 체결이 있는
   청산만 포함한다. 외부 보유 청산은 이 공식 평가에서는 제외하지만 계좌 위험일
-  손익·연속손실·서킷브레이커에는 계속 포함한다.
+  손익·연속손실·서킷브레이커에는 계속 포함한다. 기록된 비용차감 순손익이
+  없는 행에만 국장은 국내 수수료·매도세, 미장은 해외 수수료·SEC fee를
+  합산한 각 시장 왕복비용을 폴백으로 사용한다.
 - 200사이클마다 점검하는 `trend_filter_lost` 비율은 국장·미장을 합산하지 않는다. 시장별 KIS 확정 청산이 6건 이상이고 해당 사유가 50%를 초과할 때만 그 시장의 `min_hold_before_trend_exit` 값과 함께 경고·이벤트를 남긴다.
 - `/lab_orders`는 내부 주문 이벤트와 KIS 실시간 미체결 주문을 함께 보여준다. 내부 `SUBMITTED` 기록은 체결 확정이 아니므로, `접수 후 체결확정 추적 필요` 섹션에서 `확인필요=MTS/잔고`로 따로 표시한다. live 미체결 조회가 성공하면 `브로커상태=미체결` 또는 `브로커상태=미체결목록없음`도 함께 표시한다.
 - **동일한 스킵 이유로 인한 무주문 알림은 30분에 한 번만 보낸다** (2026-07-14, `repeated_skip_notify_cooldown_minutes`). 실제로 주문이 제출되지 않은 채 매 사이클 같은 이유(`net_profit_below_cost` 등)로 계속 대기 상태만 반복되는 경우 텔레그램 알림이 무한히 반복 발송되는 것을 막는다. 실제 매수/매도 체결·주문 오류 알림에는 영향이 없다.

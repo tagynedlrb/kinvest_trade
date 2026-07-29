@@ -1726,6 +1726,44 @@ def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(
     assert row["total_net_pnl_krw"] == -100.0
 
 
+def test_get_recent_strategy_guard_performance_filters_market_and_uses_its_cost(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "strategy_guard_market_cost.db")
+    for market, symbol, exchange_code in (
+        ("domestic", "005930", "KRX"),
+        ("overseas", "AAPL", "NASD"),
+    ):
+        save_confirmed_sell(
+            repository,
+            logged_at="2026-07-02T00:00:00+00:00",
+            market=market,
+            symbol=symbol,
+            exchange_code=exchange_code,
+            action_reason="take_profit",
+            strategy_flag="VWAP",
+            pnl_pct=0.01,
+            entry_price=100.0,
+            qty_executed=1,
+        )
+
+    domestic = repository.get_recent_strategy_guard_performance(
+        market="domestic",
+        cost_pct=0.0023,
+    )
+    overseas = repository.get_recent_strategy_guard_performance(
+        market="overseas",
+        cost_pct=0.0050206,
+    )
+
+    assert len(domestic) == len(overseas) == 1
+    assert domestic[0]["market"] == "domestic"
+    assert overseas[0]["market"] == "overseas"
+    assert round(domestic[0]["avg_net_pnl_pct"], 7) == 0.0077
+    assert round(overseas[0]["avg_net_pnl_pct"], 7) == 0.0049794
+
+
 def test_strategy_guard_state_persists_activation_until_released(
     tmp_path,
 ) -> None:

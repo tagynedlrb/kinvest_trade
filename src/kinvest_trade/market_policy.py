@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from .config import AppConfig, AutoTradeConfig, MarketPolicyDefinition
@@ -16,6 +16,16 @@ from .strategy.manager import PriorityStrategyManager
 from .technical_signals import MovingAverageSnapshot
 
 MarketName = Literal["domestic", "overseas"]
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyGuardPolicy:
+    lookback_hours: int
+    min_trades: int
+    max_avg_net_pnl_pct: float
+    strategy_flags: frozenset[str]
+    min_final_sessions: int
+    fallback_cost_pct: float
 
 
 def normalize_market_name(market: str) -> MarketName:
@@ -45,6 +55,129 @@ def get_market_auto_trade_config(
     if configured is not None:
         return configured
     return getattr(config, "auto_trade", None)
+
+
+def get_market_strategy_guard_policy(
+    config: AppConfig | object,
+    market: str,
+) -> StrategyGuardPolicy:
+    normalized = normalize_market_name(market)
+    policies = getattr(config, "market_policies", None)
+    definition = getattr(policies, normalized, None) if policies is not None else None
+    market_auto_trade = getattr(definition, "auto_trade", None)
+    auto_trade = market_auto_trade or get_market_auto_trade_config(
+        config,
+        normalized,
+    )
+    liquidity_lab = getattr(config, "liquidity_lab", object())
+    guard_source = market_auto_trade or liquidity_lab
+
+    raw_flags = getattr(
+        guard_source,
+        "strategy_guard_strategy_flags",
+        ["VWAP", "RSI", "VOL"],
+    )
+    if isinstance(raw_flags, str):
+        raw_flags = [raw_flags]
+    strategy_flags = frozenset(
+        str(flag).strip().upper()
+        for flag in raw_flags
+        if str(flag).strip()
+    )
+
+    raw_legacy_commission = getattr(
+        auto_trade,
+        "commission_rate",
+        None,
+    )
+    legacy_commission = (
+        None
+        if raw_legacy_commission is None
+        else float(raw_legacy_commission or 0.0)
+    )
+    if normalized == "domestic":
+        raw_commission = getattr(
+            auto_trade,
+            "domestic_commission_rate",
+            None,
+        )
+        commission = (
+            float(raw_commission or 0.0)
+            if raw_commission is not None
+            else (
+                legacy_commission
+                if legacy_commission is not None
+                else 0.00015
+            )
+        )
+        sell_tax = float(
+            getattr(auto_trade, "domestic_sell_tax_rate", 0.002) or 0.0
+        )
+        fallback_cost_pct = commission * 2 + sell_tax
+    else:
+        raw_commission = getattr(
+            auto_trade,
+            "overseas_commission_rate",
+            None,
+        )
+        commission = (
+            float(raw_commission or 0.0)
+            if raw_commission is not None
+            else (
+                legacy_commission
+                if legacy_commission is not None
+                else 0.0025
+            )
+        )
+        sec_fee = float(
+            getattr(auto_trade, "sec_fee_rate", 0.0000206) or 0.0
+        )
+        fallback_cost_pct = commission * 2 + sec_fee
+
+    return StrategyGuardPolicy(
+        lookback_hours=max(
+            1,
+            int(
+                getattr(
+                    guard_source,
+                    "strategy_guard_lookback_hours",
+                    48,
+                )
+                or 48
+            ),
+        ),
+        min_trades=max(
+            1,
+            int(
+                getattr(
+                    guard_source,
+                    "strategy_guard_min_trades",
+                    3,
+                )
+                or 3
+            ),
+        ),
+        max_avg_net_pnl_pct=float(
+            getattr(
+                guard_source,
+                "strategy_guard_max_avg_net_pnl_pct",
+                -0.003,
+            )
+        ),
+        strategy_flags=strategy_flags,
+        min_final_sessions=max(
+            0,
+            int(
+                getattr(
+                    auto_trade,
+                    "strategy_guard_min_final_sessions",
+                    3,
+                )
+                or 0
+            ),
+        ),
+        fallback_cost_pct=max(0.0, fallback_cost_pct),
+    )
 
 
 class MomentumMarketPolicy:

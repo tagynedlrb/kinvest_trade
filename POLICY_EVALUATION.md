@@ -356,6 +356,20 @@
   field stays disabled because no domestic repeated-fire evidence exists.
   This is a bounded risk response, not a profitability claim, and it does not
   loosen or tighten normal-session frequency.
+- During the deployment wait, all six ordinary-long entries opened after the
+  second release closed at an after-cost loss: PAYO, FEIM, MOD, FER, ALOY and
+  SITE totaled USD -270.404745 and KRW -365,046.41. A third overseas breaker
+  consequently fired at 18:30:46 UTC. The new two-fire rule would have blocked
+  these entries, but this remains a same-session retrospective counterfactual,
+  not independent evidence of long-run profitability.
+- Deployment restored the active third breaker and its 19:00:46 UTC release
+  boundary. The first completed cycle made no order, had no failed API attempt,
+  and naturally classified a PAYO ordinary-long candidate as
+  `post_cb_session_loss_limit_reached`. This confirms wiring, durable replay,
+  and the distinction from the NASDAQ-recovery-only baseline. It does not
+  validate the exact threshold across sessions; the high-context reasoning
+  comparison is confirmed only for finding and preventing the omitted
+  repeated-fire risk.
 - Reassess the two-fire limit over at least three final US sessions containing
   a repeated trigger. Record blocked-long counterfactual net outcomes and
   admitted inverse outcomes. Relax or return the rule to shadow if blocked

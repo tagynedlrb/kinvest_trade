@@ -512,6 +512,7 @@ class ReportHelper:
             f"사이클={controller.current_cycle_no}",
             controller._report_freshness_notice(),
             f"예상호출={last_report.get('estimated_api_calls_per_cycle', '-')}",
+            f"미장스캔={last_report.get('overseas_scan_scope', '-')}",
         ]
         if controller.mode != "running":
             lines.append("주의=루프가 실행 중이 아니므로 아래 목록은 마지막 저장 감시데이터")

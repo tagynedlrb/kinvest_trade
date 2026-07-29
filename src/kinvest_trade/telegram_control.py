@@ -2870,6 +2870,11 @@ class TelegramLiquidityLabController:
                     for pos in report.overseas_positions
                 ],
                 "estimated_api_calls_per_cycle": report.estimated_api_calls_per_cycle,
+                "overseas_scan_scope": getattr(
+                    report,
+                    "overseas_scan_scope",
+                    "none",
+                ),
                 "market_closed": (
                     not report.krx_market_open and not report.us_market_open
                 ),

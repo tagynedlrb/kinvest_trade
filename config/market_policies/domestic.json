@@ -21,7 +21,7 @@
     "daily_slow_window": 60,
     "intraday_fast_window": 9,
     "intraday_slow_window": 21,
-    "intraday_bar_minutes": 5,
+    "intraday_bar_minutes": 1,
     "intraday_chart_refresh_sec": 60,
     "daily_chart_refresh_sec": 600,
     "rsi_period": 14,

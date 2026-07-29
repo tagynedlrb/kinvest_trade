@@ -193,6 +193,7 @@ class LiquidityLabReport:
     estimated_api_calls_per_cycle: int
     domestic_order: dict | None
     overseas_order: dict | None
+    overseas_scan_scope: str = "none"
 
     def to_dict(self) -> dict:
         return {
@@ -217,6 +218,7 @@ class LiquidityLabReport:
             "estimated_api_calls_per_cycle": self.estimated_api_calls_per_cycle,
             "domestic_order": self.domestic_order,
             "overseas_order": self.overseas_order,
+            "overseas_scan_scope": self.overseas_scan_scope,
         }
 
 
@@ -264,6 +266,18 @@ class LiquidityLabService:
         self._overseas_scan_cycle_count: int = 0
         self._overseas_balance_cache: dict = {}
         self._domestic_balance_cache: dict = {}
+        self._domestic_quote_cache: dict[str, DomesticScanResult] = {}
+        self._domestic_quote_cache_cycle: int = -1
+        self._domestic_minute_chart_cache: dict[str, list[dict]] = {}
+        self._domestic_minute_chart_cache_cycle: int = -1
+        self._daily_chart_cache: dict[
+            tuple[str, str, str],
+            tuple[datetime, list[dict]],
+        ] = {}
+        self._overseas_scan_scope: str = "full"
+        self._last_non_orderable_overlap_full_scan_at: datetime | None = None
+        self._last_logged_overseas_scan_scope: str = ""
+        self._last_overseas_scan_candidate_count: int = 0
         self._overseas_relist_schedule: list[tuple[int, int]] = self._parse_relist_schedule(
             getattr(self.config.liquidity_lab, "overseas_relist_schedule_kst", "")
         )
@@ -2431,6 +2445,122 @@ class LiquidityLabService:
             )
         return OverseasCandidateConfig(symbol="", exchange_code="NASD")
 
+    def _fresh_daily_chart_rows(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        exchange_code: str = "",
+        now: datetime,
+        refresh_sec: int,
+    ) -> list[dict] | None:
+        cache = getattr(self, "_daily_chart_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._daily_chart_cache = cache
+        key = (
+            str(market).strip().lower(),
+            str(symbol).strip().upper(),
+            str(exchange_code).strip().upper(),
+        )
+        cached = cache.get(key)
+        if not isinstance(cached, tuple) or len(cached) != 2:
+            return None
+        captured_at, rows = cached
+        if not isinstance(captured_at, datetime) or not isinstance(rows, list):
+            return None
+        age_sec = (ensure_timezone(now) - ensure_timezone(captured_at)).total_seconds()
+        if age_sec < 0 or age_sec >= max(1, int(refresh_sec)):
+            return None
+        return rows
+
+    def _store_daily_chart_rows(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        rows: list[dict],
+        captured_at: datetime,
+        exchange_code: str = "",
+    ) -> None:
+        cache = getattr(self, "_daily_chart_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._daily_chart_cache = cache
+        key = (
+            str(market).strip().lower(),
+            str(symbol).strip().upper(),
+            str(exchange_code).strip().upper(),
+        )
+        cache[key] = (ensure_timezone(captured_at), list(rows))
+
+    def _overseas_scan_scope_for_cycle(
+        self,
+        *,
+        now: datetime,
+        krx_open: bool,
+        us_open: bool,
+        us_orderable_in_profile: bool,
+    ) -> str:
+        if not us_open:
+            return "none"
+        if us_orderable_in_profile or not krx_open:
+            return "full"
+
+        auto = self._get_market_policy("overseas").auto_trade
+        full_scan_interval_sec = max(
+            60,
+            int(getattr(auto, "intraday_bar_minutes", 5) or 5) * 60,
+        )
+        last_full_scan = getattr(
+            self,
+            "_last_non_orderable_overlap_full_scan_at",
+            None,
+        )
+        if (
+            last_full_scan is None
+            or (
+                ensure_timezone(now) - ensure_timezone(last_full_scan)
+            ).total_seconds()
+            >= full_scan_interval_sec
+        ):
+            return "full"
+        return "monitored"
+
+    @staticmethod
+    def _overseas_inverse_exchange_code(symbol: str) -> str:
+        return {
+            "SQQQ": "NASD",
+            "SOXS": "AMEX",
+            "SPXU": "AMEX",
+        }.get(str(symbol).strip().upper(), "NASD")
+
+    def _monitored_overseas_pool(
+        self,
+        *,
+        held_symbol_map: dict[str, str],
+        open_inverse_shadow_symbols: set[str],
+    ) -> list[OverseasCandidateConfig]:
+        monitored_exchange_codes = {
+            str(symbol).strip().upper(): str(exchange_code or "NASD").strip().upper()
+            for symbol, exchange_code in held_symbol_map.items()
+            if str(symbol).strip()
+        }
+        for symbol in open_inverse_shadow_symbols:
+            symbol_upper = str(symbol).strip().upper()
+            if symbol_upper:
+                monitored_exchange_codes.setdefault(
+                    symbol_upper,
+                    self._overseas_inverse_exchange_code(symbol_upper),
+                )
+        return [
+            OverseasCandidateConfig(
+                symbol=symbol,
+                exchange_code=exchange_code or "NASD",
+            )
+            for symbol, exchange_code in sorted(monitored_exchange_codes.items())
+        ]
+
     def _active_overseas_pool(
         self,
         held_positions: list | None = None,
@@ -4231,6 +4361,55 @@ class LiquidityLabService:
         refreshed_position_markets: set[str] = set()
         domestic_scan_started = krx_cycle_open
         overseas_scan_started = us_cycle_open
+        overseas_scan_scope = self._overseas_scan_scope_for_cycle(
+            now=now,
+            krx_open=krx_cycle_open,
+            us_open=us_cycle_open,
+            us_orderable_in_profile=us_orderable_in_profile,
+        )
+        self._overseas_scan_scope = overseas_scan_scope
+        if overseas_scan_scope != getattr(
+            self,
+            "_last_logged_overseas_scan_scope",
+            "",
+        ):
+            self._last_logged_overseas_scan_scope = overseas_scan_scope
+            overseas_policy = self._get_market_policy("overseas").auto_trade
+            self._save_event(
+                event_type="market_scan_scope",
+                market="overseas",
+                detail={
+                    "scope": overseas_scan_scope,
+                    "krx_open": krx_cycle_open,
+                    "us_open": us_cycle_open,
+                    "profile_orderable": us_orderable_in_profile,
+                    "full_scan_interval_seconds": max(
+                        60,
+                        int(
+                            getattr(
+                                overseas_policy,
+                                "intraday_bar_minutes",
+                                5,
+                            )
+                            or 5
+                        )
+                        * 60,
+                    ),
+                    "reason": (
+                        "non_orderable_overlap_bar_refresh"
+                        if (
+                            overseas_scan_scope == "full"
+                            and krx_cycle_open
+                            and not us_orderable_in_profile
+                        )
+                        else "orderable_profile_or_no_krx_overlap"
+                        if overseas_scan_scope == "full"
+                        else "protect_krx_live_cadence"
+                        if overseas_scan_scope == "monitored"
+                        else "us_market_closed"
+                    ),
+                },
+            )
         domestic_ranked = await self.scan_domestic() if domestic_scan_started else []
         domestic_positions = (
             await self._load_domestic_positions(domestic_ranked)
@@ -4245,7 +4424,16 @@ class LiquidityLabService:
         ):
             refreshed_position_markets.add("domestic")
         if overseas_scan_started:
+            overseas_scan_started_at = datetime.now(timezone.utc)
             overseas_ranked, held_symbols_cache = await self.scan_overseas()
+            if (
+                overseas_scan_scope == "full"
+                and krx_cycle_open
+                and not us_orderable_in_profile
+            ):
+                self._last_non_orderable_overlap_full_scan_at = (
+                    overseas_scan_started_at
+                )
             overseas_positions = await self._load_overseas_positions(
                 overseas_ranked,
                 held_symbols_cache=held_symbols_cache,
@@ -4425,6 +4613,8 @@ class LiquidityLabService:
             remaining_overseas_slots = 0
         if not us_cycle_open:
             remaining_overseas_slots = 0
+        if overseas_scan_scope != "full":
+            remaining_overseas_slots = 0
         total_cap_binds_overseas = False
         if remaining_total_slots is not None:
             overseas_total_budget = max(
@@ -4444,6 +4634,8 @@ class LiquidityLabService:
                 if overseas_cb_halted
                 else "overseas_order_reject_halted"
                 if overseas_reject_halted
+                else "overseas_monitor_only"
+                if overseas_scan_scope == "monitored"
                 else "total_position_cap_reached"
                 if total_cap_binds_overseas
                 else "overseas_position_cap_reached"
@@ -4539,6 +4731,8 @@ class LiquidityLabService:
                 if "overseas" in session_changed_markets
                 else "us_session_transition_guard"
                 if us_transition_guard_active
+                else "overseas_monitor_only"
+                if overseas_scan_scope == "monitored"
                 else "us_open_but_mock_session_not_supported"
                 if us_cycle_open and not us_orderable_in_profile
                 else overseas_entry_block_reason or "no_overseas_candidate"
@@ -4673,11 +4867,15 @@ class LiquidityLabService:
             estimated_api_calls_per_cycle=self._estimate_api_calls_per_cycle(
                 krx_open=domestic_scan_started,
                 us_open=overseas_scan_started,
+                domestic_watch_count=len(domestic_watch_targets),
+                overseas_watch_count=len(overseas_watch_targets),
                 include_domestic_order=bool(domestic_exit_target or domestic_buy_target),
                 include_overseas_order=bool(overseas_exit_target or overseas_buy_target),
+                overseas_scan_scope=overseas_scan_scope,
             ),
             domestic_order=domestic_order,
             overseas_order=overseas_order,
+            overseas_scan_scope=overseas_scan_scope,
         )
         await self._send_summary(report)
         return report
@@ -4735,7 +4933,17 @@ class LiquidityLabService:
                 codes.add(code)
         return codes
 
+    def _prepare_domestic_cycle_caches(self) -> None:
+        cycle = int(getattr(self, "_cycle_count", 0) or 0)
+        if getattr(self, "_domestic_quote_cache_cycle", -1) != cycle:
+            self._domestic_quote_cache_cycle = cycle
+            self._domestic_quote_cache = {}
+        if getattr(self, "_domestic_minute_chart_cache_cycle", -1) != cycle:
+            self._domestic_minute_chart_cache_cycle = cycle
+            self._domestic_minute_chart_cache = {}
+
     async def scan_domestic(self) -> list[DomesticScanResult]:
+        self._prepare_domestic_cycle_caches()
         config = self.config.liquidity_lab
         if getattr(config, "domestic_dynamic_scan", False):
             self._domestic_scan_cycle_count = getattr(self, "_domestic_scan_cycle_count", 0) + 1
@@ -4938,7 +5146,7 @@ class LiquidityLabService:
         surge_bonus = self._surge_bonus_from_ratio(surge_ratio)
 
         activity_score = liquidity_score + turnover_surge_bonus + surge_bonus - spread_penalty
-        return DomesticScanResult(
+        result = DomesticScanResult(
             stock_code=stock_code,
             current_price=int(current["current_price"]),
             best_ask=int(orderbook["best_ask"]),
@@ -4951,6 +5159,9 @@ class LiquidityLabService:
             stock_name=stock_name,
             product_type=str(current.get("product_type", "") or "").strip(),
         )
+        self._prepare_domestic_cycle_caches()
+        self._domestic_quote_cache[stock_code] = result
+        return result
 
     async def scan_overseas(self) -> tuple[list[OverseasScanResult], set[str]]:
         """
@@ -4963,30 +5174,47 @@ class LiquidityLabService:
         config = self.config.liquidity_lab
         quote_results: list[OverseasScanResult] = []
         excluded: list[ExcludedCandidate] = []
-        self._overseas_scan_cycle_count = getattr(self, "_overseas_scan_cycle_count", 0) + 1
-        if (
-            getattr(self, "_dynamic_overseas_pool", None) is None
-            or self._overseas_scan_cycle_count
-            >= max(1, int(getattr(config, "overseas_rescan_cycles", 20)))
-        ):
-            self._overseas_scan_cycle_count = 0
-            self._tv_diagnostic_ran = False
-            await self._refresh_overseas_dynamic_pool()
+        full_scan = getattr(self, "_overseas_scan_scope", "full") != "monitored"
+        if full_scan:
+            self._overseas_scan_cycle_count = (
+                getattr(self, "_overseas_scan_cycle_count", 0) + 1
+            )
+            if (
+                getattr(self, "_dynamic_overseas_pool", None) is None
+                or self._overseas_scan_cycle_count
+                >= max(1, int(getattr(config, "overseas_rescan_cycles", 20)))
+            ):
+                self._overseas_scan_cycle_count = 0
+                self._tv_diagnostic_ran = False
+                await self._refresh_overseas_dynamic_pool()
 
         held_symbol_map = await self._get_held_symbol_map()
         virtual_symbols = self._get_virtual_held_symbols()
         open_inverse_shadow_symbols = self._open_inverse_shadow_symbols(
             "overseas"
         )
-        active_overseas_pool = self._active_overseas_pool(
-            held_symbol_map=held_symbol_map,
-            held_symbols=set(held_symbol_map.keys()) | virtual_symbols,
-        )
+        if full_scan:
+            active_overseas_pool = self._active_overseas_pool(
+                held_symbol_map=held_symbol_map,
+                held_symbols=set(held_symbol_map.keys()) | virtual_symbols,
+            )
+        else:
+            monitored_symbol_map = dict(held_symbol_map)
+            for symbol in virtual_symbols:
+                monitored_symbol_map.setdefault(symbol, "NASD")
+            active_overseas_pool = self._monitored_overseas_pool(
+                held_symbol_map=monitored_symbol_map,
+                open_inverse_shadow_symbols=open_inverse_shadow_symbols,
+            )
         active_overseas_symbols = {
             candidate.symbol.strip().upper()
             for candidate in active_overseas_pool
         }
-        active_inverse_symbols = self._active_inverse_symbols("overseas")
+        active_inverse_symbols = (
+            self._active_inverse_symbols("overseas")
+            if full_scan
+            else set(open_inverse_shadow_symbols)
+        )
         cycle_inverse_symbols = getattr(
             self,
             "_cycle_active_inverse_symbols",
@@ -4998,24 +5226,19 @@ class LiquidityLabService:
         cycle_inverse_symbols.setdefault("overseas", set()).update(
             active_inverse_symbols
         )
-        inverse_exchange_codes = {
-            "SQQQ": "NASD",
-            "SOXS": "AMEX",
-            "SPXU": "AMEX",
-        }
         for inverse_symbol in active_inverse_symbols:
             if inverse_symbol in active_overseas_symbols:
                 continue
             active_overseas_pool.append(
                 OverseasCandidateConfig(
                     symbol=inverse_symbol,
-                    exchange_code=inverse_exchange_codes.get(
-                        inverse_symbol,
-                        "NASD",
+                    exchange_code=self._overseas_inverse_exchange_code(
+                        inverse_symbol
                     ),
                 )
             )
             active_overseas_symbols.add(inverse_symbol)
+        self._last_overseas_scan_candidate_count = len(active_overseas_pool)
         held_symbols = set(held_symbol_map.keys()) | virtual_symbols
         monitored_symbols = held_symbols | open_inverse_shadow_symbols
         for candidate in active_overseas_pool:
@@ -5171,12 +5394,13 @@ class LiquidityLabService:
             )
             await asyncio.sleep(0.05)
 
-        for symbol in list(self._signal_cache.keys()):
-            if symbol not in signal_symbols:
-                del self._signal_cache[symbol]
-                updated_map = getattr(self, "_signal_cache_updated_at", None)
-                if updated_map is not None:
-                    updated_map.pop(symbol, None)
+        if full_scan:
+            for symbol in list(self._signal_cache.keys()):
+                if symbol not in signal_symbols:
+                    del self._signal_cache[symbol]
+                    updated_map = getattr(self, "_signal_cache_updated_at", None)
+                    if updated_map is not None:
+                        updated_map.pop(symbol, None)
 
         return quote_results, held_symbols
 
@@ -5273,24 +5497,27 @@ class LiquidityLabService:
         }
 
     async def _scan_single_domestic(self, stock_code: str) -> DomesticScanResult:
-        current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
-        orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
-        stock_name = self._get_domestic_stock_name(stock_code, current, orderbook)
+        self._prepare_domestic_cycle_caches()
+        quote_snapshot = self._domestic_quote_cache.get(stock_code)
+        if quote_snapshot is None:
+            quote_snapshot = await self._scan_single_domestic_quote(stock_code)
         target_date = datetime.now(timezone.utc).astimezone(KST).strftime("%Y%m%d")
         bars = await self.client.get_time_daily_chart(
             stock_code=stock_code,
             target_date=target_date,
             market_code=self.config.trading.market_code,
+            include_previous="Y",
         )
+        self._domestic_minute_chart_cache[stock_code] = list(bars)
         limited_bars = bars[: min(8, len(bars))]
         closes = [parse_kis_number(row.get("stck_prpr")) for row in limited_bars]
         volumes = [parse_kis_number(row.get("cntg_vol")) for row in limited_bars]
         earliest = closes[-1] if closes else 0
-        latest = closes[0] if closes else current["current_price"]
+        latest = closes[0] if closes else quote_snapshot.current_price
         minute_change_pct = 0.0 if earliest <= 0 else (latest - earliest) / earliest
-        intraday_turnover = int(current.get("turnover_krw", 0) or 0)
+        intraday_turnover = int(quote_snapshot.intraday_turnover_krw or 0)
         volume_sum = sum(volumes)
-        spread_pct = float(orderbook.get("spread_pct", 0.0) or 0.0)
+        spread_pct = float(quote_snapshot.spread_pct or 0.0)
         liquidity_score = math.log10(max(intraday_turnover, 1)) * 8.0
         volume_score = math.log10(max(volume_sum, 1)) * 4.0
         momentum_score = minute_change_pct * 300.0
@@ -5309,16 +5536,16 @@ class LiquidityLabService:
         )
         return DomesticScanResult(
             stock_code=stock_code,
-            current_price=int(current["current_price"]),
-            best_ask=int(orderbook["best_ask"]),
-            best_bid=int(orderbook["best_bid"]),
+            current_price=int(quote_snapshot.current_price),
+            best_ask=int(quote_snapshot.best_ask),
+            best_bid=int(quote_snapshot.best_bid),
             spread_pct=spread_pct,
             minute_change_pct=minute_change_pct,
             intraday_turnover_krw=intraday_turnover,
             volume_sum=volume_sum,
             activity_score=round(activity_score, 4),
-            stock_name=stock_name,
-            product_type=str(current.get("product_type", "") or "").strip(),
+            stock_name=quote_snapshot.stock_name,
+            product_type=quote_snapshot.product_type,
         )
 
     async def _scan_single_overseas(
@@ -6606,12 +6833,29 @@ class LiquidityLabService:
         candidate: OverseasScanResult,
     ) -> MovingAverageSnapshot | None:
         auto = self._get_market_policy("overseas").auto_trade
+        captured_at = datetime.now(timezone.utc)
+        daily_rows = self._fresh_daily_chart_rows(
+            market="overseas",
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            now=captured_at,
+            refresh_sec=auto.daily_chart_refresh_sec,
+        )
         try:
-            daily_rows = await self.client.get_overseas_daily_prices(
-                candidate.symbol,
-                candidate.exchange_code,
-                adjusted_price=True,
-            )
+            if daily_rows is None:
+                daily_rows = await self.client.get_overseas_daily_prices(
+                    candidate.symbol,
+                    candidate.exchange_code,
+                    adjusted_price=True,
+                )
+                if daily_rows:
+                    self._store_daily_chart_rows(
+                        market="overseas",
+                        symbol=candidate.symbol,
+                        exchange_code=candidate.exchange_code,
+                        rows=daily_rows,
+                        captured_at=captured_at,
+                    )
             minute_rows = await self.client.get_overseas_minute_chart(
                 candidate.symbol,
                 candidate.exchange_code,
@@ -6690,22 +6934,45 @@ class LiquidityLabService:
         candidate: DomesticScanResult,
     ) -> MovingAverageSnapshot | None:
         auto = self._get_market_policy("domestic").auto_trade
-        now_kst = datetime.now(timezone.utc).astimezone(KST)
+        captured_at = datetime.now(timezone.utc)
+        now_kst = captured_at.astimezone(KST)
         target_date = now_kst.strftime("%Y%m%d")
         start_date = (now_kst - timedelta(days=200)).strftime("%Y%m%d")
+        daily_rows = self._fresh_daily_chart_rows(
+            market="domestic",
+            symbol=candidate.stock_code,
+            now=captured_at,
+            refresh_sec=auto.daily_chart_refresh_sec,
+        )
+        self._prepare_domestic_cycle_caches()
+        minute_rows = self._domestic_minute_chart_cache.get(
+            candidate.stock_code
+        )
         try:
-            daily_rows = await self.client.get_daily_chart(
-                stock_code=candidate.stock_code,
-                start_date=start_date,
-                end_date=target_date,
-                market_code=self.config.trading.market_code,
-            )
-            minute_rows = await self.client.get_time_daily_chart(
-                stock_code=candidate.stock_code,
-                target_date=target_date,
-                market_code=self.config.trading.market_code,
-                include_previous="Y",
-            )
+            if daily_rows is None:
+                daily_rows = await self.client.get_daily_chart(
+                    stock_code=candidate.stock_code,
+                    start_date=start_date,
+                    end_date=target_date,
+                    market_code=self.config.trading.market_code,
+                )
+                if daily_rows:
+                    self._store_daily_chart_rows(
+                        market="domestic",
+                        symbol=candidate.stock_code,
+                        rows=daily_rows,
+                        captured_at=captured_at,
+                    )
+            if minute_rows is None:
+                minute_rows = await self.client.get_time_daily_chart(
+                    stock_code=candidate.stock_code,
+                    target_date=target_date,
+                    market_code=self.config.trading.market_code,
+                    include_previous="Y",
+                )
+                self._domestic_minute_chart_cache[candidate.stock_code] = list(
+                    minute_rows
+                )
         except KisApiError:
             return None
 
@@ -8142,6 +8409,7 @@ class LiquidityLabService:
         include_domestic_order: bool | None = None,
         include_domestic_paper: bool | None = None,
         include_overseas_order: bool,
+        overseas_scan_scope: str = "full",
     ) -> int:
         if include_domestic_order is None:
             include_domestic_order = bool(include_domestic_paper)
@@ -8161,12 +8429,17 @@ class LiquidityLabService:
             estimated_calls += domestic_candidates * 2
             estimated_calls += refine_n
             estimated_calls += 1
+            estimated_calls += max(0, int(domestic_watch_count or 0))
             if include_domestic_order:
                 estimated_calls += 1
         if us_open:
             active_overseas_candidates = self._active_overseas_pool()
-            n_candidates = len(active_overseas_candidates)
-            top_n = max(config.unified_scan_top_n, 1)
+            n_candidates = int(
+                getattr(self, "_last_overseas_scan_candidate_count", 0) or 0
+            ) or len(
+                active_overseas_candidates
+            )
+            top_n = max(config.overseas_scan_top_n, 1)
             estimated_calls += n_candidates
             estimated_calls += min(top_n, n_candidates) * 2
             exchange_codes = {
@@ -8174,15 +8447,6 @@ class LiquidityLabService:
                 for candidate in active_overseas_candidates
             }
             estimated_calls += len(exchange_codes)
-        if krx_open and us_open:
-            estimated_calls += min(
-                len(
-                    list(getattr(self, "_dynamic_domestic_codes", None))
-                    if getattr(self, "_dynamic_domestic_codes", None)
-                    else list(config.domestic_candidates)
-                ),
-                config.unified_watch_top_n,
-            )
         if include_overseas_order:
             estimated_calls += 1
         return estimated_calls

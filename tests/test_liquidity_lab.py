@@ -7047,6 +7047,136 @@ def test_domestic_signal_uses_one_minute_kis_bar_elapsed_time(monkeypatch) -> No
     assert build_calls[0]["chart_elapsed_sec"] == 17
 
 
+def test_domestic_scan_reuses_quote_and_minute_chart_within_cycle() -> None:
+    service = _build_run_service()
+    service.config = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service._cycle_count = 9
+
+    class CachedChartClient:
+        def __init__(self) -> None:
+            self.price_calls = 0
+            self.orderbook_calls = 0
+            self.minute_calls = 0
+            self.daily_calls = 0
+
+        async def get_current_price(self, stock_code, market_code):
+            self.price_calls += 1
+            return {
+                "stock_code": stock_code,
+                "current_price": 1_350,
+                "reference_price": 1_300,
+                "volume": 10_000_000,
+                "turnover_krw": 100_000_000_000,
+                "product_type": "ETF",
+                "raw": {},
+            }
+
+        async def get_orderbook(self, stock_code, market_code):
+            self.orderbook_calls += 1
+            return {
+                "stock_code": stock_code,
+                "best_ask": 1_351,
+                "best_bid": 1_350,
+                "spread_pct": 0.00074,
+                "raw_orderbook": {},
+            }
+
+        async def get_time_daily_chart(self, **_kwargs):
+            self.minute_calls += 1
+            return [
+                {
+                    "stck_bsop_date": "20260729",
+                    "stck_cntg_hour": f"11{minute:02d}00",
+                    "stck_prpr": str(1_300 + minute),
+                    "stck_hgpr": str(1_301 + minute),
+                    "stck_lwpr": str(1_299 + minute),
+                    "cntg_vol": "1000000",
+                }
+                for minute in range(59, 19, -1)
+            ]
+
+        async def get_daily_chart(self, **_kwargs):
+            self.daily_calls += 1
+            return [
+                {"stck_clpr": str(1_200 + index)}
+                for index in range(80)
+            ]
+
+    client = CachedChartClient()
+    service.client = client
+
+    quote = asyncio.run(service._scan_single_domestic_quote("114800"))
+    refined = asyncio.run(service._scan_single_domestic("114800"))
+    first_signal = asyncio.run(service._load_domestic_signal(refined))
+    second_signal = asyncio.run(service._load_domestic_signal(refined))
+
+    assert quote.current_price == refined.current_price == 1_350
+    assert first_signal is not None
+    assert second_signal is not None
+    assert client.price_calls == 1
+    assert client.orderbook_calls == 1
+    assert client.minute_calls == 1
+    assert client.daily_calls == 1
+    assert service.config.market_policies.domestic.auto_trade.intraday_bar_minutes == 1
+    assert service.config.market_policies.overseas.auto_trade.intraday_bar_minutes == 5
+
+
+def test_overseas_daily_chart_cache_does_not_stale_intraday_chart() -> None:
+    service = _build_run_service()
+    service.config = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+
+    class CachedChartClient:
+        def __init__(self) -> None:
+            self.daily_calls = 0
+            self.minute_calls = 0
+
+        async def get_overseas_daily_prices(self, *_args, **_kwargs):
+            self.daily_calls += 1
+            return [{"clos": str(100 + index)} for index in range(80)]
+
+        async def get_overseas_minute_chart(self, *_args, **_kwargs):
+            self.minute_calls += 1
+            return [
+                {
+                    "kymd": "20260729",
+                    "khms": f"12{minute:02d}00",
+                    "last": str(120 + minute),
+                    "high": str(121 + minute),
+                    "low": str(119 + minute),
+                    "evol": "1000",
+                }
+                for minute in range(59, 19, -1)
+            ]
+
+    client = CachedChartClient()
+    service.client = client
+    candidate = OverseasScanResult(
+        symbol="NVDA",
+        exchange_code="NASD",
+        last_price=180.0,
+        bid=179.9,
+        ask=180.1,
+        spread_pct=0.0011,
+        change_rate_pct=1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1_350.0,
+        activity_score=15.0,
+    )
+
+    first = asyncio.run(service._load_overseas_signal(candidate))
+    second = asyncio.run(service._load_overseas_signal(candidate))
+
+    assert first is not None
+    assert second is not None
+    assert client.daily_calls == 1
+    assert client.minute_calls == 2
+
+
 def test_overseas_signal_uses_policy_bar_duration_and_kis_korean_time(monkeypatch) -> None:
     project_root = Path(__file__).resolve().parents[1]
     service = LiquidityLabService.__new__(LiquidityLabService)
@@ -8224,6 +8354,180 @@ def test_unified_watch_excludes_closed_market() -> None:
     )
 
     assert [item.market for item in watch_targets] == ["overseas"]
+
+
+def test_overseas_full_scan_cadence_is_market_and_profile_specific() -> None:
+    service = _build_run_service()
+    service.config = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    now = datetime(2026, 7, 29, 3, 30, tzinfo=timezone.utc)
+
+    assert (
+        service._overseas_scan_scope_for_cycle(
+            now=now,
+            krx_open=True,
+            us_open=True,
+            us_orderable_in_profile=False,
+        )
+        == "full"
+    )
+
+    service._last_non_orderable_overlap_full_scan_at = now
+    assert (
+        service._overseas_scan_scope_for_cycle(
+            now=now + timedelta(seconds=299),
+            krx_open=True,
+            us_open=True,
+            us_orderable_in_profile=False,
+        )
+        == "monitored"
+    )
+    assert (
+        service._overseas_scan_scope_for_cycle(
+            now=now + timedelta(seconds=300),
+            krx_open=True,
+            us_open=True,
+            us_orderable_in_profile=False,
+        )
+        == "full"
+    )
+    assert (
+        service._overseas_scan_scope_for_cycle(
+            now=now + timedelta(seconds=1),
+            krx_open=True,
+            us_open=True,
+            us_orderable_in_profile=True,
+        )
+        == "full"
+    )
+    assert (
+        service._overseas_scan_scope_for_cycle(
+            now=now + timedelta(seconds=1),
+            krx_open=False,
+            us_open=True,
+            us_orderable_in_profile=False,
+        )
+        == "full"
+    )
+
+
+def test_overlap_monitor_scope_blocks_new_virtual_entry_but_keeps_scan() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service._last_non_orderable_overlap_full_scan_at = datetime.now(timezone.utc)
+    service._confirmed_risk_state_restored = True
+    service._session_start_logged = True
+    scan_scopes: list[str] = []
+    virtual_entry_calls: list[str] = []
+    candidate = OverseasScanResult(
+        symbol="SMCI",
+        exchange_code="NASD",
+        last_price=41.0,
+        bid=40.9,
+        ask=41.1,
+        spread_pct=0.0048,
+        change_rate_pct=2.0,
+        volume=500_000,
+        orderable_qty=10,
+        fx_rate_krw=1_350.0,
+        activity_score=15.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="SMCI",
+        exchange_code="NASD",
+        price=41.0,
+        activity_score=15.0,
+        signal_score=9.0,
+        action_bias="BUY",
+        signal_state="BUY_READY",
+        ma_summary="20d>60d 9>21",
+        note="volume_breakout_entry",
+        holding_qty=0,
+    )
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def fake_holidays(_now):
+        return False, False
+
+    async def fake_scan_domestic():
+        return []
+
+    async def fake_load_domestic_positions(_ranked):
+        return []
+
+    async def fake_scan_overseas():
+        scan_scopes.append(service._overseas_scan_scope)
+        return [candidate], set()
+
+    async def fake_load_overseas_positions(_ranked, held_symbols_cache=None):
+        del held_symbols_cache
+        return []
+
+    async def fake_build_watch_targets(**_kwargs):
+        return [watch_target]
+
+    async def fake_select_overseas_exits(
+        _ranked,
+        _positions,
+        max_exits=5,
+        profile_orderable=True,
+    ):
+        del max_exits, profile_orderable
+        return []
+
+    async def fake_virtual_entry(candidate, watch_target=None):
+        del watch_target
+        virtual_entry_calls.append(candidate.symbol)
+        return {"submitted": True, "virtual": True}
+
+    service._refresh_market_regimes = noop  # type: ignore[method-assign]
+    service._reconcile_broker_executions = noop  # type: ignore[method-assign]
+    service._ensure_tv_diagnostics = noop  # type: ignore[method-assign]
+    service._apply_holiday_overrides = fake_holidays  # type: ignore[method-assign]
+    service._maybe_send_overseas_relist_alert = noop  # type: ignore[method-assign]
+    service._observe_inverse_regime = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    service.scan_domestic = fake_scan_domestic  # type: ignore[method-assign]
+    service._load_domestic_positions = fake_load_domestic_positions  # type: ignore[method-assign]
+    service.scan_overseas = fake_scan_overseas  # type: ignore[method-assign]
+    service._load_overseas_positions = fake_load_overseas_positions  # type: ignore[method-assign]
+    service._load_virtual_overseas_positions = lambda _ranked: []  # type: ignore[method-assign]
+    service._build_unified_watch_targets = fake_build_watch_targets  # type: ignore[method-assign]
+    service._select_overseas_exit_targets = fake_select_overseas_exits  # type: ignore[method-assign]
+    service._record_virtual_overseas_buy = fake_virtual_entry  # type: ignore[method-assign]
+    service._send_summary = noop  # type: ignore[method-assign]
+
+    original_krx = liquidity_lab_module.is_krx_regular_session
+    original_us = liquidity_lab_module.is_us_regular_session
+    original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
+    original_session = liquidity_lab_module.get_us_trading_session
+    original_transition = liquidity_lab_module.seconds_until_us_session_transition
+    liquidity_lab_module.is_krx_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_orderable_session_for_env = (
+        lambda _now, _env: False
+    )
+    liquidity_lab_module.get_us_trading_session = lambda _now: "daytime"
+    liquidity_lab_module.seconds_until_us_session_transition = lambda _now: 3_600
+    try:
+        report = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_krx
+        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_orderable_session_for_env = original_orderable
+        liquidity_lab_module.get_us_trading_session = original_session
+        liquidity_lab_module.seconds_until_us_session_transition = original_transition
+
+    assert scan_scopes == ["monitored"]
+    assert virtual_entry_calls == []
+    assert report.overseas_scan_scope == "monitored"
+    assert report.overseas_order["skipped"] is True
 
 
 def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None:

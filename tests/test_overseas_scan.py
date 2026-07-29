@@ -837,3 +837,53 @@ def test_scan_overseas_retries_dynamic_refresh_even_with_manual_pool() -> None:
     assert service._tv_diagnostic_ran is False
     assert ranked == []
     assert held == set()
+
+
+def test_monitored_overseas_scan_keeps_only_holdings_and_preserves_full_cache() -> None:
+    service = _build_service()
+    service._overseas_scan_scope = "monitored"
+    service._overseas_scan_cycle_count = 7
+    service._signal_cache = {"AAA": _snapshot()}
+    service._signal_cache_updated_at = {}
+    scanned: list[tuple[str, str]] = []
+
+    async def fake_held_map():
+        return {"HOLD": "NYSE"}
+
+    async def forbidden_refresh():
+        raise AssertionError("monitor-only scan must not refresh the entry universe")
+
+    async def fake_scan(candidate):
+        scanned.append((candidate.symbol, candidate.exchange_code))
+        return OverseasScanResult(
+            symbol=candidate.symbol,
+            exchange_code=candidate.exchange_code,
+            last_price=20.0,
+            bid=19.99,
+            ask=20.01,
+            spread_pct=0.001,
+            change_rate_pct=0.0,
+            volume=1_000,
+            orderable_qty=1,
+            fx_rate_krw=0.0,
+            activity_score=5.0,
+        )
+
+    async def fake_load_signal(candidate):
+        return _snapshot(price=candidate.last_price)
+
+    service._get_held_symbol_map = fake_held_map
+    service._get_virtual_held_symbols = lambda: set()
+    service._open_inverse_shadow_symbols = lambda _market: set()
+    service._refresh_overseas_dynamic_pool = forbidden_refresh
+    service._scan_single_overseas = fake_scan
+    service._load_overseas_signal = fake_load_signal
+
+    ranked, held = asyncio.run(service.scan_overseas())
+
+    assert scanned == [("HOLD", "NYSE")]
+    assert [candidate.symbol for candidate in ranked] == ["HOLD"]
+    assert held == {"HOLD"}
+    assert service._overseas_scan_cycle_count == 7
+    assert service._last_overseas_scan_candidate_count == 1
+    assert "AAA" in service._signal_cache

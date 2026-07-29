@@ -906,8 +906,8 @@ the current direction is wrong.
   US after-cost expectancy remains negative.
 - The corporate-action implementation passed all 808 repository tests,
   `compileall`, and diff checks. Evaluation row 88 records the official
-  evidence, alternatives, and rollback conditions. Its comparative status is
-  deployment pending with no direct smaller-model A/B run or inferred.
+  evidence, alternatives, rollback conditions, and both deployment attempts.
+  No direct smaller-model A/B was run or inferred.
 - The first post-restart cycle completed cleanly but occurred after all
   supported sessions had closed, so the normal overseas scan did not run and
   CPRX remained. Treat corporate-action reconciliation as lifecycle work, not
@@ -915,6 +915,21 @@ the current direction is wrong.
   allow one closed-market broker-balance refresh, settle it, then return later
   closed cycles to zero API calls. This deployment observation adds a required
   regression boundary; it is not a reason to scan or trade closed markets.
+- Commit `43a0555` was pushed before the second restart. Two KIS checks at
+  least ten seconds apart again found zero domestic and overseas open orders;
+  the verified backup is
+  `trading_backup_20260729_222443_pre_closed_market_corporate_action_deploy.db`.
+  PID 1497465 completed cycle 20210 with three successful balance calls, no
+  failure or retry, then settled 118 virtual CPRX shares at $31.50 for +$2.36.
+  Virtual order 255 and event 4939 mark the conversion performance-excluded;
+  Telegram row 1409 succeeded. Cycle 20212 returned to zero API calls with
+  zero duplicate positions, sells, events, or notifications.
+- Evaluation row 88 is now
+  `confirmed_material_lifecycle_fix_vs_unchanged_policy_no_direct_model_ab`.
+  High-context operational verification found and closed a material lifecycle
+  gap that the unchanged-policy baseline would have left until the next
+  session. This confirms value against that declared baseline, not model-size
+  superiority; no controlled smaller-model result was produced or guessed.
 - Three-day confirmed frequency is 11 domestic buys/11 exits and 53 US
   buys/46 strategy-owned exits. Account-wide confirmed outcomes are 12
   domestic exits, 17% wins, -0.785% average net and -83,147 KRW; and 52 US

@@ -2021,11 +2021,16 @@ def test_lab_performance_command_reports_inverse_entry_market_path(
     )
 
     message = notifier.messages[-1]
-    assert "종료=1 진행=0 승률=0% 평균순수익=-0.93%" in message
+    assert (
+        "종료=1 진행=0 승률=0% 평균순수익=-0.93% "
+        "평균MFE=+0.97% 평균MAE=-0.90% 평균고점반납=+1.87%"
+        in message
+    )
     assert (
         "최근 국내 114800 종료 진입지수=-6.48% "
         "저점반등=+6.15%p 범위위치=38% 마감잔여=28분 "
-        "지수변화=+0.98%p 순수익=-0.93% 청산=인버스 손절"
+        "지수변화=+0.98%p MFE=+0.97% MAE=-0.90% "
+        "고점반납=+1.87% 순수익=-0.93% 청산=인버스 손절"
         in message
     )
 

@@ -1873,6 +1873,10 @@ class ReportHelper:
             entry_regime.get("session_range_position")
         )
         exit_return = optional_float(exit_regime.get("return_pct"))
+        entry_price = optional_float(row.get("entry_price"))
+        peak_price = optional_float(row.get("peak_price"))
+        trough_price = optional_float(row.get("trough_price"))
+        exit_price = optional_float(row.get("exit_price"))
 
         parts = [
             f"최근 {format_market_korean(market)} {symbol}",
@@ -1888,6 +1892,20 @@ class ReportHelper:
             parts.append(f"마감잔여={minutes_to_close:.0f}분")
         if entry_return is not None and exit_return is not None:
             parts.append(f"지수변화={exit_return - entry_return:+.2f}%p")
+        if entry_price is not None and entry_price > 0:
+            if peak_price is not None:
+                parts.append(
+                    f"MFE={format_pct((peak_price - entry_price) / entry_price)}"
+                )
+            if trough_price is not None:
+                parts.append(
+                    f"MAE={format_pct((trough_price - entry_price) / entry_price)}"
+                )
+            if status == "CLOSED" and peak_price is not None and exit_price is not None:
+                parts.append(
+                    "고점반납="
+                    f"{format_pct((peak_price - exit_price) / entry_price)}"
+                )
         if status == "CLOSED":
             parts.append(
                 f"순수익={format_pct(float(row.get('net_pnl_pct') or 0.0))}"
@@ -1971,6 +1989,15 @@ class ReportHelper:
                     f"종료={closed_count} 진행={int(row.get('open_count') or 0)} "
                     f"승률={win_rate * 100:.0f}% "
                     f"평균순수익={format_pct(float(row.get('avg_net_pnl_pct') or 0.0))}"
+                    + (
+                        " "
+                        f"평균MFE={format_pct(float(row.get('avg_mfe_pct') or 0.0))} "
+                        f"평균MAE={format_pct(float(row.get('avg_mae_pct') or 0.0))} "
+                        "평균고점반납="
+                        f"{format_pct(float(row.get('avg_peak_giveback_pct') or 0.0))}"
+                        if closed_count
+                        else ""
+                    )
                 )
             for row in recent_shadow_rows:
                 lines.append(self.format_inverse_shadow_trade(row))

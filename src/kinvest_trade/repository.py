@@ -2464,6 +2464,26 @@ class SqliteRepository:
                     AVG(
                         CASE WHEN status = 'CLOSED' THEN net_pnl_pct END
                     ) AS avg_net_pnl_pct,
+                    AVG(
+                        CASE
+                            WHEN status = 'CLOSED' AND entry_price > 0
+                            THEN (peak_price - entry_price) / entry_price
+                        END
+                    ) AS avg_mfe_pct,
+                    AVG(
+                        CASE
+                            WHEN status = 'CLOSED' AND entry_price > 0
+                            THEN (trough_price - entry_price) / entry_price
+                        END
+                    ) AS avg_mae_pct,
+                    AVG(
+                        CASE
+                            WHEN status = 'CLOSED'
+                                 AND entry_price > 0
+                                 AND exit_price IS NOT NULL
+                            THEN (peak_price - exit_price) / entry_price
+                        END
+                    ) AS avg_peak_giveback_pct,
                     SUM(
                         CASE WHEN status = 'CLOSED' THEN net_pnl_pct ELSE 0 END
                     ) AS total_net_pnl_pct

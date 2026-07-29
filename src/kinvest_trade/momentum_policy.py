@@ -210,6 +210,196 @@ def evaluate_entry_setup(
     return EntrySetup(True, reason, "BUY", _note(snapshot), score=round(score, 2), urgent=urgent)
 
 
+def evaluate_inverse_regime_trend_breakout_setup(
+    config: AutoTradeConfig,
+    snapshot: MovingAverageSnapshot,
+    *,
+    regime_eligible: bool,
+    benchmark_return_pct: float | None,
+    etf_metadata: dict | None = None,
+) -> EntrySetup:
+    """Evaluate the market-specific inverse shadow trend formula."""
+    if snapshot.spread_pct > config.max_spread_pct:
+        return EntrySetup(False, "spread_too_wide", "SKIP", _note(snapshot))
+    if not snapshot.has_required_context:
+        return EntrySetup(False, "warmup_context", "WARMUP", "warmup")
+    if not regime_eligible:
+        return EntrySetup(
+            False,
+            "inverse_benchmark_regime_unconfirmed",
+            "WAIT",
+            _note(snapshot),
+        )
+
+    configured_benchmark_threshold = getattr(
+        config,
+        "inverse_trend_breakout_benchmark_threshold_pct",
+        -3.0,
+    )
+    benchmark_threshold = (
+        -3.0
+        if configured_benchmark_threshold is None
+        else float(configured_benchmark_threshold)
+    )
+    if (
+        benchmark_return_pct is None
+        or benchmark_return_pct > benchmark_threshold
+    ):
+        return EntrySetup(
+            False,
+            "inverse_severe_decline_unconfirmed",
+            "WAIT",
+            _note(snapshot),
+        )
+
+    metadata = etf_metadata or {}
+    if bool(getattr(config, "inverse_require_nav_validation", False)):
+        if not bool(metadata.get("available")):
+            return EntrySetup(
+                False,
+                "inverse_etf_metadata_unavailable",
+                "WAIT",
+                _note(snapshot),
+            )
+        tracking_multiplier = metadata.get("tracking_multiplier")
+        if tracking_multiplier is None or float(tracking_multiplier) >= 0:
+            return EntrySetup(
+                False,
+                "inverse_tracking_direction_unconfirmed",
+                "WAIT",
+                _note(snapshot),
+            )
+        nav_deviation_pct = metadata.get("nav_deviation_pct")
+        if nav_deviation_pct is None:
+            return EntrySetup(
+                False,
+                "inverse_nav_unavailable",
+                "WAIT",
+                _note(snapshot),
+            )
+        configured_max_nav_deviation = getattr(
+            config,
+            "inverse_max_nav_deviation_pct",
+            0.01,
+        )
+        max_nav_deviation = max(
+            0.0,
+            0.01
+            if configured_max_nav_deviation is None
+            else float(configured_max_nav_deviation),
+        )
+        if abs(float(nav_deviation_pct)) > max_nav_deviation:
+            return EntrySetup(
+                False,
+                "inverse_nav_deviation_too_wide",
+                "WAIT",
+                _note(snapshot),
+            )
+
+    fast = snapshot.minute_ma_fast
+    slow = snapshot.minute_ma_slow
+    if (
+        not snapshot.intraday_trend_up
+        or fast is None
+        or slow is None
+        or snapshot.price < fast
+    ):
+        return EntrySetup(
+            False,
+            "inverse_product_intraday_not_up",
+            "WAIT",
+            _note(snapshot),
+        )
+    if (
+        snapshot.intraday_momentum <= 0
+        or snapshot.intraday_bar_return <= 0
+    ):
+        return EntrySetup(
+            False,
+            "inverse_product_momentum_unconfirmed",
+            "WAIT",
+            _note(snapshot),
+        )
+
+    configured_min_volume_ratio = getattr(
+        config,
+        "inverse_trend_breakout_min_volume_ratio",
+        0.8,
+    )
+    min_volume_ratio = max(
+        0.0,
+        0.8
+        if configured_min_volume_ratio is None
+        else float(configured_min_volume_ratio),
+    )
+    if snapshot.volume_ratio < min_volume_ratio:
+        return EntrySetup(
+            False,
+            "inverse_product_volume_low",
+            "WAIT",
+            _note(snapshot),
+        )
+
+    configured_min_breakout_distance = getattr(
+        config,
+        "inverse_trend_breakout_min_breakout_distance_pct",
+        -0.005,
+    )
+    min_breakout_distance = (
+        -0.005
+        if configured_min_breakout_distance is None
+        else float(configured_min_breakout_distance)
+    )
+    if (
+        snapshot.breakout_level is None
+        or snapshot.breakout_level <= 0
+        or snapshot.breakout_distance_pct < min_breakout_distance
+    ):
+        return EntrySetup(
+            False,
+            "inverse_product_breakout_unconfirmed",
+            "WAIT",
+            _note(snapshot),
+        )
+    if snapshot.breakout_distance_pct > config.max_breakout_extension_pct:
+        return EntrySetup(False, "chasing", "SKIP", _note(snapshot))
+
+    configured_max_rsi = getattr(
+        config,
+        "inverse_trend_breakout_max_rsi14",
+        85.0,
+    )
+    max_rsi = min(
+        100.0,
+        max(
+            0.0,
+            85.0 if configured_max_rsi is None else float(configured_max_rsi),
+        ),
+    )
+    if snapshot.rsi14 is not None and snapshot.rsi14 > max_rsi:
+        return EntrySetup(
+            False,
+            "entry_rsi_too_high",
+            "SKIP",
+            _note(snapshot),
+        )
+
+    score = (
+        min(snapshot.volume_ratio, 3.0) * 25.0
+        + max(snapshot.intraday_momentum, 0.0) * 4000.0
+        + max(snapshot.intraday_bar_return, 0.0) * 3000.0
+        + min(abs(benchmark_return_pct), 10.0) * 2.0
+    )
+    return EntrySetup(
+        True,
+        "inverse_regime_trend_breakout_entry",
+        "BUY",
+        _note(snapshot),
+        score=round(score, 2),
+        urgent=False,
+    )
+
+
 def evaluate_scale_in_setup(
     config: AutoTradeConfig,
     snapshot: MovingAverageSnapshot,

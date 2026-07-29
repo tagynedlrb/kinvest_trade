@@ -42,6 +42,15 @@ def parse_kis_number(value: str | int | float | None) -> int:
     return sign * int(digits)
 
 
+def parse_kis_float(value: str | int | float | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(str(value).strip().replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class KisRestClient:
     """Thin async wrapper around a small subset of KIS REST endpoints.
 
@@ -53,6 +62,7 @@ class KisRestClient:
 
     TOKEN_PATH = "/oauth2/tokenP"
     DOMESTIC_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
+    ETF_ETN_PRICE_PATH = "/uapi/etfetn/v1/quotations/inquire-price"
     DOMESTIC_ASKING_PATH = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
     DOMESTIC_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
     DOMESTIC_INDEX_DAILY_PATH = (
@@ -563,6 +573,45 @@ class KisRestClient:
             "spread_pct": spread_pct,
             "raw_orderbook": output1,
             "raw_expected": output2,
+        }
+
+    async def get_etf_etn_current_price(
+        self,
+        stock_code: str,
+        market_code: str = "J",
+    ) -> dict[str, Any]:
+        """Return ETF/ETN NAV and tracking metadata from the product endpoint."""
+        payload = await self._request(
+            "GET",
+            self.ETF_ETN_PRICE_PATH,
+            "FHPST02400000",
+            params={
+                "FID_COND_MRKT_DIV_CODE": market_code,
+                "FID_INPUT_ISCD": stock_code,
+            },
+        )
+        output = payload.get("output", {}) or {}
+        current_price = parse_kis_float(output.get("stck_prpr"))
+        nav = parse_kis_float(output.get("nav"))
+        return {
+            "stock_code": stock_code,
+            "current_price": current_price,
+            "nav": nav,
+            "nav_deviation_pct": (
+                (current_price - nav) / nav
+                if current_price > 0 and nav > 0
+                else None
+            ),
+            "reported_deviation_pct": parse_kis_float(output.get("dprt")),
+            "tracking_error_pct": parse_kis_float(output.get("trc_errt")),
+            "tracking_multiplier": parse_kis_float(
+                output.get("etf_trc_ert_mltp")
+            ),
+            "lp_orderable_code": str(
+                output.get("lp_oder_able_cls_code", "") or ""
+            ).strip(),
+            "vi_code": str(output.get("vi_cls_code", "") or "").strip(),
+            "raw": output,
         }
 
     async def get_daily_chart(

@@ -180,10 +180,17 @@ class AutoTradeConfig:
     leveraged_etf_symbols: list[str]
     inverse_regime_enabled: bool = False
     inverse_execution_mode: str = "disabled"
+    inverse_entry_formula: str = "strategy_consensus_v1"
     inverse_benchmark_return_threshold_pct: float = -1.0
     inverse_require_same_session: bool = True
     inverse_require_product_intraday_up: bool = True
     inverse_min_product_volume_ratio: float = 1.2
+    inverse_trend_breakout_benchmark_threshold_pct: float = -3.0
+    inverse_trend_breakout_min_volume_ratio: float = 0.8
+    inverse_trend_breakout_min_breakout_distance_pct: float = -0.005
+    inverse_trend_breakout_max_rsi14: float = 85.0
+    inverse_require_nav_validation: bool = False
+    inverse_max_nav_deviation_pct: float = 0.01
     inverse_take_profit_pct: float = 0.02
     inverse_stop_loss_pct: float = 0.0075
     inverse_hard_stop_loss_pct: float = 0.012

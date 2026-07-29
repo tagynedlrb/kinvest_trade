@@ -5603,6 +5603,13 @@ def test_inverse_candidates_are_market_scoped_and_shadow_orders_are_blocked() ->
         service._inverse_entry_block_reason("domestic", "252670", now=now)
         == "inverse_shadow_mode"
     )
+    service.config.market_policies.domestic.auto_trade.inverse_execution_mode = (
+        "live"
+    )
+    assert (
+        service._inverse_entry_block_reason("domestic", "252670", now=now)
+        == "inverse_dedicated_live_unvalidated"
+    )
 
 
 def test_inverse_candidates_reject_stale_benchmark_regime() -> None:
@@ -5696,6 +5703,131 @@ def test_domestic_scan_routes_liquid_low_price_inverse_to_signal_stage() -> None
     }
     assert details["114800"]["remaining_reasons"] == []
     assert details["252670"]["remaining_reasons"] == ["wide_spread"]
+
+
+def test_domestic_inverse_etf_metadata_uses_nav_endpoint_and_short_cache() -> None:
+    service = _build_run_service()
+    service.config = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    calls = 0
+
+    async def fake_etf_quote(symbol, market_code):
+        nonlocal calls
+        calls += 1
+        assert symbol == "114800"
+        assert market_code == "J"
+        return {
+            "current_price": 1404.0,
+            "nav": 1404.68,
+            "tracking_multiplier": -1.0,
+            "reported_deviation_pct": -0.05,
+            "tracking_error_pct": 0.52,
+        }
+
+    service.client = SimpleNamespace(
+        get_etf_etn_current_price=fake_etf_quote,
+    )
+    candidate = DomesticScanResult(
+        stock_code="114800",
+        current_price=1404,
+        best_ask=1405,
+        best_bid=1404,
+        spread_pct=0.000712,
+        minute_change_pct=0.01,
+        intraday_turnover_krw=2_000_000_000_000,
+        volume_sum=1_500_000_000,
+        activity_score=120.0,
+        product_type="ETF",
+    )
+
+    first = asyncio.run(
+        service._enrich_domestic_inverse_etf_metadata(candidate)
+    )
+    second = asyncio.run(
+        service._enrich_domestic_inverse_etf_metadata(candidate)
+    )
+
+    assert calls == 1
+    assert first.etf_metadata_available is True
+    assert first.etf_nav == 1404.68
+    assert first.etf_tracking_multiplier == -1.0
+    assert abs(first.etf_nav_deviation_pct + 0.000484095) < 1e-8
+    assert second == first
+
+
+def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    session_date = service._market_session_date("domestic")
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date=session_date,
+        return_pct=-4.65,
+        trend_regime="strong_down",
+    )
+    service._domestic_inverse_etf_cache = {
+        "114800": (
+            datetime.now(timezone.utc),
+            {
+                "available": True,
+                "nav": 1309.6,
+                "nav_deviation_pct": -0.00046,
+                "tracking_multiplier": -1.0,
+            },
+        )
+    }
+    snapshot = _snapshot(
+        price=1309.0,
+        spread_pct=0.000764,
+        daily_ma_fast=1200.0,
+        daily_ma_slow=1250.0,
+        minute_ma_fast=1303.56,
+        minute_ma_slow=1289.14,
+        rsi14=41.82,
+        intraday_momentum=0.006886,
+        intraday_bar_return=0.005348,
+        volume_last=940.0,
+        volume_avg=1000.0,
+        volume_ratio=0.94,
+        breakout_level=1311.0,
+        breakout_distance_pct=-0.001526,
+        vwap=1246.16,
+        macd_line=14.54,
+        macd_signal=13.35,
+        macd_golden=False,
+    )
+    generic = service._get_strategy_manager(
+        "114800",
+        "domestic",
+    ).evaluate("114800", snapshot, commit=False)
+
+    watch_target = service._build_watch_target_status(
+        market="domestic",
+        code="114800",
+        exchange_code="KRX",
+        price=1309.0,
+        activity_score=132.0,
+        signal_snapshot=snapshot,
+        held_position=None,
+        holding_qty=0,
+    )
+
+    assert generic.signal == "HOLD"
+    assert watch_target.action_bias == "WAIT"
+    assert watch_target.note == "[INV] inverse_shadow_mode"
+    trade = service.repository.get_open_inverse_shadow_trade(
+        "domestic",
+        "114800",
+    )
+    assert trade is not None
+    assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
+    assert trade["strategy_flag"] == "INV"
+    assert trade["policy_id"] == "domestic_momentum_v2"
 
 
 def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products() -> None:
@@ -5821,6 +5953,9 @@ def test_inverse_product_observations_record_blocked_and_ready_states() -> None:
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
+    service.config.market_policies.domestic.auto_trade.inverse_entry_formula = (
+        "strategy_consensus_v1"
+    )
     _save_test_regime(
         service,
         market="domestic",

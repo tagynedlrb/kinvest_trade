@@ -9,6 +9,7 @@ from kinvest_trade.momentum_policy import (
     _pullback_ready,
     evaluate_entry_setup,
     evaluate_exit_setup,
+    evaluate_inverse_regime_trend_breakout_setup,
 )
 from kinvest_trade.technical_signals import (
     MovingAverageSnapshot,
@@ -913,6 +914,94 @@ def test_inverse_etf_can_enter_when_benchmark_and_product_confirm() -> None:
     )
 
     assert result.ready is True
+
+
+def test_domestic_inverse_regime_trend_breakout_accepts_moderate_participation() -> None:
+    config = replace(
+        _build_config(),
+        inverse_require_nav_validation=True,
+        inverse_trend_breakout_benchmark_threshold_pct=-3.0,
+        inverse_trend_breakout_min_volume_ratio=0.8,
+        inverse_trend_breakout_min_breakout_distance_pct=-0.005,
+        inverse_trend_breakout_max_rsi14=85.0,
+        inverse_max_nav_deviation_pct=0.01,
+    )
+    result = evaluate_inverse_regime_trend_breakout_setup(
+        config,
+        _snapshot(
+            price=101.0,
+            minute_ma_fast=100.5,
+            minute_ma_slow=100.0,
+            intraday_momentum=0.006,
+            intraday_bar_return=0.005,
+            volume_ratio=0.94,
+            breakout_distance_pct=-0.0015,
+            rsi14=42.0,
+            spread_pct=0.0008,
+        ),
+        regime_eligible=True,
+        benchmark_return_pct=-4.65,
+        etf_metadata={
+            "available": True,
+            "tracking_multiplier": -1.0,
+            "nav_deviation_pct": -0.0005,
+        },
+    )
+
+    assert result.ready is True
+    assert result.reason == "inverse_regime_trend_breakout_entry"
+
+
+def test_domestic_inverse_regime_trend_breakout_fails_closed_on_etf_metadata() -> None:
+    config = replace(
+        _build_config(),
+        inverse_require_nav_validation=True,
+        inverse_max_nav_deviation_pct=0.01,
+    )
+    snapshot = _snapshot(
+        price=101.0,
+        minute_ma_fast=100.5,
+        minute_ma_slow=100.0,
+        intraday_momentum=0.006,
+        intraday_bar_return=0.005,
+        volume_ratio=0.94,
+        breakout_distance_pct=-0.0015,
+        rsi14=42.0,
+    )
+
+    missing = evaluate_inverse_regime_trend_breakout_setup(
+        config,
+        snapshot,
+        regime_eligible=True,
+        benchmark_return_pct=-4.65,
+        etf_metadata={},
+    )
+    wrong_direction = evaluate_inverse_regime_trend_breakout_setup(
+        config,
+        snapshot,
+        regime_eligible=True,
+        benchmark_return_pct=-4.65,
+        etf_metadata={
+            "available": True,
+            "tracking_multiplier": 1.0,
+            "nav_deviation_pct": 0.0,
+        },
+    )
+    wide_nav = evaluate_inverse_regime_trend_breakout_setup(
+        config,
+        snapshot,
+        regime_eligible=True,
+        benchmark_return_pct=-4.65,
+        etf_metadata={
+            "available": True,
+            "tracking_multiplier": -1.0,
+            "nav_deviation_pct": 0.011,
+        },
+    )
+
+    assert missing.reason == "inverse_etf_metadata_unavailable"
+    assert wrong_direction.reason == "inverse_tracking_direction_unconfirmed"
+    assert wide_nav.reason == "inverse_nav_deviation_too_wide"
 
 
 def test_normal_stock_blocked_when_daily_trend_down() -> None:

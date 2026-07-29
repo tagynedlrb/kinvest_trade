@@ -495,6 +495,55 @@ def test_get_domestic_index_daily_prices_uses_kospi_endpoint(tmp_path: Path) -> 
     assert rows[0]["bstp_nmix_prpr"] == "6023.66"
 
 
+def test_get_etf_etn_current_price_preserves_nav_and_tracking_fields(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        assert method == "GET"
+        assert path == client.ETF_ETN_PRICE_PATH
+        assert tr_id == "FHPST02400000"
+        assert kwargs["params"] == {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": "114800",
+        }
+        return {
+            "output": {
+                "stck_prpr": "1,404",
+                "nav": "1404.68",
+                "dprt": "-0.05",
+                "trc_errt": "0.52",
+                "etf_trc_ert_mltp": "-1.00",
+                "lp_oder_able_cls_code": "N",
+                "vi_cls_code": "N",
+            }
+        }
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    quote = asyncio.run(client.get_etf_etn_current_price("114800"))
+
+    assert quote["current_price"] == 1404.0
+    assert quote["nav"] == 1404.68
+    assert quote["tracking_multiplier"] == -1.0
+    assert quote["reported_deviation_pct"] == -0.05
+    assert abs(quote["nav_deviation_pct"] + 0.000484095) < 1e-8
+
+
 def test_get_overseas_index_daily_prices_uses_nasdaq_composite_endpoint(
     tmp_path: Path,
 ) -> None:

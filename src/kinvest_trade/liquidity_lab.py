@@ -52,9 +52,11 @@ from .message_format import (
     format_usd,
 )
 from .momentum_policy import (
+    EntrySetup,
     derive_watch_state,
     evaluate_entry_setup,
     evaluate_exit_setup,
+    evaluate_inverse_regime_trend_breakout_setup,
 )
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
@@ -98,6 +100,10 @@ class DomesticScanResult:
     activity_score: float
     stock_name: str = ""
     product_type: str = ""
+    etf_nav: float | None = None
+    etf_nav_deviation_pct: float | None = None
+    etf_tracking_multiplier: float | None = None
+    etf_metadata_available: bool = False
 
 
 @dataclass(slots=True)
@@ -270,6 +276,10 @@ class LiquidityLabService:
         self._domestic_quote_cache_cycle: int = -1
         self._domestic_minute_chart_cache: dict[str, list[dict]] = {}
         self._domestic_minute_chart_cache_cycle: int = -1
+        self._domestic_inverse_etf_cache: dict[
+            str,
+            tuple[datetime, dict],
+        ] = {}
         self._daily_chart_cache: dict[
             tuple[str, str, str],
             tuple[datetime, list[dict]],
@@ -930,26 +940,13 @@ class LiquidityLabService:
         *,
         now: datetime | None = None,
     ):
-        policy = self._get_market_policy(market)
-        if policy.auto_trade is None:
-            raise RuntimeError(f"{market} market policy requires auto_trade configuration")
-        observation_now = now or datetime.now(timezone.utc)
-        inverse_decision = self._inverse_regime_decision(
-            market,
-            code,
-            now=observation_now,
-        )
-        result = evaluate_entry_setup(
-            policy.auto_trade,
-            signal_snapshot,
-            symbol=code,
-            inverse_etf_symbols=policy.auto_trade.inverse_etf_symbols,
-            leveraged_etf_symbols=policy.auto_trade.leveraged_etf_symbols,
-            inverse_regime_eligible=(
-                inverse_decision.eligible
-                if inverse_decision is not None
-                else None
-            ),
+        result, inverse_decision, entry_formula, etf_metadata = (
+            self._entry_setup_for_policy(
+                signal_snapshot,
+                code,
+                market,
+                now=now,
+            )
         )
         if self._is_inverse_symbol(market, code):
             raw_volume_ratio = (
@@ -971,10 +968,11 @@ class LiquidityLabService:
                 market=market,
                 symbol=code,
                 reason=result.reason,
-                now=observation_now,
+                now=now or datetime.now(timezone.utc),
                 detail={
                     "state": result.state,
                     "score": result.score,
+                    "entry_formula": entry_formula,
                     "regime_reason": (
                         inverse_decision.reason
                         if inverse_decision is not None
@@ -985,6 +983,12 @@ class LiquidityLabService:
                         if inverse_decision is not None
                         else False
                     ),
+                    "benchmark_return_pct": (
+                        inverse_decision.benchmark_return_pct
+                        if inverse_decision is not None
+                        else None
+                    ),
+                    "etf_metadata": etf_metadata,
                     "price": signal_snapshot.price,
                     "spread_pct": signal_snapshot.spread_pct,
                     "volume_ratio": signal_snapshot.volume_ratio,
@@ -995,9 +999,129 @@ class LiquidityLabService:
                     "intraday_trend_up": signal_snapshot.intraday_trend_up,
                     "minute_ma_fast": signal_snapshot.minute_ma_fast,
                     "minute_ma_slow": signal_snapshot.minute_ma_slow,
+                    "breakout_distance_pct": (
+                        signal_snapshot.breakout_distance_pct
+                    ),
+                    "rsi14": signal_snapshot.rsi14,
                 },
             )
         return result
+
+    def _inverse_entry_formula(self, market: str) -> str:
+        policy = self._get_market_policy(market)
+        if policy.auto_trade is None:
+            raise RuntimeError(f"{market} market policy requires auto_trade configuration")
+        return str(
+            getattr(
+                policy.auto_trade,
+                "inverse_entry_formula",
+                "strategy_consensus_v1",
+            )
+            or "strategy_consensus_v1"
+        ).strip().lower()
+
+    def _uses_dedicated_inverse_entry_formula(
+        self,
+        market: str,
+        code: str,
+    ) -> bool:
+        return (
+            self._is_inverse_symbol(market, code)
+            and self._inverse_entry_formula(market)
+            == "regime_trend_breakout_v1"
+        )
+
+    def _cached_domestic_inverse_etf_metadata(
+        self,
+        code: str,
+    ) -> dict:
+        cache = getattr(self, "_domestic_inverse_etf_cache", {}) or {}
+        cached = cache.get(str(code).strip())
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 2
+            and isinstance(cached[1], dict)
+        ):
+            return dict(cached[1])
+        return {}
+
+    def _entry_setup_for_policy(
+        self,
+        signal_snapshot: MovingAverageSnapshot,
+        code: str,
+        market: str,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[
+        EntrySetup,
+        InverseRegimeDecision | None,
+        str,
+        dict,
+    ]:
+        policy = self._get_market_policy(market)
+        if policy.auto_trade is None:
+            raise RuntimeError(f"{market} market policy requires auto_trade configuration")
+        observation_now = now or datetime.now(timezone.utc)
+        inverse_decision = self._inverse_regime_decision(
+            market,
+            code,
+            now=observation_now,
+        )
+        entry_formula = self._inverse_entry_formula(market)
+        etf_metadata = (
+            self._cached_domestic_inverse_etf_metadata(code)
+            if normalize_market_name(market) == "domestic"
+            and self._is_inverse_symbol(market, code)
+            else {}
+        )
+        if self._is_inverse_symbol(market, code):
+            if entry_formula == "regime_trend_breakout_v1":
+                result = evaluate_inverse_regime_trend_breakout_setup(
+                    policy.auto_trade,
+                    signal_snapshot,
+                    regime_eligible=bool(
+                        inverse_decision is not None
+                        and inverse_decision.eligible
+                    ),
+                    benchmark_return_pct=(
+                        inverse_decision.benchmark_return_pct
+                        if inverse_decision is not None
+                        else None
+                    ),
+                    etf_metadata=etf_metadata,
+                )
+                return (
+                    result,
+                    inverse_decision,
+                    entry_formula,
+                    etf_metadata,
+                )
+            if entry_formula != "strategy_consensus_v1":
+                return (
+                    EntrySetup(
+                        False,
+                        "inverse_entry_formula_unknown",
+                        "WAIT",
+                        "policy",
+                    ),
+                    inverse_decision,
+                    entry_formula,
+                    etf_metadata,
+                )
+
+        result = evaluate_entry_setup(
+            policy.auto_trade,
+            signal_snapshot,
+            symbol=code,
+            inverse_etf_symbols=policy.auto_trade.inverse_etf_symbols,
+            leveraged_etf_symbols=policy.auto_trade.leveraged_etf_symbols,
+            inverse_regime_eligible=(
+                inverse_decision.eligible
+                if inverse_decision is not None
+                else None
+            ),
+        )
+        return result, inverse_decision, entry_formula, etf_metadata
 
     def _derive_watch_state(
         self,
@@ -1005,9 +1129,18 @@ class LiquidityLabService:
         code: str,
         market: str = "overseas",
     ) -> tuple[str, str]:
+        if self._uses_dedicated_inverse_entry_formula(market, code):
+            result, _, _, _ = self._entry_setup_for_policy(
+                signal_snapshot,
+                code,
+                market,
+            )
+            return result.state, result.reason
         policy = self._get_market_policy(market)
         if policy.auto_trade is None:
-            raise RuntimeError(f"{market} market policy requires auto_trade configuration")
+            raise RuntimeError(
+                f"{market} market policy requires auto_trade configuration"
+            )
         inverse_decision = self._inverse_regime_decision(market, code)
         return derive_watch_state(
             policy.auto_trade,
@@ -1200,6 +1333,8 @@ class LiquidityLabService:
             return decision.reason
         if decision.execution_mode != "live":
             return "inverse_shadow_mode"
+        if self._uses_dedicated_inverse_entry_formula(market, symbol):
+            return "inverse_dedicated_live_unvalidated"
         return ""
 
     def _inverse_entry_size_multiplier(
@@ -1282,6 +1417,12 @@ class LiquidityLabService:
                 "signal_snapshot": asdict(signal_snapshot),
                 "reference_price": float(price),
                 "execution_mode": "shadow",
+                "entry_formula": self._inverse_entry_formula(market_key),
+                "etf_metadata": (
+                    self._cached_domestic_inverse_etf_metadata(symbol)
+                    if market_key == "domestic"
+                    else {}
+                ),
             },
         )
         if inserted:
@@ -4942,6 +5083,120 @@ class LiquidityLabService:
             self._domestic_minute_chart_cache_cycle = cycle
             self._domestic_minute_chart_cache = {}
 
+    async def _enrich_domestic_inverse_etf_metadata(
+        self,
+        candidate: DomesticScanResult,
+    ) -> DomesticScanResult:
+        if not self._is_approved_domestic_inverse_product(candidate):
+            return candidate
+        current = datetime.now(timezone.utc)
+        cache = getattr(self, "_domestic_inverse_etf_cache", None)
+        if cache is None:
+            cache = {}
+            self._domestic_inverse_etf_cache = cache
+        cache_key = candidate.stock_code.strip()
+        cached = cache.get(cache_key)
+        ttl_seconds = max(
+            1,
+            int(
+                getattr(
+                    self._get_market_policy("domestic").auto_trade,
+                    "intraday_chart_refresh_sec",
+                    60,
+                )
+                or 60
+            ),
+        )
+        metadata: dict
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 2
+            and isinstance(cached[0], datetime)
+            and isinstance(cached[1], dict)
+            and (current - cached[0]).total_seconds() <= ttl_seconds
+        ):
+            metadata = dict(cached[1])
+        else:
+            fetch = getattr(
+                self.client,
+                "get_etf_etn_current_price",
+                None,
+            )
+            if not callable(fetch):
+                metadata = {
+                    "available": False,
+                    "reason": "etf_metadata_api_unavailable",
+                }
+            else:
+                try:
+                    response = await fetch(
+                        candidate.stock_code,
+                        self.config.trading.market_code,
+                    )
+                    nav = self._parse_float(response.get("nav"))
+                    tracking_multiplier = self._parse_float(
+                        response.get("tracking_multiplier")
+                    )
+                    quote_price = self._parse_float(
+                        response.get("current_price")
+                    )
+                    nav_deviation_pct = (
+                        (float(candidate.current_price) - nav) / nav
+                        if candidate.current_price > 0 and nav > 0
+                        else None
+                    )
+                    metadata = {
+                        "available": bool(
+                            nav > 0
+                            and quote_price > 0
+                            and tracking_multiplier != 0
+                        ),
+                        "nav": nav if nav > 0 else None,
+                        "nav_deviation_pct": nav_deviation_pct,
+                        "tracking_multiplier": (
+                            tracking_multiplier
+                            if tracking_multiplier != 0
+                            else None
+                        ),
+                        "etf_quote_price": (
+                            quote_price if quote_price > 0 else None
+                        ),
+                        "reported_deviation_pct": response.get(
+                            "reported_deviation_pct"
+                        ),
+                        "tracking_error_pct": response.get(
+                            "tracking_error_pct"
+                        ),
+                        "captured_at": current.isoformat(),
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    metadata = {
+                        "available": False,
+                        "reason": "etf_metadata_lookup_failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:200],
+                    }
+                    self._record_inverse_observation(
+                        event_type="inverse_quote_failed",
+                        market="domestic",
+                        symbol=candidate.stock_code,
+                        reason="inverse_etf_metadata_lookup_failed",
+                        detail={
+                            "stage": "etf_metadata",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:200],
+                        },
+                    )
+            cache[cache_key] = (current, metadata)
+
+        return replace(
+            candidate,
+            etf_nav=metadata.get("nav"),
+            etf_nav_deviation_pct=metadata.get("nav_deviation_pct"),
+            etf_tracking_multiplier=metadata.get("tracking_multiplier"),
+            etf_metadata_available=bool(metadata.get("available")),
+        )
+
     async def scan_domestic(self) -> list[DomesticScanResult]:
         self._prepare_domestic_cycle_caches()
         config = self.config.liquidity_lab
@@ -5029,6 +5284,13 @@ class LiquidityLabService:
                         "snapshot": asdict(candidate),
                     },
                 )
+            if not reasons and self._is_approved_domestic_inverse_product(
+                candidate
+            ):
+                candidate = await self._enrich_domestic_inverse_etf_metadata(
+                    candidate
+                )
+                self._domestic_quote_cache[candidate.stock_code] = candidate
             if reasons:
                 excluded.append(
                     ExcludedCandidate(
@@ -5546,6 +5808,10 @@ class LiquidityLabService:
             activity_score=round(activity_score, 4),
             stock_name=quote_snapshot.stock_name,
             product_type=quote_snapshot.product_type,
+            etf_nav=quote_snapshot.etf_nav,
+            etf_nav_deviation_pct=quote_snapshot.etf_nav_deviation_pct,
+            etf_tracking_multiplier=quote_snapshot.etf_tracking_multiplier,
+            etf_metadata_available=quote_snapshot.etf_metadata_available,
         )
 
     async def _scan_single_overseas(

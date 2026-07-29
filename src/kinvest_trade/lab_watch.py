@@ -811,6 +811,15 @@ class WatchStateHelper:
             signal_snapshot,
             commit=False,
         )
+        dedicated_inverse_entry = (
+            service._uses_dedicated_inverse_entry_formula(market, code)
+        )
+        if dedicated_inverse_entry:
+            strategy_result.signal = "BUY" if entry_setup.ready else "HOLD"
+            strategy_result.flag = "INV"
+            strategy_result.entry_by = "INV" if entry_setup.ready else ""
+            strategy_result.exit_by = ""
+            strategy_result.triggered_by = frozenset()
         if strategy_result.signal == "BUY":
             block_reason = service._entry_strategy_block_reason(
                 market=market,
@@ -938,10 +947,12 @@ class WatchStateHelper:
                     strategy_flag=strategy_result.flag,
                     entry_by=strategy_result.entry_by,
                 )
-            combined_score = (
-                service._get_strategy_manager(code, market).buy_score(signal_snapshot)
-                + entry_setup.score
-            )
+            combined_score = entry_setup.score
+            if not dedicated_inverse_entry:
+                combined_score += service._get_strategy_manager(
+                    code,
+                    market,
+                ).buy_score(signal_snapshot)
             return service._make_watch_target_status(
                 market=market,
                 code=code,

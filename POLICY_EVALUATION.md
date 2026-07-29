@@ -32,6 +32,38 @@
   recent volume, spread, same-session benchmark decline, product direction and
   volume confirmation remain mandatory. Unapproved symbols and an approved
   code returned as an ordinary stock receive no exemption.
+- Domestic inverse entries use the independently versioned
+  `domestic_momentum_v2` shadow formula. The ordinary long-side VWAP, RSI/MACD
+  and 2x-volume consensus is not an adequate proxy after an inverse ETF has
+  already moved far above VWAP during a broad-market decline. The dedicated
+  formula requires a same-session KOSPI decline of at least 3%, an up-sloping
+  inverse-product minute trend with both positive multi-bar momentum and a
+  positive current-bar return, projected relative volume of at least 0.8,
+  price within 0.5% below the recent breakout level, RSI no higher than 85,
+  and the existing spread and extension limits.
+- Before that domestic formula can produce a shadow entry, the official KIS
+  ETF/ETN quote must confirm a negative tracking multiplier, positive NAV, and
+  an absolute market-price/NAV deviation no greater than 1%. Missing or stale
+  product metadata fails closed. The product endpoint and field definitions
+  are documented by the
+  [KIS ETF/ETN current-price sample](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/etfetn/inquire_price/inquire_price.py)
+  and its
+  [official response mapping](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/etfetn/inquire_price/chk_inquire_price.py).
+  KRX explains that NAV disclosure, arbitrage and LP quotes support price/NAV
+  convergence, but do not justify ignoring observed spread or deviation
+  ([KRX ETF price and liquidity](https://open.krx.co.kr/contents/OPN/01/01030204/OPN01030204T8.jsp)).
+- The domestic dedicated formula remains shadow-only even if an operator
+  changes the inverse execution mode to `live`; a separate code and evidence
+  change is required to remove that block. The overseas policy remains
+  `overseas_momentum_v1/strategy_consensus_v1` until US-specific down-regime
+  observations support its own revision. KODEX states that `114800` targets
+  the inverse of the F-KOSPI200 **daily** return and that longer or more
+  volatile holding periods can diverge
+  ([KODEX Inverse](https://www.samsungfund.com/etf/product/view.do?id=2ETF20));
+  `252670` targets -2x daily return and can suffer larger path dependence
+  ([KODEX 200 Futures Inverse 2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)).
+  Therefore one entry per symbol/session, intraday exits, conservative spread
+  simulation and no live promotion from one crash-day replay remain mandatory.
 - Volatility uses percentage True Range: the maximum of the session high-low
   range and each absolute high/low distance from the prior close. This captures
   close-to-open gaps while normalizing domestic and overseas markets against

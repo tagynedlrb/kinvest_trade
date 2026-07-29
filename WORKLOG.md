@@ -1,5 +1,105 @@
 # WORKLOG
 
+## [2026-07-29] 국장 급락장 인버스 v2 shadow 공식 분리
+
+### 일반 공식의 구조적 누락과 후보 재생
+- KOSPI가 장중 `-9.07%`, 거래량비 `0.80`, 변동폭비 `2.27`인
+  `strong_down|normal|extreme` 구간에서 `114800` 관측 50개를
+  감사했다. 가격은 `1,309→1,405원`까지 올랐지만 기존
+  `strategy_consensus_v1`은 매수 후보를 한 번도 만들지 못했다.
+  주된 차단은 일반 롱 기준의 VWAP 과열, 2배 거래량 미달,
+  RSI 저점 조건이었다. 급락장 인버스 추세를 일반 롱 공식으로
+  대신 평가하기에는 구조가 맞지 않는다는 실증이다.
+- 국장 전용 후보 공식은 같은 세션 KOSPI `-3%` 이하, 인버스 상품의
+  양의 다중봉·현재봉 수익률, 빠른 분봉 이평 상회, 예상 거래량비
+  `0.8` 이상, 최근 돌파선 `0.5%` 이내, RSI `85` 이하와 기존
+  스프레드·과열 한도를 모두 요구한다. 보수적 반스프레드와 수수료를
+  적용한 재생에서 첫 후보 `cycle_log.id=211599`, `1,309원`은
+  25개 관측 뒤 `1,344.5002원` 청산으로 순 `+2.642%`,
+  최대 불리폭 `-0.611%`였다. 거래량 문턱 `1.0/1.2`에서는 후보가
+  0개였다.
+- 이 결과는 단일 급락일의 반사실 재생이며 실제 체결이 아니다.
+  따라서 매매 빈도를 높일 가능성은 확인했지만 실거래 승격 근거로
+  사용하지 않는다. 최소 5회 적격 shadow 청산과 3개 확정 KOSPI
+  세션에서 재현되기 전까지 live 주문은 코드로 강제 차단한다.
+  `252670`은 관측 스프레드 약 `0.65~0.79%`가 기존 `0.3%`
+  한도를 넘어 계속 제외한다.
+
+### 공식 상품 검증과 시장별 소유권
+- KIS 공식 ETF/ETN 현재가 API `FHPST02400000`,
+  `/uapi/etfetn/v1/quotations/inquire-price`를 추가했다.
+  [공식 요청 예제](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/etfetn/inquire_price/inquire_price.py)와
+  [응답 필드 매핑](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/etfetn/inquire_price/chk_inquire_price.py)을
+  기준으로 음의 추적배수, 양의 NAV와 절대 NAV 괴리율 `1%` 이하를
+  확인한다. 누락·방향 불일치·과대 괴리는 fail-closed다.
+- KRX는 NAV 공시와 LP·차익거래가 가격 수렴을 돕지만 괴리와
+  스프레드를 없애지는 않는다고 설명한다.
+  [KRX ETF 가격·유동성 안내](https://open.krx.co.kr/contents/OPN/01/01030204/OPN01030204T8.jsp)
+  따라서 공식 NAV 확인 뒤에도 기존 체결비용 경계를 유지한다.
+- KODEX 설명상 `114800`은 F-KOSPI200 **일간** 수익률의 -1배,
+  `252670`은 일간 -2배를 목표로 하며 장기·고변동 구간에서는
+  복리 경로의존성이 커진다.
+  [KODEX 인버스](https://www.samsungfund.com/etf/product/view.do?id=2ETF20),
+  [KODEX 200선물인버스2X](https://www.samsungfund.com/etf/product/view.do?id=2ETF70)
+  이를 근거로 종목·세션당 1회, 당일 청산, 보수적 비용 모형을
+  유지한다.
+- 국장은 `domestic_momentum_v2/regime_trend_breakout_v1`로
+  독립 버전화했다. 미장은 기존
+  `overseas_momentum_v1/strategy_consensus_v1`을 그대로 두어
+  국장 급락일의 관측으로 미장 정책을 바꾸지 않았다.
+
+### 배포 후 실제 관측과 안전 경계
+- 첫 배포 뒤 `cycle_log.id=213273`은 장중 고점 `1,405원`에서
+  `1,376원`으로 되밀린 상태를 감지해
+  `inverse_product_intraday_not_up`으로 진입을 거부했다. 관측
+  이벤트의 기존 세션 중복키가 공식 버전을 포함하지 않아 새 NAV
+  세부정보가 저장되지 않는 가시성 결함도 발견했다.
+- 중복키와 요약 집계를 `observation_version`별로 분리했다. 최종
+  배포의 `event_log.id=4237`은
+  `regime_trend_breakout_v1`, NAV `1,358.01`, 계산 괴리율
+  `-0.148%`, 추적배수 `-1.0`을 별도 기록했다.
+  `cycle_log.id=213375`의 가격 `1,356원`, 다중봉 `-0.949%`,
+  현재봉 `-0.440%`, 빠른 이평 `1,368.78`로 진입을 거부했다.
+  다음 사이클 `id=213405`도 현재봉은 `+0.148%`였지만 다중봉
+  `-0.295%`여서 거부했다. shadow 포지션과 실주문은 모두 0건이다.
+- 브로커 이벤트는 `521건/max id 1014`, 실행은
+  `81건/max id 81`로 전후가 같다. 최종 서비스는 PID `1344382`,
+  `NRestarts=0`, `active/running`이다. 재시작 뒤 ETF API는
+  `HTTP 200`으로 성공했다. 일반 현재가·호가에서 `EGW00201`
+  호출제한 2건이 있었지만 각각 다음 재시도에서 회복돼 별도
+  호출제한 감사로 계속 추적한다.
+
+### 검증·백업·평가
+- 클라이언트 소수점 파싱, 국장·미장 설정 분리, 공식 적격/누락
+  fail-closed, 60초 메타데이터 캐시, 일반 전략 HOLD 상태의 shadow
+  개시, live 강제 차단, 공식 버전별 중복 방지 회귀를 포함해 전체
+  **694개**, `compileall`, `git diff --check`가 통과했다.
+- 구현 커밋 `ee31cd6`과 관측 버전 수정 `9a8ca69`을
+  `git_token.txt` 일회성 인증으로 원격 `master`에 푸시했다.
+  첫 변경 전 백업은
+  `data/trading_backup_20260729_044928_pre_domestic_inverse_v2.db`
+  (SHA-256
+  `2a014115c8a0df2c0207f3142d764feab9df35c87712667d2acff161efea90fa`),
+  관측 수정 전 백업은
+  `data/trading_backup_20260729_045834_pre_inverse_observation_version_fix.db`
+  (SHA-256
+  `380d8c9994c5688fd6b552c9eb97a9a66573ab7e3e10e7ed7f5b7e60d8fd871d`)다.
+  두 백업 모두 무결성 정상, 외래키 위반 0, 핵심 9개 테이블 행 수가
+  원본과 일치했다.
+- 직전 확정 NASDAQ은 `-0.221%`, 거래량비 `1.056`,
+  `sideways|normal|normal`이다. 국장 잠정 급락·극단 변동성과
+  미장 확정 횡보·보통 활동을 같은 기준으로 해석하지 않는다.
+  정책평가 `policy_evaluation_log.id=48`, 텔레그램 개선보고
+  `telegram_message_log.id=1197`을 저장했다.
+- 고문맥 감사가 일반 공식의 구조적 누락, 공식 상품 방향/NAV,
+  비용 반영 재생, 뒤늦은 추격 거부, 버전 중복 가시성 결함을 함께
+  찾아낸 가치는 확인했다. 직접 소형 모델 A/B는 수행하지 않아
+  모델 크기에 인과적으로 귀속하지 않는다. 메타데이터 누락·비정상
+  추적배수·NAV 괴리 초과 상태에서 진입하거나, KOSPI·모멘텀·이평·
+  거래량·돌파·스프레드 경계를 어기거나, 미장에 공식이 적용되거나,
+  실주문이 발생하거나, 5회 청산·3개 확정 세션에서 성과가 재현되지
+  않으면 이번 정책은 반증된다.
+
 ## [2026-07-29] 국장 우선 시장별 스캔 주기 분리와 조회 중복 제거
 
 ### 운영 병목 감사와 시장별 설계

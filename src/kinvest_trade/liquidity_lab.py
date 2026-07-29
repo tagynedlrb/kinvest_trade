@@ -6995,6 +6995,7 @@ class LiquidityLabService:
                 symbol = candidate.symbol.upper()
                 signal_snapshot = self._signal_cache.get(symbol)
                 held = overseas_held_map.get(symbol)
+                watch_state = self._get_watch_state_helper()
                 holding_qty = 0
                 if tracker is not None:
                     unified_position = tracker.get_unified(
@@ -7007,6 +7008,57 @@ class LiquidityLabService:
                     holding_qty = max(0, unified_position.total_qty)
                 elif held is not None:
                     holding_qty = held.quantity
+                if (
+                    held is not None
+                    and watch_state.is_fully_pending_overseas_position(
+                        held,
+                        effective_qty=holding_qty,
+                    )
+                ):
+                    persisted = (
+                        watch_state.get_persisted_symbol_state(
+                            "overseas",
+                            symbol,
+                        )
+                        or {}
+                    )
+                    watch_target = self._make_watch_target_status(
+                        market="overseas",
+                        code=candidate.symbol,
+                        exchange_code=candidate.exchange_code,
+                        price=candidate.last_price,
+                        activity_score=candidate.activity_score,
+                        signal_score=0.0,
+                        action_bias="WAIT",
+                        signal_state="SETTLEMENT_PENDING",
+                        ma_summary=(
+                            self._ma_relation_summary(
+                                signal_snapshot,
+                                "overseas",
+                            )
+                            if signal_snapshot is not None
+                            else "-"
+                        ),
+                        note="virtual_sell_pending",
+                        holding_qty=0,
+                        signal_snapshot=signal_snapshot,
+                        strategy_flag=str(
+                            persisted.get("strategy_flag", "")
+                            or ""
+                        ),
+                        entry_by=str(
+                            persisted.get("entry_by", "")
+                            or ""
+                        ),
+                        decision_reason="virtual_sell_pending",
+                        is_virtual=False,
+                    )
+                    watch_targets.append(watch_target)
+                    self._save_cycle_log_from_watch_target(
+                        watch_target,
+                        pnl_pct=None,
+                    )
+                    continue
                 watch_target = self._build_watch_target_status(
                     market="overseas",
                     code=candidate.symbol,

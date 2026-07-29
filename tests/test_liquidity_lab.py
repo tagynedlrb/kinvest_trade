@@ -8250,6 +8250,170 @@ def test_build_unified_watch_targets_includes_virtual_held_outside_rank() -> Non
     assert watch_targets[0].strategy_flag == "VWAP"
 
 
+def test_restore_strategy_context_skips_fully_pending_real_position() -> None:
+    service = _build_run_service()
+    snapshot = _snapshot(price=151.0)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="trend_holding",
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        holding_qty=5,
+        last_price=151.0,
+        pnl_pct=0.0067,
+        entry_price=150.0,
+        has_position=1,
+        snapshot_json=asdict(snapshot),
+        updated_at="2026-07-29T09:00:00+00:00",
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=5,
+        orderable_qty=5,
+        avg_price=150.0,
+        current_price=151.0,
+        pnl_pct=0.0067,
+    )
+    service._restore_strategy_contexts(
+        domestic_positions=[],
+        overseas_positions=[held],
+    )
+    manager = service._get_strategy_manager("NVDA", "overseas")
+    assert manager.position is not None
+
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=5,
+        avg_sell_price=151.0,
+        currency="USD",
+        updated_at="2026-07-29 18:00:00 KST",
+    )
+    service._restore_strategy_contexts(
+        domestic_positions=[],
+        overseas_positions=[held],
+    )
+
+    assert manager.position is None
+
+
+def test_unified_watch_marks_fully_pending_real_position_as_wait() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 0
+    service._cycle_count = 12
+    snapshot = _snapshot(
+        price=151.0,
+        volume_ratio=0.0,
+        intraday_momentum=-0.01,
+        intraday_bar_return=-0.01,
+    )
+    service._signal_cache = {"NVDA": snapshot}
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        action_bias="SELL",
+        signal_state="SELL_READY",
+        note="time_exit_profit",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        holding_qty=5,
+        last_price=151.0,
+        pnl_pct=0.0067,
+        entry_price=150.0,
+        has_position=1,
+        snapshot_json=asdict(snapshot),
+        updated_at="2026-07-29T09:00:00+00:00",
+    )
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=5,
+        avg_sell_price=151.0,
+        currency="USD",
+        updated_at="2026-07-29 18:00:00 KST",
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=5,
+        orderable_qty=5,
+        avg_price=150.0,
+        current_price=151.0,
+        pnl_pct=0.0067,
+    )
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=[],
+            overseas_ranked=[],
+            domestic_positions=[],
+            overseas_positions=[held],
+            krx_open=False,
+            us_open=True,
+        )
+    )
+
+    assert len(watch_targets) == 1
+    assert watch_targets[0].action_bias == "WAIT"
+    assert watch_targets[0].signal_state == "SETTLEMENT_PENDING"
+    assert watch_targets[0].note == "virtual_sell_pending"
+    assert watch_targets[0].holding_qty == 0
+    latest_cycle = service.repository.query_cycle_log(limit=1)[0]
+    assert latest_cycle["action_bias"] == "WAIT"
+    assert latest_cycle["action_reason"] == "virtual_sell_pending"
+    persisted = service.repository.get_lab_symbol_state("overseas", "NVDA")
+    assert persisted["signal_state"] == "SETTLEMENT_PENDING"
+    assert persisted["has_position"] == 0
+
+
+def test_fully_pending_real_position_does_not_hide_virtual_exposure() -> None:
+    service = _build_run_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=5,
+        avg_sell_price=151.0,
+        currency="USD",
+        updated_at="2026-07-29 18:00:00 KST",
+    )
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        fill_price=150.5,
+        currency="USD",
+        session="premarket",
+        reason="strategy_buy_signal",
+        created_at="2026-07-29 18:01:00 KST",
+    )
+    held = OverseasHeldPosition(
+        symbol="NVDA",
+        exchange_code="NASD",
+        quantity=5,
+        orderable_qty=5,
+        avg_price=150.0,
+        current_price=151.0,
+        pnl_pct=0.0067,
+    )
+
+    assert (
+        service._get_watch_state_helper().is_fully_pending_overseas_position(
+            held
+        )
+        is False
+    )
+
+
 def test_held_position_shows_hold_not_wait() -> None:
     service = _build_run_service()
     held = OverseasHeldPosition(

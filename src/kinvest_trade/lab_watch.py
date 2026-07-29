@@ -463,6 +463,12 @@ class WatchStateHelper:
                 current_price=position.current_price,
             )
         for position in overseas_positions:
+            if self.is_fully_pending_overseas_position(position):
+                self.service._reset_strategy_position(
+                    position.symbol.upper(),
+                    "overseas",
+                )
+                continue
             self.restore_strategy_position(
                 market="overseas",
                 symbol=position.symbol.upper(),
@@ -471,6 +477,33 @@ class WatchStateHelper:
                 avg_price=position.avg_price,
                 current_price=position.current_price,
             )
+
+    def is_fully_pending_overseas_position(
+        self,
+        position: "OverseasHeldPosition",
+        *,
+        effective_qty: int | None = None,
+    ) -> bool:
+        if position.is_virtual or position.quantity <= 0:
+            return False
+        tracker = self.service._get_position_tracker()
+        if tracker is None:
+            return False
+        pending = tracker.get_pending_settlement(
+            "overseas",
+            position.symbol.upper(),
+        )
+        if pending is None or pending[0] < position.quantity:
+            return False
+        if effective_qty is None:
+            effective_qty = tracker.get_unified(
+                market="overseas",
+                symbol=position.symbol,
+                real_qty=position.quantity,
+                currency="USD",
+                exchange_code=position.exchange_code,
+            ).total_qty
+        return effective_qty <= 0
 
     def restore_strategy_position(
         self,

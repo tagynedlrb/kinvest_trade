@@ -57,3 +57,4 @@ def test_format_side_market_and_reason_korean() -> None:
     )
     assert format_reason_korean("stale_live_overseas_order_cancel") == "해외 장기미체결 취소"
     assert format_reason_korean("stale_live_overseas_order_cancel_failed") == "해외 장기미체결 취소거부"
+    assert format_reason_korean("virtual_sell_pending") == "가상청산 후 실정산 대기"

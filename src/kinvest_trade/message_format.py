@@ -155,6 +155,7 @@ REASON_KOREAN_MAP = {
     "trend_down": "상품 단기 추세 하락",
     "setup_not_ready": "진입 조합 미충족",
     "recent_full_sell_balance_pending": "완전 체결 후 잔고 반영 대기",
+    "virtual_sell_pending": "가상청산 후 실정산 대기",
 }
 
 

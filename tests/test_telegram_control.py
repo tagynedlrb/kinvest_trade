@@ -4189,6 +4189,15 @@ def test_write_runtime_state_persists_lab_runtime_state() -> None:
             "overseas:MSEX": 42,
             "overseas:OTHER": 99,
         },
+        _overseas_signal_suppressed_until={
+            "IPFX": future,
+            "OLD": expired,
+        },
+        _overseas_signal_failures={
+            "IPFX": 3,
+            "OLD": 3,
+            "OTHER": 2,
+        },
     )
 
     controller._write_runtime_state()
@@ -4198,6 +4207,8 @@ def test_write_runtime_state_persists_lab_runtime_state() -> None:
     assert set(lab_state["exit_cooldown"]) == {"overseas:SOXL"}
     assert set(lab_state["no_orderable_retry"]) == {"overseas:MSEX"}
     assert lab_state["no_orderable_counts"] == {"overseas:MSEX": 42}
+    assert set(lab_state["overseas_signal_suppressed_until"]) == {"IPFX"}
+    assert lab_state["overseas_signal_failures"] == {"IPFX": 3}
 
 
 def test_write_and_restore_runtime_state_preserves_circuit_breaker(tmp_path) -> None:
@@ -4304,6 +4315,17 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
                         "overseas:STALE": 7,
                         "bad": "not-an-int",
                     },
+                    "overseas_signal_suppressed_until": {
+                        "IPFX": future.isoformat(),
+                        "EXPIRED": (
+                            datetime.now(timezone.utc) - timedelta(minutes=1)
+                        ).isoformat(),
+                    },
+                    "overseas_signal_failures": {
+                        "IPFX": 3,
+                        "EXPIRED": 3,
+                        "OTHER": 2,
+                    },
                 },
                 "telegram_control": {
                     "mode": "running",
@@ -4322,6 +4344,8 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
             self._exit_cooldown = {}
             self._no_orderable_retry = {}
             self._no_orderable_counts = {}
+            self._overseas_signal_suppressed_until = {}
+            self._overseas_signal_failures = {}
 
         def _reconcile_confirmed_risk_day_pnl(self):
             pass
@@ -4332,6 +4356,12 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
                     "exit_cooldown": dict(self._exit_cooldown),
                     "no_orderable_retry": dict(self._no_orderable_retry),
                     "no_orderable_counts": dict(self._no_orderable_counts),
+                    "overseas_signal_suppressed_until": dict(
+                        self._overseas_signal_suppressed_until
+                    ),
+                    "overseas_signal_failures": dict(
+                        self._overseas_signal_failures
+                    ),
                 }
             )
             return DummyReport("watchlist_wait")
@@ -4349,6 +4379,8 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
     assert "overseas:SOXL" in seen[0]["exit_cooldown"]
     assert "overseas:MSEX" in seen[0]["no_orderable_retry"]
     assert seen[0]["no_orderable_counts"] == {"overseas:MSEX": 42}
+    assert set(seen[0]["overseas_signal_suppressed_until"]) == {"IPFX"}
+    assert seen[0]["overseas_signal_failures"] == {"IPFX": 3}
     assert controller._restored_lab_runtime_state == {}
 
 

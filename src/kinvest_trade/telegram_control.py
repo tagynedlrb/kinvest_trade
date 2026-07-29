@@ -1663,9 +1663,22 @@ class TelegramLiquidityLabController:
             getattr(service, "_no_orderable_retry", None),
             now=now,
         )
+        overseas_signal_suppressed_until = self._future_datetime_map(
+            getattr(
+                service,
+                "_overseas_signal_suppressed_until",
+                None,
+            ),
+            now=now,
+        )
         active_retry_keys = set(no_orderable_retry)
         raw_counts = getattr(service, "_no_orderable_counts", None) or {}
         no_orderable_counts = self._normalise_count_map(raw_counts, active_retry_keys)
+        active_signal_keys = set(overseas_signal_suppressed_until)
+        signal_failures = self._normalise_count_map(
+            getattr(service, "_overseas_signal_failures", None) or {},
+            active_signal_keys,
+        )
         payload: dict[str, object] = {}
         if exit_cooldown:
             payload["exit_cooldown"] = exit_cooldown
@@ -1673,6 +1686,12 @@ class TelegramLiquidityLabController:
             payload["no_orderable_retry"] = no_orderable_retry
         if no_orderable_counts:
             payload["no_orderable_counts"] = no_orderable_counts
+        if overseas_signal_suppressed_until:
+            payload["overseas_signal_suppressed_until"] = (
+                overseas_signal_suppressed_until
+            )
+        if signal_failures:
+            payload["overseas_signal_failures"] = signal_failures
         circuit_breaker = self._circuit_breaker_state_payload(service)
         if circuit_breaker:
             payload["circuit_breaker"] = circuit_breaker
@@ -1759,10 +1778,27 @@ class TelegramLiquidityLabController:
             return
         exit_cooldown = self._parse_datetime_state_map(state.get("exit_cooldown"))
         no_orderable_retry = self._parse_datetime_state_map(state.get("no_orderable_retry"))
+        overseas_signal_suppressed_until = self._parse_datetime_state_map(
+            state.get("overseas_signal_suppressed_until")
+        )
         if exit_cooldown:
             service._exit_cooldown.update(exit_cooldown)
         if no_orderable_retry:
             service._no_orderable_retry.update(no_orderable_retry)
+        if overseas_signal_suppressed_until:
+            existing_suppressions = getattr(
+                service,
+                "_overseas_signal_suppressed_until",
+                None,
+            )
+            if existing_suppressions is None:
+                existing_suppressions = {}
+                service._overseas_signal_suppressed_until = (
+                    existing_suppressions
+                )
+            existing_suppressions.update(
+                overseas_signal_suppressed_until
+            )
         counts = self._normalise_count_map(
             state.get("no_orderable_counts"),
             set(no_orderable_retry),
@@ -1773,6 +1809,20 @@ class TelegramLiquidityLabController:
                 existing = {}
                 service._no_orderable_counts = existing
             existing.update(counts)
+        signal_failures = self._normalise_count_map(
+            state.get("overseas_signal_failures"),
+            set(overseas_signal_suppressed_until),
+        )
+        if signal_failures:
+            existing_failures = getattr(
+                service,
+                "_overseas_signal_failures",
+                None,
+            )
+            if existing_failures is None:
+                existing_failures = {}
+                service._overseas_signal_failures = existing_failures
+            existing_failures.update(signal_failures)
         circuit_breaker_state = state.get("circuit_breaker")
         manager = getattr(service, "cb", None)
         loader = getattr(manager, "load_state", None)
@@ -1793,6 +1843,10 @@ class TelegramLiquidityLabController:
             state.get("no_orderable_retry"),
             now=now,
         )
+        overseas_signal_suppressed_until = cls._future_datetime_map(
+            state.get("overseas_signal_suppressed_until"),
+            now=now,
+        )
         active_retry_keys = set(no_orderable_retry)
         raw_counts = state.get("no_orderable_counts") if isinstance(state, dict) else {}
         no_orderable_counts = cls._normalise_count_map(raw_counts, active_retry_keys)
@@ -1803,6 +1857,17 @@ class TelegramLiquidityLabController:
             result["no_orderable_retry"] = no_orderable_retry
         if no_orderable_counts:
             result["no_orderable_counts"] = no_orderable_counts
+        active_signal_keys = set(overseas_signal_suppressed_until)
+        signal_failures = cls._normalise_count_map(
+            state.get("overseas_signal_failures"),
+            active_signal_keys,
+        )
+        if overseas_signal_suppressed_until:
+            result["overseas_signal_suppressed_until"] = (
+                overseas_signal_suppressed_until
+            )
+        if signal_failures:
+            result["overseas_signal_failures"] = signal_failures
         circuit_breaker = cls._normalise_circuit_breaker_state(
             state.get("circuit_breaker")
         )

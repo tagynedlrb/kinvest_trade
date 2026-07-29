@@ -342,6 +342,21 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   turnover, not automatic evidence to delay exits. Compare post-exit paths at
   declared horizons and require multiple final benchmark sessions before
   changing a market's hold hysteresis. Keep hard stops outside that delay.
+- Raw WAIT rows are repeated scanner observations, not independent blocked
+  opportunities. Start a new evaluation episode only when the same
+  market/symbol/reason has been absent for at least five minutes.
+- Evaluate 15/30/60-minute paths using the latest same-session price at or
+  before the horizon, no more than five minutes stale. Exclude right-censored
+  horizons and report observation coverage rather than filling them with a
+  close or a later-session price.
+- Include only sessions orderable by the active broker profile. Closed-session
+  and unsupported extended-session stale prices are diagnostics, not
+  hypothetical executable entries.
+- The optimistic cost floor is 0.03% for domestic tax-exempt products and
+  0.50% for overseas trades. Domestic stock tax, spread and slippage can only
+  make results worse. Require at least three final sessions in the same regime,
+  positive market-specific net expectancy, and no one-symbol/day concentration
+  before loosening a particular gate.
 
 ## Strategy loss guards
 
@@ -431,18 +446,27 @@ the current direction is wrong.
 
 ## Current decision checkpoint
 
-- Domestic: eight broker-confirmed exits produced two after-cost wins and
-  -10,389.32 KRW net. Do not loosen entry thresholds from this sample. Blocked
-  candidates had materially negative forward returns, and each observed regime
-  still covers only one final KOSPI session. On 2026-07-28, KOSPI closed
-  -10.84% at 6,023.66 while two same-day exits lost 4,314.74 KRW net. This is
-  not evidence for increasing long-entry frequency.
+- Domestic: the seven-day session-owned ledger has eleven confirmed entries
+  and eleven exits; the account ledger has twelve confirmed exits, two
+  after-cost wins and -83,147 KRW net. On 2026-07-29, KOSPI closed
+  -5.98% at 5,663.24 in a strong-down/normal-activity/extreme-volatility
+  regime. `volume_low` produced 178 deduplicated episodes and optimistic
+  15/30/60-minute net means of -0.508%/-1.179%/-1.570%. The prior final
+  strong-down day was also negative. Keep the domestic volume and trend gates.
 - Overseas: twenty broker-confirmed exits produced six after-cost wins and
   -325,904.33 KRW net. The final 2026-07-28 NASDAQ session was
   sideways/normal-activity/normal-volatility; its eleven exits produced three
   wins and -98,792.54 KRW net. `VWAP+RSI` was positive in four same-day exits,
   while `VWAP+VOL` was negative in six. Neither is eligible for a policy change
   because each bucket still spans fewer than three final sessions.
+- Overseas blocked-entry review: across two final
+  sideways/normal-activity/normal-volatility sessions, `volume_low` has 247
+  episodes and optimistic 15/30/60-minute net means of
+  -0.375%/-0.318%/-0.056%; standalone VWAP and VOL blocks are also
+  nonpositive at every horizon. `trend_down` is positive only at 60 minutes
+  (+0.291%), while 15 and 30 minutes remain negative and 60-minute coverage is
+  70%. Keep every current gate and retain the 60-minute result only as a
+  hypothesis for the third final session.
 - Overseas `trend_filter_lost` review: ten confirmed exits span only two final
   NASDAQ sessions. Observable post-exit prices had mean returns of -0.066% at
   five minutes (10 rows), -0.115% at fifteen (7), +0.040% at thirty (6), and
@@ -455,10 +479,12 @@ the current direction is wrong.
   bucket but span only two final sessions; the minimum is three. Re-evaluate
   after the declared regime sample matures instead of converting one crash
   episode into a permanent entry block.
-- Frequency: the seven-day confirmed ledger contains eight domestic and
-  twenty-seven overseas entries, followed by eight and twenty exits. This is
-  not evidence of a system frequency ceiling. Do not loosen entry gates while
-  after-cost expectancy remains negative and regime coverage is this narrow.
+- Frequency: the seven-day confirmed ledger contains eleven domestic and
+  twenty-seven overseas entries, followed by eleven and twenty exits. The
+  largest raw WAIT bucket shrinks from 1,251 to 178 domestic episodes and from
+  5,143 to 247 overseas episodes after deduplication. This is not evidence of a
+  system frequency ceiling. Do not loosen entry gates while after-cost
+  expectancy remains negative and regime coverage is this narrow.
 - Both markets: inverse trading remains shadow-only. Current evidence justifies
   testing a separate down-market formula, but not risking broker capital. The
   first deployment occurred after the observed KOSPI crash session had closed,

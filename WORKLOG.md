@@ -1,5 +1,66 @@
 # WORKLOG
 
+## [2026-07-29] 미장 미체결 조회의 실전·VPS 분리와 fail-closed 전환
+
+### 실제 장애와 전일 미체결 감사
+- `2026-07-14` 이후 해외 미체결 조회 실패는 10회였고 오류는
+  `EGW00201` 호출제한과 `EGW00300` 게이트웨이 라우팅이었다. 기존
+  `_list_open_overseas_orders()`는 이 실패를 기록한 뒤 빈 목록을
+  반환해, 관측 실패를 `미체결 없음`으로 해석했다.
+- `CRAN`은 `event_log.id=2876` 조회 실패와 같은 사이클에 기존 주문
+  취소 `broker_order_events.id=710`, 새 매도 접수 `id=711`이
+  이어졌다. 별도의 두 조회가 서로 다른 결과를 내면 상충·동일방향
+  주문 판단이 원자적이지 않다는 실증 반례다.
+- 전일 무체결 매수 `FSUN 157주(id=66)`와 `HUBB 11주(id=72)`는
+  체결 0·미체결 전량 상태이고 현재 잔고에는 없다. 다만 과거
+  `UDR id=23`은 같은 전일 무체결 상태가 다음 정규장 조회에서
+  `nccs_qty=0`으로 바뀌어 정상 종결됐다. 따라서 시간 경과만으로
+  FSUN/HUBB를 취소 완료 처리하는 추론은 원장 신뢰성이 부족해
+  거부하고 다음 VPS 정규장의 브로커 종결 증거를 기다린다.
+
+### 공식 경계와 수정
+- KIS 공식 저장소 커밋
+  `b093e42ba32d1df5f5ddad7a71cb715cbc800832`은 실전 현재 미체결 전용
+  `TTTS3018R`을 제공한다.
+  [KIS 해외주식 미체결내역 공식 예제](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/inquire_nccs/inquire_nccs.py)
+  이 샘플에는 VPS TR이 없으므로 실전은 `inquire_nccs`, VPS는
+  심볼·미체결 필터와 페이지 처리를 적용한 `VTTS3035R inquire_ccnl`로
+  명시적으로 분리했다.
+- 한 종목의 매수·매도 미체결을 한 스냅샷에서 분류해 주문 결정당
+  최대 조회를 2회에서 1회로 줄였다. 조회 실패 시 신규 주문, 상충
+  주문 취소, stale 교체를 모두 보류한다. 가상청산 정산기의 stale
+  취소도 조회 실패 시 주문번호를 추측하지 않고 실행원장과 pending을
+  보존한다.
+- 이는 매매 빈도 완화가 아니다. API 압력을 낮춰 정상 신호의 실행
+  기회를 보존하되, 불확실성을 빈 슬롯으로 취급해 빈도를 높이는
+  경로는 닫았다. 국장 공식과 미장 진입·청산 임계값은 변경하지 않았다.
+
+### 검증·배포·반증조건
+- 신규 회귀는 실전 전용 API/TR/연속조회, VPS 호출 거부, 프로필별
+  라우팅, 매수·매도 fail-closed, 종목당 단일 조회, 정산 pending
+  보존을 고정한다. 집중 7개와 전체 **678개**, `compileall`,
+  `git diff --check`가 통과했다.
+- SQLite online backup은
+  `data/trading_backup_20260729_031719_pre_open_order_fail_closed.db`,
+  원본/백업 `integrity_check=ok`, 외래키 위반 0, 핵심 7개 테이블
+  행 수 일치, SHA-256
+  `528de8e288f9320cab4879e90343ad12c68c22319eb5a5296469c67008a2838a`다.
+- 커밋 `901ed6a`를 `git_token.txt` 일회성 인증으로 원격 `master`에
+  푸시하고 PID `1324227`, `NRestarts=0`, `active/running`으로
+  재시작했다. 첫 사이클은 위험일 손익 `-72,758.26원`, 연속손실
+  국장 0·미장 2를 복원했고 신규 브로커 주문·실행은 0건이다.
+  FSUN/HUBB 실행과 `ARX·IQV·LIFE·XIFR` 정산대기는 그대로다.
+- 현재 KOSPI는 비확정 `-7.94%`, 거래량비 `0.57`,
+  `strong_down|quiet|high`, 직전 확정 NASDAQ은 `-0.22%`,
+  거래량비 `1.06`, `sideways|normal|normal`이다.
+  정책평가 `policy_evaluation_log.id=45`, 텔레그램 개선보고
+  `telegram_message_log.id=1179`는 저장·전송에 성공했다.
+- 반증조건은 조회 실패 뒤 주문·취소·교체가 발생하거나, 실전 현재
+  미체결 조회가 `TTTS3018R` 대신 이력 API를 사용하거나, 한 주문
+  결정에서 스냅샷이 두 번 호출되거나, 조회 실패가 실행원장/pending을
+  지우거나, 다음 VPS 정규장에 브로커 종결 증거가 있는데도
+  FSUN/HUBB가 계속 미확정으로 남는 경우다.
+
 ## [2026-07-29] 미장 가상청산 정산의 접수·체결·성과 경계 복원
 
 ### 과거 완료 오판 감사

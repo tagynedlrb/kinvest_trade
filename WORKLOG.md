@@ -1,5 +1,71 @@
 # WORKLOG
 
+## [2026-07-29] 미장 가상청산 정산대기와 매도가능 0 경계 분리
+
+### 운영 원인 감사
+- 실보유 `ARX 463주`, `IQV 25주`, `LIFE 293주`, `XIFR 437주`는
+  2026-07-28 미국 정규장 매수 직후 각각 `orderable_qty`가 보유수량과
+  같았다. `20:00 UTC`(서머타임 05:00 KST) 정규장 종료 뒤 네 종목이
+  모두 0으로 바뀌었고, 완전 폐장 구간에는 경고가 멈췄다가
+  `01:00 UTC` 주간장 시작과 함께 다시 발생했다.
+- 네 포지션은 정규장 종료 직후 이미 전략상 가상청산됐다.
+  `IQV 25주` `atr_hard_stop`, `XIFR 437주` `stop_loss`,
+  `LIFE 293주` `trend_filter_lost`, `ARX 463주` `take_profit`이
+  `virtual_sell_pending`에 남아 다음 VPS 정규장 실제 정산을 기다리고
+  있었다. 그런데 선택기가 이미 정산대기로 전량 대표된 실보유를 다시
+  `no_orderable_qty`, `T+2 pending or API delay`로 분류했다.
+- 정규장 종료 뒤 같은 잘못된 재시도 이벤트는 80건, 그중 주간장
+  재개 뒤는 40건이었다. 재시작 직전 영속 카운터는 종목별 46이었다.
+  이는 결제 장애 증거가 아니라 프로필 세션과 전략상 청산 상태를
+  섞은 진단 오류다.
+- KIS 공식 해외잔고 예제는 `ovrs_cblc_qty`(해외잔고수량)와
+  `ord_psbl_qty`(주문가능수량)를 별도 필드로 제공하고 모의잔고에는
+  `VTTS3012R`을 사용한다.
+  [KIS 해외주식 잔고 공식 예제](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/inquire_balance/inquire_balance.py)
+  반면 미국 주간주문 공식 예제는 실전 `TTTS6036U`·`TTTS6037U`만
+  정의한다.
+  [KIS 미국주간주문 공식 예제](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/daytime_order/daytime_order.py)
+
+### 수정과 검증
+- `virtual_sell_pending.qty >= real.quantity`이면 해당 수량을 전략상
+  청산 완료·브로커 정산 대기로 본다. VPS 비주문 세션에서는 기존의
+  잘못된 retry/count를 지우고, 같은 종목을 후속 정책청산 루프에서
+  다시 고르지 않는다. 정산대기 행 자체는 보존한다.
+- VPS 정규장에 들어오면 정산기가 실제 위험을 소유한다. 이때도
+  주문가능수량이 0이면
+  `pending_virtual_sell_reconcile_zero_qty`, KIS가 주문을 거부하면
+  `pending_virtual_sell_reconcile_rejected`를 기록하고 정산대기를
+  유지한다. 성공 시에만 no-orderable 상태를 해제한다.
+- 일반 미대표 실보유의 0수량 진단은 유지하되 부정확한 `T+2` 단정을
+  제거하고 미체결 주문·브로커 잔고 상태를 확인하도록 바꿨다. 부분
+  정산대기가 한 사이클에 두 번 카운트되지 않는 회귀도 추가했다.
+- 집중 회귀 37개, 포지션 추적 회귀 11개, 전체 회귀 **668개**,
+  `compileall`, `git diff --check`가 통과했다.
+- 배포 전 SQLite online backup은
+  `data/trading_backup_20260729_022022_pre_pending_reconcile_boundary.db`,
+  원본/백업 `integrity_check=ok`, 외래키 위반 0, SHA-256
+  `292b824266a477287dc299508208aaa87707c4f940875ce4cf54810ea4ae9575`다.
+
+### 배포 결과와 반증조건
+- 커밋 `b963ed1`을 `git_token.txt` 인증으로 원격 `master`에
+  푸시하고 PID `1311081`, `NRestarts=0`, `active/running`으로
+  재시작했다. 첫 사이클 뒤 종목별 46이던 retry/count는 모두
+  사라졌고, 배포 기준 `event_log.id=4137` 이후 새
+  `no_orderable_qty`는 0건이다.
+- 정산대기 4건은 그대로이며 브로커 이벤트 최대 ID `1014`, 실행
+  최대 ID `81`로 신규 주문·체결은 없다. 현재 KOSPI는 비확정
+  `-5.92%`, `strong_down|quiet|high`, 직전 확정 NASDAQ은
+  `-0.22%`, `sideways|normal|normal`이다. 이번 수정은 미장 운영
+  상태 경계이므로 국장·미장 공식과 진입 빈도는 바꾸지 않았다.
+- 반증조건은 VPS 비주문 세션에서 전량 정산대기 종목의 retry/count가
+  다시 생기거나, 다음 VPS 정규장의 0수량·정산 주문거부가 원인별로
+  기록되지 않거나, 실패했는데 정산대기가 삭제되거나, 부분 대기가
+  한 사이클에 중복 누적되거나, 비지원 세션에 실제 주문이 생기는
+  경우다. 다음 정규장에는 주문 접수만으로 정산 완료 처리하는지까지
+  체결 원장과 대조한다.
+- 정책평가 `policy_evaluation_log.id=43`, 텔레그램 개선보고
+  `telegram_message_log.id=1171`을 저장했고 전송에 성공했다.
+
 ## [2026-07-29] 급락장 승인 인버스의 일반 저가주 필터 오적용 교정
 
 ### 실제 급락장 관측

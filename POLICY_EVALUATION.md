@@ -104,6 +104,18 @@ recovers legacy sell flags without discarding genuine bot trades. A confirmed
 exit from an imported holding with no such buy remains in account-wide PnL,
 daily-loss and consecutive-loss controls, but cannot train or score a formula.
 
+A virtual sell against a real overseas holding closes strategy exposure but
+does not prove broker settlement. Preserve its `virtual_sell_pending` quantity
+until the VPS regular session can reconcile it. When that pending quantity
+fully covers the visible real holding, a zero `ord_psbl_qty` outside the
+profile-orderable session is an expected account-profile boundary, not evidence
+of T+2 failure. It must neither consume the no-orderable anomaly budget nor be
+selected for another strategy exit. During a profile-orderable session, zero
+quantity or a rejected settlement order is a genuine reconciliation stall:
+retain the pending row, record a cause-specific diagnostic, and alert with
+bounded backoff. A submitted settlement order still requires a separate
+fill-finality audit; submission alone is not broker-confirmed performance.
+
 For a confirmed exit, `action_reason` is the canonical decision cause used in
 reason-level performance and operator alerts. `exit_by` is the strategy
 manager's exit-signal attribution and remains a separate diagnostic dimension.

@@ -2640,7 +2640,7 @@ def test_overseas_partial_fill_and_replacement_finalize_once_as_one_trade() -> N
     assert service.repository.list_unfinalized_broker_executions() == []
 
 
-def test_real_sell_clears_virtual_sell_pending() -> None:
+def test_real_sell_submission_preserves_unrelated_virtual_sell_pending() -> None:
     service = _build_sell_service()
     service.repository.upsert_virtual_sell_pending(
         market="overseas",
@@ -2676,7 +2676,9 @@ def test_real_sell_clears_virtual_sell_pending() -> None:
 
     _run_orderable_overseas_sell(service, candidate, held, "momentum_loss_cut")
 
-    assert service.repository.get_virtual_sell_pending("overseas", "AAL") is None
+    pending = service.repository.get_virtual_sell_pending("overseas", "AAL")
+    assert pending is not None
+    assert pending["qty"] == 1
 
 
 def test_place_overseas_sell_order_no_telegram_on_failure() -> None:

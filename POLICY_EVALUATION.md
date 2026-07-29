@@ -113,8 +113,25 @@ of T+2 failure. It must neither consume the no-orderable anomaly budget nor be
 selected for another strategy exit. During a profile-orderable session, zero
 quantity or a rejected settlement order is a genuine reconciliation stall:
 retain the pending row, record a cause-specific diagnostic, and alert with
-bounded backoff. A submitted settlement order still requires a separate
-fill-finality audit; submission alone is not broker-confirmed performance.
+bounded backoff. An accepted settlement order must enter the same immutable
+broker-execution ledger as every other real order. Preserve the entire pending
+quantity and block duplicate submission until KIS order history reports a
+terminal outcome. A full fill removes the matching quantity, a terminal partial
+fill removes only its confirmed quantity, and a cancel or rejection removes
+none. A stale open settlement may be canceled only when its broker order number
+matches the tracked execution; retry starts after that cancellation becomes
+terminal in order history. Submission alone is neither settlement nor
+broker-confirmed performance.
+
+The virtual exit already owns the strategy decision time and strategy PnL.
+Later broker settlement is an execution-control event: record its actual fill,
+virtual reference price, and settlement slippage. The confirmed account fill
+must enter account-wide PnL and risk control exactly once, but its `SELL_REAL`
+accounting row has an empty session ID and `is_session_trade=0` so it cannot
+become a second strategy result. Use the actual settlement fill for account
+costs and risk, while the virtual exit remains the formula-performance result.
+Any fill beyond the still-pending quantity is an unmatched-fill incident and
+must remain visible in the audit event rather than being silently attributed.
 
 For a confirmed exit, `action_reason` is the canonical decision cause used in
 reason-level performance and operator alerts. `exit_by` is the strategy

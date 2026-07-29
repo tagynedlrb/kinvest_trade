@@ -26,6 +26,8 @@ class DummyNotifier:
 class DummyClient:
     def __init__(self) -> None:
         self.order_calls: list[dict] = []
+        self.cancel_calls: list[dict] = []
+        self.pending_orders: list[dict] = []
         self.raise_error = False
 
     async def place_overseas_order_for_current_session(
@@ -50,7 +52,22 @@ class DummyClient:
         )
         if self.raise_error:
             raise RuntimeError("unexpected order failure")
-        return self.order_calls[-1]
+        return {
+            "request": self.order_calls[-1],
+            "output": {"ODNO": f"{len(self.order_calls):010d}"},
+        }
+
+    async def get_overseas_order_history(self, **kwargs) -> dict:
+        del kwargs
+        return {"orders": list(self.pending_orders)}
+
+    async def revise_or_cancel_overseas_order(self, **kwargs) -> dict:
+        self.cancel_calls.append(kwargs)
+        return {
+            "output": {
+                "ODNO": str(kwargs.get("original_order_no") or ""),
+            }
+        }
 
 
 def _build_tracker() -> tuple[SqliteRepository, VirtualTradeManager, UnifiedPositionTracker]:
@@ -64,6 +81,14 @@ def _build_service() -> LiquidityLabService:
     repository, virtual_trades, tracker = _build_tracker()
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = SimpleNamespace(
+        credentials=SimpleNamespace(env="vps"),
+        risk=SimpleNamespace(
+            max_consecutive_losses=3,
+            circuit_breaker_cooldown_minutes=30,
+            daily_loss_limit_pct=0.99,
+            operating_capital_krw=50_000_000,
+            risk_day_rollover_hour_kst=7,
+        ),
         liquidity_lab=SimpleNamespace(
             overseas_stop_loss_pct=0.008,
             overseas_take_profit_pct=0.012,
@@ -384,7 +409,52 @@ def test_reconcile_pending_rejection_keeps_pending_and_records_cause() -> None:
     assert detail["error"] == "mock settlement rejected"
 
 
-def test_reconcile_settles_min_of_pending_and_orderable() -> None:
+def test_reconcile_missing_order_number_preserves_pending_without_resubmit() -> None:
+    class MissingOrderNumberClient(DummyClient):
+        async def place_overseas_order_for_current_session(self, **kwargs) -> dict:
+            await super().place_overseas_order_for_current_session(**kwargs)
+            return {"rt_cd": "0", "msg1": "accepted without order number"}
+
+    service = _build_service()
+    service.client = MissingOrderNumberClient()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+
+    assert len(service.client.order_calls) == 1
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert pending["qty"] == 2
+    assert service.repository.list_unfinalized_broker_executions() == []
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_tracking_failed",
+        limit=1,
+    )[0]
+    assert json.loads(event["detail"])["pending_preserved"] is True
+    assert "[KIS][VIRTUAL_SETTLEMENT_TRACKING_FAILED]" in service.notifier.messages[-1]
+
+
+def test_reconcile_submits_min_of_pending_and_preserves_pending_until_fill() -> None:
     service = _build_service()
     service.repository.upsert_virtual_sell_pending(
         market="overseas",
@@ -412,7 +482,24 @@ def test_reconcile_settles_min_of_pending_and_orderable() -> None:
     assert service.client.order_calls[0]["qty"] == 3
     pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
     assert pending is not None
-    assert pending["qty"] == 2
+    assert pending["qty"] == 5
+    executions = service.repository.list_unfinalized_broker_executions()
+    assert len(executions) == 1
+    assert executions[0]["requested_qty"] == 3
+    assert (
+        executions[0]["context_json"]["execution_role"]
+        == "virtual_sell_settlement"
+    )
+    assert "[KIS][VIRTUAL_SETTLEMENT_SUBMITTED]" in service.notifier.messages[-1]
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+
+    assert len(service.client.order_calls) == 1
+    assert service.repository.get_virtual_sell_pending("overseas", "NVDA")["qty"] == 5
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=[]))
+
+    assert service.repository.get_virtual_sell_pending("overseas", "NVDA")["qty"] == 5
 
 
 def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
@@ -478,8 +565,249 @@ def test_reconcile_uses_virtual_sell_price_for_pnl_log() -> None:
     ]
 
     asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    service.client.pending_orders = [
+        {
+            "odno": "0000000001",
+            "pdno": "NVDA",
+            "sll_buy_dvsn_cd": "01",
+            "ft_ord_qty": "2",
+            "ft_ccld_qty": "2",
+            "ft_ccld_amt3": "222.0",
+            "ft_ccld_unpr3": "111.0",
+            "nccs_qty": "0",
+            "rvse_cncl_dvsn": "00",
+            "dmst_ord_dt": "20260701",
+            "thco_ord_tmd": "223100",
+        }
+    ]
+    stats = asyncio.run(
+        service._reconcile_broker_executions(
+            datetime(2026, 7, 1, 13, 32, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
 
+    assert stats["finalized"] == 1
+    assert service.repository.get_virtual_sell_pending("overseas", "NVDA") is None
+    account_rows = service.repository.query_cycle_log(
+        action_bias="SELL_REAL",
+        limit=5,
+    )
+    assert len(account_rows) == 1
+    assert account_rows[0]["action_reason"] == "virtual_sell_settlement"
+    assert account_rows[0]["session_id"] == ""
+    assert account_rows[0]["is_session_trade"] == 0
+    assert service.repository.get_realized_strategy_performance() == []
+    strategy_summary = service.repository.get_session_pnl_summary(
+        include_virtual=False,
+    )
+    assert strategy_summary["real"] == {}
+    account_summary = service.repository.get_session_pnl_summary(
+        include_virtual=False,
+        include_non_session_real=True,
+    )
+    assert account_summary["real"]["overseas"]["trade_count"] == 1
     message = service.notifier.messages[-1]
     assert "[KIS][VIRTUAL_SETTLED]" in message
     assert "가상매도가=+$115.00" in message
-    assert "손익=+$30.00" in message
+    assert "전략손익=+$30.00" in message
+    assert "실제체결가=+$111.00" in message
+    assert "정산슬리피지=-$8.00" in message
+
+
+def test_reconcile_partial_terminal_fill_reduces_only_confirmed_quantity() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=5,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=5,
+            orderable_qty=3,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    execution = service.repository.list_unfinalized_broker_executions()[0]
+    execution.update(
+        {
+            "filled_qty": 2,
+            "filled_amount": 222.0,
+            "avg_fill_price": 111.0,
+            "remaining_qty": 0,
+            "canceled_qty": 1,
+            "status": "PARTIAL_CANCELED",
+            "fill_recorded_at": "2026-07-01T13:31:00+00:00",
+        }
+    )
+
+    applied = asyncio.run(
+        service._apply_confirmed_execution_group(
+            [execution],
+            filled_qty=2,
+            filled_amount=222.0,
+            target_qty=3,
+            reconciled_at=datetime(2026, 7, 1, 13, 32, tzinfo=timezone.utc),
+        )
+    )
+
+    assert applied is True
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert pending["qty"] == 3
+    assert service.repository.list_unfinalized_broker_executions() == []
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_confirmed",
+        limit=1,
+    )[0]
+    detail = json.loads(event["detail"])
+    assert detail["settled_qty"] == 2
+    assert detail["remaining_pending_qty"] == 3
+
+
+def test_reconcile_no_fill_preserves_pending_and_allows_retry() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    execution = service.repository.list_unfinalized_broker_executions()[0]
+    service.repository.finalize_broker_execution_group_without_fill(
+        execution["execution_group_id"],
+        finalized_at="2026-07-01T13:32:00+00:00",
+    )
+    asyncio.run(service._handle_no_fill_execution_group([execution]))
+
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert pending["qty"] == 2
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_no_fill",
+        limit=1,
+    )[0]
+    assert json.loads(event["detail"])["retry_allowed"] is True
+
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    assert len(service.client.order_calls) == 2
+
+
+def test_stale_virtual_settlement_is_canceled_without_clearing_pending() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-06-30 20:00:00 KST",
+    )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+    asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    execution = service.repository.list_unfinalized_broker_executions()[0]
+    execution["created_at"] = "2026-06-30T13:30:00+00:00"
+    service.client.pending_orders = [
+        {
+            "pdno": "NVDA",
+            "sll_buy_dvsn_cd": "01",
+            "nccs_qty": "2",
+            "odno": "0000000001",
+            "ft_ord_unpr3": "111.0",
+        }
+    ]
+
+    canceled = asyncio.run(
+        service._cancel_stale_virtual_sell_settlement(
+            execution=execution,
+            exchange_code="NASD",
+            now=datetime(2026, 7, 1, 13, 31, tzinfo=timezone.utc),
+        )
+    )
+
+    assert canceled is True
+    assert len(service.client.cancel_calls) == 1
+    pending = service.repository.get_virtual_sell_pending("overseas", "NVDA")
+    assert pending is not None
+    assert pending["qty"] == 2
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_cancel_submitted",
+        limit=1,
+    )[0]
+    assert json.loads(event["detail"])["pending_preserved_until_history_confirmation"]
+
+
+def test_stale_virtual_settlement_does_not_cancel_mismatched_open_sell() -> None:
+    service = _build_service()
+    execution = {
+        "created_at": "2026-06-30T13:30:00+00:00",
+        "execution_group_id": "settlement-group",
+        "market": "overseas",
+        "symbol": "NVDA",
+        "exchange_code": "NASD",
+        "side": "SELL",
+        "broker_order_no": "0000000001",
+    }
+    service.client.pending_orders = [
+        {
+            "pdno": "NVDA",
+            "sll_buy_dvsn_cd": "01",
+            "nccs_qty": "2",
+            "odno": "0000009999",
+            "ft_ord_unpr3": "111.0",
+        }
+    ]
+
+    canceled = asyncio.run(
+        service._cancel_stale_virtual_sell_settlement(
+            execution=execution,
+            exchange_code="NASD",
+            now=datetime(2026, 7, 1, 13, 31, tzinfo=timezone.utc),
+        )
+    )
+
+    assert canceled is False
+    assert service.client.cancel_calls == []
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_cancel_skipped",
+        limit=1,
+    )[0]
+    assert json.loads(event["detail"])["reason"] == "open_sell_order_number_mismatch"

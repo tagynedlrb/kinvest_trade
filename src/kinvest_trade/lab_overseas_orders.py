@@ -1220,14 +1220,6 @@ class OverseasOrderHelper:
                 "reason": reject_reason,
                 "error": error_text,
             }
-        existing_pending = service.repository.get_virtual_sell_pending("overseas", candidate.symbol)
-        if existing_pending is not None and tracker is not None:
-            tracker.settle(
-                market="overseas",
-                symbol=candidate.symbol,
-                real_qty_after_settlement=0,
-            )
-
         sell_result = (
             tracker.apply_sell(
                 market="overseas",

@@ -71,6 +71,7 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _MIN_VPS_US_FULL_SCAN_WINDOW_SEC = 120
 _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN = 30
+_VIRTUAL_SELL_SETTLEMENT_ROLE = "virtual_sell_settlement"
 
 
 def _fallback_runtime_config() -> SimpleNamespace:
@@ -3149,6 +3150,392 @@ class LiquidityLabService:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _is_virtual_sell_settlement_context(context: object) -> bool:
+        return (
+            isinstance(context, dict)
+            and str(context.get("execution_role") or "").strip()
+            == _VIRTUAL_SELL_SETTLEMENT_ROLE
+        )
+
+    def _find_unfinalized_virtual_sell_settlement(
+        self,
+        symbol: str,
+    ) -> dict | None:
+        symbol_key = symbol.strip().upper()
+        for execution in self.repository.list_unfinalized_broker_executions(
+            market="overseas",
+            limit=1000,
+        ):
+            if str(execution.get("symbol") or "").strip().upper() != symbol_key:
+                continue
+            if str(execution.get("side") or "").strip().upper() != "SELL":
+                continue
+            if self._is_virtual_sell_settlement_context(
+                execution.get("context_json")
+            ):
+                return execution
+        return None
+
+    async def _cancel_stale_virtual_sell_settlement(
+        self,
+        *,
+        execution: dict,
+        exchange_code: str,
+        now: datetime | None = None,
+    ) -> bool:
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        created_at = parse_datetime(str(execution.get("created_at") or ""))
+        if created_at is None:
+            return False
+        execution_group_id = str(execution.get("execution_group_id") or "")
+        if execution_group_id in getattr(
+            self,
+            "_virtual_settlement_cancel_requested",
+            set(),
+        ):
+            return False
+        age_sec = max(
+            0.0,
+            (current - ensure_timezone(created_at)).total_seconds(),
+        )
+        if age_sec < 45.0:
+            return False
+
+        symbol = str(execution.get("symbol") or "").strip().upper()
+        pending_order = await self._find_open_overseas_order(
+            symbol=symbol,
+            side="SELL",
+            exchange_code=exchange_code,
+        )
+        if pending_order is None:
+            return False
+        expected_order_no = self.repository.normalize_broker_order_no(
+            execution.get("broker_order_no")
+        )
+        open_order_no = self.repository.normalize_broker_order_no(
+            pending_order.get("order_no")
+        )
+        if not expected_order_no or open_order_no != expected_order_no:
+            self._save_event(
+                event_type="virtual_pending_settlement_cancel_skipped",
+                market="overseas",
+                symbol=symbol,
+                detail={
+                    "reason": "open_sell_order_number_mismatch",
+                    "expected_order_no": expected_order_no,
+                    "open_order_no": open_order_no,
+                    "age_sec": round(age_sec, 3),
+                },
+            )
+            return False
+        try:
+            response = await self._cancel_open_overseas_order(
+                symbol=symbol,
+                exchange_code=exchange_code,
+                pending_order=pending_order,
+            )
+        except KisApiError as exc:
+            self._save_event(
+                event_type="virtual_pending_settlement_cancel_failed",
+                market="overseas",
+                symbol=symbol,
+                detail={
+                    "broker_order_no": execution.get("broker_order_no"),
+                    "age_sec": round(age_sec, 3),
+                    "error": str(exc)[:200],
+                },
+            )
+            return False
+
+        self._record_broker_order_event(
+            market="overseas",
+            symbol=symbol,
+            exchange_code=exchange_code,
+            side="SELL",
+            order_kind="cancel",
+            requested_qty=int(pending_order.get("open_qty") or 0),
+            requested_price=float(pending_order.get("order_price") or 0.0),
+            status="CANCELED",
+            reason="stale_virtual_sell_settlement",
+            payload=self._broker_cancel_payload(response, pending_order),
+        )
+        requested = getattr(
+            self,
+            "_virtual_settlement_cancel_requested",
+            set(),
+        )
+        requested.add(execution_group_id)
+        self._virtual_settlement_cancel_requested = requested
+        self._save_event(
+            event_type="virtual_pending_settlement_cancel_submitted",
+            market="overseas",
+            symbol=symbol,
+            detail={
+                "execution_group_id": execution_group_id,
+                "broker_order_no": execution.get("broker_order_no"),
+                "open_qty": int(pending_order.get("open_qty") or 0),
+                "age_sec": round(age_sec, 3),
+                "pending_preserved_until_history_confirmation": True,
+            },
+        )
+        return True
+
+    async def _apply_confirmed_virtual_sell_settlement(
+        self,
+        *,
+        first: dict,
+        context: dict,
+        execution_group_id: str,
+        fill_price: float,
+        filled_qty: int,
+        target_qty: int,
+        confirmed_at: datetime,
+    ) -> bool:
+        market = str(first.get("market") or "").strip().lower()
+        symbol = str(first.get("symbol") or "").strip().upper()
+        pending = self.repository.get_virtual_sell_pending(market, symbol)
+        pending_qty = 0 if pending is None else int(pending.get("qty") or 0)
+        settled_qty = min(max(0, filled_qty), max(0, pending_qty))
+        unmatched_fill_qty = max(0, filled_qty - settled_qty)
+        pending_avg_price = float(
+            (
+                pending.get("avg_sell_price")
+                if pending is not None
+                else context.get("virtual_sell_avg_price")
+            )
+            or 0.0
+        )
+        remaining_qty = max(0, pending_qty - settled_qty)
+
+        if pending is not None and settled_qty > 0:
+            if remaining_qty <= 0:
+                self.repository.delete_virtual_sell_pending(market, symbol)
+            else:
+                self.repository.upsert_virtual_sell_pending(
+                    market=market,
+                    symbol=symbol,
+                    exchange_code=(
+                        pending.get("exchange_code")
+                        or first.get("exchange_code")
+                    ),
+                    qty=remaining_qty,
+                    avg_sell_price=pending_avg_price,
+                    currency=str(pending.get("currency") or "USD"),
+                    updated_at=format_kst(confirmed_at),
+                )
+
+        entry_price = self._parse_optional_float(context.get("entry_price")) or 0.0
+        virtual_realized_pnl = (
+            (pending_avg_price - entry_price) * settled_qty
+            if entry_price > 0 and pending_avg_price > 0
+            else 0.0
+        )
+        actual_realized_pnl = (
+            (fill_price - entry_price) * settled_qty
+            if entry_price > 0
+            else 0.0
+        )
+        settlement_slippage = (
+            (fill_price - pending_avg_price) * settled_qty
+            if pending_avg_price > 0
+            else 0.0
+        )
+        pnl_pct = (
+            (pending_avg_price - entry_price) / entry_price
+            if entry_price > 0 and pending_avg_price > 0
+            else 0.0
+        )
+        logged_at = str(
+            first.get("fill_recorded_at")
+            or first.get("updated_at")
+            or confirmed_at.astimezone(timezone.utc).isoformat()
+        )
+        if entry_price <= 0:
+            self.repository.finalize_broker_execution_group(
+                execution_group_id,
+                finalized_at=confirmed_at.astimezone(timezone.utc).isoformat(),
+            )
+            self._save_event(
+                event_type="virtual_pending_settlement_accounting_failed",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "reason": "missing_entry_price",
+                    "execution_group_id": execution_group_id,
+                    "filled_qty": filled_qty,
+                    "settled_qty": settled_qty,
+                    "pending_preserved_qty": remaining_qty,
+                },
+            )
+            return True
+
+        fx_rate = float(context.get("fx_rate") or 1380.0)
+        gross_pnl_usd = (fill_price - entry_price) * filled_qty
+        gross_pnl_krw = gross_pnl_usd * fx_rate
+        (
+            net_pnl_usd,
+            net_pnl_krw,
+            sell_fee_usd,
+            sell_fee_krw,
+        ) = self._estimate_overseas_net_pnl(
+            entry_price=entry_price,
+            exit_price=fill_price,
+            qty=filled_qty,
+            fx_rate=fx_rate,
+        )
+        account_pnl_pct = (fill_price - entry_price) / entry_price
+        inserted = self.repository.save_cycle_log(
+            logged_at=logged_at,
+            market=market,
+            symbol=symbol,
+            exchange_code=first.get("exchange_code"),
+            action_bias="SELL_REAL",
+            action_reason=_VIRTUAL_SELL_SETTLEMENT_ROLE,
+            price=fill_price,
+            pnl_pct=account_pnl_pct,
+            realized_pnl_usd=gross_pnl_usd,
+            realized_pnl_krw=gross_pnl_krw,
+            holding_qty=filled_qty,
+            cycle_no=int(first.get("cycle_no") or 0),
+            net_pnl_usd=net_pnl_usd,
+            net_pnl_krw=net_pnl_krw,
+            commission_usd=sell_fee_usd,
+            commission_krw=sell_fee_krw,
+            session_id="",
+            strategy_flag="",
+            entry_by="",
+            exit_by=_VIRTUAL_SELL_SETTLEMENT_ROLE,
+            is_session_trade=0,
+            entry_price=entry_price,
+            qty_executed=filled_qty,
+            is_virtual=0,
+            orderable_qty=int(context.get("orderable_qty") or filled_qty),
+            stock_name=str(context.get("stock_name") or symbol),
+            cost_calculation_version=OVERSEAS_COST_CALCULATION_VERSION,
+            execution_group_id=execution_group_id,
+        )
+        if not inserted:
+            return False
+
+        execution_at = ensure_timezone(parse_datetime(logged_at) or confirmed_at)
+        confirmation_delay_sec = max(
+            0.0,
+            (confirmed_at - execution_at).total_seconds(),
+        )
+        cb = self._get_circuit_breaker()
+        was_halted = bool(self._is_trading_halted(market))
+        daily_was_halted = cb.daily_halted_at is not None
+        same_risk_day = (
+            cb.current_risk_day(execution_at)
+            == cb.current_risk_day(confirmed_at)
+        )
+        risk_controls_replayed = (
+            same_risk_day
+            or confirmation_delay_sec
+            <= _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN * 60
+        )
+        entry_notional_krw = entry_price * filled_qty * fx_rate
+        net_pnl_pct = (
+            net_pnl_krw / entry_notional_krw
+            if entry_notional_krw > 0
+            else account_pnl_pct
+        )
+        if risk_controls_replayed:
+            self._on_realised(
+                market=market,
+                net_pnl_krw=net_pnl_krw,
+                net_pnl_pct=net_pnl_pct,
+                include_session_pnl=same_risk_day,
+            )
+        self._reconcile_confirmed_risk_day_pnl(confirmed_at)
+        is_halted = self._is_trading_halted(market)
+        daily_is_halted = cb.daily_halted_at is not None
+        consecutive_losses = self._consecutive_losses_for_market(market)
+        self.repository.update_cycle_log_execution_risk(
+            execution_group_id,
+            consecutive_losses=consecutive_losses,
+            cb_active=int(is_halted),
+        )
+        if daily_is_halted and not daily_was_halted:
+            await self._send_circuit_breaker_notification(
+                "\n".join(
+                    [
+                        "일일손실한도 발동",
+                        (
+                            f"리스크일={cb.current_risk_day(confirmed_at).isoformat()} | "
+                            f"확정순손익 {self._session_realised_krw:+,.0f}원"
+                        ),
+                        "국장·미장 신규 매수를 07:00 KST 전환까지 중단합니다.",
+                    ]
+                )
+            )
+        elif is_halted and not was_halted:
+            await self._send_circuit_breaker_notification(
+                "\n".join(
+                    [
+                        "서킷브레이커 발동",
+                        (
+                            f"시장={format_market_korean(market)} | "
+                            f"연속손절 {consecutive_losses}회 | "
+                            f"세션손익 {self._session_realised_krw:+,.0f}원"
+                        ),
+                        f"{format_market_korean(market)} 신규 매수만 중단합니다.",
+                    ]
+                )
+            )
+        self._save_event(
+            event_type="virtual_pending_settlement_confirmed",
+            market=market,
+            symbol=symbol,
+            detail={
+                "execution_group_id": execution_group_id,
+                "broker_order_no": first.get("broker_order_no"),
+                "filled_qty": filled_qty,
+                "target_qty": target_qty,
+                "settled_qty": settled_qty,
+                "unmatched_fill_qty": unmatched_fill_qty,
+                "remaining_pending_qty": remaining_qty,
+                "avg_fill_price": round(fill_price, 8),
+                "virtual_sell_avg_price": round(pending_avg_price, 8),
+                "entry_price": round(entry_price, 8),
+                "virtual_realized_pnl_usd": round(virtual_realized_pnl, 6),
+                "actual_realized_pnl_usd": round(actual_realized_pnl, 6),
+                "actual_net_pnl_usd": round(net_pnl_usd, 6),
+                "actual_net_pnl_krw": round(net_pnl_krw, 2),
+                "settlement_slippage_usd": round(settlement_slippage, 6),
+                "performance_recorded_at_virtual_exit": True,
+                "account_risk_recorded_at_settlement": True,
+                "strategy_owned_sell_real": False,
+                "risk_controls_replayed": risk_controls_replayed,
+            },
+        )
+        if settled_qty <= 0:
+            return True
+
+        await self.notifier.send(
+            "\n".join(
+                [
+                    "[KIS][VIRTUAL_SETTLED]",
+                    f"시각={format_kst_korean(confirmed_at)}",
+                    f"시장={format_market_korean(market)}",
+                    f"종목={symbol}",
+                    "구분=정산매도 체결확정",
+                    f"체결수량={settled_qty}주",
+                    f"실제체결가={format_usd(fill_price)}",
+                    f"가상매도가={format_usd(pending_avg_price)}",
+                    f"매입가={format_usd(entry_price)}",
+                    f"전략손익={format_usd(virtual_realized_pnl)}",
+                    f"전략수익률={format_pct(pnl_pct)}",
+                    f"계좌순손익={format_usd(net_pnl_usd)}",
+                    f"정산슬리피지={format_usd(settlement_slippage)}",
+                    f"남은정산대기={remaining_qty}주",
+                    "참고=KIS 주문체결내역 확인 후 체결수량만 정산함",
+                ]
+            )
+        )
+        return True
+
     async def _apply_confirmed_execution_group(
         self,
         executions: list[dict],
@@ -3224,6 +3611,16 @@ class LiquidityLabService:
         orderable_qty = int(context.get("orderable_qty") or filled_qty)
         stock_name = str(context.get("stock_name") or symbol)
         product_type = str(context.get("product_type") or "").strip()
+        if self._is_virtual_sell_settlement_context(context):
+            return await self._apply_confirmed_virtual_sell_settlement(
+                first=first,
+                context=context,
+                execution_group_id=execution_group_id,
+                fill_price=fill_price,
+                filled_qty=filled_qty,
+                target_qty=target_qty,
+                confirmed_at=confirmed_at,
+            )
         is_session_trade = int(first.get("is_session_trade") or 0)
         if side == "SELL" and not is_session_trade and self._is_session_owned(symbol):
             is_session_trade = 1
@@ -3625,6 +4022,27 @@ class LiquidityLabService:
         market = str(first.get("market") or "")
         symbol = str(first.get("symbol") or "")
         side = str(first.get("side") or "").upper()
+        context = (
+            first.get("context_json")
+            if isinstance(first.get("context_json"), dict)
+            else {}
+        )
+        if self._is_virtual_sell_settlement_context(context):
+            self._save_event(
+                event_type="virtual_pending_settlement_no_fill",
+                market=market,
+                symbol=symbol,
+                detail={
+                    "execution_group_id": first.get("execution_group_id"),
+                    "side": side,
+                    "statuses": sorted(
+                        {str(row.get("status") or "") for row in executions}
+                    ),
+                    "pending_preserved": True,
+                    "retry_allowed": True,
+                },
+            )
+            return
         if side == "BUY":
             self._reset_strategy_position(symbol, market)
         self._save_event(
@@ -6338,7 +6756,6 @@ class LiquidityLabService:
         if not pending_rows:
             return
 
-        tracker = self._get_position_tracker()
         real_by_symbol = {
             position.symbol.upper(): position
             for position in overseas_positions
@@ -6352,6 +6769,27 @@ class LiquidityLabService:
             pending_avg_price = float(row["avg_sell_price"])
             exchange_code = row.get("exchange_code")
             currency = str(row["currency"])
+            if symbol in getattr(
+                self,
+                "_untracked_virtual_settlement_symbols",
+                set(),
+            ):
+                continue
+            active_settlement = self._find_unfinalized_virtual_sell_settlement(
+                symbol
+            )
+            if active_settlement is not None:
+                self._clear_no_orderable_retry("overseas", symbol)
+                self._reset_no_orderable_stall("overseas", symbol)
+                await self._cancel_stale_virtual_sell_settlement(
+                    execution=active_settlement,
+                    exchange_code=str(
+                        exchange_code
+                        or active_settlement.get("exchange_code")
+                        or ""
+                    ),
+                )
+                continue
 
             real = real_by_symbol.get(symbol)
             virtual_buy = (
@@ -6373,7 +6811,6 @@ class LiquidityLabService:
                 )
                 continue
 
-            real_qty = 0 if real is None else real.quantity
             orderable_qty = 0 if real is None else real.orderable_qty
             settle_qty = min(pending_qty, orderable_qty)
             if real is not None and pending_qty > 0 and orderable_qty <= 0:
@@ -6396,13 +6833,15 @@ class LiquidityLabService:
                 continue
             if settle_qty > 0 and real is not None:
                 try:
-                    await self.client.place_overseas_order_for_current_session(
-                        side="sell",
-                        symbol=symbol,
-                        exchange_code=(exchange_code or real.exchange_code),
-                        qty=settle_qty,
-                        price=f"{real.current_price:.4f}",
-                        order_division="00",
+                    response = (
+                        await self.client.place_overseas_order_for_current_session(
+                            side="sell",
+                            symbol=symbol,
+                            exchange_code=(exchange_code or real.exchange_code),
+                            qty=settle_qty,
+                            price=f"{real.current_price:.4f}",
+                            order_division="00",
+                        )
                     )
                 except KisApiError as exc:
                     self._track_no_orderable_stall(
@@ -6426,51 +6865,112 @@ class LiquidityLabService:
 
                 self._clear_no_orderable_retry("overseas", symbol)
                 self._reset_no_orderable_stall("overseas", symbol)
-                realized_pnl = (pending_avg_price - real.avg_price) * settle_qty
-                pnl_pct = (
-                    (pending_avg_price - real.avg_price) / real.avg_price
-                    if real.avg_price > 0
-                    else 0.0
+                execution = self._record_broker_order_event(
+                    market="overseas",
+                    symbol=symbol,
+                    exchange_code=(exchange_code or real.exchange_code),
+                    side="SELL",
+                    order_kind="limit",
+                    requested_qty=settle_qty,
+                    requested_price=real.current_price,
+                    status="SUBMITTED",
+                    reason=_VIRTUAL_SELL_SETTLEMENT_ROLE,
+                    payload={
+                        "response": response,
+                        "pending_qty": pending_qty,
+                        "virtual_sell_avg_price": pending_avg_price,
+                    },
+                    execution_context={
+                        "execution_role": _VIRTUAL_SELL_SETTLEMENT_ROLE,
+                        "virtual_sell_avg_price": pending_avg_price,
+                        "pending_qty_at_submission": pending_qty,
+                        "entry_price": real.avg_price,
+                        "fx_rate": float(
+                            getattr(
+                                self._get_market_policy(
+                                    "overseas"
+                                ).auto_trade,
+                                "usd_krw_fallback_rate",
+                                1380.0,
+                            )
+                            or 1380.0
+                        ),
+                        "orderable_qty": real.orderable_qty,
+                        "real_qty_at_submission": real.quantity,
+                        "stock_name": symbol,
+                        "currency": currency,
+                        "session_id": getattr(self, "_session_id", ""),
+                        "cycle_no": getattr(self, "_cycle_count", 0),
+                        "is_session_trade": 0,
+                    },
+                )
+                broker_order_no = self._extract_broker_order_no(response)
+                if execution is None:
+                    untracked = getattr(
+                        self,
+                        "_untracked_virtual_settlement_symbols",
+                        set(),
+                    )
+                    untracked.add(symbol)
+                    self._untracked_virtual_settlement_symbols = untracked
+                    self._save_event(
+                        event_type="virtual_pending_settlement_tracking_failed",
+                        market="overseas",
+                        symbol=symbol,
+                        detail={
+                            "reason": "accepted_order_missing_execution_ledger",
+                            "requested_qty": settle_qty,
+                            "broker_order_no": broker_order_no,
+                            "pending_preserved": True,
+                        },
+                    )
+                    await self.notifier.send(
+                        "\n".join(
+                            [
+                                "[KIS][VIRTUAL_SETTLEMENT_TRACKING_FAILED]",
+                                f"시각={format_kst_korean(datetime.now(timezone.utc))}",
+                                f"시장={format_market_korean('overseas')}",
+                                f"종목={symbol}",
+                                f"접수수량={settle_qty}주",
+                                "상태=주문 접수 후 체결원장 생성 실패",
+                                "조치=정산대기 유지·자동 재제출 중단",
+                            ]
+                        )
+                    )
+                    continue
+
+                self._save_event(
+                    event_type="virtual_pending_settlement_submitted",
+                    market="overseas",
+                    symbol=symbol,
+                    detail={
+                        "execution_group_id": execution.get(
+                            "execution_group_id"
+                        ),
+                        "broker_order_no": broker_order_no,
+                        "requested_qty": settle_qty,
+                        "requested_price": real.current_price,
+                        "pending_qty": pending_qty,
+                        "pending_preserved_until_fill": True,
+                    },
                 )
                 await self.notifier.send(
                     "\n".join(
                         [
-                            "[KIS][VIRTUAL_SETTLED]",
+                            "[KIS][VIRTUAL_SETTLEMENT_SUBMITTED]",
                             f"시각={format_kst_korean(datetime.now(timezone.utc))}",
                             f"시장={format_market_korean('overseas')}",
                             f"종목={symbol}",
-                            "구분=정산매도",
-                            f"수량={settle_qty}주",
+                            "구분=정산매도 접수",
+                            f"접수수량={settle_qty}주",
+                            f"주문번호={broker_order_no}",
+                            f"주문가={format_usd(real.current_price)}",
                             f"가상매도가={format_usd(pending_avg_price)}",
                             f"매입가={format_usd(real.avg_price)}",
-                            f"손익={format_usd(realized_pnl)}",
-                            f"수익률={format_pct(pnl_pct)}",
-                            "참고=거래불가 세션 중 가상매도 건이 실제 매도로 정산됨",
+                            f"정산대기={pending_qty}주",
+                            "참고=접수 상태이며 KIS 체결내역 확인 전에는 정산하지 않음",
                         ]
                     )
-                )
-                real.quantity = max(0, real.quantity - settle_qty)
-                real.orderable_qty = max(0, real.orderable_qty - settle_qty)
-
-            remaining_pending_qty = max(0, pending_qty - settle_qty)
-            if remaining_pending_qty <= 0:
-                if tracker is not None:
-                    tracker.settle(
-                        market="overseas",
-                        symbol=symbol,
-                        real_qty_after_settlement=max(0, real_qty - settle_qty),
-                    )
-                else:
-                    self.repository.delete_virtual_sell_pending("overseas", symbol)
-            elif settle_qty > 0:
-                self.repository.upsert_virtual_sell_pending(
-                    market="overseas",
-                    symbol=symbol,
-                    exchange_code=exchange_code,
-                    qty=remaining_pending_qty,
-                    avg_sell_price=pending_avg_price,
-                    currency=currency,
-                    updated_at=format_kst(datetime.now(timezone.utc)),
                 )
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:

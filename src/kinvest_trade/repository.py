@@ -1919,6 +1919,17 @@ class SqliteRepository:
         *,
         finalized_at: str,
     ) -> bool:
+        return self.finalize_broker_execution_group(
+            execution_group_id,
+            finalized_at=finalized_at,
+        )
+
+    def finalize_broker_execution_group(
+        self,
+        execution_group_id: str,
+        *,
+        finalized_at: str,
+    ) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(
                 """

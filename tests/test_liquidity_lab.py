@@ -6306,6 +6306,92 @@ def test_corporate_action_reconcile_defers_on_stale_balance_cache() -> None:
     )
 
 
+def test_closed_market_cycle_reconciles_only_effective_virtual_action() -> None:
+    service = _build_run_service()
+    _configure_test_corporate_action_service(service)
+
+    class ClosedMarketBalanceClient:
+        def __init__(self) -> None:
+            self.balance_calls: list[str] = []
+
+        async def get_overseas_balance(
+            self,
+            exchange_code: str,
+            currency_code: str,
+        ):
+            assert currency_code == "USD"
+            self.balance_calls.append(exchange_code)
+            return {"positions": []}
+
+    client = ClosedMarketBalanceClient()
+    service.client = client
+    service.virtual_trades.record_buy(
+        market="overseas",
+        symbol="CPRX",
+        exchange_code="NASD",
+        qty=118,
+        fill_price=31.48,
+        currency="USD",
+        session="after_hours",
+        reason="strategy_buy_signal",
+        created_at="2026-07-15 05:55:58 KST",
+    )
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def no_holidays(_now):
+        return False, False
+
+    service._refresh_market_regimes = noop  # type: ignore[method-assign]
+    service._reconcile_broker_executions = noop  # type: ignore[method-assign]
+    service._ensure_tv_diagnostics = noop  # type: ignore[method-assign]
+    service._apply_holiday_overrides = no_holidays  # type: ignore[method-assign]
+    service._maybe_send_overseas_relist_alert = noop  # type: ignore[method-assign]
+    service._observe_inverse_regime = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+
+    original_krx = liquidity_lab_module.is_krx_regular_session
+    original_us = liquidity_lab_module.is_us_regular_session
+    original_orderable = (
+        liquidity_lab_module.is_us_orderable_session_for_env
+    )
+    original_session = liquidity_lab_module.get_us_trading_session
+    liquidity_lab_module.is_krx_regular_session = lambda _now: False
+    liquidity_lab_module.is_us_regular_session = lambda _now: False
+    liquidity_lab_module.is_us_orderable_session_for_env = (
+        lambda _now, _env: False
+    )
+    liquidity_lab_module.get_us_trading_session = lambda _now: "closed"
+    try:
+        first = asyncio.run(service.run())
+        calls_after_first = list(client.balance_calls)
+        second = asyncio.run(service.run())
+    finally:
+        liquidity_lab_module.is_krx_regular_session = original_krx
+        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_orderable_session_for_env = (
+            original_orderable
+        )
+        liquidity_lab_module.get_us_trading_session = original_session
+
+    assert set(calls_after_first) == {"NASD", "NYSE", "AMEX"}
+    assert client.balance_calls == calls_after_first
+    assert first.primary_selection_reason == "no_supported_market_open"
+    assert first.estimated_api_calls_per_cycle == 3
+    assert first.overseas_order["corporate_action_symbols"] == ["CPRX"]
+    assert first.overseas_order["corporate_action_settled"] == ["CPRX"]
+    assert second.estimated_api_calls_per_cycle == 0
+    assert "corporate_action_symbols" not in second.overseas_order
+    assert service.virtual_trades.get_position("overseas", "CPRX") is None
+    sells = [
+        row
+        for row in service.repository.list_virtual_orders(limit=20)
+        if row["symbol"] == "CPRX" and row["side"] == "sell"
+    ]
+    assert len(sells) == 1
+    assert sells[0]["excluded_from_performance"] == 1
+
+
 def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
     service = _build_run_service()
     _configure_test_corporate_action_service(service)

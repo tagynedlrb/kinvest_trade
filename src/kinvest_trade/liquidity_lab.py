@@ -2473,6 +2473,30 @@ class LiquidityLabService:
             )
         return settled_symbols
 
+    def _effective_virtual_corporate_action_symbols(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> list[str]:
+        manager = getattr(self, "virtual_trades", None)
+        if manager is None:
+            return []
+        return sorted(
+            {
+                position.symbol.strip().upper()
+                for position in manager.list_positions("overseas")
+                if (
+                    position.qty > 0
+                    and self._effective_corporate_action(
+                        "overseas",
+                        position.symbol,
+                        now=now,
+                    )
+                    is not None
+                )
+            }
+        )
+
     def _get_position_tracker(self) -> UnifiedPositionTracker | None:
         tracker = getattr(self, "position_tracker", None)
         if tracker is not None:
@@ -5849,6 +5873,31 @@ class LiquidityLabService:
                 )
 
         if not krx_open and not us_open:
+            corporate_action_symbols = (
+                self._effective_virtual_corporate_action_symbols(now=now)
+            )
+            corporate_action_settled: list[str] = []
+            corporate_action_api_calls = 0
+            if corporate_action_symbols:
+                await self._get_held_symbol_map()
+                corporate_action_settled = (
+                    await self._reconcile_effective_overseas_corporate_actions(
+                        now=now,
+                    )
+                )
+                balance_cache = getattr(
+                    self,
+                    "_overseas_balance_cache",
+                    {},
+                )
+                balance_data = balance_cache.get("data")
+                if (
+                    balance_cache.get("cycle") == self._cycle_count
+                    and isinstance(balance_data, dict)
+                ):
+                    corporate_action_api_calls = len(balance_data)
+                else:
+                    corporate_action_api_calls = 1
             return LiquidityLabReport(
                 scanned_at=format_kst(now) or "",
                 krx_market_open=False,
@@ -5865,9 +5914,20 @@ class LiquidityLabService:
                 domestic_positions=[],
                 overseas_positions=[],
                 watch_targets=[],
-                estimated_api_calls_per_cycle=0,
+                estimated_api_calls_per_cycle=corporate_action_api_calls,
                 domestic_order={"skipped": True, "reason": "market_closed"},
-                overseas_order={"skipped": True, "reason": "market_closed"},
+                overseas_order={
+                    "skipped": True,
+                    "reason": "market_closed",
+                    **(
+                        {
+                            "corporate_action_symbols": corporate_action_symbols,
+                            "corporate_action_settled": corporate_action_settled,
+                        }
+                        if corporate_action_symbols
+                        else {}
+                    ),
+                },
             )
 
         if not krx_cycle_open and not us_cycle_open:

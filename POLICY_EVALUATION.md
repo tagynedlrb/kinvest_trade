@@ -904,10 +904,17 @@ the current direction is wrong.
   class. Removing dead-symbol API work and a stale virtual slot improves
   capacity hygiene but does not justify looser gates or higher turnover while
   US after-cost expectancy remains negative.
-- The corporate-action implementation passed all 807 repository tests,
+- The corporate-action implementation passed all 808 repository tests,
   `compileall`, and diff checks. Evaluation row 88 records the official
   evidence, alternatives, and rollback conditions. Its comparative status is
   deployment pending with no direct smaller-model A/B run or inferred.
+- The first post-restart cycle completed cleanly but occurred after all
+  supported sessions had closed, so the normal overseas scan did not run and
+  CPRX remained. Treat corporate-action reconciliation as lifecycle work, not
+  market-signal work: when and only when an effective virtual action remains,
+  allow one closed-market broker-balance refresh, settle it, then return later
+  closed cycles to zero API calls. This deployment observation adds a required
+  regression boundary; it is not a reason to scan or trade closed markets.
 - Three-day confirmed frequency is 11 domestic buys/11 exits and 53 US
   buys/46 strategy-owned exits. Account-wide confirmed outcomes are 12
   domestic exits, 17% wins, -0.785% average net and -83,147 KRW; and 52 US

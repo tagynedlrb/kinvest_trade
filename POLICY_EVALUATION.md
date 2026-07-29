@@ -78,6 +78,13 @@
   below 950ms also succeeded. Persist pair activation and incremental wait
   separately from adaptive pacing, and do not count overlapping readiness
   boundaries twice.
+- The first deployed natural window contained 27 consecutive balance pairs
+  and 525 API attempts with no attempt or terminal failures. Twenty-six pairs
+  needed no incremental wait. After one preceding balance response took
+  236ms, the next pair added 36ms and dispatched 851.031ms after completion;
+  it succeeded on the first attempt. This confirms selective activation and
+  cost accounting at the intended boundary, but not the unobservable
+  counterfactual that the same call would otherwise have rate-limited.
 - Reconsider the current VPS pacing when a tracked rate-limit request ends in
   terminal failure, recovered rate-limit requests exceed 1% for three
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry
@@ -475,6 +482,11 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   tombstone stops duplicate broker calls only: an order-not-found response
   alone must not finalize or delete the execution ledger because it does not
   prove whether the order filled, expired, or was previously canceled.
+- The first deployment passed both the startup scheduler check and the next
+  ten-minute check without adding to the six predeployment FSUN/HUBB duplicate
+  cancel events. Both ambiguous execution rows remained unfinalized, while an
+  unrelated GLW take-profit order submitted and filled normally. Continue
+  reconciliation independently; suppression success is not no-fill evidence.
 
 ## Session boundary safety
 

@@ -50,6 +50,31 @@
   일관되게 양수이고, 그 기회비용이 현재 청산의 회피손실보다
   커지는 경우다.
 
+### 통합배포와 운영검증
+- 구현·근거 커밋 `a62a184`는 저장소 전체 **796개** 테스트,
+  `compileall`, `git diff --check`를 통과한 뒤
+  `git_token.txt`를 노출하지 않는 임시 credential helper로
+  원격 `master`에 푸시했다. 정책평가
+  `policy_evaluation_log.id=87`에는 현재 청산시점 유지,
+  지연·빈도축소 기각, 5청산·3최종세션 반증조건을 기록했다.
+- 공식 KIS 미체결을 10초 간격으로 두 번 확인해 매회 국내 0,
+  해외 0건이었다. 온라인 백업
+  `data/trading_backup_20260729_214036_pre_exit_forward_report_deploy.db`
+  의 SHA-256은
+  `4f0adf31da827c1beacc828997c220c45a083c5f062e38b2ba884d6719ad676b`,
+  무결성 정상, 외래키 위반 0이다.
+- 서비스를 `2026-07-29T21:40:47Z`에 PID `1491746`으로
+  재시작했다. `active/running`, `NRestarts=0`이고 자연
+  사이클 `20164/20165`가 `last_error=None`, 신규주문 없이
+  끝났다. 재시작 뒤 첫 검증창 API 90회는 시도 실패·최종
+  실패·재시도가 모두 0이다.
+- 실제 `/lab_report exit-forward 168` 경로는 텔레그램 로그
+  `id=1404`, 명시 배포보고는 `id=1405`로 모두 성공했다.
+  CLI와 텔레그램이 같은 27건·2개 레짐 결과를 냈다. 직접
+  소형모델 A/B는 수행하거나 추정하지 않았으므로 비교가치는
+  `deployed_operational_report_validated_forward_policy_pending_no_direct_model_ab`
+  로 남기고 전향 표본으로 재평가한다.
+
 ## [2026-07-30] 국장 VWAP 진입확인과 레버리지 분류·승인 분리
 
 ### 성과·시장 레짐 근거

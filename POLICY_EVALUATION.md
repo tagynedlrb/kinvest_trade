@@ -920,6 +920,16 @@ the current direction is wrong.
   reports missing post-exit prices instead of substituting the exit price.
   It groups by final market regime and requires five exits across three final
   sessions before a timing policy can be reconsidered.
+- Commit `a62a184` passed 796 repository tests and was pushed before restart.
+  Two KIS checks ten seconds apart found no domestic or overseas open orders;
+  the verified online backup is
+  `trading_backup_20260729_214036_pre_exit_forward_report_deploy.db`.
+  Service PID 1491746 completed natural cycles 20164 and 20165 without an
+  order or runtime error, and all 90 API attempts in the first deployment
+  window succeeded without retry. The Telegram report and deployment notice
+  succeeded as log rows 1404 and 1405. Evaluation row 87 remains forward
+  policy validation pending because no direct smaller-model A/B was run or
+  inferred.
 - Inverse execution remains shadow-only. Every completed inverse observation
   predates `product_exact_v1` benchmark alignment; there is no exact-alignment
   entry sample yet. SQQQ now uses NDX, SPXU uses SPX, domestic inverse products

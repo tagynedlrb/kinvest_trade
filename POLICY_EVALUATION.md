@@ -271,8 +271,14 @@ until the VPS regular session can reconcile it. When that pending quantity
 fully covers the visible real holding, a zero `ord_psbl_qty` outside the
 profile-orderable session is an expected account-profile boundary, not evidence
 of T+2 failure. It must neither consume the no-orderable anomaly budget nor be
-selected for another strategy exit. During a profile-orderable session, zero
-quantity or a rejected settlement order is a genuine reconciliation stall:
+selected for another strategy exit. It must also remain absent from the active
+strategy manager and appear in watch/cycle state as
+`WAIT/SETTLEMENT_PENDING/virtual_sell_pending`, not as a repeated
+`SELL_READY`; this separates completed strategy exposure from unfinished
+broker reconciliation. A partial pending quantity or an independent positive
+virtual position retains normal strategy monitoring. During a
+profile-orderable session, zero quantity or a rejected settlement order is a
+genuine reconciliation stall:
 retain the pending row, record a cause-specific diagnostic, and alert with
 bounded backoff. An accepted settlement order must enter the same immutable
 broker-execution ledger as every other real order. Preserve the entire pending
@@ -437,6 +443,13 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   make results worse. Require at least three final sessions in the same regime,
   positive market-specific net expectancy, and no one-symbol/day concentration
   before loosening a particular gate.
+- Do not label current activity as low frequency when three days already
+  contain 11 confirmed domestic entries and 27 confirmed overseas entries.
+  With after-cost account PnL negative in both markets and all ten overseas
+  slots backed by real or virtual exposure, increasing scan aggressiveness or
+  capacity has no current expectancy basis. Revisit only after positive
+  market-specific net expectancy and confirmed profitable candidates blocked
+  solely by capacity across at least three final benchmark sessions.
 
 ## Strategy loss guards
 

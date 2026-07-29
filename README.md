@@ -810,6 +810,7 @@ python3 main.py balance-check
 python3 main.py overseas-price-check <종목코드> --exchange <거래소코드>
 # 해외 계좌 잔고 조회
 python3 main.py overseas-balance-check --exchange <거래소코드> --currency USD
+# KIS 연속조회가 있으면 최대 10페이지를 자동 누적하며 page_count를 함께 출력
 # 해당 가격에서 주문 가능 수량 확인
 python3 main.py overseas-orderable-check <종목코드> --exchange <거래소코드> --price <가격>
 # 해외 매수 주문 미리보기 (DRY_RUN 기본값, 실제 제출 안 함)

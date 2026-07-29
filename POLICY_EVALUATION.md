@@ -44,6 +44,23 @@
   terminal failure, recovered rate-limit requests exceed 1% for three
   consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry
   delay causes an orderable policy bar to be missed.
+- KIS overseas-balance exchange scope is environment-specific. The official
+  sample defines demo `NASD`, `NYSE`, and `AMEX` as separate US exchanges,
+  while production `NASD` means all US markets and production `NAS` means
+  Nasdaq only
+  ([KIS overseas-balance sample](https://github.com/koreainvestment/open-trading-api/blob/b093e42ba32d1df5f5ddad7a71cb715cbc800832/examples_llm/overseas_stock/inquire_balance/inquire_balance.py)).
+  A VPS `NASD` response that happens to include NYSE rows is observational
+  evidence, not permission to collapse the documented demo requests.
+- Overseas balance must follow KIS continuation semantics. When response
+  `tr_cont` is `M` or `F`, use the returned `CTX_AREA_FK200` and
+  `CTX_AREA_NK200` with request header `tr_cont=N`; accumulate at most ten
+  pages and stop on an empty or repeated context. The current one-page account
+  incurs no extra call. Review the first natural multi-page response for row
+  uniqueness, cycle latency, terminal failures, repeated contexts, and
+  max-page truncation before changing the bound.
+- Position completeness is an exit-safety contract, not a trading-frequency
+  parameter. A balance transport or pagination fix does not justify changing
+  entry formulas, market-specific limits, or candidate frequency.
 
 ## Telegram command channel reliability
 

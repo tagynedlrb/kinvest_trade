@@ -6976,6 +6976,146 @@ def test_get_overseas_signal_for_candidate_reuses_recent_cache_without_reload() 
     assert snapshot.price == 170.29
 
 
+def test_domestic_signal_uses_one_minute_kis_bar_elapsed_time(monkeypatch) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = load_app_config(project_root / "config" / "fixed_config.json")
+
+    class SignalClient:
+        async def get_daily_chart(self, **_kwargs):
+            return [
+                {"stck_clpr": str(1000 + index)}
+                for index in range(80)
+            ]
+
+        async def get_time_daily_chart(self, **_kwargs):
+            return [
+                {
+                    "stck_bsop_date": "20260729",
+                    "stck_cntg_hour": f"12{minute:02d}00",
+                    "stck_prpr": str(1100 + minute),
+                    "stck_hgpr": str(1101 + minute),
+                    "stck_lwpr": str(1099 + minute),
+                    "cntg_vol": "1000",
+                }
+                for minute in range(59, 19, -1)
+            ]
+
+    elapsed_calls: list[dict] = []
+    build_calls: list[dict] = []
+
+    def fake_elapsed(rows, **kwargs):
+        elapsed_calls.append({"rows": rows, **kwargs})
+        return 17
+
+    def fake_build(**kwargs):
+        build_calls.append(kwargs)
+        return _snapshot(price=1110.0)
+
+    service.client = SignalClient()
+    monkeypatch.setattr(
+        liquidity_lab_module,
+        "chart_bar_elapsed_seconds",
+        fake_elapsed,
+    )
+    monkeypatch.setattr(
+        liquidity_lab_module,
+        "build_moving_average_snapshot",
+        fake_build,
+    )
+    candidate = DomesticScanResult(
+        stock_code="114800",
+        current_price=1110,
+        best_ask=1111,
+        best_bid=1110,
+        spread_pct=0.0009,
+        minute_change_pct=0.0,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=1_000_000,
+        activity_score=10.0,
+    )
+
+    result = asyncio.run(service._load_domestic_signal(candidate))
+
+    assert result is not None
+    assert elapsed_calls[0]["bar_duration_sec"] == 60
+    assert elapsed_calls[0]["timestamp_fields"][0][:2] == (
+        "stck_bsop_date",
+        "stck_cntg_hour",
+    )
+    assert build_calls[0]["bar_duration_sec"] == 60
+    assert build_calls[0]["chart_elapsed_sec"] == 17
+
+
+def test_overseas_signal_uses_policy_bar_duration_and_kis_korean_time(monkeypatch) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = load_app_config(project_root / "config" / "fixed_config.json")
+
+    class SignalClient:
+        async def get_overseas_daily_prices(self, *_args, **_kwargs):
+            return [{"clos": str(100 + index)} for index in range(80)]
+
+        async def get_overseas_minute_chart(self, *_args, **_kwargs):
+            return [
+                {
+                    "kymd": "20260729",
+                    "khms": f"23{minute:02d}00",
+                    "xymd": "20260729",
+                    "xhms": f"10{minute:02d}00",
+                    "last": str(120 + minute),
+                    "high": str(121 + minute),
+                    "low": str(119 + minute),
+                    "evol": "1000",
+                }
+                for minute in range(59, 19, -1)
+            ]
+
+    elapsed_calls: list[dict] = []
+    build_calls: list[dict] = []
+
+    def fake_elapsed(rows, **kwargs):
+        elapsed_calls.append({"rows": rows, **kwargs})
+        return 83
+
+    def fake_build(**kwargs):
+        build_calls.append(kwargs)
+        return _snapshot(price=150.0)
+
+    service.client = SignalClient()
+    monkeypatch.setattr(
+        liquidity_lab_module,
+        "chart_bar_elapsed_seconds",
+        fake_elapsed,
+    )
+    monkeypatch.setattr(
+        liquidity_lab_module,
+        "build_moving_average_snapshot",
+        fake_build,
+    )
+    candidate = OverseasScanResult(
+        symbol="SQQQ",
+        exchange_code="NASD",
+        last_price=150.0,
+        bid=149.9,
+        ask=150.1,
+        spread_pct=0.001,
+        change_rate_pct=1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=10.0,
+    )
+
+    result = asyncio.run(service._load_overseas_signal(candidate))
+
+    assert result is not None
+    assert elapsed_calls[0]["bar_duration_sec"] == 300
+    assert elapsed_calls[0]["timestamp_fields"][0][:2] == ("kymd", "khms")
+    assert build_calls[0]["bar_duration_sec"] == 300
+    assert build_calls[0]["chart_elapsed_sec"] == 83
+
+
 def test_maybe_send_overseas_relist_alert_skips_on_nyse_holiday() -> None:
     service = _build_run_service()
     service.notifier = DummyNotifier()

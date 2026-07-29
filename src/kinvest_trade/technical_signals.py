@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone, tzinfo
 
 from .indicators import (
     compute_atr,
@@ -11,6 +12,43 @@ from .indicators import (
     compute_sma,
     compute_volatility,
 )
+
+
+def chart_bar_elapsed_seconds(
+    rows: list[dict],
+    *,
+    now: datetime,
+    bar_duration_sec: int,
+    timestamp_fields: tuple[tuple[str, str, tzinfo], ...],
+) -> int:
+    """Return elapsed seconds only when the first KIS row is the active bar."""
+    if not rows or bar_duration_sec <= 0 or now.tzinfo is None:
+        return 0
+    first = rows[0]
+    for date_field, time_field, chart_timezone in timestamp_fields:
+        date_text = "".join(
+            char for char in str(first.get(date_field) or "") if char.isdigit()
+        )
+        time_text = "".join(
+            char for char in str(first.get(time_field) or "") if char.isdigit()
+        )
+        if len(date_text) != 8 or not time_text:
+            continue
+        try:
+            bar_started = datetime.strptime(
+                f"{date_text}{time_text.zfill(6)[:6]}",
+                "%Y%m%d%H%M%S",
+            ).replace(tzinfo=chart_timezone)
+        except ValueError:
+            continue
+        elapsed = (
+            now.astimezone(timezone.utc)
+            - bar_started.astimezone(timezone.utc)
+        ).total_seconds()
+        if 0 < elapsed < bar_duration_sec:
+            return max(1, int(elapsed))
+        return 0
+    return 0
 
 
 @dataclass(slots=True)

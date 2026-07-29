@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from kinvest_trade.config import load_app_config
@@ -12,6 +13,7 @@ from kinvest_trade.momentum_policy import (
 from kinvest_trade.technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
+    chart_bar_elapsed_seconds,
     compute_vwap,
 )
 
@@ -961,6 +963,69 @@ def test_rsi_period_7_in_snapshot() -> None:
     )
 
     assert snapshot.rsi14 == compute_rsi(minute_closes, 7)
+
+
+def test_chart_bar_elapsed_seconds_requires_the_active_kis_bar() -> None:
+    kst = timezone(timedelta(hours=9))
+    now = datetime(2026, 7, 29, 3, 23, 37, tzinfo=timezone.utc)
+
+    active = chart_bar_elapsed_seconds(
+        [
+            {
+                "stck_bsop_date": "20260729",
+                "stck_cntg_hour": "122300",
+            }
+        ],
+        now=now,
+        bar_duration_sec=60,
+        timestamp_fields=(("stck_bsop_date", "stck_cntg_hour", kst),),
+    )
+    completed = chart_bar_elapsed_seconds(
+        [
+            {
+                "stck_bsop_date": "20260729",
+                "stck_cntg_hour": "122200",
+            }
+        ],
+        now=now,
+        bar_duration_sec=60,
+        timestamp_fields=(("stck_bsop_date", "stck_cntg_hour", kst),),
+    )
+
+    assert active == 37
+    assert completed == 0
+
+
+def test_active_bar_volume_ratio_is_elapsed_time_adjusted() -> None:
+    kwargs = dict(
+        price=110.0,
+        bid=109.9,
+        ask=110.1,
+        daily_closes=[130.0 - index for index in range(21)],
+        minute_closes=[110.0 - index for index in range(10)],
+        minute_highs=[111.0 - index for index in range(10)],
+        minute_lows=[109.0 - index for index in range(10)],
+        minute_volumes=[100.0] + [1000.0] * 9,
+        daily_fast_window=5,
+        daily_slow_window=10,
+        intraday_fast_window=3,
+        intraday_slow_window=5,
+        volatility_window=3,
+        momentum_window=3,
+        volume_window=5,
+        rsi_period=7,
+        breakout_lookback_bars=3,
+        bollinger_window=3,
+        bollinger_stddev=2.0,
+        atr_window=3,
+        bar_duration_sec=60,
+    )
+
+    raw = build_moving_average_snapshot(**kwargs, chart_elapsed_sec=0)
+    adjusted = build_moving_average_snapshot(**kwargs, chart_elapsed_sec=30)
+
+    assert raw.volume_ratio == 0.1
+    assert adjusted.volume_ratio == 0.2
 
 
 def test_vwap_computed() -> None:

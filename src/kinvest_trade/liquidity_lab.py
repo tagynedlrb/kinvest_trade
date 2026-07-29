@@ -62,6 +62,7 @@ from .strategy import PriorityStrategyManager, STRATEGY_LABEL, StrategyID
 from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
+    chart_bar_elapsed_seconds,
     extract_price_series,
 )
 from .time_utils import ensure_timezone, format_kst, format_kst_korean, parse_datetime
@@ -937,6 +938,16 @@ class LiquidityLabService:
             ),
         )
         if self._is_inverse_symbol(market, code):
+            raw_volume_ratio = (
+                signal_snapshot.volume_last / signal_snapshot.volume_avg
+                if signal_snapshot.volume_avg > 0
+                else 0.0
+            )
+            volume_projection_multiplier = (
+                signal_snapshot.volume_ratio / raw_volume_ratio
+                if raw_volume_ratio > 0
+                else 1.0
+            )
             self._record_inverse_observation(
                 event_type=(
                     "inverse_product_ready"
@@ -963,6 +974,8 @@ class LiquidityLabService:
                     "price": signal_snapshot.price,
                     "spread_pct": signal_snapshot.spread_pct,
                     "volume_ratio": signal_snapshot.volume_ratio,
+                    "volume_ratio_raw": raw_volume_ratio,
+                    "volume_projection_multiplier": volume_projection_multiplier,
                     "intraday_momentum": signal_snapshot.intraday_momentum,
                     "intraday_bar_return": signal_snapshot.intraday_bar_return,
                     "intraday_trend_up": signal_snapshot.intraday_trend_up,
@@ -6636,6 +6649,16 @@ class LiquidityLabService:
             or len(minute_closes) < auto.intraday_slow_window
         ):
             return None
+        bar_duration_sec = max(1, int(auto.intraday_bar_minutes)) * 60
+        chart_elapsed_sec = chart_bar_elapsed_seconds(
+            minute_rows,
+            now=datetime.now(timezone.utc),
+            bar_duration_sec=bar_duration_sec,
+            timestamp_fields=(
+                ("kymd", "khms", KST),
+                ("xymd", "xhms", NEW_YORK),
+            ),
+        )
 
         return build_moving_average_snapshot(
             price=candidate.last_price,
@@ -6658,6 +6681,8 @@ class LiquidityLabService:
             bollinger_window=auto.bollinger_window,
             bollinger_stddev=auto.bollinger_stddev,
             atr_window=auto.atr_window,
+            bar_duration_sec=bar_duration_sec,
+            chart_elapsed_sec=chart_elapsed_sec,
         )
 
     async def _load_domestic_signal(
@@ -6702,6 +6727,12 @@ class LiquidityLabService:
             or len(minute_closes) < auto.intraday_slow_window
         ):
             return None
+        chart_elapsed_sec = chart_bar_elapsed_seconds(
+            minute_rows,
+            now=datetime.now(timezone.utc),
+            bar_duration_sec=60,
+            timestamp_fields=(("stck_bsop_date", "stck_cntg_hour", KST),),
+        )
 
         return build_moving_average_snapshot(
             price=float(candidate.current_price),
@@ -6724,6 +6755,8 @@ class LiquidityLabService:
             bollinger_window=auto.bollinger_window,
             bollinger_stddev=auto.bollinger_stddev,
             atr_window=auto.atr_window,
+            bar_duration_sec=60,
+            chart_elapsed_sec=chart_elapsed_sec,
         )
 
     def _should_exit_overseas_position(

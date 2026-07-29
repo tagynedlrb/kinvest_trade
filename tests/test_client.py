@@ -1006,6 +1006,115 @@ def test_get_overseas_order_history_follows_kis_continuation_pages(
     assert continuation_delays == [1.0]
 
 
+def test_get_overseas_balance_follows_kis_continuation_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    calls: list[dict] = []
+    continuation_delays: list[float] = []
+    pages = iter(
+        [
+            {
+                "output1": [{"ovrs_pdno": "AAA", "ovrs_cblc_qty": "1"}],
+                "output2": [{"frcr_buy_amt_smtl1": "100"}],
+                "ctx_area_fk200": "NEXT_FK",
+                "ctx_area_nk200": "NEXT_NK",
+                "_response_headers": {"tr_cont": "F"},
+            },
+            {
+                "output1": [{"ovrs_pdno": "BBB", "ovrs_cblc_qty": "2"}],
+                "output2": [],
+                "ctx_area_fk200": "",
+                "ctx_area_nk200": "",
+                "_response_headers": {"tr_cont": "D"},
+            },
+        ]
+    )
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "tr_id": tr_id,
+                **kwargs,
+            }
+        )
+        return next(pages)
+
+    async def fake_sleep(delay: float) -> None:
+        continuation_delays.append(delay)
+
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", fake_sleep)
+    client._request = fake_request  # type: ignore[method-assign]
+    balance = asyncio.run(client.get_overseas_balance("NASD", "USD"))
+
+    assert [row["ovrs_pdno"] for row in balance["positions"]] == ["AAA", "BBB"]
+    assert balance["position_count"] == 2
+    assert balance["summary"] == {"frcr_buy_amt_smtl1": "100"}
+    assert balance["page_count"] == 2
+    assert balance["tr_cont"] == "D"
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["path"] == client.OVERSEAS_BALANCE_PATH
+    assert calls[0]["tr_id"] == "VTTS3012R"
+    assert calls[0]["include_response_headers"] is True
+    assert calls[1]["params"]["CTX_AREA_FK200"] == "NEXT_FK"
+    assert calls[1]["params"]["CTX_AREA_NK200"] == "NEXT_NK"
+    assert calls[1]["extra_headers"] == {"tr_cont": "N"}
+    assert continuation_delays == [1.0]
+
+
+def test_get_overseas_balance_stops_on_empty_continuation_context(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    calls: list[dict] = []
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        calls.append(kwargs)
+        return {
+            "output1": [{"ovrs_pdno": "AAA"}],
+            "output2": {},
+            "ctx_area_fk200": " ",
+            "ctx_area_nk200": " ",
+            "_response_headers": {"tr_cont": "F"},
+        }
+
+    client._request = fake_request  # type: ignore[method-assign]
+    balance = asyncio.run(client.get_overseas_balance("NASD", "USD"))
+
+    assert balance["position_count"] == 1
+    assert balance["page_count"] == 1
+    assert len(calls) == 1
+
+
 def test_get_overseas_open_orders_uses_production_nccs_and_continuation(
     tmp_path: Path,
 ) -> None:

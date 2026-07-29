@@ -1085,29 +1085,68 @@ class KisRestClient:
         self,
         exchange_code: str,
         currency_code: str,
+        *,
+        paginate: bool = True,
+        max_pages: int = 10,
     ) -> dict[str, Any]:
         cano, product_code = self.account_parts()
         tr_id = "TTTS3012R" if self.credentials.env == "prod" else "VTTS3012R"
-        payload = await self._request(
-            "GET",
-            self.OVERSEAS_BALANCE_PATH,
-            tr_id,
-            params={
-                "CANO": cano,
-                "ACNT_PRDT_CD": product_code,
-                "OVRS_EXCG_CD": exchange_code,
-                "TR_CRCY_CD": currency_code,
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": "",
-            },
-        )
-        positions_raw = payload.get("output1", []) or []
-        summary_raw = payload.get("output2", []) or []
-        positions = positions_raw if isinstance(positions_raw, list) else [positions_raw]
-        if isinstance(summary_raw, list):
-            summary = summary_raw[0] if summary_raw else {}
-        else:
-            summary = summary_raw
+        positions: list[dict[str, Any]] = []
+        summary: dict[str, Any] = {}
+        payload: dict[str, Any] = {}
+        current_fk = ""
+        current_nk = ""
+        seen_contexts: set[tuple[str, str]] = set()
+        page_count = 0
+        page_limit = max(1, int(max_pages))
+        for page_index in range(page_limit):
+            payload = await self._request(
+                "GET",
+                self.OVERSEAS_BALANCE_PATH,
+                tr_id,
+                params={
+                    "CANO": cano,
+                    "ACNT_PRDT_CD": product_code,
+                    "OVRS_EXCG_CD": exchange_code,
+                    "TR_CRCY_CD": currency_code,
+                    "CTX_AREA_FK200": current_fk,
+                    "CTX_AREA_NK200": current_nk,
+                },
+                extra_headers={"tr_cont": "N"} if page_index > 0 else None,
+                include_response_headers=True,
+            )
+            page_count += 1
+            positions_raw = payload.get("output1", []) or []
+            page_positions = (
+                positions_raw if isinstance(positions_raw, list) else [positions_raw]
+            )
+            positions.extend(row for row in page_positions if isinstance(row, dict))
+            summary_raw = payload.get("output2", []) or []
+            if not summary:
+                if isinstance(summary_raw, list):
+                    summary = next(
+                        (row for row in summary_raw if isinstance(row, dict)),
+                        {},
+                    )
+                elif isinstance(summary_raw, dict):
+                    summary = summary_raw
+
+            headers = payload.get("_response_headers", {}) or {}
+            tr_cont = str(headers.get("tr_cont") or "").strip().upper()
+            next_fk = str(payload.get("ctx_area_fk200") or "")
+            next_nk = str(payload.get("ctx_area_nk200") or "")
+            context = (next_fk, next_nk)
+            if (
+                not paginate
+                or tr_cont not in {"M", "F"}
+                or (not next_fk.strip() and not next_nk.strip())
+                or context in seen_contexts
+            ):
+                break
+            seen_contexts.add(context)
+            current_fk, current_nk = next_fk, next_nk
+            if page_index + 1 < page_limit:
+                await self._pace_overseas_history_continuation()
         return {
             "account_masked": self._mask_account(cano),
             "exchange_code": exchange_code,
@@ -1115,6 +1154,12 @@ class KisRestClient:
             "positions": positions,
             "position_count": len(positions),
             "summary": summary,
+            "ctx_area_fk200": payload.get("ctx_area_fk200", ""),
+            "ctx_area_nk200": payload.get("ctx_area_nk200", ""),
+            "tr_cont": str(
+                (payload.get("_response_headers", {}) or {}).get("tr_cont") or ""
+            ),
+            "page_count": page_count,
         }
 
     async def get_overseas_possible_order(

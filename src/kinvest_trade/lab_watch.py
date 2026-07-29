@@ -1014,11 +1014,17 @@ class WatchStateHelper:
         watch_targets: list["WatchTargetStatus"],
         max_concurrent: int = 2,
     ) -> list["DomesticScanResult"]:
+        service = self.service
         candidate_map = {candidate.stock_code: candidate for candidate in domestic_ranked}
         ready_targets = [
             watch_target
             for watch_target in watch_targets
-            if watch_target.market == "domestic" and watch_target.action_bias == "BUY"
+            if watch_target.market == "domestic"
+            and watch_target.action_bias == "BUY"
+            and not service._entry_strategy_block_reason(
+                market=watch_target.market,
+                strategy_flag=watch_target.strategy_flag,
+            )
         ]
         if not ready_targets or max_concurrent <= 0:
             return []

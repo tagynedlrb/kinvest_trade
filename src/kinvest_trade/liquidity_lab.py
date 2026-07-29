@@ -328,6 +328,7 @@ class LiquidityLabService:
         )
         self._strategy_guard_cache: dict[str, object] = {}
         self._last_strategy_guard_blocked_keys: set[tuple[str, str]] = set()
+        self._confirmed_risk_state_restored = False
         self.watch_state = WatchStateHelper(self)
         self.domestic_orders = DomesticOrderHelper(self)
         self.overseas_orders = OverseasOrderHelper(self)
@@ -406,6 +407,8 @@ class LiquidityLabService:
     def _reconcile_confirmed_risk_day_pnl(
         self,
         now: datetime | None = None,
+        *,
+        restore_consecutive: bool = False,
     ) -> dict[str, object]:
         """Rebuild the shared risk-day PnL from broker-confirmed sell fills."""
         current = ensure_timezone(now or datetime.now(timezone.utc))
@@ -443,10 +446,18 @@ class LiquidityLabService:
         overseas_pnl_krw = float(by_market.get("overseas", 0.0))
         previous_risk_day = previous.get("daily_loss_date")
         day_changed = previous_risk_day != risk_day
+        restored_streaks: dict[str, int] | None = None
+        restored_halted_at: dict[str, datetime] | None = None
+        if restore_consecutive:
+            restored_streaks, restored_halted_at = (
+                self._confirmed_consecutive_loss_state(current)
+            )
         cb.load_state(
+            consecutive_losses_by_market=restored_streaks,
             session_realised_krw=total_pnl_krw,
             session_realised_krw_overseas=overseas_pnl_krw,
             daily_loss_date=risk_day,
+            halted_at_by_market=restored_halted_at,
             daily_halted_at=(
                 None if day_changed else previous.get("daily_halted_at")
             ),
@@ -481,11 +492,128 @@ class LiquidityLabService:
                 for market, value in sorted(by_market.items())
             },
         }
+        if restore_consecutive:
+            result["consecutive_losses_by_market"] = dict(
+                restored_streaks or {}
+            )
+            result["consecutive_halted_until_by_market"] = {
+                market: (
+                    halted_at
+                    + timedelta(
+                        minutes=self._market_risk_value(
+                            market,
+                            "circuit_breaker_cooldown_minutes",
+                            int(
+                                getattr(
+                                    self.config.risk,
+                                    "circuit_breaker_cooldown_minutes",
+                                    0,
+                                )
+                                or 0
+                            ),
+                        )
+                    )
+                ).isoformat()
+                for market, halted_at in (restored_halted_at or {}).items()
+            }
+            self._save_event(
+                event_type="cb_state_restored",
+                detail={
+                    "risk_day": risk_day.isoformat(),
+                    "consecutive_losses_by_market": dict(
+                        restored_streaks or {}
+                    ),
+                    "halted_markets": sorted(
+                        (restored_halted_at or {}).keys()
+                    ),
+                },
+            )
         self._save_event(
             event_type="risk_day_pnl_reconciled",
             detail=result,
         )
         return result
+
+    def _market_risk_value(
+        self,
+        market: str,
+        field_name: str,
+        fallback: int,
+    ) -> int:
+        policies = getattr(self.config, "market_policies", None)
+        definition = (
+            getattr(policies, str(market).strip().lower(), None)
+            if policies is not None
+            else None
+        )
+        configured = getattr(definition, field_name, None)
+        return fallback if configured is None else int(configured)
+
+    def _confirmed_consecutive_loss_state(
+        self,
+        current: datetime,
+    ) -> tuple[dict[str, int], dict[str, datetime]]:
+        outcomes = self.repository.get_recent_confirmed_sell_risk_outcomes(
+            limit=1000,
+            cost_pct=0.005,
+        )
+        streaks: dict[str, int] = {}
+        trigger_at: dict[str, datetime] = {}
+        base_threshold = int(
+            getattr(self.config.risk, "max_consecutive_losses", 0) or 0
+        )
+        for row in reversed(outcomes):
+            market = str(row.get("market") or "").strip().lower()
+            if not market:
+                continue
+            net_pnl_pct = float(row.get("net_pnl_pct") or 0.0)
+            if net_pnl_pct >= 0:
+                streaks[market] = 0
+                trigger_at.pop(market, None)
+                continue
+            streaks[market] = streaks.get(market, 0) + 1
+            threshold = self._market_risk_value(
+                market,
+                "max_consecutive_losses",
+                base_threshold,
+            )
+            if threshold > 0 and streaks[market] == threshold:
+                parsed = parse_datetime(str(row.get("logged_at") or ""))
+                if parsed is not None:
+                    trigger_at[market] = ensure_timezone(parsed)
+
+        active_halts: dict[str, datetime] = {}
+        base_cooldown = int(
+            getattr(
+                self.config.risk,
+                "circuit_breaker_cooldown_minutes",
+                0,
+            )
+            or 0
+        )
+        for market, count in list(streaks.items()):
+            threshold = self._market_risk_value(
+                market,
+                "max_consecutive_losses",
+                base_threshold,
+            )
+            started_at = trigger_at.get(market)
+            if threshold <= 0 or count < threshold or started_at is None:
+                continue
+            cooldown_minutes = self._market_risk_value(
+                market,
+                "circuit_breaker_cooldown_minutes",
+                base_cooldown,
+            )
+            if (
+                cooldown_minutes > 0
+                and current
+                >= started_at + timedelta(minutes=cooldown_minutes)
+            ):
+                streaks[market] = 0
+                continue
+            active_halts[market] = started_at
+        return streaks, active_halts
 
     async def _send_circuit_breaker_notification(self, message: str) -> None:
         notifier = getattr(self, "notifier", None)
@@ -2544,6 +2672,39 @@ class LiquidityLabService:
             return 1.0
         return current_delta / avg_past
 
+    def _domestic_dynamic_product_exclusion_reason(
+        self,
+        stock_code: str,
+        stock_name: str,
+    ) -> str:
+        code = str(stock_code or "").strip().upper()
+        name = str(stock_name or "").strip().upper()
+        policy = self._get_market_policy("domestic")
+        auto_trade = policy.auto_trade
+        inverse_symbols = {
+            str(value).strip().upper()
+            for value in getattr(auto_trade, "inverse_etf_symbols", [])
+            if str(value).strip()
+        }
+        leveraged_symbols = {
+            str(value).strip().upper()
+            for value in getattr(auto_trade, "leveraged_etf_symbols", [])
+            if str(value).strip()
+        }
+        if "인버스" in name or "INVERSE" in name:
+            return (
+                "inverse_requires_regime_activation"
+                if code in inverse_symbols
+                else "unapproved_inverse_product"
+            )
+        if (
+            "레버리지" in name
+            or "LEVERAGE" in name
+            or "LEVERAGED" in name
+        ) and code not in leveraged_symbols:
+            return "unapproved_leveraged_product"
+        return ""
+
     async def _refresh_domestic_dynamic_pool(self) -> None:
         ll_cfg = self.config.liquidity_lab
         try:
@@ -2578,42 +2739,77 @@ class LiquidityLabService:
             return
 
         seen: set[str] = set()
+        excluded_seen: set[str] = set()
         codes: list[str] = []
         name_map: dict[str, str] = {}
+        structured_excluded: list[dict[str, str]] = []
         for row in [*vol_rows, *flu_rows]:
             code = str(row.get("stock_code", "")).strip()
             name = str(row.get("hts_kor_isnm", "") or row.get("name", "")).strip()
+            exclusion_reason = self._domestic_dynamic_product_exclusion_reason(
+                code,
+                name,
+            )
+            if code and exclusion_reason:
+                if code not in excluded_seen:
+                    excluded_seen.add(code)
+                    structured_excluded.append(
+                        {
+                            "code": code,
+                            "name": name,
+                            "reason": exclusion_reason,
+                        }
+                    )
+                continue
             if code and name:
                 name_map[code] = name
             if code and code not in seen:
                 seen.add(code)
                 codes.append(code)
         if not codes:
+            self._dynamic_domestic_codes = []
             self._dynamic_domestic_names = {}
             self._save_event(
                 event_type="pool_refresh",
                 market="domestic",
-                detail={"pool_size": 0, "top_names": []},
+                detail={
+                    "pool_size": 0,
+                    "top_names": [],
+                    "structured_excluded_count": len(structured_excluded),
+                    "structured_excluded": structured_excluded,
+                },
             )
             return
         self._dynamic_domestic_codes = codes
         self._dynamic_domestic_names = name_map
-        top_names = [
-            str(row.get("hts_kor_isnm", "") or row.get("name", "")).strip()
-            for row in vol_rows[:5]
-            if row.get("hts_kor_isnm") or row.get("name")
-        ]
+        top_names: list[str] = []
+        for row in vol_rows:
+            code = str(row.get("stock_code", "")).strip()
+            name = str(
+                row.get("hts_kor_isnm", "") or row.get("name", "")
+            ).strip()
+            if code in seen and name:
+                top_names.append(name)
+            if len(top_names) >= 5:
+                break
         self._save_event(
             event_type="pool_refresh",
             market="domestic",
-            detail={"pool_size": len(codes), "top_names": top_names[:5]},
+            detail={
+                "pool_size": len(codes),
+                "top_names": top_names,
+                "structured_excluded_count": len(structured_excluded),
+                "structured_excluded": structured_excluded,
+            },
         )
         _logger.info("domestic_dynamic_pool_refreshed count=%s", len(codes))
         notifier = getattr(self, "notifier", None)
         if notifier is not None and getattr(notifier, "enabled", True):
             try:
                 await notifier.send(
-                    f"🔄 [국내 동적 풀 갱신] {len(codes)}종목\n거래량 상위: {', '.join(top_names)}"
+                    f"🔄 [국내 동적 풀 갱신] {len(codes)}종목\n"
+                    f"거래량 상위: {', '.join(top_names)}\n"
+                    f"미승인 구조화상품 제외: {len(structured_excluded)}종목"
                 )
             except Exception:  # noqa: BLE001
                 _logger.debug("domestic_dynamic_pool_notify_failed", exc_info=True)
@@ -2871,7 +3067,21 @@ class LiquidityLabService:
         )
         if not rows or filled_qty <= 0:
             return False
-        first = rows[0]
+        filled_rows = [
+            row for row in rows if int(row.get("filled_qty") or 0) > 0
+        ]
+        # A replacement group can contain an older canceled intent and the
+        # later order that actually closed the position. Attribute the trade
+        # to the latest filled order so its reason and signal context are not
+        # inherited from an unfilled predecessor.
+        first = max(
+            filled_rows,
+            key=lambda row: (
+                str(row.get("fill_recorded_at") or ""),
+                str(row.get("created_at") or ""),
+                int(row.get("id") or 0),
+            ),
+        )
         context = (
             first.get("context_json")
             if isinstance(first.get("context_json"), dict)
@@ -3348,6 +3558,14 @@ class LiquidityLabService:
                         getattr(self.config.credentials, "env", ""),
                     )
                 },
+            )
+        if not getattr(self, "_confirmed_risk_state_restored", False):
+            restored = self._reconcile_confirmed_risk_day_pnl(
+                now,
+                restore_consecutive=True,
+            )
+            self._confirmed_risk_state_restored = bool(
+                restored.get("reconciled")
             )
         await self._refresh_market_regimes(now)
         now = datetime.now(timezone.utc)
@@ -3905,10 +4123,47 @@ class LiquidityLabService:
         await self._send_summary(report)
         return report
 
+    async def _get_domestic_balance_for_cycle(self) -> dict | None:
+        cycle = int(getattr(self, "_cycle_count", 0) or 0)
+        cache = getattr(self, "_domestic_balance_cache", {}) or {}
+        cached_data = cache.get("data")
+        if cache.get("cycle") == cycle and isinstance(cached_data, dict):
+            return cached_data
+
+        get_balance = getattr(getattr(self, "client", None), "get_balance", None)
+        if not callable(get_balance):
+            return cached_data if isinstance(cached_data, dict) else None
+        try:
+            balance = await get_balance()
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[POSITIONS] 국내 잔고 조회 실패 - %s (error=%s)",
+                "이전 캐시로 대체"
+                if isinstance(cached_data, dict)
+                else "보유종목 없음으로 처리됨(캐시 없음)",
+                exc,
+            )
+            self._save_event(
+                event_type="maintenance_skip",
+                market="domestic",
+                symbol="",
+                detail={
+                    "reason": "domestic_balance_lookup_failed",
+                    "error": str(exc)[:200],
+                },
+            )
+            return cached_data if isinstance(cached_data, dict) else None
+
+        self._domestic_balance_cache = {
+            "cycle": cycle,
+            "data": balance,
+        }
+        return balance
+
     def _held_domestic_codes(self) -> set[str]:
-        # Reuses the balance cache _load_domestic_positions() already
-        # populates (one cycle stale at most) instead of an extra API call --
-        # this only needs to know *which* codes are held, not their qty/price.
+        # The current-cycle balance is primed before quote scanning and reused
+        # by the position loader, so held symbols outside a dynamic rank stay
+        # observable without adding a second balance API call.
         cache = getattr(self, "_domestic_balance_cache", {}) or {}
         data = cache.get("data") or {}
         rows = data.get("positions", []) or data.get("output1", [])
@@ -3954,7 +4209,11 @@ class LiquidityLabService:
         for inverse_symbol in active_inverse_symbols:
             if inverse_symbol not in active_codes:
                 active_codes.append(inverse_symbol)
+        await self._get_domestic_balance_for_cycle()
         held_codes = self._held_domestic_codes()
+        for held_code in sorted(held_codes):
+            if held_code not in active_codes:
+                active_codes.append(held_code)
         monitored_codes = held_codes | open_inverse_shadow_symbols
         quote_results: list[DomesticScanResult] = []
         excluded: list[ExcludedCandidate] = []
@@ -4749,32 +5008,9 @@ class LiquidityLabService:
         domestic_ranked: list[DomesticScanResult],
     ) -> list[DomesticHeldPosition]:
         quote_map = {item.stock_code: item for item in domestic_ranked}
-        try:
-            balance = await self.client.get_balance()
-            self._domestic_balance_cache = {
-                "cycle": getattr(self, "_cycle_count", 0),
-                "data": balance,
-            }
-        except Exception as exc:  # noqa: BLE001
-            # Treating a failed balance lookup as "zero domestic holdings"
-            # would silently drop a real held position from stop-loss/exit
-            # monitoring for this cycle. Fall back to the last known-good
-            # balance snapshot instead of pretending we hold nothing.
-            cached = getattr(self, "_domestic_balance_cache", {}) or {}
-            balance = cached.get("data")
-            _logger.warning(
-                "[POSITIONS] 국내 잔고 조회 실패 - %s (error=%s)",
-                "이전 캐시로 대체" if balance else "보유종목 없음으로 처리됨(캐시 없음)",
-                exc,
-            )
-            self._save_event(
-                event_type="maintenance_skip",
-                market="domestic",
-                symbol="",
-                detail={"reason": "domestic_balance_lookup_failed", "error": str(exc)[:200]},
-            )
-            if not balance:
-                return []
+        balance = await self._get_domestic_balance_for_cycle()
+        if not balance:
+            return []
 
         positions: list[DomesticHeldPosition] = []
         rows = balance.get("positions", []) or balance.get("output1", [])

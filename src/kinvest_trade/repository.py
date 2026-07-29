@@ -3302,6 +3302,47 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_recent_confirmed_sell_risk_outcomes(
+        self,
+        *,
+        limit: int = 1000,
+        cost_pct: float = 0.005,
+    ) -> list[dict]:
+        """Return recent confirmed sell outcomes for risk-state restoration."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    id,
+                    logged_at,
+                    market,
+                    CASE
+                        WHEN lower(market) = 'overseas'
+                          AND net_pnl_usd IS NOT NULL
+                          AND COALESCE(entry_price, 0) > 0
+                          AND COALESCE(qty_executed, 0) > 0
+                        THEN net_pnl_usd / (entry_price * qty_executed)
+                        WHEN lower(market) = 'domestic'
+                          AND net_pnl_krw IS NOT NULL
+                          AND COALESCE(entry_price, 0) > 0
+                          AND COALESCE(qty_executed, 0) > 0
+                        THEN net_pnl_krw / (entry_price * qty_executed)
+                        ELSE COALESCE(pnl_pct, 0) - ?
+                    END AS net_pnl_pct
+                FROM cycle_log
+                WHERE action_bias = 'SELL_REAL'
+                  AND COALESCE(qty_executed, 0) > 0
+                  AND {CONFIRMED_SELL_CYCLE_PREDICATE}
+                ORDER BY logged_at DESC, id DESC
+                LIMIT ?
+                """,
+                (
+                    float(cost_pct),
+                    max(1, int(limit)),
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def create_paper_run(
         self,
         mode: str,

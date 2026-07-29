@@ -110,6 +110,11 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   historical row cannot contaminate the current risk day. Persisted runtime
   state remains the fallback if this query fails; a stale calendar date or
   restart-local subtotal must not replace the confirmed ledger.
+- Before the first order decision after restart, replay recent confirmed exits
+  in execution-time order and restore each market's trailing net-loss streak.
+  If the streak crossed its market threshold, anchor the remaining cooldown to
+  the confirmed exit that first crossed it. Do not erase a live cooldown or
+  restart an already expired cooldown from process startup time.
 - KIS aggregate order-history rows expose filled quantity and price but only an
   order timestamp, not a distinct fill timestamp. Treat that timestamp as the
   best available effective time, name the source in the audit event, and retain
@@ -134,9 +139,10 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   may update only these derived fields, only when no fully filled sell
   intervenes; raw execution rows remain immutable evidence.
 - A replacement order may carry a newer, more severe exit signal. Performance
-  attribution still uses the first sell submission's reason and signal
-  snapshot because that decision initiated the exit. Replacement latency and
-  its later signal remain available in the raw execution group for audit.
+  attribution uses the latest order in the execution group with positive
+  confirmed fill quantity, because an unfilled predecessor did not execute the
+  trade. Keep the earlier intent, replacement latency, and every raw execution
+  row for audit.
 - A fill caused by a missing safety state still counts in account PnL and risk.
   It is incident evidence, not evidence for loosening the entry formula; its
   policy attribution must be called out in later regime reviews.
@@ -195,10 +201,28 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   declared horizons and require multiple final benchmark sessions before
   changing a market's hold hysteresis. Keep hard stops outside that delay.
 
+## Strategy loss guards
+
+- The initial lookback, sample, and loss thresholds may be copied across
+  markets, but every blocked key is `(market, strategy_flag)`. A domestic loss
+  never blocks the corresponding overseas strategy, or vice versa.
+- Recheck the guard both while building executable watch targets and directly
+  before broker submission. A stale target or cache transition must not bypass
+  a newly active loss guard.
+- A temporary guard is not a permanent formula verdict. Keep combinations and
+  independently performing strategies open, and require final market-regime
+  evidence across multiple sessions before converting it to a fixed block.
+
 ## Down-market inverse policy
 
 - Domestic inverse symbols and US inverse symbols are separately configured;
   evidence from one market never activates the other.
+- A KRX dynamic-rank row whose name identifies an inverse or leveraged product
+  must match that product class's explicit domestic allowlist. Approved inverse
+  products enter only through the local benchmark-regime path; unapproved
+  structured products cannot fall through to the ordinary long formula.
+- A currently held domestic product remains in quote and exit monitoring even
+  when it is no longer in the dynamic rank or is ineligible for a new entry.
 - A candidate is eligible only when the same local session's benchmark is down
   at least 1%, its benchmark trend is down, and the inverse product itself has
   a rising intraday trend, positive current momentum, and market-specific

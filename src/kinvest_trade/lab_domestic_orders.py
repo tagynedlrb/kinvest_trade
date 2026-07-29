@@ -62,6 +62,31 @@ class DomesticOrderHelper:
                 "candidate": asdict(candidate),
                 "reason": inverse_block_reason,
             }
+        block_reason = service._entry_strategy_block_reason(
+            market="domestic",
+            strategy_flag=strategy_flag,
+        )
+        if block_reason:
+            service._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason=block_reason,
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+            )
+            return {
+                "skipped": True,
+                "market": "domestic",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": block_reason,
+            }
         config = service.config.liquidity_lab
         qty = config.domestic_test_order_qty
         if config.use_slot_sizing:

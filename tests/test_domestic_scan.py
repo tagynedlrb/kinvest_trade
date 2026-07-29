@@ -102,3 +102,48 @@ def test_open_inverse_shadow_exempt_from_speculative_liquidity_filter() -> None:
 
     assert "042660" in [item.stock_code for item in ranked]
     assert "042660" not in [item.code for item in service._domestic_excluded]
+
+
+def test_held_domestic_symbol_is_scanned_outside_dynamic_pool() -> None:
+    service = _build_service()
+    service._dynamic_domestic_codes = ["005930"]
+    service._cycle_count = 1
+
+    class BalanceClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_balance(self):
+            self.calls += 1
+            return {
+                "positions": [
+                    {
+                        "pdno": "999999",
+                        "hldg_qty": "4",
+                        "ord_psbl_qty": "4",
+                        "pchs_avg_pric": "80000",
+                        "prpr": "81000",
+                    }
+                ]
+            }
+
+    service.client = BalanceClient()
+
+    async def fake_quote(stock_code):
+        return _quote(stock_code, thin=False)
+
+    async def fake_full(stock_code):
+        return _quote(stock_code, thin=False)
+
+    service._scan_single_domestic_quote = fake_quote
+    service._scan_single_domestic = fake_full
+
+    async def run_scan_and_positions():
+        ranked = await service.scan_domestic()
+        positions = await service._load_domestic_positions(ranked)
+        return ranked, positions
+
+    ranked, positions = asyncio.run(run_scan_and_positions())
+    assert "999999" in [item.stock_code for item in ranked]
+    assert [position.stock_code for position in positions] == ["999999"]
+    assert service.client.calls == 1

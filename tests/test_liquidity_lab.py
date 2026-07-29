@@ -2504,7 +2504,7 @@ def test_overseas_partial_fill_and_replacement_finalize_once_as_one_trade() -> N
         service,
         replacement_candidate,
         replacement_held,
-        "trend_filter_lost",
+        "atr_hard_stop",
     )
 
     executions = service.repository.list_unfinalized_broker_executions()
@@ -2572,6 +2572,13 @@ def test_overseas_partial_fill_and_replacement_finalize_once_as_one_trade() -> N
     assert len(rows) == 1
     assert rows[0]["qty_executed"] == 2
     assert abs(rows[0]["price"] - 281.45) < 1e-9
+    assert rows[0]["action_reason"] == "atr_hard_stop"
+    assert rows[0]["exit_by"] == "atr_hard_stop"
+    confirmed = service.repository.list_event_log(
+        event_type="execution_confirmed",
+        limit=1,
+    )
+    assert json.loads(confirmed[0]["detail"])["exit_reason"] == "atr_hard_stop"
     assert service.repository.list_unfinalized_broker_executions() == []
 
 
@@ -4443,6 +4450,82 @@ def test_domestic_buy_rejected_marks_skipped_true() -> None:
     assert service.notifier.messages == []
 
 
+def test_place_domestic_test_order_blocks_recent_underperforming_strategy_before_submission(
+    save_confirmed_sell,
+) -> None:
+    class FailingDomesticClient:
+        async def get_domestic_order_history(self, **_kwargs):
+            raise AssertionError("open-order API should not be called")
+
+        async def place_cash_order(self, **_kwargs):
+            raise AssertionError("cash-order API should not be called")
+
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
+    service.config.liquidity_lab.strategy_guard_markets = ["domestic", "overseas"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["VWAP"]
+    service.client = FailingDomesticClient()
+    now = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=now,
+            market="domestic",
+            symbol=f"LOSS{idx}",
+            exchange_code="KRX",
+            action_reason="atr_hard_stop",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+            entry_price=10_000.0,
+            qty_executed=1,
+            net_pnl_krw=-100.0,
+        )
+    snapshot = _snapshot(price=82000.0, vwap=81950.0, rsi14=45.0)
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82000,
+        best_ask=82050,
+        best_bid=81950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+        stock_name="삼성전자",
+    )
+    watch_target = WatchTargetStatus(
+        market="domestic",
+        code="005930",
+        exchange_code=None,
+        price=82000.0,
+        activity_score=11.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 5>20",
+        note="[VWAP] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(
+        service._place_domestic_test_order(
+            candidate,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "recent_strategy_underperformance"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["symbol"] == "005930"
+    assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
+
+
 def test_domestic_buy_skips_when_recent_pending_buy_exists() -> None:
     # Regression test: unlike the overseas buy path, the domestic buy path had
     # no pending-buy-order duplicate check at all. A restart between
@@ -4852,6 +4935,97 @@ def test_select_domestic_buy_targets_returns_empty_when_no_buy() -> None:
     assert selected == []
 
 
+def test_select_domestic_buy_targets_excludes_recent_underperforming_strategy(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
+    service.config.liquidity_lab.strategy_guard_markets = ["domestic", "overseas"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["VWAP", "VOL"]
+    now = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=now,
+            market="domestic",
+            symbol=f"VWAP{idx}",
+            exchange_code="KRX",
+            action_reason="atr_hard_stop",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+            entry_price=10_000.0,
+            qty_executed=1,
+            net_pnl_krw=-100.0,
+        )
+    ranked = [
+        DomesticScanResult(
+            "005930",
+            82000,
+            82050,
+            81950,
+            0.0012,
+            0.003,
+            100_000_000_000,
+            500_000,
+            18.0,
+        ),
+        DomesticScanResult(
+            "000660",
+            210000,
+            210500,
+            209500,
+            0.0015,
+            0.004,
+            90_000_000_000,
+            420_000,
+            17.0,
+        ),
+    ]
+    watch_targets = [
+        WatchTargetStatus(
+            "domestic",
+            "005930",
+            None,
+            82000.0,
+            18.0,
+            12.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[VWAP] strategy_buy_signal",
+            0,
+            strategy_flag="VWAP",
+            entry_by="VWAP",
+        ),
+        WatchTargetStatus(
+            "domestic",
+            "000660",
+            None,
+            210000.0,
+            17.0,
+            11.0,
+            "BUY",
+            "BUY_READY",
+            "20d>60d 5>20",
+            "[VOL] strategy_buy_signal",
+            0,
+            strategy_flag="VOL",
+            entry_by="VOL",
+        ),
+    ]
+
+    selected = service._select_domestic_buy_targets(
+        ranked,
+        watch_targets,
+        max_concurrent=2,
+    )
+
+    assert [item.stock_code for item in selected] == ["000660"]
+
+
 def _build_run_service() -> LiquidityLabService:
     service = LiquidityLabService.__new__(LiquidityLabService)
     project_root = Path(__file__).resolve().parents[1]
@@ -5043,6 +5217,53 @@ def test_reconcile_confirmed_risk_day_pnl_rearms_daily_limit(
     assert json.loads(events[0]["detail"])["type"] == "daily_limit"
 
 
+def test_reconcile_confirmed_risk_day_pnl_restores_consecutive_breaker_after_restart(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.risk.max_consecutive_losses = 3
+    service.config.risk.circuit_breaker_cooldown_minutes = 30
+    now = datetime.now(timezone.utc)
+    for idx, minutes_ago in enumerate((10, 5, 1)):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=(now - timedelta(minutes=minutes_ago)).isoformat(),
+            market="domestic",
+            symbol=f"LOSS{idx}",
+            exchange_code="KRX",
+            action_reason="atr_hard_stop",
+            strategy_flag="VWAP",
+            pnl_pct=-0.01,
+            entry_price=10_000.0,
+            qty_executed=1,
+            net_pnl_krw=-100.0,
+        )
+
+    result = service._reconcile_confirmed_risk_day_pnl(
+        now,
+        restore_consecutive=True,
+    )
+
+    assert result["consecutive_losses_by_market"] == {"domestic": 3}
+    assert result["consecutive_halted_until_by_market"] == {
+        "domestic": (now + timedelta(minutes=29)).isoformat()
+    }
+    assert service._consecutive_losses_for_market("domestic") == 3
+    assert service._is_trading_halted("domestic") is True
+    assert service._is_trading_halted("overseas") is False
+    restored = service.repository.list_event_log(
+        event_type="cb_state_restored",
+        limit=1,
+    )
+    assert json.loads(restored[0]["detail"])["halted_markets"] == ["domestic"]
+
+    expired_streaks, expired_halts = service._confirmed_consecutive_loss_state(
+        now + timedelta(minutes=30)
+    )
+    assert expired_streaks == {"domestic": 0}
+    assert expired_halts == {}
+
+
 def _save_test_regime(
     service: LiquidityLabService,
     *,
@@ -5118,6 +5339,76 @@ def test_inverse_candidates_reject_stale_benchmark_regime() -> None:
         service._inverse_regime_decision("domestic", "252670", now=now).reason
         == "inverse_benchmark_regime_stale"
     )
+
+
+def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service._domestic_fluctuation_rank_disabled = True
+    service.notifier = None
+
+    async def fake_volume_rank(**_kwargs):
+        return [
+            {
+                "stock_code": "0197X0",
+                "name": "SOL SK하이닉스선물단일종목인버스2X",
+            },
+            {
+                "stock_code": "252670",
+                "name": "KODEX 200선물인버스2X",
+            },
+            {
+                "stock_code": "233740",
+                "name": "KODEX 코스닥150레버리지",
+            },
+            {
+                "stock_code": "122630",
+                "name": "KODEX 레버리지",
+            },
+            {
+                "stock_code": "005930",
+                "name": "삼성전자",
+            },
+        ]
+
+    service.client = SimpleNamespace(
+        get_domestic_volume_rank=fake_volume_rank,
+    )
+
+    asyncio.run(service._refresh_domestic_dynamic_pool())
+
+    assert service._dynamic_domestic_codes == ["122630", "005930"]
+    assert service._dynamic_domestic_names == {
+        "122630": "KODEX 레버리지",
+        "005930": "삼성전자",
+    }
+    event = service.repository.list_event_log(
+        event_type="pool_refresh",
+    )[0]
+    assert event["market"] == "domestic"
+    detail = json.loads(event["detail"])
+    assert detail["top_names"] == ["KODEX 레버리지", "삼성전자"]
+    assert detail["structured_excluded_count"] == 3
+    assert detail["structured_excluded"] == [
+        {
+            "code": "0197X0",
+            "name": "SOL SK하이닉스선물단일종목인버스2X",
+            "reason": "unapproved_inverse_product",
+        },
+        {
+            "code": "252670",
+            "name": "KODEX 200선물인버스2X",
+            "reason": "inverse_requires_regime_activation",
+        },
+        {
+            "code": "233740",
+            "name": "KODEX 코스닥150레버리지",
+            "reason": "unapproved_leveraged_product",
+        },
+    ]
 
 
 def test_inverse_regime_observation_is_deduplicated_across_service_restart() -> None:

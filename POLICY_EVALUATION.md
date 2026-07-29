@@ -878,7 +878,56 @@ an actually executed lower-context/model review. Never invent another model's
 result. Every later review should actively ask what evidence would show that
 the current direction is wrong.
 
-## Current decision checkpoint
+## Current decision checkpoint (2026-07-30 KST)
+
+- Three-day confirmed frequency is 11 domestic buys/11 exits and 53 US
+  buys/46 strategy-owned exits. Account-wide confirmed outcomes are 12
+  domestic exits, 17% wins, -0.785% average net and -83,147 KRW; and 52 US
+  exits, 29% wins, -0.245% average net and -864,172 KRW. This is negative
+  after-cost expectancy, not evidence for increasing turnover.
+- The latest final regimes are KOSPI 5,663.24, -5.9834%,
+  `strong_down|normal|extreme`, and NASDAQ Composite 24,442.94, -1.7445%,
+  `strong_down|normal|high`. Regime buckets still require at least five exits
+  across three final sessions before a formula change. A final regime
+  contextualizes an outcome; it does not prove the entry-time index state or
+  override symbol-level relative strength by itself.
+- Domestic standalone VWAP has 23 confirmed session-owned exits, five wins,
+  -126,272.58 KRW total and -0.6203% mean net return. The latest three lost
+  -44,335.36 KRW and all fail the current common entry formula on volume.
+  Deploy `entry_confirmation_strategy_flags=["VWAP"]` for domestic only.
+  Keep momentum-ready VWAP opportunities open and log weak signals as
+  `strategy_confirmation_*` waits.
+- Classify `233740` as leveraged so it receives the domestic dual-trend
+  protection. Its four exits, two wins and -0.1049% average net do not justify
+  expanding the scanner universe. Keep dynamic leveraged approval at
+  `["122630"]`; classification and candidate approval are separate policies.
+- Do not copy this confirmation policy to the US market. On the same latest
+  down session, US `VWAP+RSI` had four exits, three wins and +0.2594% mean net,
+  while `VWAP+VOL`, `VOL+RSI`, and `VWAP+VOL+RSI` were negative. Preserve
+  market-specific labels and the existing rolling US guard rather than impose
+  a broad crash-day long ban.
+- Inverse execution remains shadow-only. Every completed inverse observation
+  predates `product_exact_v1` benchmark alignment; there is no exact-alignment
+  entry sample yet. SQQQ now uses NDX, SPXU uses SPX, domestic inverse products
+  use F-KOSPI200, and SOXS fails closed until its exact NYSE Semiconductor
+  source exists. Legacy proxy outcomes remain implementation evidence only.
+- Commit `82853ff` passed 794 repository tests, `compileall`, and diff checks.
+  Two KIS open-order checks found zero domestic and zero overseas orders. The
+  restarted service completed cycle 20128 with no order, no runtime error, and
+  no failed or retried API call. `policy_evaluation_log.id=86` remains
+  forward-counterfactual pending; no direct lower-model comparison was run or
+  inferred.
+- Falsification: compare each `strategy_confirmation_*` wait at 15/30/60
+  minutes after costs and by final regime. Narrow or revert after at least
+  three final sessions if blocked opportunity cost exceeds avoided losses, if
+  momentum-ready VWAP entries are blocked, or if US, inverse, or exit behavior
+  changes.
+
+### Prior snapshots (superseded by the checkpoint above)
+
+The observations below are retained as time-stamped reasoning history. Counts,
+open-position state, provisional regimes, and unresolved-order statements are
+not current operating status.
 
 - Domestic: the seven-day session-owned ledger has eleven confirmed entries
   and eleven exits; the account ledger has twelve confirmed exits, two

@@ -2009,6 +2009,78 @@ def test_lab_report_wait_command_reports_wait_bottlenecks(tmp_path) -> None:
     assert "volume_low" in message
 
 
+def test_lab_report_wait_forward_command_reports_deduplicated_returns(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_wait_forward_report.db")
+    now = datetime.now(timezone.utc)
+    regular_time = next(
+        candidate
+        for minutes_ago in range(10, 7 * 24 * 60)
+        if (
+            candidate := now - timedelta(minutes=minutes_ago)
+        ).weekday()
+        < 5
+        and telegram_control_module.is_us_orderable_session_for_env(
+            candidate,
+            "vps",
+        )
+        and telegram_control_module.is_us_orderable_session_for_env(
+            candidate + timedelta(minutes=15),
+            "vps",
+        )
+    )
+    repository.save_cycle_log(
+        logged_at=regular_time.isoformat(),
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="WAIT",
+        action_reason="volume_low",
+        strategy_flag="VOL",
+        price=100.0,
+    )
+    repository.save_cycle_log(
+        logged_at=(regular_time + timedelta(minutes=15)).isoformat(),
+        market="overseas",
+        symbol="PLTR",
+        exchange_code="NYSE",
+        action_bias="HOLD",
+        action_reason="watch",
+        strategy_flag="VOL",
+        price=101.0,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_report wait-forward 168",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][전략리포트]" in message
+    assert "기준=cycle_log WAIT 에피소드·마감 시장레짐" in message
+    assert "[WAIT 선행성과] 범위=최근 168시간" in message
+    assert "주문가능세션=vps" in message
+    assert "raw=1 ep=1" in message
+    assert "15m n=1/1(100%)" in message
+    assert "최소비용Net=+0.500%" in message
+
+
 def test_lab_guard_command_reports_current_strategy_guard_state(
     tmp_path,
     save_confirmed_sell,

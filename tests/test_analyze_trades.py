@@ -8,6 +8,7 @@ from scripts.analyze_trades import (
     main,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
+    summarize_wait_forward_performance,
 )
 from kinvest_trade.repository import SqliteRepository
 
@@ -362,6 +363,74 @@ def test_summarize_wait_bottlenecks_groups_recent_wait_rows(tmp_path) -> None:
     assert "vr=0.30" in output
     assert "rsi=56.0" in output
     assert "domestic" not in output
+
+
+def test_wait_forward_performance_deduplicates_scans_and_uses_market_cost_floor(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "wait_forward.db")
+    _save_final_domestic_regime(repository, "2026-07-29")
+    for logged_at, symbol, action_bias, reason, price in (
+        ("2026-07-29T00:00:00+00:00", "AAA", "WAIT", "volume_low", 100.0),
+        ("2026-07-29T00:01:00+00:00", "AAA", "WAIT", "volume_low", 100.0),
+        ("2026-07-29T00:15:00+00:00", "AAA", "HOLD", "watch", 102.0),
+        ("2026-07-29T00:00:00+00:00", "BBB", "WAIT", "volume_low", 200.0),
+        ("2026-07-29T00:15:00+00:00", "BBB", "HOLD", "watch", 198.0),
+    ):
+        repository.save_cycle_log(
+            logged_at=logged_at,
+            market="domestic",
+            symbol=symbol,
+            exchange_code="KRX",
+            action_bias=action_bias,
+            action_reason=reason,
+            strategy_flag="VOL",
+            price=price,
+        )
+
+    output = summarize_wait_forward_performance(
+        repository.db_path,
+        hours=24,
+        market="domestic",
+        reason="volume_low",
+        horizons=(15,),
+        now=datetime(2026, 7, 29, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert "[WAIT 선행성과]" in output
+    assert "주문가능세션=vps" in output
+    assert "raw=3 ep=2" in output
+    assert "급락/매우활발/극단변동·확정" in output
+    assert "15m n=2/2(100%)" in output
+    assert "Gross=+0.500%" in output
+    assert "양수=50%" in output
+    assert "최소비용Net=+0.470%" in output
+    assert "국장 0.03%·미장 0.50%" in output
+
+
+def test_compare_before_after_uses_market_specific_fallback_costs(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "market_cost_fallback.db")
+    for symbol, product_type in (("ETF1", "ETF"), ("STOCK1", "STOCK")):
+        save_confirmed_sell(
+            repository,
+            logged_at="2026-07-09T16:00:00+00:00",
+            market="domestic",
+            symbol=symbol,
+            exchange_code="KRX",
+            action_bias="SELL_REAL",
+            action_reason="take_profit",
+            strategy_flag="VOL",
+            pnl_pct=0.01,
+            product_type=product_type,
+        )
+
+    output = compare_before_after(repository.db_path, "2026-07-10")
+
+    assert "domestic VOL" in output
+    assert "net=+0.870%" in output
 
 
 def _save_final_domestic_regime(

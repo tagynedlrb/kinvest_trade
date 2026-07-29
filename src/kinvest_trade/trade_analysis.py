@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 import sqlite3
+import statistics
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .auto_trade_math import is_domestic_sell_tax_exempt
+from .market_sessions import (
+    is_krx_regular_session,
+    is_us_orderable_session_for_env,
+)
 from .repository import CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE
 
-DEFAULT_COST_PCT = 0.005
+DEFAULT_OVERSEAS_COST_PCT = 0.005
+DEFAULT_DOMESTIC_COMMISSION_PCT = 0.00015
+DEFAULT_DOMESTIC_SELL_TAX_PCT = 0.002
+DEFAULT_DOMESTIC_TAX_EXEMPT_COST_PCT = DEFAULT_DOMESTIC_COMMISSION_PCT * 2
+DEFAULT_DOMESTIC_STOCK_COST_PCT = (
+    DEFAULT_DOMESTIC_TAX_EXEMPT_COST_PCT + DEFAULT_DOMESTIC_SELL_TAX_PCT
+)
+DEFAULT_COST_PCT = DEFAULT_OVERSEAS_COST_PCT
 MIN_REGIME_TRADES = 5
 MIN_REGIME_DAYS = 3
 
@@ -112,14 +126,35 @@ def _net_pnl_pct_expr(conn: sqlite3.Connection) -> str:
             if has_net_krw
             else ""
         )
+        fallback_expr = _fallback_net_pnl_pct_expr(conn)
         return (
             "CASE "
             f"{overseas_expr} "
             f"{domestic_expr} "
-            f"ELSE COALESCE(pnl_pct, 0) - {DEFAULT_COST_PCT} "
+            f"ELSE {fallback_expr} "
             "END"
         )
-    return f"COALESCE(pnl_pct, 0) - {DEFAULT_COST_PCT}"
+    return _fallback_net_pnl_pct_expr(conn)
+
+
+def _fallback_net_pnl_pct_expr(conn: sqlite3.Connection) -> str:
+    domestic_cost_expr = str(DEFAULT_DOMESTIC_STOCK_COST_PCT)
+    if _has_column(conn, "cycle_log", "product_type"):
+        tax_exempt_conditions = " OR ".join(
+            f"UPPER(COALESCE(product_type, '')) LIKE '%{marker}%'"
+            for marker in ("ETF", "ETN", "ELW")
+        )
+        domestic_cost_expr = (
+            f"CASE WHEN {tax_exempt_conditions} "
+            f"THEN {DEFAULT_DOMESTIC_TAX_EXEMPT_COST_PCT} "
+            f"ELSE {DEFAULT_DOMESTIC_STOCK_COST_PCT} END"
+        )
+    return (
+        "COALESCE(pnl_pct, 0) - "
+        "CASE WHEN LOWER(COALESCE(market, '')) = 'domestic' "
+        f"THEN ({domestic_cost_expr}) "
+        f"ELSE {DEFAULT_OVERSEAS_COST_PCT} END"
+    )
 
 
 def compare_before_after(db_path: Path | str, cutoff_date: str) -> str:
@@ -239,6 +274,338 @@ def summarize_wait_bottlenecks(
         conn.close()
 
 
+def _parse_logged_at(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _regime_key_label(regime_key: str) -> str:
+    return "/".join(
+        _REGIME_LABELS.get(part, part)
+        for part in str(regime_key or "unknown").split("|")
+    )
+
+
+def _minimum_round_trip_cost_pct(market: str) -> float:
+    if str(market).strip().lower() == "domestic":
+        return DEFAULT_DOMESTIC_TAX_EXEMPT_COST_PCT
+    return DEFAULT_OVERSEAS_COST_PCT
+
+
+def summarize_wait_forward_performance(
+    db_path: Path | str,
+    *,
+    hours: int = 72,
+    limit: int = 8,
+    market: str = "",
+    reason: str = "",
+    episode_gap_minutes: int = 5,
+    price_tolerance_minutes: int = 5,
+    horizons: tuple[int, ...] = (15, 30, 60),
+    orderable_env: str = "vps",
+    now: datetime | None = None,
+) -> str:
+    """Measure blocked-entry opportunity cost without counting repeated scans."""
+    lookback_hours = max(1, int(hours or 72))
+    row_limit = max(1, int(limit or 8))
+    gap_minutes = max(1, int(episode_gap_minutes or 5))
+    tolerance_minutes = max(1, int(price_tolerance_minutes or 5))
+    normalized_market = str(market or "").strip().lower()
+    if normalized_market and normalized_market not in {"domestic", "overseas"}:
+        raise ValueError("market must be domestic or overseas")
+    normalized_reason = str(reason or "").strip()
+    normalized_env = str(orderable_env or "vps").strip().lower()
+    if normalized_env not in {"vps", "prod"}:
+        raise ValueError("orderable_env must be vps or prod")
+    horizon_values = tuple(
+        sorted({max(1, int(value)) for value in horizons if int(value) > 0})
+    )
+    if not horizon_values:
+        raise ValueError("at least one positive horizon is required")
+
+    analysis_now = now or datetime.now(timezone.utc)
+    if analysis_now.tzinfo is None:
+        analysis_now = analysis_now.replace(tzinfo=timezone.utc)
+    analysis_now = analysis_now.astimezone(timezone.utc)
+    cutoff = analysis_now - timedelta(hours=lookback_hours)
+    expanded_cutoff = cutoff - timedelta(minutes=gap_minutes)
+
+    conn = sqlite3.connect(Path(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        where = [
+            "logged_at >= ?",
+            "logged_at <= ?",
+            "COALESCE(price, 0) > 0",
+        ]
+        params: list[object] = [
+            expanded_cutoff.isoformat(),
+            analysis_now.isoformat(),
+        ]
+        if normalized_market:
+            where.append("LOWER(market) = ?")
+            params.append(normalized_market)
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT
+                    id, logged_at, market, symbol, action_bias,
+                    action_reason, price, strategy_flag
+                FROM cycle_log
+                WHERE {" AND ".join(where)}
+                ORDER BY logged_at ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+        ]
+        parsed_rows: list[dict[str, object]] = []
+        for row in rows:
+            logged_at = _parse_logged_at(row.get("logged_at"))
+            if logged_at is None:
+                continue
+            market_name = str(row.get("market") or "").strip().lower()
+            if market_name == "domestic":
+                if not is_krx_regular_session(logged_at):
+                    continue
+            elif market_name == "overseas":
+                if not is_us_orderable_session_for_env(logged_at, normalized_env):
+                    continue
+            else:
+                continue
+            row["_logged_at"] = logged_at
+            row["_session_date"] = _cycle_session_date(row)
+            parsed_rows.append(row)
+
+        regime_map: dict[tuple[str, str], dict[str, object]] = {}
+        if _has_table(conn, "market_regimes"):
+            regime_map = {
+                (
+                    str(row["market"] or "").strip().lower(),
+                    str(row["session_date"] or ""),
+                ): dict(row)
+                for row in conn.execute("SELECT * FROM market_regimes").fetchall()
+            }
+
+        sequences: dict[
+            tuple[str, str, str],
+            tuple[list[datetime], list[dict[str, object]]],
+        ] = {}
+        sequence_rows: dict[
+            tuple[str, str, str],
+            list[dict[str, object]],
+        ] = defaultdict(list)
+        session_latest: dict[tuple[str, str], datetime] = {}
+        for row in parsed_rows:
+            market_name = str(row.get("market") or "").strip().lower()
+            symbol = str(row.get("symbol") or "").strip()
+            session_date = str(row.get("_session_date") or "")
+            logged_at = row.get("_logged_at")
+            if not symbol or not session_date or not isinstance(logged_at, datetime):
+                continue
+            sequence_rows[(market_name, symbol, session_date)].append(row)
+            session_key = (market_name, session_date)
+            previous_latest = session_latest.get(session_key)
+            if previous_latest is None or logged_at > previous_latest:
+                session_latest[session_key] = logged_at
+        for key, grouped_rows in sequence_rows.items():
+            sequences[key] = (
+                [
+                    row["_logged_at"]
+                    for row in grouped_rows
+                    if isinstance(row.get("_logged_at"), datetime)
+                ],
+                grouped_rows,
+            )
+
+        buckets: dict[
+            tuple[str, str, str, int],
+            dict[str, object],
+        ] = defaultdict(
+            lambda: {
+                "raw": 0,
+                "episodes": [],
+                "dates": set(),
+                "symbols": set(),
+                "strategies": defaultdict(int),
+            }
+        )
+        last_reason_at: dict[tuple[str, str, str, str], datetime] = {}
+        for row in parsed_rows:
+            logged_at = row.get("_logged_at")
+            if not isinstance(logged_at, datetime):
+                continue
+            if str(row.get("action_bias") or "").upper() != "WAIT":
+                continue
+            row_reason = str(row.get("action_reason") or "N/A").strip() or "N/A"
+            if normalized_reason and row_reason != normalized_reason:
+                continue
+            market_name = str(row.get("market") or "").strip().lower()
+            symbol = str(row.get("symbol") or "").strip()
+            session_date = str(row.get("_session_date") or "")
+            episode_key = (market_name, symbol, session_date, row_reason)
+            previous = last_reason_at.get(episode_key)
+            last_reason_at[episode_key] = logged_at
+            if logged_at < cutoff:
+                continue
+            regime = regime_map.get((market_name, session_date), {})
+            regime_key = str(regime.get("regime_key") or "unknown")
+            is_final = int(regime.get("is_final") or 0)
+            bucket_key = (market_name, row_reason, regime_key, is_final)
+            bucket = buckets[bucket_key]
+            bucket["raw"] = int(bucket["raw"]) + 1
+
+            if previous is not None and (
+                logged_at - previous < timedelta(minutes=gap_minutes)
+            ):
+                continue
+            episodes = bucket["episodes"]
+            if isinstance(episodes, list):
+                episodes.append(row)
+            dates = bucket["dates"]
+            if isinstance(dates, set):
+                dates.add(session_date)
+            symbols = bucket["symbols"]
+            if isinstance(symbols, set):
+                symbols.add(symbol)
+            strategies = bucket["strategies"]
+            if isinstance(strategies, defaultdict):
+                strategy = str(row.get("strategy_flag") or "N/A").strip() or "N/A"
+                strategies[strategy] += 1
+
+        result = [
+            (
+                f"[WAIT 선행성과] 범위=최근 {lookback_hours}시간 "
+                f"주문가능세션={normalized_env} "
+                f"에피소드간격={gap_minutes}분 가격허용오차={tolerance_minutes}분"
+            ),
+            (
+                "  정의=동일 시장·종목·사유가 간격 이상 끊긴 뒤 첫 WAIT; "
+                "동일 세션 목표시각 직전 관측가"
+            ),
+        ]
+        if not buckets:
+            result.append("  표본=없음")
+            return "\n".join(result)
+
+        sorted_buckets = sorted(
+            buckets.items(),
+            key=lambda item: (
+                -len(item[1]["episodes"]),
+                item[0][0],
+                item[0][1],
+                item[0][2],
+            ),
+        )
+        for (market_name, row_reason, regime_key, is_final), bucket in sorted_buckets[
+            :row_limit
+        ]:
+            episodes = (
+                bucket["episodes"]
+                if isinstance(bucket["episodes"], list)
+                else []
+            )
+            dates = bucket["dates"] if isinstance(bucket["dates"], set) else set()
+            symbols = (
+                bucket["symbols"]
+                if isinstance(bucket["symbols"], set)
+                else set()
+            )
+            strategies = bucket["strategies"]
+            strategy_text = "-"
+            if isinstance(strategies, defaultdict):
+                strategy_text = ",".join(
+                    f"{name}:{count}"
+                    for name, count in sorted(
+                        strategies.items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:3]
+                )
+            finality = "확정" if is_final else "임시"
+            result.append(
+                f"  {market_name:<8} {row_reason:<24} "
+                f"{_regime_key_label(regime_key)}·{finality} "
+                f"raw={int(bucket['raw'])} ep={len(episodes)} "
+                f"{len(symbols)}종목/{len(dates)}일 전략={strategy_text}"
+            )
+            minimum_cost = _minimum_round_trip_cost_pct(market_name)
+            for horizon in horizon_values:
+                gross_returns: list[float] = []
+                mature = 0
+                for episode in episodes:
+                    logged_at = episode.get("_logged_at")
+                    if not isinstance(logged_at, datetime):
+                        continue
+                    session_date = str(episode.get("_session_date") or "")
+                    session_key = (market_name, session_date)
+                    target = logged_at + timedelta(minutes=horizon)
+                    if target > session_latest.get(session_key, logged_at):
+                        continue
+                    mature += 1
+                    sequence_key = (
+                        market_name,
+                        str(episode.get("symbol") or "").strip(),
+                        session_date,
+                    )
+                    times, session_rows = sequences.get(sequence_key, ([], []))
+                    index = bisect_right(times, target) - 1
+                    if index < 0:
+                        continue
+                    future_row = session_rows[index]
+                    future_at = future_row.get("_logged_at")
+                    if not isinstance(future_at, datetime):
+                        continue
+                    if target - future_at > timedelta(minutes=tolerance_minutes):
+                        continue
+                    entry_price = float(episode.get("price") or 0.0)
+                    future_price = float(future_row.get("price") or 0.0)
+                    if entry_price <= 0 or future_price <= 0:
+                        continue
+                    gross_returns.append(future_price / entry_price - 1.0)
+                if not mature:
+                    result.append(f"    {horizon:>2}m 표본=성숙대기")
+                    continue
+                if not gross_returns:
+                    result.append(f"    {horizon:>2}m 표본=0/{mature}(관측누락)")
+                    continue
+                average = statistics.fmean(gross_returns)
+                median = statistics.median(gross_returns)
+                positive_rate = (
+                    sum(value > 0 for value in gross_returns)
+                    / len(gross_returns)
+                    * 100.0
+                )
+                coverage = len(gross_returns) / mature * 100.0
+                result.append(
+                    f"    {horizon:>2}m n={len(gross_returns)}/{mature}"
+                    f"({coverage:.0f}%) Gross={average * 100:+.3f}% "
+                    f"중앙={median * 100:+.3f}% 양수={positive_rate:.0f}% "
+                    f"최소비용Net={(average - minimum_cost) * 100:+.3f}%"
+                )
+            readiness = (
+                "평가가능"
+                if is_final and len(dates) >= MIN_REGIME_DAYS
+                else f"관찰계속({len(dates)}/{MIN_REGIME_DAYS}일)"
+            )
+            result.append(f"    정책표본={readiness}")
+        result.append(
+            "  비용하한=국장 0.03%·미장 0.50% 왕복수수료만; "
+            "세금·스프레드·슬리피지 제외한 낙관치"
+        )
+        result.append(
+            "  정책변경조건=확정 동일 레짐 3거래일 이상; "
+            "반복행 수만으로 진입필터 완화 금지"
+        )
+        return "\n".join(result)
+    finally:
+        conn.close()
+
+
 def _cycle_session_date(row: dict[str, object]) -> str | None:
     try:
         logged_at = datetime.fromisoformat(
@@ -270,9 +637,18 @@ def _recorded_net_pct(row: dict[str, object]) -> float:
     except (TypeError, ValueError):
         pass
     try:
-        return float(row.get("pnl_pct") or 0.0) - DEFAULT_COST_PCT
+        gross = float(row.get("pnl_pct") or 0.0)
+        if market == "domestic":
+            product_type = str(row.get("product_type") or "")
+            cost = (
+                DEFAULT_DOMESTIC_TAX_EXEMPT_COST_PCT
+                if is_domestic_sell_tax_exempt(product_type)
+                else DEFAULT_DOMESTIC_STOCK_COST_PCT
+            )
+            return gross - cost
+        return gross - DEFAULT_OVERSEAS_COST_PCT
     except (TypeError, ValueError):
-        return -DEFAULT_COST_PCT
+        return -_minimum_round_trip_cost_pct(market)
 
 
 def _regime_label(regime: dict[str, object]) -> str:

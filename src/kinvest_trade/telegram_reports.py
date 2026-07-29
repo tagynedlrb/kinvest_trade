@@ -27,6 +27,7 @@ from .trade_analysis import (
     compare_before_after,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
+    summarize_wait_forward_performance,
 )
 
 if TYPE_CHECKING:
@@ -1447,6 +1448,7 @@ class ReportHelper:
         usage = (
             "사용법=/lab_report compare 2026-07-10 또는 2026-07-10T18:00\n"
             "사용법=/lab_report wait 72\n"
+            "사용법=/lab_report wait-forward 72\n"
             "사용법=/lab_report regime 30"
         )
         if not args:
@@ -1510,6 +1512,35 @@ class ReportHelper:
                     f"시각={format_kst_korean(now)}",
                     "기준=cycle_log WAIT",
                     bottlenecks,
+                ]
+            )
+        if report_kind in {"wait-forward", "wait_forward"} and len(args) in {1, 2}:
+            try:
+                hours = int(args[1]) if len(args) == 2 else 72
+                forward_report = summarize_wait_forward_performance(
+                    controller.repository.db_path,
+                    hours=hours,
+                    limit=4,
+                    orderable_env=str(
+                        getattr(controller.config.credentials, "env", "vps")
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                return "\n".join(
+                    [
+                        "[KIS][전략리포트]",
+                        f"시각={format_kst_korean(now)}",
+                        "실행실패=WAIT 선행성과 생성 실패",
+                        f"오류={str(exc)[:120]}",
+                        usage,
+                    ]
+                )
+            return "\n".join(
+                [
+                    "[KIS][전략리포트]",
+                    f"시각={format_kst_korean(now)}",
+                    "기준=cycle_log WAIT 에피소드·마감 시장레짐",
+                    forward_report,
                 ]
             )
         if report_kind == "regime" and len(args) in {1, 2}:

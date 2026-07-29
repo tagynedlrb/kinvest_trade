@@ -17,6 +17,7 @@ from kinvest_trade.trade_analysis import (
     compare_before_after,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
+    summarize_wait_forward_performance,
 )
 
 
@@ -39,6 +40,29 @@ def main() -> None:
         help="기준일/시각 전후 SELL_REAL 전략 성과 비교 (KST, YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM)",
     )
     parser.add_argument("--wait-hours", type=int, default=0, help="최근 N시간 WAIT 병목 요약")
+    parser.add_argument(
+        "--wait-forward-hours",
+        type=int,
+        default=0,
+        help="최근 N시간 WAIT 에피소드의 15/30/60분 선행성과",
+    )
+    parser.add_argument(
+        "--wait-forward-market",
+        choices=("domestic", "overseas"),
+        default="",
+        help="WAIT 선행성과 시장 필터",
+    )
+    parser.add_argument(
+        "--wait-forward-reason",
+        default="",
+        help="WAIT 선행성과 사유 필터",
+    )
+    parser.add_argument(
+        "--wait-forward-env",
+        choices=("vps", "prod"),
+        default="vps",
+        help="WAIT 선행성과 주문가능 세션 프로필",
+    )
     parser.add_argument("--wait-limit", type=int, default=12, help="WAIT 병목 출력 행 수")
     parser.add_argument("--regime-limit", type=int, default=12, help="시장 레짐 성과 출력 행 수")
     args = parser.parse_args()
@@ -61,6 +85,18 @@ def main() -> None:
         except ValueError as exc:
             print(f"기준일 형식 오류: {exc}", file=sys.stderr)
             raise SystemExit(2) from exc
+        return
+    if args.wait_forward_hours > 0:
+        print(
+            summarize_wait_forward_performance(
+                db_path,
+                hours=args.wait_forward_hours,
+                limit=args.wait_limit,
+                market=args.wait_forward_market,
+                reason=args.wait_forward_reason,
+                orderable_env=args.wait_forward_env,
+            )
+        )
         return
     if args.wait_hours > 0:
         print(

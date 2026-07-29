@@ -527,19 +527,36 @@ class MarketRegimeCollector:
             )
             for record in records:
                 self.repository.upsert_market_regime(record)
+            current_session = local_date.isoformat()
+            current_record = next(
+                (
+                    record
+                    for record in records
+                    if record["session_date"] == current_session
+                ),
+                None,
+            )
+            observation_saved = int(
+                current_record is not None
+                and self.repository.save_market_regime_observation(
+                    current_record
+                )
+            )
             final_count = sum(int(record["is_final"]) for record in records)
             _logger.info(
-                "[REGIME][%s] benchmark=%s fetched=%d merged=%d final=%d",
+                "[REGIME][%s] benchmark=%s fetched=%d merged=%d final=%d observation=%d",
                 market,
                 config["benchmark_name"],
                 len(fetched_rows),
                 len(records),
                 final_count,
+                observation_saved,
             )
             return {
                 "status": "updated",
                 "records": len(records),
                 "final_records": final_count,
+                "observations": observation_saved,
             }
         except Exception as exc:  # noqa: BLE001
             _logger.warning("[REGIME][%s] refresh_failed error=%s", market, exc)

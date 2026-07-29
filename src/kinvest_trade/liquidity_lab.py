@@ -1185,6 +1185,99 @@ class LiquidityLabService:
         timezone_for_market = KST if normalize_market_name(market) == "domestic" else NEW_YORK
         return current.astimezone(timezone_for_market).date().isoformat()
 
+    def _market_regime_context(
+        self,
+        market: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict:
+        market_key = normalize_market_name(market)
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        expected_session_date = self._market_session_date(
+            market_key,
+            current,
+        )
+        unavailable = {
+            "available": False,
+            "market": market_key,
+            "expected_session_date": expected_session_date,
+        }
+        repository = getattr(self, "repository", None)
+        if repository is None:
+            return {**unavailable, "reason": "repository_unavailable"}
+        regime = repository.get_market_regime(
+            market_key,
+            expected_session_date,
+        )
+        if regime is None:
+            return {**unavailable, "reason": "same_session_regime_missing"}
+
+        captured_at = parse_datetime(regime.get("captured_at"))
+        observation_age_sec = None
+        if captured_at is not None:
+            captured_at = ensure_timezone(captured_at).astimezone(timezone.utc)
+            observation_age_sec = max(
+                0,
+                int((current.astimezone(timezone.utc) - captured_at).total_seconds()),
+            )
+        observation_id = None
+        observation_lookup = getattr(
+            repository,
+            "get_market_regime_observation_at",
+            None,
+        )
+        if callable(observation_lookup):
+            observation = observation_lookup(
+                market_key,
+                current,
+                session_date=expected_session_date,
+            )
+            if (
+                observation is not None
+                and str(observation.get("captured_at") or "")
+                == str(regime.get("captured_at") or "")
+            ):
+                observation_id = int(observation.get("id") or 0) or None
+
+        return {
+            "available": True,
+            "market": market_key,
+            "session_date": expected_session_date,
+            "benchmark_code": str(regime.get("benchmark_code") or ""),
+            "benchmark_name": str(regime.get("benchmark_name") or ""),
+            "source": str(regime.get("source") or ""),
+            "captured_at": regime.get("captured_at"),
+            "observation_id": observation_id,
+            "observation_age_sec": observation_age_sec,
+            "is_final": int(regime.get("is_final") or 0),
+            "open_price": regime.get("open_price"),
+            "high_price": regime.get("high_price"),
+            "low_price": regime.get("low_price"),
+            "close_price": regime.get("close_price"),
+            "previous_close": regime.get("previous_close"),
+            "return_pct": regime.get("return_pct"),
+            "volume": regime.get("volume"),
+            "turnover": regime.get("turnover"),
+            "volume_ratio_20": regime.get("volume_ratio_20"),
+            "range_pct": regime.get("range_pct"),
+            "range_ratio_20": regime.get("range_ratio_20"),
+            "trend_regime": str(regime.get("trend_regime") or "unknown"),
+            "activity_regime": str(
+                regime.get("activity_regime") or "unknown"
+            ),
+            "volatility_regime": str(
+                regime.get("volatility_regime") or "unknown"
+            ),
+            "regime_key": str(
+                regime.get("regime_key")
+                or "unknown|unknown|unknown"
+            ),
+            "sample_days": int(regime.get("sample_days") or 0),
+            "calculation_version": str(
+                regime.get("calculation_version") or ""
+            ),
+        }
+
     def _inverse_regime_decision(
         self,
         market: str,
@@ -1886,6 +1979,10 @@ class LiquidityLabService:
             after_logged_at=after_logged_at,
             cost_pct=cost_pct,
         )
+        current_market_regimes = {
+            market: self._market_regime_context(market)
+            for market in sorted(guard_markets)
+        }
         blocked: set[tuple[str, str]] = set()
         blocked_detail: list[dict] = []
         for row in rows:
@@ -1915,6 +2012,7 @@ class LiquidityLabService:
             "cycle_no": cycle_no,
             "blocked": blocked,
             "rows": rows,
+            "current_market_regimes": current_market_regimes,
         }
         previous = getattr(self, "_last_strategy_guard_blocked_keys", set())
         if blocked and blocked != previous:
@@ -1925,6 +2023,7 @@ class LiquidityLabService:
                     "min_trades": min_trades,
                     "max_avg_net_pnl_pct": max_avg_net,
                     "blocked": blocked_detail,
+                    "current_market_regimes": current_market_regimes,
                 },
             )
         self._last_strategy_guard_blocked_keys = blocked

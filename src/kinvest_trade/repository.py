@@ -11,7 +11,7 @@ from .auto_trade_math import (
     estimate_domestic_trade_costs,
 )
 from .market_sessions import KST, NEW_YORK
-from .time_utils import parse_datetime
+from .time_utils import ensure_timezone, parse_datetime
 
 
 CONFIRMED_SELL_CYCLE_PREDICATE = """
@@ -100,6 +100,7 @@ class SqliteRepository:
         "virtual_orders",
         "virtual_sell_pending",
         "lab_symbol_state",
+        "market_regime_observations",
         "market_regimes",
         "policy_evaluation_log",
     )
@@ -590,6 +591,51 @@ class SqliteRepository:
                 CREATE INDEX IF NOT EXISTS idx_market_regimes_key
                     ON market_regimes(market, regime_key, session_date);
 
+                CREATE TABLE IF NOT EXISTS market_regime_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    market TEXT NOT NULL,
+                    session_date TEXT NOT NULL,
+                    benchmark_code TEXT NOT NULL,
+                    benchmark_name TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    is_final INTEGER NOT NULL DEFAULT 0,
+                    open_price REAL,
+                    high_price REAL,
+                    low_price REAL,
+                    close_price REAL,
+                    previous_close REAL,
+                    return_pct REAL,
+                    volume INTEGER,
+                    turnover REAL,
+                    volume_avg_20 REAL,
+                    volume_ratio_20 REAL,
+                    range_pct REAL,
+                    range_avg_20 REAL,
+                    range_ratio_20 REAL,
+                    trend_regime TEXT NOT NULL DEFAULT 'unknown',
+                    activity_regime TEXT NOT NULL DEFAULT 'unknown',
+                    volatility_regime TEXT NOT NULL DEFAULT 'unknown',
+                    regime_key TEXT NOT NULL DEFAULT 'unknown|unknown|unknown',
+                    sample_days INTEGER NOT NULL DEFAULT 0,
+                    calculation_version TEXT NOT NULL DEFAULT 'intraday_range_v1',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE (
+                        market,
+                        session_date,
+                        captured_at,
+                        calculation_version
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS idx_market_regime_observations_session
+                    ON market_regime_observations(
+                        market, session_date, captured_at
+                    );
+                CREATE INDEX IF NOT EXISTS idx_market_regime_observations_key
+                    ON market_regime_observations(
+                        market, regime_key, captured_at
+                    );
+
                 CREATE TABLE IF NOT EXISTS policy_evaluation_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -916,6 +962,146 @@ class SqliteRepository:
                 """,
                 values,
             )
+
+    def save_market_regime_observation(self, regime: dict) -> bool:
+        columns = (
+            "market",
+            "session_date",
+            "benchmark_code",
+            "benchmark_name",
+            "source",
+            "captured_at",
+            "is_final",
+            "open_price",
+            "high_price",
+            "low_price",
+            "close_price",
+            "previous_close",
+            "return_pct",
+            "volume",
+            "turnover",
+            "volume_avg_20",
+            "volume_ratio_20",
+            "range_pct",
+            "range_avg_20",
+            "range_ratio_20",
+            "trend_regime",
+            "activity_regime",
+            "volatility_regime",
+            "regime_key",
+            "sample_days",
+            "calculation_version",
+            "raw_json",
+        )
+        values = []
+        for column in columns:
+            value = regime.get(column)
+            if column == "market":
+                value = str(value or "").strip().lower()
+            if column == "captured_at":
+                parsed = parse_datetime(value)
+                if parsed is not None:
+                    value = ensure_timezone(parsed).astimezone(
+                        timezone.utc
+                    ).isoformat()
+            if column == "calculation_version":
+                value = str(value or "intraday_range_v1")
+            if column == "raw_json" and not isinstance(value, str):
+                value = json.dumps(value or {}, ensure_ascii=False, default=str)
+            values.append(value)
+        placeholders = ", ".join("?" for _ in columns)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                INSERT INTO market_regime_observations ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(
+                    market, session_date, captured_at, calculation_version
+                ) DO NOTHING
+                """,
+                values,
+            )
+        return cursor.rowcount > 0
+
+    def get_market_regime_observation_at(
+        self,
+        market: str,
+        observed_at: str | datetime,
+        *,
+        session_date: str | None = None,
+    ) -> dict | None:
+        parsed = parse_datetime(observed_at)
+        captured_before = (
+            ensure_timezone(parsed).astimezone(timezone.utc).isoformat()
+            if parsed is not None
+            else str(observed_at).strip()
+        )
+        where = ["market = ?", "captured_at <= ?"]
+        params: list[object] = [
+            str(market).strip().lower(),
+            captured_before,
+        ]
+        if session_date:
+            where.append("session_date = ?")
+            params.append(str(session_date))
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM market_regime_observations
+                WHERE {" AND ".join(where)}
+                ORDER BY captured_at DESC, id DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_market_regime_observations(
+        self,
+        *,
+        market: str | None = None,
+        session_date: str | None = None,
+        captured_after: str | datetime | None = None,
+        captured_before: str | datetime | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        if session_date:
+            where.append("session_date = ?")
+            params.append(str(session_date))
+        for column, value, operator in (
+            ("captured_at", captured_after, ">="),
+            ("captured_at", captured_before, "<="),
+        ):
+            if value is None:
+                continue
+            parsed = parse_datetime(value)
+            normalized = (
+                ensure_timezone(parsed).astimezone(timezone.utc).isoformat()
+                if parsed is not None
+                else str(value).strip()
+            )
+            where.append(f"{column} {operator} ?")
+            params.append(normalized)
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM market_regime_observations
+                {where_sql}
+                ORDER BY captured_at DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_market_regime(
         self,

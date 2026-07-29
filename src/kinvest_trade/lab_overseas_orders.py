@@ -605,6 +605,9 @@ class OverseasOrderHelper:
             "cycle_no": getattr(service, "_cycle_count", 0),
             "is_session_trade": 1,
             "pool_size": service._pool_size_for_market("overseas"),
+            "entry_market_regime": service._market_regime_context(
+                "overseas"
+            ),
         }
         service._record_broker_order_event(
             market="overseas",

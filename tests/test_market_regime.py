@@ -201,6 +201,116 @@ def test_collector_persists_both_market_benchmarks(tmp_path) -> None:
     assert overseas["benchmark_name"] == "NASDAQ Composite"
     assert overseas["is_final"] == 0
     assert len(repository.list_market_regimes(final_only=True)) == 3
+    observations = repository.list_market_regime_observations(limit=10)
+    assert result["domestic"]["observations"] == 1
+    assert result["overseas"]["observations"] == 1
+    assert len(observations) == 2
+    assert {row["session_date"] for row in observations} == {"2026-07-28"}
+
+
+def test_market_regime_observations_are_append_only_and_queryable_by_time(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "regime.db")
+    first_at = datetime(2026, 7, 28, 0, 30, tzinfo=timezone.utc)
+    second_at = first_at + timedelta(minutes=5)
+    source_rows = [
+        _domestic_row("20260727", 100.0),
+        _domestic_row("20260728", 98.0),
+    ]
+    first = build_regime_records(
+        "domestic",
+        source_rows,
+        captured_at=first_at,
+    )[-1]
+    second = build_regime_records(
+        "domestic",
+        [
+            source_rows[0],
+            _domestic_row("20260728", 102.0),
+        ],
+        captured_at=second_at,
+    )[-1]
+
+    assert repository.save_market_regime_observation(first)
+    assert not repository.save_market_regime_observation(first)
+    assert repository.save_market_regime_observation(second)
+
+    observations = repository.list_market_regime_observations(
+        market="domestic",
+        session_date="2026-07-28",
+    )
+    assert [row["close_price"] for row in observations] == [102.0, 98.0]
+    first_lookup = repository.get_market_regime_observation_at(
+        "domestic",
+        first_at + timedelta(minutes=1),
+        session_date="2026-07-28",
+    )
+    second_lookup = repository.get_market_regime_observation_at(
+        "domestic",
+        second_at,
+        session_date="2026-07-28",
+    )
+    assert first_lookup is not None
+    assert first_lookup["close_price"] == 98.0
+    assert second_lookup is not None
+    assert second_lookup["close_price"] == 102.0
+
+
+def test_collector_preserves_successive_current_session_observations(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "regime.db")
+
+    class FakeClient:
+        domestic_calls = 0
+        overseas_calls = 0
+
+        async def get_domestic_index_daily_prices(self, **_kwargs):
+            self.domestic_calls += 1
+            return [
+                _domestic_row("20260727", 100.0),
+                _domestic_row(
+                    "20260728",
+                    98.0 + (2.0 * self.domestic_calls),
+                ),
+            ]
+
+        async def get_overseas_index_daily_prices(self, **_kwargs):
+            self.overseas_calls += 1
+            return [
+                _overseas_row("20260727", 200.0),
+                _overseas_row(
+                    "20260728",
+                    198.0 + (2.0 * self.overseas_calls),
+                ),
+            ]
+
+    collector = MarketRegimeCollector(FakeClient(), repository)
+    first_at = datetime(2026, 7, 28, 14, 0, tzinfo=timezone.utc)
+    second_at = first_at + timedelta(minutes=5)
+
+    asyncio.run(collector.refresh_if_due(first_at, force=True))
+    asyncio.run(collector.refresh_if_due(second_at, force=True))
+
+    domestic = repository.list_market_regime_observations(
+        market="domestic",
+        session_date="2026-07-28",
+    )
+    overseas = repository.list_market_regime_observations(
+        market="overseas",
+        session_date="2026-07-28",
+    )
+    assert [row["close_price"] for row in domestic] == [102.0, 100.0]
+    assert [row["close_price"] for row in overseas] == [202.0, 200.0]
+    assert repository.get_market_regime(
+        "domestic",
+        "2026-07-28",
+    )["close_price"] == 102.0
+    assert repository.get_market_regime(
+        "overseas",
+        "2026-07-28",
+    )["close_price"] == 202.0
 
 
 def test_collector_refreshes_open_session_regime_every_five_minutes(

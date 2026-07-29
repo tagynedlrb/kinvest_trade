@@ -3368,6 +3368,14 @@ def test_place_overseas_sell_order_registers_order_rejection_on_pending_exit_can
 
 def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None:
     service = _build_run_service()
+    overseas_session = service._market_session_date("overseas")
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date=overseas_session,
+        return_pct=0.6,
+        trend_regime="up",
+    )
     service.client = DummySellClient(
         pending_orders=[
             {
@@ -3408,6 +3416,13 @@ def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None
     assert broker_rows[1]["payload_json"]["original_order_no"] == "61001"
     assert broker_rows[1]["payload_json"]["original_order_price"] == 23.5
     assert broker_rows[1]["payload_json"]["reference_price"] == 23.11
+    entry_regime = broker_rows[0]["payload_json"]["execution_context"][
+        "entry_market_regime"
+    ]
+    assert entry_regime["available"] is True
+    assert entry_regime["session_date"] == overseas_session
+    assert entry_regime["benchmark_name"] == "NASDAQ Composite"
+    assert entry_regime["regime_key"] == "up|active|high"
 
 
 def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None:
@@ -4912,6 +4927,14 @@ def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
     service.repository = _build_repository()
     service.notifier = DummyNotifier()
     service._session_id = "sess-domestic-buy"
+    domestic_session = service._market_session_date("domestic")
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date=domestic_session,
+        return_pct=-0.4,
+        trend_regime="down",
+    )
     candidate = DomesticScanResult(
         stock_code="005930",
         current_price=80000,
@@ -4966,6 +4989,13 @@ def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
     assert broker_rows[0]["requested_price"] == 80000.0
     assert broker_rows[0]["payload_json"]["order_division"] == "00"
     assert broker_rows[0]["payload_json"]["reference_price"] == 80000.0
+    entry_regime = broker_rows[0]["payload_json"]["execution_context"][
+        "entry_market_regime"
+    ]
+    assert entry_regime["available"] is True
+    assert entry_regime["session_date"] == domestic_session
+    assert entry_regime["benchmark_name"] == "KOSPI"
+    assert entry_regime["regime_key"] == "down|active|high"
 
 
 def test_domestic_execution_treats_confirmed_cancel_qty_as_terminal() -> None:
@@ -5644,6 +5674,63 @@ def _save_test_regime(
             "raw_json": {},
         }
     )
+
+
+def test_market_regime_context_uses_same_session_observation_lineage() -> None:
+    service = _build_run_service()
+    now = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)
+    session_date = service._market_session_date("domestic", now)
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date=session_date,
+        return_pct=-1.2,
+        trend_regime="strong_down",
+    )
+    regime = service.repository.get_market_regime(
+        "domestic",
+        session_date,
+    )
+    assert regime is not None
+    captured_at = now - timedelta(minutes=5)
+    regime["captured_at"] = captured_at.isoformat()
+    regime["volume_ratio_20"] = 1.4
+    regime["range_ratio_20"] = 2.2
+    service.repository.upsert_market_regime(regime)
+    assert service.repository.save_market_regime_observation(regime)
+
+    context = service._market_regime_context("domestic", now=now)
+
+    assert context["available"] is True
+    assert context["session_date"] == session_date
+    assert context["benchmark_name"] == "KOSPI"
+    assert context["observation_id"] is not None
+    assert context["observation_age_sec"] == 300
+    assert context["return_pct"] == -1.2
+    assert context["volume_ratio_20"] == 1.4
+    assert context["range_ratio_20"] == 2.2
+    assert context["regime_key"] == "strong_down|active|high"
+
+
+def test_market_regime_context_does_not_substitute_prior_session() -> None:
+    service = _build_run_service()
+    now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date="2026-07-27",
+        return_pct=0.5,
+        trend_regime="up",
+    )
+
+    context = service._market_regime_context("overseas", now=now)
+
+    assert context == {
+        "available": False,
+        "market": "overseas",
+        "expected_session_date": "2026-07-28",
+        "reason": "same_session_regime_missing",
+    }
 
 
 def test_inverse_candidates_are_market_scoped_and_shadow_orders_are_blocked() -> None:
@@ -8126,6 +8213,14 @@ def test_select_overseas_buy_targets_excludes_recent_underperforming_standalone_
     service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.003
     service.config.liquidity_lab.strategy_guard_markets = ["overseas"]
     service.config.liquidity_lab.strategy_guard_strategy_flags = ["RSI"]
+    overseas_session = service._market_session_date("overseas")
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date=overseas_session,
+        return_pct=-0.8,
+        trend_regime="down",
+    )
     now = datetime.now(timezone.utc).isoformat()
     for idx in range(3):
         save_confirmed_sell(
@@ -8200,6 +8295,10 @@ def test_select_overseas_buy_targets_excludes_recent_underperforming_standalone_
     assert len(events) == 1
     detail = json.loads(events[0]["detail"])
     assert detail["blocked"][0]["strategy_flag"] == "RSI"
+    guard_regime = detail["current_market_regimes"]["overseas"]
+    assert guard_regime["available"] is True
+    assert guard_regime["session_date"] == overseas_session
+    assert guard_regime["regime_key"] == "down|active|high"
 
 
 def test_select_overseas_buy_targets_excludes_already_held_symbols() -> None:

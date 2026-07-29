@@ -307,6 +307,9 @@ class DomesticOrderHelper:
             "cycle_no": getattr(service, "_cycle_count", 0),
             "is_session_trade": 1,
             "pool_size": service._pool_size_for_market("domestic"),
+            "entry_market_regime": service._market_regime_context(
+                "domestic"
+            ),
         }
         service._record_broker_order_event(
             market="domestic",

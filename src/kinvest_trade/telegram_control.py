@@ -1819,6 +1819,9 @@ class TelegramLiquidityLabController:
         active_retry_keys = set(no_orderable_retry)
         raw_counts = getattr(service, "_no_orderable_counts", None) or {}
         no_orderable_counts = self._normalise_count_map(raw_counts, active_retry_keys)
+        symbol_loss_streak = self._normalise_symbol_loss_streak_map(
+            getattr(service, "_symbol_loss_streak", None)
+        )
         active_signal_keys = set(overseas_signal_suppressed_until)
         signal_failures = self._normalise_count_map(
             getattr(service, "_overseas_signal_failures", None) or {},
@@ -1831,6 +1834,7 @@ class TelegramLiquidityLabController:
             payload["no_orderable_retry"] = no_orderable_retry
         if no_orderable_counts:
             payload["no_orderable_counts"] = no_orderable_counts
+        payload["symbol_loss_streak"] = symbol_loss_streak
         if overseas_signal_suppressed_until:
             payload["overseas_signal_suppressed_until"] = (
                 overseas_signal_suppressed_until
@@ -1930,6 +1934,11 @@ class TelegramLiquidityLabController:
             service._exit_cooldown.update(exit_cooldown)
         if no_orderable_retry:
             service._no_orderable_retry.update(no_orderable_retry)
+        if "symbol_loss_streak" in state:
+            service._symbol_loss_streak = dict(
+                state.get("symbol_loss_streak") or {}
+            )
+            service._confirmed_symbol_loss_state_restored = True
         if overseas_signal_suppressed_until:
             existing_suppressions = getattr(
                 service,
@@ -2002,6 +2011,12 @@ class TelegramLiquidityLabController:
             result["no_orderable_retry"] = no_orderable_retry
         if no_orderable_counts:
             result["no_orderable_counts"] = no_orderable_counts
+        if isinstance(state.get("symbol_loss_streak"), dict):
+            result["symbol_loss_streak"] = (
+                cls._normalise_symbol_loss_streak_map(
+                    state.get("symbol_loss_streak")
+                )
+            )
         active_signal_keys = set(overseas_signal_suppressed_until)
         signal_failures = cls._normalise_count_map(
             state.get("overseas_signal_failures"),
@@ -2236,6 +2251,28 @@ class TelegramLiquidityLabController:
                 continue
             if count > 0:
                 result[key_text] = count
+        return result
+
+    @staticmethod
+    def _normalise_symbol_loss_streak_map(raw: object) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, int] = {}
+        for key, value in raw.items():
+            market, separator, symbol = str(key).partition(":")
+            market = market.strip().lower()
+            symbol = symbol.strip().upper()
+            if (
+                not separator
+                or market not in {"domestic", "overseas"}
+                or not symbol
+            ):
+                continue
+            try:
+                count = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                continue
+            result[f"{market}:{symbol}"] = min(count, 1_000_000)
         return result
 
     def _write_runtime_state(self) -> None:

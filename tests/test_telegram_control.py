@@ -4747,6 +4747,11 @@ def test_write_runtime_state_persists_lab_runtime_state() -> None:
             "overseas:MSEX": 42,
             "overseas:OTHER": 99,
         },
+        _symbol_loss_streak={
+            "overseas:SOXL": 2,
+            "domestic:005930": 0,
+            "invalid": 9,
+        },
         _overseas_signal_suppressed_until={
             "IPFX": future,
             "OLD": expired,
@@ -4765,6 +4770,10 @@ def test_write_runtime_state_persists_lab_runtime_state() -> None:
     assert set(lab_state["exit_cooldown"]) == {"overseas:SOXL"}
     assert set(lab_state["no_orderable_retry"]) == {"overseas:MSEX"}
     assert lab_state["no_orderable_counts"] == {"overseas:MSEX": 42}
+    assert lab_state["symbol_loss_streak"] == {
+        "domestic:005930": 0,
+        "overseas:SOXL": 2,
+    }
     assert set(lab_state["overseas_signal_suppressed_until"]) == {"IPFX"}
     assert lab_state["overseas_signal_failures"] == {"IPFX": 3}
 
@@ -4859,6 +4868,30 @@ def test_normalise_circuit_breaker_state_tolerates_malformed_values() -> None:
     assert state["order_reject_history"] == {}
 
 
+def test_normalise_symbol_loss_streak_preserves_zero_reset_markers() -> None:
+    state = TelegramLiquidityLabController._normalise_lab_runtime_state(
+        {
+            "symbol_loss_streak": {
+                "OVERSEAS:soxl": 2,
+                "domestic:005930": 0,
+                "overseas:bad": "invalid",
+                "unknown:AAA": 3,
+                "missing_separator": 4,
+            }
+        }
+    )
+
+    assert state["symbol_loss_streak"] == {
+        "domestic:005930": 0,
+        "overseas:SOXL": 2,
+    }
+    assert "symbol_loss_streak" not in (
+        TelegramLiquidityLabController._normalise_lab_runtime_state(
+            {"symbol_loss_streak": ["invalid"]}
+        )
+    )
+
+
 def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
     controller = _build_async_controller()
     future = datetime.now(timezone.utc) + timedelta(minutes=20)
@@ -4872,6 +4905,11 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
                         "overseas:MSEX": 42,
                         "overseas:STALE": 7,
                         "bad": "not-an-int",
+                    },
+                    "symbol_loss_streak": {
+                        "overseas:SOXL": 2,
+                        "domestic:005930": 0,
+                        "bad": 9,
                     },
                     "overseas_signal_suppressed_until": {
                         "IPFX": future.isoformat(),
@@ -4902,6 +4940,8 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
             self._exit_cooldown = {}
             self._no_orderable_retry = {}
             self._no_orderable_counts = {}
+            self._symbol_loss_streak = {}
+            self._confirmed_symbol_loss_state_restored = False
             self._overseas_signal_suppressed_until = {}
             self._overseas_signal_failures = {}
 
@@ -4914,6 +4954,10 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
                     "exit_cooldown": dict(self._exit_cooldown),
                     "no_orderable_retry": dict(self._no_orderable_retry),
                     "no_orderable_counts": dict(self._no_orderable_counts),
+                    "symbol_loss_streak": dict(self._symbol_loss_streak),
+                    "symbol_loss_state_restored": bool(
+                        self._confirmed_symbol_loss_state_restored
+                    ),
                     "overseas_signal_suppressed_until": dict(
                         self._overseas_signal_suppressed_until
                     ),
@@ -4937,6 +4981,11 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
     assert "overseas:SOXL" in seen[0]["exit_cooldown"]
     assert "overseas:MSEX" in seen[0]["no_orderable_retry"]
     assert seen[0]["no_orderable_counts"] == {"overseas:MSEX": 42}
+    assert seen[0]["symbol_loss_streak"] == {
+        "domestic:005930": 0,
+        "overseas:SOXL": 2,
+    }
+    assert seen[0]["symbol_loss_state_restored"] is True
     assert set(seen[0]["overseas_signal_suppressed_until"]) == {"IPFX"}
     assert seen[0]["overseas_signal_failures"] == {"IPFX": 3}
     assert controller._restored_lab_runtime_state == {}

@@ -6061,6 +6061,104 @@ def test_confirmed_loss_restore_truncates_outcomes_at_persisted_release(
     assert later_halts == {}
 
 
+def test_confirmed_symbol_loss_backfill_restores_escalated_cooldown(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc)
+    for idx, minutes_ago in enumerate((20, 1)):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=(now - timedelta(minutes=minutes_ago)).isoformat(),
+            market="overseas",
+            symbol="LXFR",
+            exchange_code="NYSE",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP+VOL",
+            pnl_pct=-0.001,
+            entry_price=100.0,
+            price=99.9,
+            qty_executed=10,
+            net_pnl_usd=-6.0 - idx,
+            net_pnl_krw=-8_100.0 - idx,
+        )
+    save_confirmed_sell(
+        service.repository,
+        logged_at=(now - timedelta(minutes=2)).isoformat(),
+        market="overseas",
+        symbol="ARX",
+        exchange_code="NYSE",
+        action_reason="virtual_sell_settlement",
+        pnl_pct=-0.01,
+        entry_price=100.0,
+        price=99.0,
+        qty_executed=10,
+        net_pnl_usd=-15.0,
+        net_pnl_krw=-20_250.0,
+        is_session_trade=0,
+    )
+
+    result = service._reconcile_confirmed_symbol_loss_state(now)
+
+    assert result["reconciled"] is True
+    assert result["streaks"]["overseas:LXFR"] == 2
+    assert "overseas:ARX" not in result["streaks"]
+    assert service._symbol_loss_streak["overseas:LXFR"] == 2
+    remaining = (
+        service._exit_cooldown["overseas:LXFR"] - now
+    ).total_seconds() / 60
+    assert 58.5 <= remaining <= 59.5
+    restored = service.repository.list_event_log(
+        event_type="symbol_loss_streak_state_restored",
+        limit=1,
+    )
+    detail = json.loads(restored[0]["detail"])
+    assert detail["extended_cooldowns"]["overseas:LXFR"] == (
+        now - timedelta(minutes=1) + timedelta(minutes=60)
+    ).isoformat()
+
+
+def test_confirmed_symbol_loss_backfill_stops_at_latest_net_win(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc)
+    save_confirmed_sell(
+        service.repository,
+        logged_at=(now - timedelta(minutes=20)).isoformat(),
+        market="overseas",
+        symbol="RESET",
+        exchange_code="NASD",
+        action_reason="trend_filter_lost",
+        pnl_pct=-0.01,
+        entry_price=100.0,
+        price=99.0,
+        qty_executed=10,
+        net_pnl_usd=-15.0,
+        net_pnl_krw=-20_250.0,
+    )
+    save_confirmed_sell(
+        service.repository,
+        logged_at=(now - timedelta(minutes=1)).isoformat(),
+        market="overseas",
+        symbol="RESET",
+        exchange_code="NASD",
+        action_reason="take_profit",
+        pnl_pct=0.02,
+        entry_price=100.0,
+        price=102.0,
+        qty_executed=10,
+        net_pnl_usd=15.0,
+        net_pnl_krw=20_250.0,
+    )
+
+    result = service._reconcile_confirmed_symbol_loss_state(now)
+
+    assert "overseas:RESET" not in result["streaks"]
+    assert "overseas:RESET" not in service._symbol_loss_streak
+    assert "overseas:RESET" not in service._exit_cooldown
+
+
 def _save_test_regime(
     service: LiquidityLabService,
     *,

@@ -497,6 +497,14 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   or unrelated counters. A deployment restart must not turn a declared
   180-minute exclusion into three fresh broker chart calls, while held symbols
   remain exempt so exit monitoring continues.
+- Per-symbol consecutive-loss streaks are also restart state. Persist
+  market-qualified symbol keys, including a zero reset marker after a net win,
+  so a restart cannot shorten the existing two-loss 60-minute or three-loss
+  180-minute re-entry cooldown. For legacy state with no streak field, replay
+  broker-confirmed real exits once in effective-time order, stop at the latest
+  after-cost win, exclude virtual-settlement accounting rows, and anchor any
+  still-live cooldown to the latest confirmed exit rather than process start.
+  Never revive an already expired cooldown from historical losses.
 - Session ownership is reconstructed from same-session broker-confirmed buys,
   not symbol identity alone. This keeps restarted bot positions attributable
   without claiming manually imported holdings.

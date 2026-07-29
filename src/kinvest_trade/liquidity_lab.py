@@ -373,6 +373,7 @@ class LiquidityLabService:
         self._strategy_guard_cache: dict[str, object] = {}
         self._last_strategy_guard_blocked_keys: set[tuple[str, str]] = set()
         self._confirmed_risk_state_restored = False
+        self._confirmed_symbol_loss_state_restored = False
         self.watch_state = WatchStateHelper(self)
         self.domestic_orders = DomesticOrderHelper(self)
         self.overseas_orders = OverseasOrderHelper(self)
@@ -574,6 +575,100 @@ class LiquidityLabService:
             )
         self._save_event(
             event_type="risk_day_pnl_reconciled",
+            detail=result,
+        )
+        return result
+
+    def _reconcile_confirmed_symbol_loss_state(
+        self,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        """Backfill trailing per-symbol net-loss streaks for legacy state."""
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        try:
+            outcomes = self.repository.get_recent_confirmed_sell_risk_outcomes(
+                limit=5000,
+                cost_pct=0.005,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.exception("confirmed_symbol_loss_state_reconcile_failed")
+            result = {
+                "reconciled": False,
+                "error": str(exc)[:200],
+            }
+            self._save_event(
+                event_type="symbol_loss_streak_state_restore_failed",
+                detail=result,
+            )
+            return result
+
+        streaks: dict[str, int] = {}
+        latest_loss_at: dict[str, datetime] = {}
+        resolved_keys: set[str] = set()
+        for row in outcomes:
+            market = str(row.get("market") or "").strip().lower()
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if market not in {"domestic", "overseas"} or not symbol:
+                continue
+            if str(row.get("action_reason") or "") == (
+                _VIRTUAL_SELL_SETTLEMENT_ROLE
+            ):
+                continue
+            key = f"{market}:{symbol}"
+            if key in resolved_keys:
+                continue
+            net_pnl_pct = float(row.get("net_pnl_pct") or 0.0)
+            if net_pnl_pct >= 0:
+                resolved_keys.add(key)
+                continue
+            streaks[key] = min(3, streaks.get(key, 0) + 1)
+            if key not in latest_loss_at:
+                occurred_at = parse_datetime(str(row.get("logged_at") or ""))
+                if occurred_at is not None:
+                    latest_loss_at[key] = ensure_timezone(occurred_at)
+
+        runtime = self._get_runtime_manager()
+        for key, streak in streaks.items():
+            runtime.symbol_loss_streak[key] = max(
+                int(runtime.symbol_loss_streak.get(key, 0) or 0),
+                streak,
+            )
+
+        extended_cooldowns: dict[str, str] = {}
+        for key, streak in streaks.items():
+            if streak < 2 or key not in latest_loss_at:
+                continue
+            market, symbol = key.split(":", 1)
+            cooldown_minutes = 180 if streak >= 3 else 60
+            runtime.set_exit_cooldown_minutes(
+                market,
+                symbol,
+                cooldown_minutes,
+                started_at=latest_loss_at[key],
+                observed_at=current,
+            )
+            cooldown_until = runtime.exit_cooldown.get(key)
+            if (
+                cooldown_until is not None
+                and ensure_timezone(cooldown_until) > current
+            ):
+                extended_cooldowns[key] = ensure_timezone(
+                    cooldown_until
+                ).isoformat()
+
+        self._sync_runtime_legacy_state(runtime)
+        result = {
+            "reconciled": True,
+            "source": "confirmed_sell_ledger_one_time_backfill",
+            "streaks": {
+                key: int(value)
+                for key, value in sorted(streaks.items())
+                if value > 0
+            },
+            "extended_cooldowns": dict(sorted(extended_cooldowns.items())),
+        }
+        self._save_event(
+            event_type="symbol_loss_streak_state_restored",
             detail=result,
         )
         return result
@@ -4782,7 +4877,7 @@ class LiquidityLabService:
                 market,
                 symbol,
                 reason,
-                pnl_pct=pnl_pct,
+                pnl_pct=net_pnl_pct,
                 occurred_at=execution_at,
                 observed_at=confirmed_at,
             )
@@ -4926,6 +5021,15 @@ class LiquidityLabService:
                 restore_consecutive=True,
             )
             self._confirmed_risk_state_restored = bool(
+                restored.get("reconciled")
+            )
+        if not getattr(
+            self,
+            "_confirmed_symbol_loss_state_restored",
+            False,
+        ):
+            restored = self._reconcile_confirmed_symbol_loss_state(now)
+            self._confirmed_symbol_loss_state_restored = bool(
                 restored.get("reconciled")
             )
         await self._refresh_market_regimes(now)

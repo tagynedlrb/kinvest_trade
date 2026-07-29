@@ -4152,6 +4152,8 @@ class SqliteRepository:
                     id,
                     logged_at,
                     market,
+                    symbol,
+                    action_reason,
                     CASE
                         WHEN lower(market) = 'overseas'
                           AND net_pnl_usd IS NOT NULL

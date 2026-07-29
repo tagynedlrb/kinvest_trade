@@ -2032,12 +2032,6 @@ class LiquidityLabService:
             payload["original_order_orgno"] = original_order_orgno
         return payload
 
-    def _overseas_order_history_exchange_param(self, exchange_code: str) -> str:
-        env = str(getattr(self.config.credentials, "env", "vps") or "vps")
-        if env != "prod":
-            return ""
-        return exchange_code
-
     @staticmethod
     def _parse_overseas_order_history_timestamp(row: dict) -> datetime | None:
         ord_dt = str(row.get("dmst_ord_dt") or row.get("ord_dt") or "").strip()
@@ -2057,30 +2051,33 @@ class LiquidityLabService:
         symbol: str,
         exchange_code: str,
     ) -> list[dict]:
-        now_kst = datetime.now(timezone.utc).astimezone(KST)
-        start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
-        end_date = now_kst.strftime("%Y%m%d")
+        env = str(getattr(self.config.credentials, "env", "vps") or "vps")
         try:
-            history = await self.client.get_overseas_order_history(
-                symbol=symbol.upper(),
-                start_date=start_date,
-                end_date=end_date,
-                side_filter="00",
-                fill_filter="02",
-                exchange_code=self._overseas_order_history_exchange_param(exchange_code),
-                sort_sqn="DS",
-            )
+            if env == "prod":
+                history = await self.client.get_overseas_open_orders(
+                    exchange_code=exchange_code,
+                    sort_sqn="DS",
+                    paginate=True,
+                    max_pages=10,
+                )
+            else:
+                now_kst = datetime.now(timezone.utc).astimezone(KST)
+                start_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d")
+                end_date = now_kst.strftime("%Y%m%d")
+                history = await self.client.get_overseas_order_history(
+                    symbol=symbol.upper(),
+                    start_date=start_date,
+                    end_date=end_date,
+                    side_filter="00",
+                    fill_filter="02",
+                    exchange_code="",
+                    sort_sqn="DS",
+                    paginate=True,
+                    max_pages=10,
+                )
         except Exception as exc:  # noqa: BLE001
-            # A failed lookup here must not be silently treated as "no pending
-            # order" by callers (duplicate-buy/duplicate-sell prevention) —
-            # that exact failure mode (a broken open-order lookup reading as
-            # "nothing pending") caused the CRAN duplicate-buy incident. We
-            # still return an empty list (raising here would crash the whole
-            # cycle for unrelated symbols/markets), but at least make the
-            # failure visible to operators instead of it looking identical to
-            # "genuinely no pending order".
             _logger.warning(
-                "[ORDERS] 해외 미체결 조회 실패 - 조회결과 없음으로 처리됨 (symbol=%s, error=%s)",
+                "[ORDERS] 해외 미체결 조회 실패 - 주문 보류 (symbol=%s, error=%s)",
                 symbol,
                 exc,
             )
@@ -2093,7 +2090,9 @@ class LiquidityLabService:
                     "error": str(exc)[:200],
                 },
             )
-            return []
+            raise KisApiError(
+                f"open_overseas_order_lookup_failed: {exc}"
+            ) from exc
         results: list[dict] = []
         for row in history.get("orders", []):
             row_symbol = str(row.get("pdno") or row.get("ovrs_pdno") or "").strip().upper()
@@ -2114,6 +2113,23 @@ class LiquidityLabService:
         )
         return results
 
+    async def _open_overseas_orders_by_side(
+        self,
+        *,
+        symbol: str,
+        exchange_code: str,
+    ) -> dict[str, dict | None]:
+        orders: dict[str, dict | None] = {"BUY": None, "SELL": None}
+        for row in await self._list_open_overseas_orders(
+            symbol=symbol,
+            exchange_code=exchange_code,
+        ):
+            side_code = str(row.get("sll_buy_dvsn_cd") or "").strip()
+            side = "SELL" if side_code == "01" else "BUY" if side_code == "02" else ""
+            if side and orders[side] is None:
+                orders[side] = row
+        return orders
+
     async def _find_open_overseas_order(
         self,
         *,
@@ -2121,11 +2137,11 @@ class LiquidityLabService:
         side: str,
         exchange_code: str,
     ) -> dict | None:
-        side_code = "01" if side.upper() == "SELL" else "02"
-        for row in await self._list_open_overseas_orders(symbol=symbol, exchange_code=exchange_code):
-            if str(row.get("sll_buy_dvsn_cd") or "").strip() == side_code:
-                return row
-        return None
+        orders = await self._open_overseas_orders_by_side(
+            symbol=symbol,
+            exchange_code=exchange_code,
+        )
+        return orders["SELL" if side.upper() == "SELL" else "BUY"]
 
     async def _find_conflicting_overseas_order(
         self,
@@ -2134,11 +2150,11 @@ class LiquidityLabService:
         side: str,
         exchange_code: str,
     ) -> dict | None:
-        conflicting_side = "02" if side.upper() == "SELL" else "01"
-        for row in await self._list_open_overseas_orders(symbol=symbol, exchange_code=exchange_code):
-            if str(row.get("sll_buy_dvsn_cd") or "").strip() == conflicting_side:
-                return row
-        return None
+        orders = await self._open_overseas_orders_by_side(
+            symbol=symbol,
+            exchange_code=exchange_code,
+        )
+        return orders["BUY" if side.upper() == "SELL" else "SELL"]
 
     async def _cancel_open_overseas_order(
         self,
@@ -3203,11 +3219,25 @@ class LiquidityLabService:
             return False
 
         symbol = str(execution.get("symbol") or "").strip().upper()
-        pending_order = await self._find_open_overseas_order(
-            symbol=symbol,
-            side="SELL",
-            exchange_code=exchange_code,
-        )
+        try:
+            pending_order = await self._find_open_overseas_order(
+                symbol=symbol,
+                side="SELL",
+                exchange_code=exchange_code,
+            )
+        except KisApiError as exc:
+            self._save_event(
+                event_type="virtual_pending_settlement_cancel_skipped",
+                market="overseas",
+                symbol=symbol,
+                detail={
+                    "reason": "open_order_lookup_failed",
+                    "broker_order_no": execution.get("broker_order_no"),
+                    "age_sec": round(age_sec, 3),
+                    "error": str(exc)[:200],
+                },
+            )
+            return False
         if pending_order is None:
             return False
         expected_order_no = self.repository.normalize_broker_order_no(

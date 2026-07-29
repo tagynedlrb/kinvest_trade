@@ -281,11 +281,39 @@ class OverseasOrderHelper:
                 "candidate": asdict(candidate),
                 "signal_snapshot": asdict(signal_snapshot),
             }
-        conflicting_sell_order = await service._find_conflicting_overseas_order(
-            symbol=candidate.symbol,
-            side="BUY",
-            exchange_code=candidate.exchange_code,
-        )
+        try:
+            open_orders = await service._open_overseas_orders_by_side(
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+            )
+        except KisApiError as exc:
+            service._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="open_order_lookup_failed",
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=candidate.orderable_qty,
+                extra_detail={"error": str(exc)[:200]},
+            )
+            return {
+                "submitted": False,
+                "skipped": True,
+                "market": "overseas",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "signal_snapshot": asdict(signal_snapshot),
+                "qty": qty,
+                "reason": "open_order_lookup_failed",
+                "error": str(exc),
+            }
+        conflicting_sell_order = open_orders["SELL"]
         if conflicting_sell_order is not None:
             conflicting_age_sec = service._pending_order_age_seconds(conflicting_sell_order)
             if conflicting_age_sec < 60:
@@ -364,11 +392,7 @@ class OverseasOrderHelper:
                 ),
             )
         replacement_for_order_no = ""
-        pending_buy_order = await service._find_open_overseas_order(
-            symbol=candidate.symbol,
-            side="BUY",
-            exchange_code=candidate.exchange_code,
-        )
+        pending_buy_order = open_orders["BUY"]
         if pending_buy_order is not None:
             pending_age_sec = service._pending_order_age_seconds(pending_buy_order)
             if pending_age_sec < 120:
@@ -883,11 +907,44 @@ class OverseasOrderHelper:
                 }
         replacement_note = ""
         is_exit_replacement = False
-        conflicting_buy_order = await service._find_conflicting_overseas_order(
-            symbol=candidate.symbol,
-            side="SELL",
-            exchange_code=candidate.exchange_code,
-        )
+        try:
+            open_orders = await service._open_overseas_orders_by_side(
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+            )
+        except KisApiError as exc:
+            service._record_trade_skip(
+                market="overseas",
+                symbol=candidate.symbol,
+                exchange_code=candidate.exchange_code,
+                reason="open_order_lookup_failed",
+                side="sell",
+                price=sell_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                stock_name=candidate.symbol,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+                extra_detail={"error": str(exc)[:200]},
+            )
+            return {
+                "submitted": False,
+                "skipped": True,
+                "market": "overseas",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": (
+                    None if signal_snapshot is None else asdict(signal_snapshot)
+                ),
+                "exit_reason": exit_reason,
+                "reason": "open_order_lookup_failed",
+                "error": str(exc),
+            }
+        conflicting_buy_order = open_orders["BUY"]
         if conflicting_buy_order is not None:
             conflicting_age_sec = service._pending_order_age_seconds(conflicting_buy_order, now=now)
             if exit_reason not in service._protective_exit_reasons() and conflicting_age_sec < 30:
@@ -967,11 +1024,7 @@ class OverseasOrderHelper:
                 payload=cancel_response if isinstance(cancel_response, dict) else {"response": cancel_response},
             )
             replacement_note = "미체결 매수 취소 후 재매도"
-        pending_sell_order = await service._find_open_overseas_order(
-            symbol=candidate.symbol,
-            side="SELL",
-            exchange_code=candidate.exchange_code,
-        )
+        pending_sell_order = open_orders["SELL"]
         if pending_sell_order is not None:
             pending_age_sec = service._pending_order_age_seconds(pending_sell_order, now=now)
             is_protective_exit = exit_reason in service._protective_exit_reasons()

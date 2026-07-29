@@ -775,6 +775,42 @@ def test_stale_virtual_settlement_is_canceled_without_clearing_pending() -> None
     assert json.loads(event["detail"])["pending_preserved_until_history_confirmation"]
 
 
+def test_stale_virtual_settlement_preserves_order_when_lookup_fails() -> None:
+    service = _build_service()
+    execution = {
+        "created_at": "2026-06-30T13:30:00+00:00",
+        "execution_group_id": "settlement-group",
+        "market": "overseas",
+        "symbol": "NVDA",
+        "exchange_code": "NASD",
+        "side": "SELL",
+        "broker_order_no": "0000000001",
+    }
+
+    async def failing_history(**_kwargs):
+        raise KisApiError("EGW00300 gateway routing error")
+
+    service.client.get_overseas_order_history = failing_history
+
+    canceled = asyncio.run(
+        service._cancel_stale_virtual_sell_settlement(
+            execution=execution,
+            exchange_code="NASD",
+            now=datetime(2026, 7, 1, 13, 31, tzinfo=timezone.utc),
+        )
+    )
+
+    assert canceled is False
+    assert service.client.cancel_calls == []
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_cancel_skipped",
+        limit=1,
+    )[0]
+    detail = json.loads(event["detail"])
+    assert detail["reason"] == "open_order_lookup_failed"
+    assert detail["broker_order_no"] == "0000000001"
+
+
 def test_stale_virtual_settlement_does_not_cancel_mismatched_open_sell() -> None:
     service = _build_service()
     execution = {

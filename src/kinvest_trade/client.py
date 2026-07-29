@@ -76,6 +76,7 @@ class KisRestClient:
     OVERSEAS_BALANCE_PATH = "/uapi/overseas-stock/v1/trading/inquire-balance"
     OVERSEAS_POSSIBLE_ORDER_PATH = "/uapi/overseas-stock/v1/trading/inquire-psamount"
     OVERSEAS_ORDER_HISTORY_PATH = "/uapi/overseas-stock/v1/trading/inquire-ccnl"
+    OVERSEAS_OPEN_ORDERS_PATH = "/uapi/overseas-stock/v1/trading/inquire-nccs"
     OVERSEAS_REVISE_CANCEL_PATH = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
     OVERSEAS_ORDER_PATH = "/uapi/overseas-stock/v1/trading/order"
     OVERSEAS_DAYTIME_ORDER_PATH = "/uapi/overseas-stock/v1/trading/daytime-order"
@@ -1076,6 +1077,73 @@ class KisRestClient:
             current_fk, current_nk = next_fk, next_nk
             if page_index + 1 < page_limit:
                 await self._pace_overseas_history_continuation()
+        return {
+            "orders": rows,
+            "ctx_area_fk200": payload.get("ctx_area_fk200", ""),
+            "ctx_area_nk200": payload.get("ctx_area_nk200", ""),
+            "tr_cont": str(
+                (payload.get("_response_headers", {}) or {}).get("tr_cont") or ""
+            ),
+            "page_count": page_count,
+            "raw": payload,
+        }
+
+    async def get_overseas_open_orders(
+        self,
+        *,
+        exchange_code: str,
+        sort_sqn: str = "DS",
+        fk200: str = "",
+        nk200: str = "",
+        paginate: bool = True,
+        max_pages: int = 10,
+    ) -> dict[str, Any]:
+        """Return the production broker's current overseas unfilled orders."""
+        if self.credentials.env != "prod":
+            raise KisApiError(
+                "TTTS3018R overseas open-order inquiry is production-only"
+            )
+        cano, product_code = self.account_parts()
+        rows: list[dict[str, Any]] = []
+        payload: dict[str, Any] = {}
+        current_fk = fk200
+        current_nk = nk200
+        seen_contexts: set[tuple[str, str]] = set()
+        page_count = 0
+        page_limit = max(1, int(max_pages))
+        for page_index in range(page_limit):
+            payload = await self._request(
+                "GET",
+                self.OVERSEAS_OPEN_ORDERS_PATH,
+                "TTTS3018R",
+                params={
+                    "CANO": cano,
+                    "ACNT_PRDT_CD": product_code,
+                    "OVRS_EXCG_CD": exchange_code,
+                    "SORT_SQN": sort_sqn,
+                    "CTX_AREA_FK200": current_fk,
+                    "CTX_AREA_NK200": current_nk,
+                },
+                extra_headers={"tr_cont": "N"} if page_index > 0 else None,
+                include_response_headers=True,
+            )
+            page_count += 1
+            output = payload.get("output", []) or []
+            page_rows = output if isinstance(output, list) else [output]
+            rows.extend(row for row in page_rows if isinstance(row, dict))
+            headers = payload.get("_response_headers", {}) or {}
+            tr_cont = str(headers.get("tr_cont") or "").strip().upper()
+            next_fk = str(payload.get("ctx_area_fk200") or "")
+            next_nk = str(payload.get("ctx_area_nk200") or "")
+            context = (next_fk, next_nk)
+            if (
+                not paginate
+                or tr_cont not in {"M", "F"}
+                or context in seen_contexts
+            ):
+                break
+            seen_contexts.add(context)
+            current_fk, current_nk = next_fk, next_nk
         return {
             "orders": rows,
             "ctx_area_fk200": payload.get("ctx_area_fk200", ""),

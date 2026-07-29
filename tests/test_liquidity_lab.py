@@ -1757,6 +1757,8 @@ class DummySellClient:
         self.pending_orders = pending_orders or []
         self.order_calls: list[dict] = []
         self.cancel_calls: list[dict] = []
+        self.history_calls: list[dict] = []
+        self.open_order_calls: list[dict] = []
 
     async def place_overseas_order_for_current_session(
         self,
@@ -1809,7 +1811,11 @@ class DummySellClient:
         }
 
     async def get_overseas_order_history(self, **kwargs):
-        del kwargs
+        self.history_calls.append(kwargs)
+        return {"orders": list(self.pending_orders)}
+
+    async def get_overseas_open_orders(self, **kwargs):
+        self.open_order_calls.append(kwargs)
         return {"orders": list(self.pending_orders)}
 
     async def revise_or_cancel_overseas_order(self, **kwargs):
@@ -3005,7 +3011,7 @@ def test_place_overseas_sell_order_unknown_pnl_when_avg_zero() -> None:
     assert "수익률=-" in service.notifier.messages[0]
 
 
-def test_list_open_overseas_orders_always_filters_by_symbol_and_unfilled_only() -> None:
+def test_list_open_overseas_orders_routes_vps_and_prod_to_distinct_apis() -> None:
     # Regression test: for env != "prod" (mock/paper), this used to query with
     # symbol="" and fill_filter="00" (all statuses across all symbols). The KIS
     # mock order-history endpoint returns only ~15 rows with no pagination, so
@@ -3014,15 +3020,21 @@ def test_list_open_overseas_orders_always_filters_by_symbol_and_unfilled_only() 
     # wrongly returned None -> the duplicate-order-dedup check silently broke,
     # letting the same symbol be bought over and over (CRAN incident,
     # 2026-07-13: 60+ duplicate BUY orders for one symbol in 30 minutes).
-    calls: list[dict] = []
+    history_calls: list[dict] = []
+    open_order_calls: list[dict] = []
 
     class CapturingClient:
         async def get_overseas_order_history(self, **kwargs):
-            calls.append(kwargs)
+            history_calls.append(kwargs)
+            return {"orders": []}
+
+        async def get_overseas_open_orders(self, **kwargs):
+            open_order_calls.append(kwargs)
             return {"orders": []}
 
     for env in ("vps", "prod"):
-        calls.clear()
+        history_calls.clear()
+        open_order_calls.clear()
         service = LiquidityLabService.__new__(LiquidityLabService)
         service.config = type(
             "Config",
@@ -3035,9 +3047,101 @@ def test_list_open_overseas_orders_always_filters_by_symbol_and_unfilled_only() 
             service._list_open_overseas_orders(symbol="cran", exchange_code="NASD")
         )
 
-        assert len(calls) == 1
-        assert calls[0]["symbol"] == "CRAN"
-        assert calls[0]["fill_filter"] == "02"
+        if env == "vps":
+            assert len(history_calls) == 1
+            assert history_calls[0]["symbol"] == "CRAN"
+            assert history_calls[0]["fill_filter"] == "02"
+            assert history_calls[0]["exchange_code"] == ""
+            assert history_calls[0]["paginate"] is True
+            assert open_order_calls == []
+        else:
+            assert history_calls == []
+            assert len(open_order_calls) == 1
+            assert open_order_calls[0]["exchange_code"] == "NASD"
+            assert open_order_calls[0]["paginate"] is True
+
+
+def test_overseas_buy_fails_closed_when_open_order_lookup_fails() -> None:
+    service = _build_run_service()
+    client = DummySellClient()
+
+    async def failing_history(**_kwargs):
+        raise KisApiError("EGW00300 gateway routing error")
+
+    client.get_overseas_order_history = failing_history
+    service.client = client
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NASD",
+        last_price=23.10,
+        bid=23.09,
+        ask=23.11,
+        spread_pct=0.0008,
+        change_rate_pct=1.1,
+        volume=1_200_000,
+        orderable_qty=5,
+        fx_rate_krw=0.0,
+        activity_score=11.0,
+    )
+    service._signal_cache["PLTR"] = _snapshot(price=23.10)
+
+    result = asyncio.run(service._place_overseas_test_order(candidate))
+
+    assert result["submitted"] is False
+    assert result["reason"] == "open_order_lookup_failed"
+    assert client.order_calls == []
+    assert client.cancel_calls == []
+    lookup_events = service.repository.list_event_log(
+        event_type="maintenance_skip",
+        limit=5,
+    )
+    assert len(lookup_events) == 1
+    assert json.loads(lookup_events[0]["detail"])["reason"] == (
+        "open_overseas_order_lookup_failed"
+    )
+
+
+def test_overseas_sell_fails_closed_when_open_order_lookup_fails() -> None:
+    service = _build_sell_service()
+
+    async def failing_history(**_kwargs):
+        raise KisApiError("EGW00201 rate limit")
+
+    service.client.get_overseas_order_history = failing_history
+    candidate = OverseasScanResult(
+        symbol="TSLA",
+        exchange_code="NASD",
+        last_price=278.0,
+        bid=277.9,
+        ask=278.1,
+        spread_pct=0.0007,
+        change_rate_pct=-2.0,
+        volume=1_500_000,
+        orderable_qty=0,
+        fx_rate_krw=0.0,
+        activity_score=9.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="TSLA",
+        exchange_code="NASD",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=290.0,
+        current_price=278.0,
+        pnl_pct=(278.0 - 290.0) / 290.0,
+    )
+
+    result = _run_orderable_overseas_sell(
+        service,
+        candidate,
+        held,
+        "stop_loss",
+    )
+
+    assert result["submitted"] is False
+    assert result["reason"] == "open_order_lookup_failed"
+    assert service.client.order_calls == []
+    assert service.client.cancel_calls == []
 
 
 def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() -> None:
@@ -3092,6 +3196,7 @@ def test_place_overseas_sell_order_cancels_stale_pending_exit_then_reorders() ->
     assert broker_rows[1]["payload_json"]["reference_price"] == 316.9
     assert broker_rows[1]["payload_json"]["open_qty"] == 61
     assert service.repository.query_cycle_log(action_bias="SELL_REAL", limit=5) == []
+    assert len(service.client.history_calls) == 1
     replacement_rows = service.repository.query_cycle_log(
         action_bias="SELL_REPLACED",
         limit=5,
@@ -3384,6 +3489,7 @@ def test_place_overseas_buy_order_records_cancel_event_for_stale_pending_buy() -
     assert broker_rows[1]["payload_json"]["original_order_price"] == 23.15
     assert broker_rows[1]["payload_json"]["reference_price"] == 23.11
     assert broker_rows[1]["payload_json"]["open_qty"] == 3
+    assert len(service.client.history_calls) == 1
 
 
 def test_place_overseas_sell_order_cancels_conflicting_buy_order_before_stop_loss() -> None:
@@ -9455,6 +9561,9 @@ def test_overseas_buy_uses_slot_sizing_when_balance_is_available() -> None:
                     "ord_psbl_frcr_amt_wcrc": "1000",
                 },
             }
+
+        async def get_overseas_order_history(self, **_kwargs):
+            return {"orders": []}
 
         async def place_overseas_order_for_current_session(
             self,

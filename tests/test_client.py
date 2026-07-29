@@ -9,7 +9,7 @@ from queue import Empty
 import httpx
 import pytest
 
-from kinvest_trade.client import KisRestClient
+from kinvest_trade.client import KisApiError, KisRestClient
 from kinvest_trade.config import KisCredentials
 
 
@@ -679,6 +679,88 @@ def test_get_overseas_order_history_follows_kis_continuation_pages(
     assert calls[1]["params"]["CTX_AREA_NK200"] == "NEXT"
     assert calls[1]["extra_headers"] == {"tr_cont": "N"}
     assert continuation_delays == [1.0]
+
+
+def test_get_overseas_open_orders_uses_production_nccs_and_continuation(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="prod",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    calls: list[dict] = []
+    pages = iter(
+        [
+            {
+                "output": [{"odno": "100", "pdno": "FSUN", "nccs_qty": "2"}],
+                "ctx_area_fk200": "NEXT_FK",
+                "ctx_area_nk200": "NEXT_NK",
+                "_response_headers": {"tr_cont": "F"},
+            },
+            {
+                "output": [{"odno": "101", "pdno": "HUBB", "nccs_qty": "1"}],
+                "ctx_area_fk200": "",
+                "ctx_area_nk200": "",
+                "_response_headers": {"tr_cont": "D"},
+            },
+        ]
+    )
+
+    async def fake_request(method: str, path: str, tr_id: str, **kwargs):
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "tr_id": tr_id,
+                **kwargs,
+            }
+        )
+        return next(pages)
+
+    client._request = fake_request  # type: ignore[method-assign]
+    result = asyncio.run(
+        client.get_overseas_open_orders(exchange_code="NASD")
+    )
+
+    assert [row["odno"] for row in result["orders"]] == ["100", "101"]
+    assert result["page_count"] == 2
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["path"] == client.OVERSEAS_OPEN_ORDERS_PATH
+    assert calls[0]["tr_id"] == "TTTS3018R"
+    assert calls[0]["params"]["OVRS_EXCG_CD"] == "NASD"
+    assert calls[1]["params"]["CTX_AREA_FK200"] == "NEXT_FK"
+    assert calls[1]["params"]["CTX_AREA_NK200"] == "NEXT_NK"
+    assert calls[1]["extra_headers"] == {"tr_cont": "N"}
+
+
+def test_get_overseas_open_orders_rejects_vps_profile(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    with pytest.raises(KisApiError, match="production-only"):
+        asyncio.run(client.get_overseas_open_orders(exchange_code="NASD"))
 
 
 def test_overseas_history_continuation_delay_is_not_applied_to_production(

@@ -12,6 +12,28 @@
   inspect evidence, document the decision, test, back up mutable production
   data, commit, push, restart, send a Telegram report, and recheck health.
 
+## API reliability measurement
+
+- KIS API health separates transport/API attempts from logical requests. Every
+  new attempt records one logical request ID, its attempt number, whether a
+  retry is scheduled and why, and whether the row is the terminal outcome.
+  A failed attempt followed by a terminal success is a recovered request, not
+  a terminal API failure. Raw failed attempts remain visible as broker-pressure
+  evidence.
+- Legacy rows with no logical request ID remain available for historical raw
+  attempt analysis but are excluded from tracked terminal-request metrics.
+  One logical request must produce exactly one terminal row.
+- KIS's official flow notice states that the virtual REST environment allows
+  one request per second per account as of April 20, 2026
+  ([KIS API flow notice](https://apiportal.koreainvestment.com/community/10000000-0000-0011-0000-000000000001/post/d0d1a83f-6f8d-4437-9700-6d26702fd989)).
+  Do not globally slow every market scan from recovered attempts alone.
+  Compare terminal failures, recovery latency, sustained retry ratio and the
+  opportunity cost of slower scans first.
+- Reconsider the current VPS pacing when a tracked rate-limit request ends in
+  terminal failure, recovered rate-limit requests exceed 1% for three
+  consecutive 30-minute windows, recovery p95 exceeds five seconds, or retry
+  delay causes an orderable policy bar to be missed.
+
 ## Market separation
 
 - Domestic and overseas policies are independently owned and versioned.

@@ -2103,7 +2103,10 @@ class ReportHelper:
                 win_rate = win_count / closed_count if closed_count else 0.0
                 lines.append(
                     f"{format_market_korean(str(row.get('market') or ''))} "
-                    f"종료={closed_count} 진행={int(row.get('open_count') or 0)} "
+                    f"상품종료={closed_count} "
+                    f"상품진행={int(row.get('open_count') or 0)} "
+                    f"관찰세션={int(row.get('observed_session_count') or 0)} "
+                    f"종료세션={int(row.get('closed_session_count') or 0)} "
                     f"승률={win_rate * 100:.0f}% "
                     f"평균순수익={format_pct(float(row.get('avg_net_pnl_pct') or 0.0))}"
                     + (
@@ -2119,7 +2122,9 @@ class ReportHelper:
             for row in recent_shadow_rows:
                 lines.append(self.format_inverse_shadow_trade(row))
         else:
-            lines.append("종료=0 진행=0 진입표본=없음")
+            lines.append(
+                "상품종료=0 상품진행=0 관찰세션=0 진입표본=없음"
+            )
         lines.append("─── 역방향 관측 ───")
         if not inverse_observations:
             lines.append("관측=없음(해당 기간 영구 로그 없음)")

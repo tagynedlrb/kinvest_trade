@@ -693,6 +693,11 @@ profit-taking cause such as `momentum_loss_cut` or `take_profit`.
   and exit. It closes on take-profit, stop, hard stop, time limit, benchmark
   recovery, or session rollover. Daily-reset inverse products are never carried
   into the next session by this policy.
+- Report product paths and market-session evidence separately. Product open,
+  close and win counts remain useful for comparing tracking and execution, but
+  `observed_session_count` and `closed_session_count` count distinct
+  market-scoped `entry_session_date` values. Multiple products from one shock
+  may contribute multiple product paths but only one observed market session.
 - Every inverse shadow entry freezes the same-session benchmark snapshot,
   including observation lineage, return, session-low return, rebound from that
   low, current position inside the intraday high-low range, and minutes until

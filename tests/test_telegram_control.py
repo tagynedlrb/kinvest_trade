@@ -1960,7 +1960,10 @@ def test_lab_performance_command_reports_realized_strategy_only(
     assert "청산=VWAP" not in message
     assert "손익=-$12.50/-16,875원" in message
     assert "─── 역방향 shadow ───" in message
-    assert "종료=0 진행=0 진입표본=없음" in message
+    assert (
+        "상품종료=0 상품진행=0 관찰세션=0 진입표본=없음"
+        in message
+    )
     assert "관측=없음(해당 기간 영구 로그 없음)" in message
 
 
@@ -2036,7 +2039,8 @@ def test_lab_performance_command_reports_inverse_entry_market_path(
 
     message = notifier.messages[-1]
     assert (
-        "종료=1 진행=0 승률=0% 평균순수익=-0.93% "
+        "상품종료=1 상품진행=0 관찰세션=1 종료세션=1 "
+        "승률=0% 평균순수익=-0.93% "
         "평균MFE=+0.97% 평균MAE=-0.90% 평균고점반납=+1.87%"
         in message
     )

@@ -2533,6 +2533,18 @@ class SqliteRepository:
                         AS open_count,
                     SUM(CASE WHEN status = 'CLOSED' THEN 1 ELSE 0 END)
                         AS closed_count,
+                    COUNT(DISTINCT entry_session_date)
+                        AS observed_session_count,
+                    COUNT(
+                        DISTINCT CASE
+                            WHEN status = 'OPEN' THEN entry_session_date
+                        END
+                    ) AS open_session_count,
+                    COUNT(
+                        DISTINCT CASE
+                            WHEN status = 'CLOSED' THEN entry_session_date
+                        END
+                    ) AS closed_session_count,
                     SUM(
                         CASE
                             WHEN status = 'CLOSED' AND net_pnl_pct > 0 THEN 1

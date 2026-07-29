@@ -6810,6 +6810,9 @@ def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
     )
     performance = service.repository.get_inverse_shadow_performance()
     assert performance[0]["closed_count"] == 1
+    assert performance[0]["observed_session_count"] == 1
+    assert performance[0]["open_session_count"] == 0
+    assert performance[0]["closed_session_count"] == 1
     assert performance[0]["win_count"] == 1
     assert performance[0]["avg_net_pnl_pct"] > 0.025
     closed_trade = service.repository.list_inverse_shadow_trades(limit=1)[0]

@@ -2020,6 +2020,64 @@ def test_get_session_pnl_summary_after_filter(tmp_path, save_confirmed_sell) -> 
     assert summary["virtual"]["overseas_USD"]["total_pnl"] == 2.0
 
 
+def test_inverse_shadow_performance_counts_distinct_market_sessions(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "inverse_sessions.db")
+
+    def open_trade(symbol: str, session_date: str) -> None:
+        assert repository.open_inverse_shadow_trade(
+            opened_at=f"{session_date}T14:00:00+00:00",
+            market="overseas",
+            symbol=symbol,
+            exchange_code="AMEX",
+            entry_session_date=session_date,
+            policy_id="overseas_momentum_v2",
+            entry_price=100.0,
+            entry_spread_pct=0.0,
+            commission_rate=0.0025,
+            benchmark_name="NASDAQ Composite",
+            benchmark_return_pct=-1.5,
+            benchmark_regime_key="down|normal|normal",
+            entry_reason="inverse_regime_trend_breakout_entry",
+            strategy_flag="INV",
+            entry_by="INV",
+        )
+
+    open_trade("SQQQ", "2026-07-29")
+    open_trade("SPXU", "2026-07-29")
+    open_trade("SOXS", "2026-07-28")
+    trades = {
+        row["symbol"]: row
+        for row in repository.list_inverse_shadow_trades(limit=10)
+    }
+    for symbol, net_pnl_pct in (("SQQQ", 0.01), ("SOXS", -0.01)):
+        trade = trades[symbol]
+        assert repository.update_inverse_shadow_trade(
+            int(trade["id"]),
+            updated_at=f"{trade['entry_session_date']}T15:00:00+00:00",
+            hold_cycles=5,
+            peak_price=102.0,
+            trough_price=99.0,
+            last_price=101.0,
+            closed_at=f"{trade['entry_session_date']}T15:00:00+00:00",
+            exit_price=101.0,
+            gross_pnl_pct=0.01,
+            net_pnl_pct=net_pnl_pct,
+            exit_reason="inverse_time_exit",
+        )
+
+    performance = repository.get_inverse_shadow_performance()
+
+    assert len(performance) == 1
+    assert performance[0]["open_count"] == 1
+    assert performance[0]["closed_count"] == 2
+    assert performance[0]["observed_session_count"] == 2
+    assert performance[0]["open_session_count"] == 1
+    assert performance[0]["closed_session_count"] == 2
+    assert performance[0]["win_count"] == 1
+
+
 def test_policy_evaluation_log_preserves_reasoning_and_later_validation(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "policy_evaluation.db")
     evaluation_id = repository.save_policy_evaluation(

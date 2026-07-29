@@ -450,6 +450,12 @@ class TelegramLiquidityLabController:
                 msg_cd=str(info.get("msg_cd", "")),
                 msg1=str(info.get("msg1", ""))[:200],
                 elapsed_ms=info.get("elapsed_ms"),
+                logical_request_id=str(info.get("logical_request_id", "")),
+                attempt_no=int(info.get("attempt_no", 1) or 1),
+                max_attempts=int(info.get("max_attempts", 1) or 1),
+                retry_scheduled=bool(info.get("retry_scheduled", False)),
+                retry_reason=str(info.get("retry_reason", "")),
+                logical_terminal=bool(info.get("logical_terminal", True)),
             )
         except Exception:  # noqa: BLE001
             pass

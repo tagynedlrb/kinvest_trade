@@ -508,6 +508,111 @@ def test_api_call_log_can_be_saved_and_listed(tmp_path) -> None:
     assert rows[0]["success"] == 0
     assert rows[0]["msg_cd"] == "IGW00007"
     assert rows[0]["elapsed_ms"] == 123
+    assert rows[0]["logical_request_id"] == ""
+    assert rows[0]["attempt_no"] == 1
+    assert rows[0]["logical_terminal"] == 1
+
+
+def test_api_call_health_separates_recovered_retry_from_terminal_failure(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "api_health.db")
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:00+00:00",
+        method="GET",
+        tr_id="QUOTE",
+        success=False,
+        http_status=500,
+        msg_cd="EGW00201",
+        logical_request_id="request-recovered",
+        attempt_no=1,
+        max_attempts=3,
+        retry_scheduled=True,
+        retry_reason="rate_limit",
+        logical_terminal=False,
+    )
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:02+00:00",
+        method="GET",
+        tr_id="QUOTE",
+        success=True,
+        http_status=200,
+        logical_request_id="request-recovered",
+        attempt_no=2,
+        max_attempts=3,
+        logical_terminal=True,
+    )
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:04+00:00",
+        method="GET",
+        tr_id="BALANCE",
+        success=False,
+        http_status=500,
+        msg_cd="EGW00201",
+        logical_request_id="request-failed",
+        attempt_no=3,
+        max_attempts=3,
+        logical_terminal=True,
+    )
+
+    summary = repository.summarize_api_call_health(
+        since="2026-07-29T00:00:00+00:00"
+    )
+
+    assert summary == {
+        "attempt_count": 3,
+        "attempt_failure_count": 2,
+        "tracked_request_count": 2,
+        "terminal_failure_count": 1,
+        "recovered_request_count": 1,
+        "retry_scheduled_count": 1,
+        "rate_limit_retry_count": 1,
+        "attempt_failure_rate": pytest.approx(2 / 3),
+        "terminal_failure_rate": pytest.approx(1 / 2),
+    }
+
+
+def test_api_call_lineage_columns_migrate_legacy_table(tmp_path) -> None:
+    db_path = tmp_path / "legacy_api_log.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE api_call_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                method TEXT NOT NULL,
+                tr_id TEXT NOT NULL DEFAULT '',
+                path TEXT NOT NULL DEFAULT '',
+                success INTEGER NOT NULL DEFAULT 1,
+                http_status INTEGER,
+                msg_cd TEXT NOT NULL DEFAULT '',
+                msg1 TEXT NOT NULL DEFAULT '',
+                elapsed_ms INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO api_call_log (created_at, method, success)
+            VALUES ('2026-07-28T00:00:00+00:00', 'GET', 0)
+            """
+        )
+
+    repository = SqliteRepository(db_path)
+    row = repository.list_api_calls(limit=1)[0]
+
+    assert row["logical_request_id"] == ""
+    assert row["attempt_no"] == 1
+    assert row["max_attempts"] == 1
+    assert row["retry_scheduled"] == 0
+    assert row["retry_reason"] == ""
+    assert row["logical_terminal"] == 1
+    summary = repository.summarize_api_call_health(
+        since="2026-07-28T00:00:00+00:00"
+    )
+    assert summary["attempt_failure_count"] == 1
+    assert summary["tracked_request_count"] == 0
+    assert summary["terminal_failure_count"] == 0
 
 
 def test_submitted_order_audit_rows_excludes_canceled_and_keeps_cancel_rejected(tmp_path) -> None:

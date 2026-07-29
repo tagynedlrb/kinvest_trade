@@ -544,7 +544,13 @@ class SqliteRepository:
                     http_status INTEGER,
                     msg_cd TEXT NOT NULL DEFAULT '',
                     msg1 TEXT NOT NULL DEFAULT '',
-                    elapsed_ms INTEGER
+                    elapsed_ms INTEGER,
+                    logical_request_id TEXT NOT NULL DEFAULT '',
+                    attempt_no INTEGER NOT NULL DEFAULT 1,
+                    max_attempts INTEGER NOT NULL DEFAULT 1,
+                    retry_scheduled INTEGER NOT NULL DEFAULT 0,
+                    retry_reason TEXT NOT NULL DEFAULT '',
+                    logical_terminal INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE INDEX IF NOT EXISTS idx_api_call_log_created_at
                     ON api_call_log(created_at);
@@ -618,6 +624,42 @@ class SqliteRepository:
                 "market_regimes",
                 "calculation_version",
                 "TEXT NOT NULL DEFAULT 'intraday_range_v1'",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "logical_request_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "attempt_no",
+                "INTEGER NOT NULL DEFAULT 1",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "max_attempts",
+                "INTEGER NOT NULL DEFAULT 1",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "retry_scheduled",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "retry_reason",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "api_call_log",
+                "logical_terminal",
+                "INTEGER NOT NULL DEFAULT 1",
             )
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_usd", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "auto_trade_runs", "realized_pnl_net_krw", "REAL NOT NULL DEFAULT 0")
@@ -2226,14 +2268,21 @@ class SqliteRepository:
         msg_cd: str = "",
         msg1: str = "",
         elapsed_ms: int | None = None,
+        logical_request_id: str = "",
+        attempt_no: int = 1,
+        max_attempts: int = 1,
+        retry_scheduled: bool = False,
+        retry_reason: str = "",
+        logical_terminal: bool = True,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO api_call_log (
                     created_at, method, tr_id, path, success, http_status,
-                    msg_cd, msg1, elapsed_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    msg_cd, msg1, elapsed_ms, logical_request_id, attempt_no,
+                    max_attempts, retry_scheduled, retry_reason, logical_terminal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -2245,6 +2294,12 @@ class SqliteRepository:
                     msg_cd,
                     msg1,
                     elapsed_ms,
+                    logical_request_id,
+                    max(1, int(attempt_no)),
+                    max(1, int(max_attempts)),
+                    1 if retry_scheduled else 0,
+                    retry_reason,
+                    1 if logical_terminal else 0,
                 ),
             )
 
@@ -2257,6 +2312,89 @@ class SqliteRepository:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def summarize_api_call_health(
+        self,
+        *,
+        since: str,
+        until: str | None = None,
+    ) -> dict[str, int | float]:
+        where = ["created_at >= ?"]
+        params: list[str] = [since]
+        if until is not None:
+            where.append("created_at < ?")
+            params.append(until)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS attempt_count,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END)
+                        AS attempt_failure_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND logical_terminal = 1
+                            THEN 1 ELSE 0
+                        END
+                    ) AS tracked_request_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND logical_terminal = 1
+                             AND success = 0
+                            THEN 1 ELSE 0
+                        END
+                    ) AS terminal_failure_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND logical_terminal = 1
+                             AND success = 1
+                             AND attempt_no > 1
+                            THEN 1 ELSE 0
+                        END
+                    ) AS recovered_request_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND retry_scheduled = 1
+                            THEN 1 ELSE 0
+                        END
+                    ) AS retry_scheduled_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
+                             AND retry_reason = 'rate_limit'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS rate_limit_retry_count
+                FROM api_call_log
+                WHERE {" AND ".join(where)}
+                """,
+                params,
+            ).fetchone()
+        result = {
+            key: int(row[key] or 0)
+            for key in (
+                "attempt_count",
+                "attempt_failure_count",
+                "tracked_request_count",
+                "terminal_failure_count",
+                "recovered_request_count",
+                "retry_scheduled_count",
+                "rate_limit_retry_count",
+            )
+        }
+        tracked = result["tracked_request_count"]
+        attempts = result["attempt_count"]
+        result["attempt_failure_rate"] = (
+            result["attempt_failure_count"] / attempts if attempts else 0.0
+        )
+        result["terminal_failure_rate"] = (
+            result["terminal_failure_count"] / tracked if tracked else 0.0
+        )
+        return result
 
     def list_broker_order_events(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:

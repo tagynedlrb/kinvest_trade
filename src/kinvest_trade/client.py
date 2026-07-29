@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Callable
 
@@ -184,6 +185,12 @@ class KisRestClient:
         http_status: int | None = None,
         msg_cd: str = "",
         msg1: str = "",
+        logical_request_id: str = "",
+        attempt_no: int = 1,
+        max_attempts: int = 1,
+        retry_scheduled: bool = False,
+        retry_reason: str = "",
+        logical_terminal: bool = True,
     ) -> None:
         if self._on_api_call is None:
             return
@@ -198,6 +205,12 @@ class KisRestClient:
                     "msg_cd": msg_cd,
                     "msg1": msg1,
                     "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                    "logical_request_id": logical_request_id,
+                    "attempt_no": attempt_no,
+                    "max_attempts": max_attempts,
+                    "retry_scheduled": retry_scheduled,
+                    "retry_reason": retry_reason,
+                    "logical_terminal": logical_terminal,
                 }
             )
         except Exception:  # noqa: BLE001
@@ -322,7 +335,10 @@ class KisRestClient:
     ) -> dict[str, Any]:
         # KIS는 초당 호출 제한 응답(EGW00201)을 줄 수 있다.
         # 토큰 만료(EGW00123)도 간헐적으로 발생할 수 있어 자동 갱신 후 재시도한다.
-        for attempt in range(3):
+        max_attempts = 3
+        logical_request_id = uuid.uuid4().hex
+        for attempt in range(max_attempts):
+            attempt_no = attempt + 1
             started_at = time.monotonic()
             token = await self.ensure_token()
             headers = {
@@ -352,8 +368,14 @@ class KisRestClient:
                     started_at=started_at,
                     success=False,
                     msg1=f"transport_error: {exc}"[:200],
+                    logical_request_id=logical_request_id,
+                    attempt_no=attempt_no,
+                    max_attempts=max_attempts,
+                    retry_scheduled=attempt < max_attempts - 1,
+                    retry_reason="transport_error" if attempt < max_attempts - 1 else "",
+                    logical_terminal=attempt >= max_attempts - 1,
                 )
-                if attempt < 2:
+                if attempt < max_attempts - 1:
                     await asyncio.sleep(1.0)
                     continue
                 raise KisApiError(f"{tr_id} transport_error: {exc}") from exc
@@ -368,12 +390,22 @@ class KisRestClient:
                     success=False,
                     http_status=response.status_code,
                     msg1="non_json_response",
+                    logical_request_id=logical_request_id,
+                    attempt_no=attempt_no,
+                    max_attempts=max_attempts,
+                    logical_terminal=True,
                 )
                 response.raise_for_status()
                 raise
 
             token_expired = payload.get("msg_cd") == "EGW00123"
             if response.status_code >= 400:
+                rate_limited = payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES
+                retry_reason = ""
+                if token_expired and attempt < max_attempts - 1:
+                    retry_reason = "token_expired"
+                elif rate_limited and attempt < max_attempts - 1:
+                    retry_reason = "rate_limit"
                 self._log_api_call(
                     method=method,
                     path=path,
@@ -383,12 +415,18 @@ class KisRestClient:
                     http_status=response.status_code,
                     msg_cd=str(payload.get("msg_cd") or ""),
                     msg1=str(payload.get("msg1") or ""),
+                    logical_request_id=logical_request_id,
+                    attempt_no=attempt_no,
+                    max_attempts=max_attempts,
+                    retry_scheduled=bool(retry_reason),
+                    retry_reason=retry_reason,
+                    logical_terminal=not bool(retry_reason),
                 )
-                if token_expired and attempt < 2:
+                if token_expired and attempt < max_attempts - 1:
                     self._invalidate_token()
                     await asyncio.sleep(0.2)
                     continue
-                if payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES and attempt < 2:
+                if rate_limited and attempt < max_attempts - 1:
                     await asyncio.sleep(1.0)
                     continue
                 raise KisApiError(
@@ -406,6 +444,10 @@ class KisRestClient:
                     http_status=response.status_code,
                     msg_cd=str(payload.get("msg_cd") or ""),
                     msg1=str(payload.get("msg1") or ""),
+                    logical_request_id=logical_request_id,
+                    attempt_no=attempt_no,
+                    max_attempts=max_attempts,
+                    logical_terminal=True,
                 )
                 if include_response_headers:
                     response_headers = getattr(response, "headers", {}) or {}
@@ -416,6 +458,12 @@ class KisRestClient:
                     }
                 return payload
 
+            rate_limited = payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES
+            retry_reason = ""
+            if token_expired and attempt < max_attempts - 1:
+                retry_reason = "token_expired"
+            elif rate_limited and attempt < max_attempts - 1:
+                retry_reason = "rate_limit"
             self._log_api_call(
                 method=method,
                 path=path,
@@ -425,12 +473,18 @@ class KisRestClient:
                 http_status=response.status_code,
                 msg_cd=str(payload.get("msg_cd") or ""),
                 msg1=str(payload.get("msg1") or ""),
+                logical_request_id=logical_request_id,
+                attempt_no=attempt_no,
+                max_attempts=max_attempts,
+                retry_scheduled=bool(retry_reason),
+                retry_reason=retry_reason,
+                logical_terminal=not bool(retry_reason),
             )
-            if token_expired and attempt < 2:
+            if token_expired and attempt < max_attempts - 1:
                 self._invalidate_token()
                 await asyncio.sleep(0.2)
                 continue
-            if payload.get("msg_cd") in self._RATE_LIMIT_MSG_CODES and attempt < 2:
+            if rate_limited and attempt < max_attempts - 1:
                 await asyncio.sleep(1.0)
                 continue
 

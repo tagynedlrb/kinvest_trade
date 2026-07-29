@@ -160,14 +160,86 @@ def test_request_reports_api_calls_via_on_api_call_hook(
     assert calls[0]["path"] == "/test"
     assert calls[0]["method"] == "GET"
     assert isinstance(calls[0]["elapsed_ms"], int)
+    assert calls[0]["logical_request_id"]
+    assert calls[0]["attempt_no"] == 1
+    assert calls[0]["max_attempts"] == 3
+    assert calls[0]["retry_scheduled"] is True
+    assert calls[0]["retry_reason"] == "rate_limit"
+    assert calls[0]["logical_terminal"] is False
     assert calls[1]["success"] is True
     assert calls[1]["http_status"] == 200
+    assert calls[1]["logical_request_id"] == calls[0]["logical_request_id"]
+    assert calls[1]["attempt_no"] == 2
+    assert calls[1]["max_attempts"] == 3
+    assert calls[1]["retry_scheduled"] is False
+    assert calls[1]["retry_reason"] == ""
+    assert calls[1]["logical_terminal"] is True
     # None of the logged fields ever carry account number or credentials.
     for call in calls:
         serialized = str(call)
         assert credentials.account_no not in serialized
         assert credentials.appkey not in serialized
         assert credentials.appsecret not in serialized
+
+
+def test_request_marks_exhausted_rate_limit_as_terminal_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    client._client = FakeAsyncClient(
+        [
+            FakeResponse(
+                500,
+                {
+                    "msg_cd": "EGW00201",
+                    "msg1": "초당 거래건수를 초과하였습니다.",
+                },
+            )
+            for _ in range(3)
+        ]
+    )
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_wait(*_args, **_kwargs) -> None:
+        return None
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_wait  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", no_wait)
+
+    with pytest.raises(KisApiError, match="EGW00201"):
+        asyncio.run(client._request("GET", "/test", "TRTEST"))
+
+    assert [call["attempt_no"] for call in calls] == [1, 2, 3]
+    assert len({call["logical_request_id"] for call in calls}) == 1
+    assert [call["retry_scheduled"] for call in calls] == [True, True, False]
+    assert [call["retry_reason"] for call in calls] == [
+        "rate_limit",
+        "rate_limit",
+        "",
+    ]
+    assert [call["logical_terminal"] for call in calls] == [
+        False,
+        False,
+        True,
+    ]
 
 
 def _make_paced_test_client(credentials: KisCredentials) -> KisRestClient:

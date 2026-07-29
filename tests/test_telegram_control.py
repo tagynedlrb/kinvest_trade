@@ -1709,9 +1709,15 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
             "tr_id": "VTTC0012U",
             "success": False,
             "http_status": 500,
-            "msg_cd": "IGW00007",
-            "msg1": "MCA 전문바디 구성 중 오류가 발생하였습니다.",
+            "msg_cd": "EGW00201",
+            "msg1": "초당 거래건수를 초과하였습니다.",
             "elapsed_ms": 87,
+            "logical_request_id": "request-1",
+            "attempt_no": 1,
+            "max_attempts": 3,
+            "retry_scheduled": True,
+            "retry_reason": "rate_limit",
+            "logical_terminal": False,
         }
     )
 
@@ -1720,6 +1726,12 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert rows[0]["tr_id"] == "VTTC0012U"
     assert rows[0]["success"] == 0
     assert rows[0]["elapsed_ms"] == 87
+    assert rows[0]["logical_request_id"] == "request-1"
+    assert rows[0]["attempt_no"] == 1
+    assert rows[0]["max_attempts"] == 3
+    assert rows[0]["retry_scheduled"] == 1
+    assert rows[0]["retry_reason"] == "rate_limit"
+    assert rows[0]["logical_terminal"] == 0
 
 
 def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:

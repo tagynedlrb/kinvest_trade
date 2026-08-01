@@ -926,9 +926,18 @@ the current direction is wrong.
   close-guard cancellation at 15/30/60 minutes for opportunity cost. At the
   next KRX open, independently reconcile execution 292 before allowing its
   local state to influence capacity or performance.
-- The 10,000-credit reset boundary arrived after local verification and before
-  deployment preflight. The code is committed and pushed as an undeployed
-  checkpoint; no service restart or Telegram deployment notice is claimed.
+- The 10,000-credit reset boundary first arrived before deployment preflight,
+  but the user's subsequent explicit deployment request completed the held
+  checkpoint. Two broker reads more than ten seconds apart found two domestic
+  positions, two overseas positions, and zero open orders in either market.
+  Source and backup databases passed `integrity_check` with zero foreign-key
+  violations; the verified backup is
+  `trading_backup_20260801_173613_pre_krx_close_guard_us_exit_deploy.db`.
+  Commit `af2ad02` was pushed before restart. Service PID 1540887 remained
+  active with no restart failure, and the closed-market observation window
+  produced zero new KIS calls, orders, or error events. Telegram deployment
+  report row 1704 succeeded. Local execution 292 stays unresolved until the
+  next KRX-session broker reconciliation and must not be treated as a fill.
 
 ## Previous decision checkpoint (2026-07-30 KST)
 

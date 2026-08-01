@@ -973,6 +973,10 @@ class SqliteRepository:
             self._ensure_column(conn, "broker_order_events", "exit_by", "TEXT NOT NULL DEFAULT ''")
             self._backfill_non_trade_cycle_log_flags(conn)
             self._backfill_missing_exit_labels(conn)
+            self._normalize_terminal_broker_execution_statuses(
+                conn,
+                finalized_only=True,
+            )
 
     @staticmethod
     def _backfill_non_trade_cycle_log_flags(conn: sqlite3.Connection) -> None:
@@ -1012,6 +1016,45 @@ class SqliteRepository:
                   'conflicting_buy_cancelled'
               )
             """
+        )
+
+    @staticmethod
+    def _normalize_terminal_broker_execution_statuses(
+        conn: sqlite3.Connection,
+        *,
+        execution_group_id: str | None = None,
+        finalized_only: bool = False,
+    ) -> None:
+        """Canonicalize statuses only when persisted quantities prove finality."""
+        where = [
+            "requested_qty > 0",
+            "("
+            "filled_qty >= requested_qty "
+            "OR rejected_qty >= requested_qty "
+            "OR (canceled_qty > 0 AND "
+            "filled_qty + canceled_qty + rejected_qty >= requested_qty)"
+            ")",
+        ]
+        params: list[object] = []
+        if execution_group_id is not None:
+            where.append("execution_group_id = ?")
+            params.append(str(execution_group_id))
+        if finalized_only:
+            where.append("finalized_at IS NOT NULL")
+        conn.execute(
+            f"""
+            UPDATE broker_order_executions
+            SET status = CASE
+                    WHEN filled_qty >= requested_qty THEN 'FILLED'
+                    WHEN filled_qty <= 0 AND rejected_qty >= requested_qty
+                        THEN 'REJECTED'
+                    WHEN filled_qty > 0 THEN 'PARTIAL_CANCELED'
+                    ELSE 'CANCELED'
+                END,
+                remaining_qty = 0
+            WHERE {' AND '.join(where)}
+            """,
+            params,
         )
 
     @staticmethod
@@ -1944,6 +1987,10 @@ class SqliteRepository:
                         execution_group_id,
                     ),
                 )
+                self._normalize_terminal_broker_execution_statuses(
+                    conn,
+                    execution_group_id=execution_group_id,
+                )
             return inserted
 
     def reconcile_domestic_sell_costs(
@@ -2600,6 +2647,10 @@ class SqliteRepository:
                   AND finalized_at IS NULL
                 """,
                 (finalized_at, finalized_at, execution_group_id),
+            )
+            self._normalize_terminal_broker_execution_statuses(
+                conn,
+                execution_group_id=execution_group_id,
             )
             return int(cursor.rowcount or 0) > 0
 

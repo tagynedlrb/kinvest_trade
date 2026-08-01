@@ -274,7 +274,7 @@ class BrokerExecutionReconciler:
         executions: list[dict],
     ) -> dict[int, dict]:
         """Associate each terminal cancel with its nearest prior submission."""
-        if market != "overseas" or not executions:
+        if market not in {"domestic", "overseas"} or not executions:
             return {}
         repository = self.service.repository
         loader = getattr(

@@ -904,6 +904,74 @@ def test_latest_position_entry_time_uses_confirmed_buy_fill(
     assert repository.get_latest_position_entry_time("overseas", "COIN") is None
 
 
+def test_terminal_execution_status_is_normalized_on_finalize_and_startup(tmp_path) -> None:
+    db_path = tmp_path / "terminal_execution_status.db"
+    repository = SqliteRepository(db_path)
+    created_at = "2026-07-31T06:06:44+00:00"
+    event_id = repository.save_broker_order_event(
+        created_at=created_at,
+        market="domestic",
+        symbol="0162Z0",
+        exchange_code="KRX",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=73,
+        requested_price=13395.0,
+        status="SUBMITTED",
+        reason="domestic_buy",
+        broker_order_no="38515",
+        is_virtual=0,
+        payload={},
+    )
+    execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at,
+        market="domestic",
+        symbol="0162Z0",
+        exchange_code="KRX",
+        side="BUY",
+        broker_order_no="38515",
+        requested_qty=73,
+        requested_price=13395.0,
+    )
+    assert execution is not None
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=0,
+        filled_amount=0.0,
+        avg_fill_price=None,
+        remaining_qty=73,
+        canceled_qty=73,
+        rejected_qty=0,
+        status="PENDING",
+        history={},
+        checked_at="2026-07-31T06:20:00+00:00",
+    )
+
+    assert repository.finalize_broker_execution_group(
+        execution["execution_group_id"],
+        finalized_at="2026-07-31T06:21:00+00:00",
+    ) is True
+    finalized = repository.list_broker_order_executions(limit=1)[0]
+    assert finalized["status"] == "CANCELED"
+    assert finalized["remaining_qty"] == 0
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE broker_order_executions
+            SET status = 'PENDING', remaining_qty = requested_qty
+            WHERE id = ?
+            """,
+            (int(execution["id"]),),
+        )
+
+    repaired_repository = SqliteRepository(db_path)
+    repaired = repaired_repository.list_broker_order_executions(limit=1)[0]
+    assert repaired["status"] == "CANCELED"
+    assert repaired["remaining_qty"] == 0
+
+
 def test_repair_confirmed_cycle_entry_timing_uses_active_buy_fill(
     tmp_path,
     save_confirmed_buy,

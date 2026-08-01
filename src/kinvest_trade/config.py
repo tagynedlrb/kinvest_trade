@@ -211,6 +211,10 @@ class AutoTradeConfig:
     dynamic_pool_approved_leveraged_symbols: list[str] = field(
         default_factory=list
     )
+    stale_order_cancel_minutes: int = 30
+    close_guard_cancel_window_minutes: int = 0
+    close_guard_min_order_age_minutes: int = 5
+    close_guard_poll_interval_minutes: int = 1
 
 
 @dataclass(slots=True)

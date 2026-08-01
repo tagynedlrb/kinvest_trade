@@ -1341,6 +1341,89 @@ def test_select_overseas_exit_targets_defers_stale_balance_after_sell_submit() -
     assert detail["stale_holding_qty"] == 417
 
 
+def test_select_overseas_stop_exit_retries_pending_sell_after_45_seconds() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        liquidity_lab=SimpleNamespace(
+            overseas_take_profit_pct=0.025,
+            overseas_stop_loss_pct=0.015,
+            overseas_stop_loss_confirm_enabled=False,
+            loop_interval_sec=25,
+        )
+    )
+    service.repository = _build_repository()
+    service.notifier = DummyNotifier()
+    service._session_id = "protective-replace-test"
+    service._get_position_tracker = lambda: None  # type: ignore[method-assign]
+    service.virtual_trades = None
+    service._signal_cache = {}
+    created_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    event_id = service.repository.save_broker_order_event(
+        created_at=created_at.isoformat(),
+        market="overseas",
+        symbol="RBLX",
+        exchange_code="NYSE",
+        side="SELL",
+        order_kind="aggressive_limit",
+        requested_qty=207,
+        requested_price=38.71,
+        status="SUBMITTED",
+        reason="stop_loss",
+        broker_order_no="41777",
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at.isoformat(),
+        market="overseas",
+        symbol="RBLX",
+        exchange_code="NYSE",
+        side="SELL",
+        broker_order_no="41777",
+        requested_qty=207,
+        requested_price=38.71,
+    )
+    assert execution is not None
+    ranked = [
+        OverseasScanResult(
+            symbol="RBLX",
+            exchange_code="NYSE",
+            last_price=38.2,
+            bid=38.19,
+            ask=38.21,
+            spread_pct=0.0005,
+            change_rate_pct=-20.0,
+            volume=1_000_000,
+            orderable_qty=0,
+            fx_rate_krw=1350.0,
+            activity_score=-3900.0,
+        )
+    ]
+    held_positions = [
+        OverseasHeldPosition(
+            symbol="RBLX",
+            exchange_code="NYSE",
+            quantity=207,
+            orderable_qty=0,
+            avg_price=39.611,
+            current_price=38.2,
+            pnl_pct=(38.2 - 39.611) / 39.611,
+        )
+    ]
+
+    selected = asyncio.run(
+        service._select_overseas_exit_targets(
+            ranked,
+            held_positions,
+            max_exits=5,
+        )
+    )
+
+    assert len(selected) == 1
+    _, held, exit_reason, _ = selected[0]
+    assert exit_reason == "stop_loss"
+    assert held.orderable_qty == 207
+
+
 def test_recent_unfinalized_sell_excludes_terminal_canceled_group() -> None:
     repository = _build_repository()
     now = datetime.now(timezone.utc)
@@ -1936,6 +2019,10 @@ class DummySellClient:
         self.history_calls.append(kwargs)
         return {"orders": list(self.pending_orders)}
 
+    async def get_domestic_order_history(self, **kwargs):
+        self.history_calls.append(kwargs)
+        return {"orders": list(self.pending_orders)}
+
     async def get_overseas_open_orders(self, **kwargs):
         self.open_order_calls.append(kwargs)
         return {"orders": list(self.pending_orders)}
@@ -1982,14 +2069,26 @@ def _build_sell_service(
 @contextmanager
 def _force_overseas_orderable_session():
     original = liquidity_lab_module.is_us_orderable_session_for_env
+    original_session = liquidity_lab_module.get_us_trading_session
+    original_holiday = liquidity_lab_module.is_nyse_holiday
     original_helper = lab_overseas_orders_module.is_us_orderable_session_for_env
+    original_helper_session = lab_overseas_orders_module.get_us_trading_session
+    original_helper_holiday = lab_overseas_orders_module.is_nyse_holiday
     liquidity_lab_module.is_us_orderable_session_for_env = lambda *_args: True
+    liquidity_lab_module.get_us_trading_session = lambda *_args: "regular"
+    liquidity_lab_module.is_nyse_holiday = lambda *_args: False
     lab_overseas_orders_module.is_us_orderable_session_for_env = lambda *_args: True
+    lab_overseas_orders_module.get_us_trading_session = lambda *_args: "regular"
+    lab_overseas_orders_module.is_nyse_holiday = lambda *_args: False
     try:
         yield
     finally:
         liquidity_lab_module.is_us_orderable_session_for_env = original
+        liquidity_lab_module.get_us_trading_session = original_session
+        liquidity_lab_module.is_nyse_holiday = original_holiday
         lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper
+        lab_overseas_orders_module.get_us_trading_session = original_helper_session
+        lab_overseas_orders_module.is_nyse_holiday = original_helper_holiday
 
 
 @contextmanager
@@ -2425,6 +2524,96 @@ def test_overseas_reconcile_uses_terminal_followup_with_zero_fill_history() -> N
         "created_at": "2026-07-29T13:30:13+00:00",
         "status": "CANCELED",
         "reason": "stale_order_already_resolved",
+    }
+
+
+def test_domestic_reconcile_uses_cancel_event_when_history_still_pending() -> None:
+    history_row = {
+        "ord_dt": "20260731",
+        "ord_tmd": "150644",
+        "odno": "38515",
+        "orgn_odno": "0",
+        "pdno": "0162Z0",
+        "sll_buy_dvsn_cd": "02",
+        "ord_qty": "73",
+        "tot_ccld_qty": "0",
+        "tot_ccld_amt": "0",
+        "avg_prvs": "0",
+        "rmn_qty": "73",
+        "cncl_cfrm_qty": "0",
+        "rjct_qty": "0",
+        "cncl_yn": "N",
+        "rvse_cncl_dvsn": "00",
+    }
+    service = _build_sell_service(pending_orders=[history_row])
+    created_at = "2026-07-31T06:06:44+00:00"
+    event_id = service.repository.save_broker_order_event(
+        created_at=created_at,
+        market="domestic",
+        symbol="0162Z0",
+        exchange_code="KRX",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=73,
+        requested_price=13395.0,
+        status="SUBMITTED",
+        reason="domestic_buy",
+        broker_order_no="0000038515",
+        is_virtual=0,
+        payload={},
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at,
+        market="domestic",
+        symbol="0162Z0",
+        exchange_code="KRX",
+        side="BUY",
+        broker_order_no="0000038515",
+        requested_qty=73,
+        requested_price=13395.0,
+        strategy_flag="VWAP",
+        entry_by="VWAP",
+        session_id="reconcile-domestic",
+        is_session_trade=1,
+    )
+    assert execution is not None
+    cancel_event_id = service.repository.save_broker_order_event(
+        created_at="2026-07-31T06:20:00+00:00",
+        market="domestic",
+        symbol="0162Z0",
+        exchange_code="KRX",
+        side="BUY",
+        order_kind="cancel",
+        requested_qty=73,
+        requested_price=13395.0,
+        status="CANCELED",
+        reason="close_guard_live_order_cancel",
+        broker_order_no="38599",
+        is_virtual=0,
+        payload={"original_order_no": "38515", "open_qty": 73},
+    )
+
+    stats = asyncio.run(
+        BrokerExecutionReconciler(service).reconcile(
+            now=datetime(2026, 7, 31, 6, 21, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert stats["matched"] == 1
+    assert stats["terminal_followups"] == 1
+    assert stats["no_fill"] == 1
+    assert service.repository.list_unfinalized_broker_executions() == []
+    updated = service.repository.list_broker_order_executions(limit=1)[0]
+    assert updated["status"] == "CANCELED"
+    assert updated["remaining_qty"] == 0
+    assert updated["canceled_qty"] == 73
+    assert updated["history_json"]["_terminal_followup"] == {
+        "event_id": cancel_event_id,
+        "created_at": "2026-07-31T06:20:00+00:00",
+        "status": "CANCELED",
+        "reason": "close_guard_live_order_cancel",
     }
 
 
@@ -3195,15 +3384,21 @@ def test_place_domestic_sell_order_rejected_adds_10min_cooldown_and_logs_it() ->
 @contextmanager
 def _patch_overseas_orderable_by_env(orderable_envs: set[str]):
     original = liquidity_lab_module.is_us_orderable_session_for_env
+    original_holiday = liquidity_lab_module.is_nyse_holiday
     original_helper = lab_overseas_orders_module.is_us_orderable_session_for_env
+    original_helper_holiday = lab_overseas_orders_module.is_nyse_holiday
     patched = lambda _now, env: env in orderable_envs  # noqa: E731
     liquidity_lab_module.is_us_orderable_session_for_env = patched
+    liquidity_lab_module.is_nyse_holiday = lambda *_args: False
     lab_overseas_orders_module.is_us_orderable_session_for_env = patched
+    lab_overseas_orders_module.is_nyse_holiday = lambda *_args: False
     try:
         yield
     finally:
         liquidity_lab_module.is_us_orderable_session_for_env = original
+        liquidity_lab_module.is_nyse_holiday = original_holiday
         lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper
+        lab_overseas_orders_module.is_nyse_holiday = original_helper_holiday
 
 
 def test_overseas_sell_session_blocked_converts_real_position_to_virtual_when_prod_orderable() -> None:
@@ -11354,14 +11549,18 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
+    original_is_nyse_holiday = liquidity_lab_module.is_nyse_holiday
     original_helper_orderable = lab_overseas_orders_module.is_us_orderable_session_for_env
+    original_helper_holiday = lab_overseas_orders_module.is_nyse_holiday
     liquidity_lab_module.is_krx_regular_session = lambda now: False
     liquidity_lab_module.is_us_regular_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
+    liquidity_lab_module.is_nyse_holiday = lambda *_args: False
     lab_overseas_orders_module.is_us_orderable_session_for_env = (
         lambda _now, env: env == "prod"
     )
+    lab_overseas_orders_module.is_nyse_holiday = lambda *_args: False
     try:
         report = asyncio.run(service.run())
     finally:
@@ -11369,7 +11568,9 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
         liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
+        liquidity_lab_module.is_nyse_holiday = original_is_nyse_holiday
         lab_overseas_orders_module.is_us_orderable_session_for_env = original_helper_orderable
+        lab_overseas_orders_module.is_nyse_holiday = original_helper_holiday
 
     assert report.primary_market == "overseas"
     assert report.primary_selection_reason == "watchlist_buy_signal"

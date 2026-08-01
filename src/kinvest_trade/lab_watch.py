@@ -1395,10 +1395,16 @@ class WatchStateHelper:
                 and real is not None
                 and real.quantity > already_pending_qty
             ):
+                pending_suppression_window_sec = (
+                    45
+                    if pnl_pct <= -config.overseas_stop_loss_pct
+                    else 480
+                )
                 if service._suppress_recent_pending_sell_stale_balance(
                     market="overseas",
                     symbol=symbol,
                     holding_qty=real.quantity,
+                    window_sec=pending_suppression_window_sec,
                 ):
                     continue
                 if service._suppress_recent_full_sell_stale_balance(

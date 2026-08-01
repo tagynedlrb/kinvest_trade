@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from .client import parse_kis_number
 from .market_sessions import (
     is_us_orderable_session_for_env,
+    minutes_until_regular_session_close,
     us_holiday_date_for_kis_session,
 )
 from .message_format import format_market_korean, format_reason_korean
@@ -82,7 +83,11 @@ class OrderAdminHelper:
             )
             return
 
-        stale_orders = controller._filter_stale_live_open_orders(live_open_orders)
+        stale_orders = (
+            list(candidate_orders)
+            if candidate_orders is not None
+            else controller._filter_stale_live_open_orders(live_open_orders)
+        )
         if not stale_orders:
             await controller.notifier.send(
                 "\n".join(
@@ -125,9 +130,14 @@ class OrderAdminHelper:
         lines = [
             "[KIS][국내미체결취소]",
             f"시각={format_kst_korean(current)}",
-            f"동작={'자동취소' if source == 'auto' else '확정취소'}",
+            f"동작={'자동취소' if source.startswith('auto') else '확정취소'}",
             f"요청={len(stale_orders)}건",
         ]
+        event_reason = (
+            "close_guard_live_order_cancel"
+            if source == "auto_close_guard"
+            else "stale_live_order_cancel"
+        )
         async with controller._new_kis_client(
             client_source=f"telegram_{source}_cancel_domestic",
         ) as client:
@@ -173,7 +183,7 @@ class OrderAdminHelper:
                         requested_qty=open_qty,
                         requested_price=price,
                         status="REJECTED",
-                        reason="stale_live_order_cancel_failed",
+                        reason=f"{event_reason}_failed",
                         broker_order_no=order_no,
                         is_virtual=0,
                         payload={
@@ -203,7 +213,7 @@ class OrderAdminHelper:
                     requested_qty=open_qty,
                     requested_price=price,
                     status="CANCELED",
-                    reason="stale_live_order_cancel",
+                    reason=event_reason,
                     broker_order_no=cancel_order_no,
                     is_virtual=0,
                     payload={
@@ -232,10 +242,28 @@ class OrderAdminHelper:
         current = now or datetime.now(timezone.utc)
         if not _tc.is_krx_regular_session(current) or _tc.is_krx_holiday(current.astimezone(KST).date()):
             return False
+        policy = self._order_maintenance_policy("domestic")
+        minutes_to_close = minutes_until_regular_session_close(
+            "domestic",
+            current,
+        )
+        if minutes_to_close is not None and minutes_to_close <= 0:
+            return False
+        close_guard_active = (
+            policy["close_guard_cancel_window_minutes"] > 0
+            and minutes_to_close is not None
+            and minutes_to_close
+            <= policy["close_guard_cancel_window_minutes"]
+        )
+        poll_interval_min = (
+            policy["close_guard_poll_interval_minutes"]
+            if close_guard_active
+            else 10
+        )
         last_run = controller._last_auto_stale_domestic_cancel_at
         if last_run is not None:
             elapsed_min = (current - last_run).total_seconds() / 60
-            if elapsed_min < 10:
+            if elapsed_min < poll_interval_min:
                 return False
         controller._last_auto_stale_domestic_cancel_at = current
         try:
@@ -254,16 +282,83 @@ class OrderAdminHelper:
             )
             return False
 
-        stale_orders = controller._filter_stale_live_open_orders(live_open_orders, now=current)
+        stale_orders = controller._filter_stale_live_open_orders(
+            live_open_orders,
+            stale_threshold_min=policy["stale_order_cancel_minutes"],
+            now=current,
+        )
+        close_guard_selected = False
+        if close_guard_active:
+            close_guard_orders = controller._filter_stale_live_open_orders(
+                live_open_orders,
+                stale_threshold_min=policy["close_guard_min_order_age_minutes"],
+                now=current,
+            )
+            existing_keys = {
+                (
+                    str(row.get("symbol") or "").strip().upper(),
+                    controller.repository.normalize_broker_order_no(
+                        row.get("order_no")
+                    ),
+                )
+                for row in stale_orders
+            }
+            for row in close_guard_orders:
+                key = (
+                    str(row.get("symbol") or "").strip().upper(),
+                    controller.repository.normalize_broker_order_no(
+                        row.get("order_no")
+                    ),
+                )
+                if (
+                    controller._domestic_order_side(row) == "BUY"
+                    and key not in existing_keys
+                ):
+                    stale_orders.append(row)
+                    existing_keys.add(key)
+                    close_guard_selected = True
         bot_owned_stale_orders = controller._filter_bot_submitted_domestic_orders(stale_orders)
         if not bot_owned_stale_orders:
             return False
         await controller._execute_cancel_stale_domestic_orders(
-            source="auto",
+            source="auto_close_guard" if close_guard_selected else "auto",
             candidate_orders=bot_owned_stale_orders,
             now=current,
         )
         return True
+
+    def _order_maintenance_policy(self, market: str) -> dict[str, int]:
+        controller = self.controller
+        auto_trade = getattr(controller.config, "auto_trade", None)
+        market_policies = getattr(controller.config, "market_policies", None)
+        market_policy = getattr(market_policies, market, None)
+        market_auto_trade = getattr(market_policy, "auto_trade", None)
+        if market_auto_trade is not None:
+            auto_trade = market_auto_trade
+
+        def positive(name: str, default: int, *, allow_zero: bool = False) -> int:
+            value = int(getattr(auto_trade, name, default) or 0)
+            return max(0 if allow_zero else 1, value)
+
+        return {
+            "stale_order_cancel_minutes": positive(
+                "stale_order_cancel_minutes",
+                30,
+            ),
+            "close_guard_cancel_window_minutes": positive(
+                "close_guard_cancel_window_minutes",
+                0,
+                allow_zero=True,
+            ),
+            "close_guard_min_order_age_minutes": positive(
+                "close_guard_min_order_age_minutes",
+                5,
+            ),
+            "close_guard_poll_interval_minutes": positive(
+                "close_guard_poll_interval_minutes",
+                1,
+            ),
+        }
 
     def filter_bot_submitted_domestic_orders(self, rows: list[dict]) -> list[dict]:
         controller = self.controller
@@ -323,7 +418,12 @@ class OrderAdminHelper:
             )
             return False
 
-        stale_orders = controller._filter_stale_live_open_orders(live_open_orders, now=current)
+        policy = self._order_maintenance_policy("overseas")
+        stale_orders = controller._filter_stale_live_open_orders(
+            live_open_orders,
+            stale_threshold_min=policy["stale_order_cancel_minutes"],
+            now=current,
+        )
         bot_owned_stale_orders = controller._filter_bot_submitted_overseas_orders(stale_orders)
         if not bot_owned_stale_orders:
             return False

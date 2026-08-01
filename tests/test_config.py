@@ -133,6 +133,12 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.policy_id == "overseas_momentum_v2"
     assert domestic.auto_trade.strategy_guard_min_final_sessions == 3
     assert overseas.auto_trade.strategy_guard_min_final_sessions == 3
+    assert domestic.auto_trade.stale_order_cancel_minutes == 30
+    assert domestic.auto_trade.close_guard_cancel_window_minutes == 15
+    assert domestic.auto_trade.close_guard_min_order_age_minutes == 5
+    assert domestic.auto_trade.close_guard_poll_interval_minutes == 1
+    assert overseas.auto_trade.stale_order_cancel_minutes == 30
+    assert overseas.auto_trade.close_guard_cancel_window_minutes == 0
     assert domestic.post_cb_reentry_benchmark_floor_pct is None
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
@@ -190,6 +196,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "RSI",
         "VOL",
         "VWAP+VOL",
+        "VOL+RSI",
     ]
     assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
     assert overseas.auto_trade.entry_confirmation_strategy_flags == []

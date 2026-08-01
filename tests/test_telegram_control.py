@@ -3231,6 +3231,142 @@ def test_maybe_auto_cancel_stale_domestic_orders_only_bot_submitted_orders(tmp_p
     assert calls[0]["now"] == now
 
 
+def test_auto_cancel_domestic_close_guard_only_accelerates_stale_buys(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_close_guard.db")
+    now = datetime(2026, 7, 10, 6, 20, tzinfo=timezone.utc)
+    orders = [
+        {
+            "created_at": now - timedelta(minutes=14),
+            "symbol": "0162Z0",
+            "sll_buy_dvsn_cd": "02",
+            "open_qty": 73,
+            "order_price": 13395,
+            "order_no": "38515",
+        },
+        {
+            "created_at": now - timedelta(minutes=3),
+            "symbol": "005930",
+            "sll_buy_dvsn_cd": "02",
+            "open_qty": 3,
+            "order_price": 82000,
+            "order_no": "38516",
+        },
+        {
+            "created_at": now - timedelta(minutes=14),
+            "symbol": "069500",
+            "sll_buy_dvsn_cd": "01",
+            "open_qty": 2,
+            "order_price": 50000,
+            "order_no": "38517",
+        },
+    ]
+    for row in orders:
+        repository.save_broker_order_event(
+            created_at=row["created_at"].isoformat(),
+            market="domestic",
+            symbol=row["symbol"],
+            exchange_code="KRX",
+            side="BUY" if row["sll_buy_dvsn_cd"] == "02" else "SELL",
+            order_kind="limit",
+            requested_qty=row["open_qty"],
+            requested_price=row["order_price"],
+            status="SUBMITTED",
+            reason="domestic_order",
+            broker_order_no=row["order_no"],
+            is_virtual=0,
+            payload={},
+        )
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            market_policies=SimpleNamespace(
+                domestic=SimpleNamespace(
+                    auto_trade=SimpleNamespace(
+                        stale_order_cancel_minutes=30,
+                        close_guard_cancel_window_minutes=15,
+                        close_guard_min_order_age_minutes=5,
+                        close_guard_poll_interval_minutes=1,
+                    )
+                )
+            ),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(  # type: ignore[method-assign]
+        0,
+        result=orders,
+    )
+    calls: list[dict] = []
+
+    async def fake_execute(*, source="manual", candidate_orders=None, now=None):
+        calls.append({"source": source, "candidate_orders": candidate_orders, "now": now})
+
+    controller._execute_cancel_stale_domestic_orders = fake_execute  # type: ignore[method-assign]
+
+    result = asyncio.run(controller._maybe_auto_cancel_stale_domestic_orders(now=now))
+
+    assert result is True
+    assert calls[0]["source"] == "auto_close_guard"
+    assert [row["order_no"] for row in calls[0]["candidate_orders"]] == ["38515"]
+
+
+def test_auto_cancel_domestic_does_not_use_close_guard_early(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_close_guard_early.db")
+    now = datetime(2026, 7, 10, 5, 20, tzinfo=timezone.utc)
+    repository.save_broker_order_event(
+        created_at=(now - timedelta(minutes=14)).isoformat(),
+        market="domestic",
+        symbol="0162Z0",
+        exchange_code="KRX",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=73,
+        requested_price=13395,
+        status="SUBMITTED",
+        reason="domestic_buy",
+        broker_order_no="38515",
+        is_virtual=0,
+        payload={},
+    )
+    row = {
+        "created_at": now - timedelta(minutes=14),
+        "symbol": "0162Z0",
+        "sll_buy_dvsn_cd": "02",
+        "open_qty": 73,
+        "order_price": 13395,
+        "order_no": "38515",
+    }
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(runtime_state_path=tmp_path / "runtime_state.json"),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+            market_policies=SimpleNamespace(
+                domestic=SimpleNamespace(
+                    auto_trade=SimpleNamespace(
+                        stale_order_cancel_minutes=30,
+                        close_guard_cancel_window_minutes=15,
+                        close_guard_min_order_age_minutes=5,
+                        close_guard_poll_interval_minutes=1,
+                    )
+                )
+            ),
+        ),
+        repository=repository,
+        notifier=DummyNotifier(),
+    )
+    controller._load_live_open_domestic_orders = lambda: asyncio.sleep(0, result=[row])  # type: ignore[method-assign]
+
+    result = asyncio.run(controller._maybe_auto_cancel_stale_domestic_orders(now=now))
+
+    assert result is False
+
+
 def test_filter_bot_submitted_domestic_orders_matches_despite_zero_padding_difference(
     tmp_path,
 ) -> None:

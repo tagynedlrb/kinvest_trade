@@ -878,7 +878,59 @@ an actually executed lower-context/model review. Never invent another model's
 result. Every later review should actively ask what evidence would show that
 the current direction is wrong.
 
-## Current decision checkpoint (2026-07-30 KST)
+## Current decision checkpoint (2026-08-01 KST)
+
+- The July 31 domestic session closed with 33 confirmed exits and
+  +92,302.73 KRW net in a KOSPI `strong_up|normal|extreme` final regime
+  (+17.91%). The July 31 US session closed with 12 confirmed exits and
+  -1,738,865.34 KRW net in a NASDAQ `up|active|normal` final regime
+  (+1.00%). Final-market direction therefore remains context, not a blanket
+  explanation for symbol-level entry and exit quality.
+- US `VOL+RSI` has 12 session-owned exits across four sessions, one win and
+  -$1,265.24 net. Add it to the existing US-only rolling strategy guard.
+  Keep `VWAP+RSI` unchanged because its 13 exits remain positive in aggregate,
+  and defer `VWAP+VOL+RSI` because its five exits span only two sessions.
+  Do not copy this guard to the domestic market.
+- RBLX entered at the July 31 regular open after a -23.60% fast daily gap.
+  Its protective sell was submitted within three minutes but a generic
+  480-second pending-sell suppression delayed replacement until the loss had
+  expanded to -9.66%. For an overseas position already through the configured
+  static stop, use the intended 45-second protective-order replacement window;
+  retain 480 seconds for non-protective exits.
+- A blanket first-15-minute US entry ban is rejected: the five recent opening
+  entries contain three winners, and the failure is better localized to the
+  strategy guard and protective-order lifecycle. Higher trade frequency is
+  also rejected while both markets lack reliable positive after-cost
+  expectancy. Completed inverse shadows remain negative in both markets, so
+  inverse execution stays shadow-only.
+- Domestic execution 292 remained a bot-owned BUY pending after its 15:06 KST
+  submission. A fixed 30-minute stale threshold cannot fire before the 15:30
+  close with a ten-minute maintenance poll. Domestic policy now adds a
+  one-minute final-15-minute poll and cancels bot-owned BUY orders aged at
+  least five minutes; SELL orders retain the ordinary threshold so liquidation
+  intent is not weakened. Overseas policy keeps the independent 30-minute
+  rule and no close guard.
+- Repository startup and group finalization now canonicalize finalized broker
+  rows whose terminal quantities already prove cancellation or completion.
+  Reconciliation also accepts a domestic terminal cancel event when broker
+  history lags. These changes do not force unresolved execution 292 terminal
+  while the market is closed; verify its broker state at the next KRX session.
+- The implementation passed 813 tests, `compileall`, and `git diff --check`.
+  A controlled smaller-model A/B was not run, so model-size superiority is
+  unverified. The high-context review did identify a material order-lifecycle
+  gap versus the unchanged-policy baseline.
+- Falsification: validate that the next unfilled protective stop is replaced
+  within about 90 seconds without repeated cancel/reorder churn; narrow or
+  revert the US `VOL+RSI` guard after at least three later final sessions if
+  blocked after-cost opportunities exceed avoided losses; and review every
+  close-guard cancellation at 15/30/60 minutes for opportunity cost. At the
+  next KRX open, independently reconcile execution 292 before allowing its
+  local state to influence capacity or performance.
+- The 10,000-credit reset boundary arrived after local verification and before
+  deployment preflight. The code is committed and pushed as an undeployed
+  checkpoint; no service restart or Telegram deployment notice is claimed.
+
+## Previous decision checkpoint (2026-07-30 KST)
 
 - CPRX is not an ordinary `time_exit_cost_floor_hold` sample. The virtual
   position has 118 shares at $31.48, 10,135 cycle observations confined to

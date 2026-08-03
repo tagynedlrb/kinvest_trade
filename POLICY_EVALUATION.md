@@ -937,8 +937,19 @@ the current direction is wrong.
   position, and historical filled quantity zero. It is finalized as an audited
   session-expiry no-fill while preserving KIS VPS's stale remainder 73 and
   absent broker cancellation flag.
-- The implementation passed 815 tests and `git diff --check`. No controlled
-  smaller-model A/B was run, so reasoning-size superiority remains unverified.
+- The implementation passed 815 tests, `compileall`, and `git diff --check`.
+  Commit `3699b22` was pushed before restart. Service PID 1578133 is active
+  with `NRestarts=0`; startup refreshed 157 unique market-session reviews and
+  the first natural cycle loaded domestic 48-hour and US 168-hour guards.
+  Its initial 46 API attempts had one recovered failed attempt and zero
+  terminal failures. Telegram start row 1818 and deployment report row 1820
+  both succeeded.
+- Structured evaluations 90 and 91 remain forward-validation pending for the
+  domestic and US policies. Evaluation 92 is confirmed against the prior
+  review because the new market-local ledger found the material KST/New York
+  attribution error and the missing structured August checkpoint. No
+  controlled smaller-model A/B was run, so model-size superiority itself
+  remains unverified.
 
 ## Previous decision checkpoint (2026-08-01 KST)
 

@@ -172,3 +172,22 @@ private credentials or full conversational transcripts.
   a generic missing-history timeout as proof.
 - Architecture: keep new bounded features out of `liquidity_lab.py` and track
   whether its line count and responsibility count fall rather than grow.
+
+## Deployment Evidence
+
+- Pre-change backup:
+  `data/trading_backup_20260803_172408_pre_market_review_policy_deploy.db`,
+  SHA-256
+  `8c303c5c11ea17919a3264b9b2f6b8419a9ad105ea0f118fb142aa711b9168fd`,
+  integrity `ok`, foreign-key violations 0.
+- Implementation commit `3699b22` was pushed to remote `master` before the
+  service restart. Full tests: 815 passed; `compileall` and `git diff --check`
+  passed.
+- Restart: `2026-08-03T17:28:57Z`, PID 1578133, `active/running`,
+  `NRestarts=0`. Startup retained 157 unique daily review rows.
+- The first natural strategy-guard audit loaded 48 hours for domestic and 168
+  hours for overseas; US `VOL+RSI` and `VWAP+VOL` were blocked. The initial
+  post-restart API window had 46 attempts, one recovered failed attempt, and
+  zero terminal failures.
+- Telegram control start row 1818 and explicit deployment report row 1820 both
+  succeeded. Structured policy evaluations are ids 89 through 92.

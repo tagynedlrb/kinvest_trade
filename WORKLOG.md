@@ -81,8 +81,26 @@
   컨텍스트에 `same_session_regime_missing`을 명시했고, 뒤이은 CVNA는
   현지일 관측을 정상 보존했다. 이는 백필 손실이 아니라 기능 도입기
   실제 결측이며, 신규 진입은 100% 존재·현지일 일치를 목표로 한다.
-- 안전한 `git_token.txt` 푸시, 재시작, 자연 사이클·원장 백필 확인과
-  텔레그램 보고가 남아 있다.
+- 구현·감사 커밋 `3699b22`를 `git_token.txt`의 값을 노출하지 않는
+  credential helper로 원격 `master`에 푸시했다. 서비스를
+  `2026-08-03T17:28:57Z`, PID `1578133`으로 재시작했고
+  `active/running`, `NRestarts=0`이다.
+- 시작 백필은 157행·157고유 시장일을 유지했다. 첫 자연 사이클의
+  `strategy_guard_active` 이벤트는 국장 48시간과 미장 168시간을
+  각각 읽었고, 미장 `VOL+RSI`와 `VWAP+VOL`을 차단했다. 국내 8월 3일
+  총평은 진입환경 `20/20`, 현지일 일치 `20/20`; 실행 292는 재시작
+  뒤에도 종결 상태이며 미확정 실행 0건이다.
+- 새 프로세스 최초 관찰창 API 46회 중 실패 시도 1회는 회복됐고
+  종단 실패는 0이다. 위험원장 복원은 국장 `-189,636.80원`, 미장
+  `-280,844.40원`, 합계 `-470,481.20원`을 재현했고 `last_error`는
+  `None`이다. 시작 Telegram `id=1818`, 명시 배포보고 `id=1820`은
+  모두 성공했다.
+- 정책평가 `id=90/91`은 각 시장의 세 최종 세션 전향검증이 남아
+  `deployed_forward_validation_pending_no_direct_model_ab`로 유지했다.
+  `id=92`는 기존 임의 KST 집계가 놓친 시장 현지일 귀속 오류와
+  구조화 로그 단절을 실제로 찾아
+  `confirmed_material_session_boundary_and_structured_log_gap_vs_existing_review_no_direct_model_ab`
+  로 기록했다. 직접 소형모델 A/B 우월성은 주장하지 않는다.
 
 ## [2026-07-30] CPRX 현금합병과 미장 기업행동 수명주기
 

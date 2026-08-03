@@ -143,8 +143,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
-    assert domestic.post_cb_max_fires_per_session == 2
-    assert overseas.post_cb_max_fires_per_session == 2
+    assert domestic.post_cb_max_fires_per_session == 1
+    assert overseas.post_cb_max_fires_per_session == 1
     assert domestic.inverse_require_symbol_benchmark is True
     assert domestic.inverse_benchmarks["114800"].market == "domestic"
     assert domestic.inverse_benchmarks["114800"].benchmark_code == "101000"

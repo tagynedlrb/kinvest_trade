@@ -7258,7 +7258,7 @@ def test_domestic_post_cb_reentry_requires_recovery_above_market_floor() -> None
     assert recovered_reason == ""
 
 
-def test_post_cb_reentry_gate_stops_long_entries_after_two_session_fires() -> None:
+def test_post_cb_reentry_gate_stops_long_entries_after_one_session_fire() -> None:
     service = _build_run_service()
     now = datetime.now(timezone.utc) + timedelta(seconds=2)
     _configure_overseas_post_cb_reentry_gate(
@@ -7266,15 +7266,14 @@ def test_post_cb_reentry_gate_stops_long_entries_after_two_session_fires() -> No
         now=now,
         return_pct=-0.5,
     )
-    for _ in range(2):
-        service.repository.save_event(
-            event_type="cb_fired",
-            detail={
-                "type": "consecutive",
-                "market": "overseas",
-                "consecutive_losses": 3,
-            },
-        )
+    service.repository.save_event(
+        event_type="cb_fired",
+        detail={
+            "type": "consecutive",
+            "market": "overseas",
+            "consecutive_losses": 3,
+        },
+    )
 
     reason, detail = service._post_cb_reentry_regime_gate(
         "overseas",
@@ -7286,11 +7285,56 @@ def test_post_cb_reentry_gate_stops_long_entries_after_two_session_fires() -> No
     )
 
     assert reason == "post_cb_session_loss_limit_reached"
-    assert detail["max_fires_per_session"] == 2
-    assert detail["breaker_session"]["fire_count"] == 2
-    assert len(detail["breaker_session"]["event_ids"]) == 2
+    assert detail["max_fires_per_session"] == 1
+    assert detail["breaker_session"]["fire_count"] == 1
+    assert len(detail["breaker_session"]["event_ids"]) == 1
     assert "market_regime" not in detail
     assert next_session_reason == ""
+
+
+def test_domestic_post_cb_reentry_gate_stops_after_one_session_fire() -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc) + timedelta(seconds=2)
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    session_date = service._market_session_date("domestic", now)
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date=session_date,
+        return_pct=-2.9,
+        trend_regime="strong_down",
+    )
+    regime = service.repository.get_market_regime("domestic", session_date)
+    assert regime is not None
+    regime["captured_at"] = (now - timedelta(seconds=30)).isoformat()
+    service.repository.upsert_market_regime(regime)
+    service._get_circuit_breaker().load_state(
+        last_cb_released_at_by_market={
+            "domestic": now - timedelta(minutes=1),
+        }
+    )
+    service.repository.save_event(
+        event_type="cb_fired",
+        detail={
+            "type": "consecutive",
+            "market": "domestic",
+            "consecutive_losses": 3,
+        },
+    )
+
+    reason, detail = service._post_cb_reentry_regime_gate(
+        "domestic",
+        now=now,
+    )
+
+    assert reason == "post_cb_session_loss_limit_reached"
+    assert detail["max_fires_per_session"] == 1
+    assert detail["breaker_session"]["fire_count"] == 1
+    assert "market_regime" not in detail
 
 
 def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:

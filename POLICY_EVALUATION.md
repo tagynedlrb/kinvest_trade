@@ -878,7 +878,64 @@ an actually executed lower-context/model review. Never invent another model's
 result. Every later review should actively ask what evidence would show that
 the current direction is wrong.
 
-## Current decision checkpoint (2026-08-03 KST)
+## Current decision checkpoint (2026-08-04 KST)
+
+- Post-deployment reconstruction confirms that the US circuit-breaker fired at
+  13:50:19Z and 15:21:10Z. No BUY followed the second fire, so the deployed
+  two-fire gate worked as written. After the first release, however, two FERG
+  and two ITGR entries were admitted. Three closed at a combined -276,410.64
+  KRW after costs; the remaining ITGR position was only +0.06% gross at review,
+  below the approximately 0.50% minimum round-trip cost.
+- This was not a falling-index artifact. Entry-time Nasdaq returns were roughly
+  +1.30% to +1.78%, so the broad-market recovery floor passed while the local
+  symbol/strategy loss cluster persisted. Independently, domestic trading after
+  its first breaker produced 19 exits, one winner, and -65,603.24 KRW.
+- Set each independently owned market's `post_cb_max_fires_per_session` from
+  two to one. The first three-loss circuit-breaker becomes that market's local
+  session loss-budget stop for ordinary longs. Existing-position exits and
+  approved inverse shadows remain exempt, and the next local session resets
+  the count.
+- This is a bounded financial-risk control, not evidence that every post-loss
+  reversal is unprofitable. The SEC notes that automated-process errors can
+  compound rapidly and describes pre-set capital/activity controls and
+  automated breach actions as core market-access safeguards
+  ([SEC Market Access FAQ](https://www.sec.gov/rules-regulations/staff-guidance/trading-markets-frequently-asked-questions/divisionsmarketregfaq-0)).
+  Heston, Korajczyk, and Sadka find that short-term reversals can arise from
+  temporary liquidity imbalances and bid-ask bounce
+  ([Journal of Finance](https://doi.org/10.1111/j.1540-6261.2010.01573.x));
+  therefore retain blocked-path counterfactuals instead of assuming the stop
+  has zero opportunity cost.
+- The available blocked-signal evidence is mixed: one final strong-up US day
+  has a +0.683% optimistic 60-minute after-cost floor for `VWAP+RSI`, a final
+  strong-down day has -2.135%, and the current provisional strong-up day has
+  -1.220%. Direct executed post-first-CB losses and bounded downside justify
+  the immediate stop, but not a permanent claim of universal superiority.
+- Falsification: separately by market, revert to two fires or introduce a more
+  selective recovery rule when at least three later final sessions show that
+  positive blocked after-cost opportunity exceeds avoided loss without a
+  repeated post-first-CB loss cluster. Revert immediately if the rule blocks
+  exits, inverse shadows, pre-CB entries, or the next local session.
+- Eleven overdue structured evaluations were also audited against current
+  executions, strategy guards, inverse paths, pending settlement, API health,
+  storage, and after-cost performance. Preserve each original row and attach a
+  `confirmed`, `superseded`, or explicit `inconclusive` outcome; do not silently
+  delete validation debt.
+- Evaluation ids 93 and 94 preserve the domestic and US decisions separately.
+  The prior domestic id 90 retains its -3.0% benchmark floor but records the
+  two-fire allowance as superseded. Cross-risk-day execution attribution and
+  natural multi-page balance paging remain explicitly inconclusive because no
+  qualifying natural sample occurred; the inverse threshold attribution also
+  remains immature at only three closed observations per market.
+- Pre-deployment verification passed 816 tests, `compileall`, and
+  `git diff --check`. Two KIS reads 22 seconds apart found zero open orders in
+  either market, zero domestic positions, and three deduplicated US positions.
+  The backup
+  `trading_backup_20260803_174443_pre_single_cb_session_stop_deploy.db` has
+  SHA-256
+  `67cf485f4a998622a99911c0cedc9769be299fa7e54f1e35350c484343d6901c`,
+  integrity `ok`, and zero foreign-key violations.
+
+## Previous decision checkpoint (2026-08-03 KST)
 
 - A source audit reconciled the retained GPT/Codex and Claude sessions with Git,
   the production database, service logs, `WORKLOG.md`, and this protocol. The

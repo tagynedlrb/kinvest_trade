@@ -214,3 +214,18 @@ private credentials or full conversational transcripts.
   1580482. Runtime audit confirmed domestic next-session reset and active US
   `post_cb_session_loss_limit_reached` from event ids 6971/7033. Telegram report
   row 1823 succeeded.
+- A later audit found that the daily market ledger was durable but pending
+  policy validation still exposed only a wall-clock deadline. Commit `8c48e96`
+  adds machine-readable validation specifications and reports elapsed final
+  reviews, actual CB intervention, deduplicated WAIT/SKIP blocks, mature
+  60-minute after-cost sessions, and blocked-session regimes independently for
+  KST and New York dates.
+- Evaluations 93/94 now each require three mature final blocked-entry sessions
+  strictly after their 2026-08-03 evidence session. Both currently read 0/3;
+  no success or failure is inferred. The first restarted cycle did record a
+  TGTX US policy block, but its partial deployment-day session is retained only
+  as operational evidence and excluded from the forward target.
+- Evaluation 95, backup
+  `trading_backup_20260803_180435_pre_policy_validation_progress_deploy.db`,
+  service PID 1583863, and successful Telegram row 1826 preserve the complete
+  deployment outcome. All 817 tests passed and no trading parameter changed.

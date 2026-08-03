@@ -908,6 +908,18 @@ the current direction is wrong.
   circuit-breaker threshold, exit, or inverse policy. Before deployment, all
   817 tests, `compileall`, and `git diff --check` passed. With no new mature
   final session yet, the one-fire policy remains ungraded rather than confirmed.
+- Commit `8c48e96` was pushed before restarting PID 1583863 at 18:05:44Z.
+  Backup
+  `trading_backup_20260803_180435_pre_policy_validation_progress_deploy.db`
+  has SHA-256
+  `f50c0f48bd0b6dbfc3ce019b0e9a048fd002df6d9e61071be1a71f5e1aca22b1`,
+  integrity `ok`, and zero foreign-key violations. The first cycle produced no
+  order and recorded a TGTX US policy block; initial API attempts were 86 with
+  zero failed or terminal attempts. Telegram rows 1824 through 1826 succeeded.
+- The production report shows evaluations 93 and 94 independently at zero
+  mature final sessions out of three. Evaluation 95 records this deployed
+  measurement decision and keeps reasoning value `unverified` because no
+  direct smaller-model comparison was performed.
 
 ## Current decision checkpoint (2026-08-04 KST)
 

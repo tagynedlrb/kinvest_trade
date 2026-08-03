@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -1903,6 +1904,110 @@ def test_strategy_guard_state_persists_activation_until_released(
     assert reactivated["activated_at"] == "2026-08-03T00:30:00+00:00"
     assert reactivated["activation_session_date"] == "2026-08-03"
     assert reactivated["status"] == "ACTIVE"
+
+
+def test_market_session_review_persists_regime_trade_and_quality_snapshot(
+    tmp_path,
+    save_confirmed_buy,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "market_session_review.db")
+    save_confirmed_buy(
+        repository,
+        logged_at="2026-08-03T01:00:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_bias="BUY_REAL",
+        action_reason="domestic_buy",
+        strategy_flag="VWAP+RSI",
+        session_id="session-review",
+        price=100.0,
+        qty_executed=2,
+    )
+    with sqlite3.connect(repository.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE broker_order_executions
+            SET context_json = ?
+            WHERE id = (
+                SELECT MAX(id)
+                FROM broker_order_executions
+                WHERE side = 'BUY'
+            )
+            """,
+            (
+                json.dumps(
+                    {
+                        "entry_market_regime": {
+                            "available": True,
+                            "market": "domestic",
+                            "session_date": "2026-08-03",
+                            "observation_id": 17,
+                            "return_pct": -4.2,
+                        }
+                    }
+                ),
+            ),
+        )
+    save_confirmed_sell(
+        repository,
+        logged_at="2026-08-03T01:10:00+00:00",
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        action_bias="SELL_REAL",
+        action_reason="trend_filter_lost",
+        strategy_flag="VWAP+RSI",
+        session_id="session-review",
+        entry_price=100.0,
+        price=101.0,
+        qty_executed=2,
+        pnl_pct=0.01,
+        net_pnl_krw=1.5,
+    )
+    repository.upsert_market_regime(
+        {
+            "market": "domestic",
+            "session_date": "2026-08-03",
+            "benchmark_code": "0001",
+            "benchmark_name": "KOSPI",
+            "source": "KIS:FHKUP03500100",
+            "captured_at": "2026-08-03T06:40:00+00:00",
+            "is_final": 1,
+            "close_price": 98.0,
+            "previous_close": 100.0,
+            "return_pct": -2.0,
+            "volume": 200,
+            "turnover": 1000.0,
+            "volume_ratio_20": 0.8,
+            "range_pct": 4.0,
+            "range_ratio_20": 1.2,
+            "trend_regime": "strong_down",
+            "activity_regime": "quiet",
+            "volatility_regime": "normal",
+            "regime_key": "strong_down|quiet|normal",
+            "sample_days": 20,
+        }
+    )
+
+    review = repository.refresh_market_session_review(
+        market="domestic",
+        session_date="2026-08-03",
+        reviewed_at="2026-08-03T07:00:00+00:00",
+    )
+    stored = repository.list_market_session_reviews(limit=1)[0]
+
+    assert review is not None
+    assert stored["confirmed_entry_count"] == 1
+    assert stored["entry_regime_context_count"] == 1
+    assert stored["entry_regime_session_match_count"] == 1
+    assert stored["confirmed_exit_count"] == 1
+    assert stored["win_count"] == 1
+    assert stored["net_pnl_krw"] == pytest.approx(1.5)
+    assert stored["quality_json"]["entry_regime_coverage_pct"] == 1.0
+    assert stored["strategy_summary_json"]["VWAP+RSI"]["count"] == 1
+    assert stored["exit_reason_summary_json"]["trend_filter_lost"]["wins"] == 1
 
 
 def test_get_session_pnl_summary_includes_virtual(tmp_path) -> None:

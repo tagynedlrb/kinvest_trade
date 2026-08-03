@@ -344,6 +344,11 @@ class TelegramLiquidityLabController:
         self._restore_runtime_state()
         self._sync_confirmed_session_performance()
         self._prune_expired_operational_logs()
+        try:
+            review_count = self.repository.refresh_final_market_session_reviews()
+            _logger.info("[REGIME] 일별 시장성과 총평 복원=%d건", review_count)
+        except Exception:  # noqa: BLE001
+            _logger.exception("market_session_review_backfill_failed")
         self._write_runtime_state()
         try:
             await self.notifier.set_commands(BOT_COMMANDS)

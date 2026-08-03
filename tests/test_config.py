@@ -139,11 +139,11 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert domestic.auto_trade.close_guard_poll_interval_minutes == 1
     assert overseas.auto_trade.stale_order_cancel_minutes == 30
     assert overseas.auto_trade.close_guard_cancel_window_minutes == 0
-    assert domestic.post_cb_reentry_benchmark_floor_pct is None
+    assert domestic.post_cb_reentry_benchmark_floor_pct == -3.0
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
-    assert domestic.post_cb_max_fires_per_session is None
+    assert domestic.post_cb_max_fires_per_session == 2
     assert overseas.post_cb_max_fires_per_session == 2
     assert domestic.inverse_require_symbol_benchmark is True
     assert domestic.inverse_benchmarks["114800"].market == "domestic"
@@ -181,7 +181,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert cprx_action.status == "effective"
     assert len(cprx_action.reference_urls) == 2
     assert domestic.auto_trade.strategy_guard_lookback_hours == 48
-    assert overseas.auto_trade.strategy_guard_lookback_hours == 48
+    assert overseas.auto_trade.strategy_guard_lookback_hours == 168
     assert domestic.auto_trade.strategy_guard_min_trades == 3
     assert overseas.auto_trade.strategy_guard_min_trades == 3
     assert domestic.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.003

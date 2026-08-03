@@ -878,14 +878,78 @@ an actually executed lower-context/model review. Never invent another model's
 result. Every later review should actively ask what evidence would show that
 the current direction is wrong.
 
-## Current decision checkpoint (2026-08-01 KST)
+## Current decision checkpoint (2026-08-03 KST)
+
+- A source audit reconciled the retained GPT/Codex and Claude sessions with Git,
+  the production database, service logs, `WORKLOG.md`, and this protocol. The
+  material missing facts and original local-log paths are preserved in
+  `docs/SESSION_LOG_RECONCILIATION_2026-08-03.md`. In particular, the
+  structured policy ledger stopped at id 88 even though the 2026-08-01
+  decision and deployment existed in this document and Git.
+- Backfilling the market-local ledger found a material historical attribution
+  error in the 2026-08-01 checkpoint below. Its 12 US exits and -1,738,865.34
+  KRW were grouped by KST calendar date, not the Nasdaq session. New York-local
+  July 31 contains two confirmed exits, both losses, and -1,459,481.84 KRW.
+  The old aggregate may describe a KST operational day but must not be joined
+  to one final Nasdaq regime.
+- Final KOSPI on August 3 was 6,257.45, down 5.1247%, with a 20-day volume
+  ratio of 0.6347 and a 5.64% range: `strong_down|quiet|calm`. The final local
+  review contains 20 entries, 22 exits, one after-cost winner, and -189,636.80
+  KRW. After the first domestic circuit-breaker fire, the remaining 19 new
+  same-day entries/exits produced only one after-cost winner and about
+  -65,603.24 KRW. Add a domestic-only post-CB
+  KOSPI floor of -3.0% and a maximum of two fires per local session. It does
+  not block pre-CB longs or inverse shadows and does not change US policy.
+- The August 3 US session remained provisional at review time, approximately
+  +2% on Nasdaq with no usable KIS volume. Its activity is unknown until final
+  collection. Four confirmed exits were all after-cost losses, about -280,844
+  KRW, and the existing two-fire US circuit-breaker cap prevented more longs.
+- The US `VWAP+VOL` guard released after minimum final sessions only because
+  its 48-hour loss observations aged out first; subsequent trades remained
+  negative. Increase only the US strategy-guard lookback to 168 hours. Keep
+  the domestic lookback at 48 hours and do not globally guard `VWAP+RSI` from
+  a provisional session.
+- Create `market_session_reviews`, keyed by market and local session date, to
+  persist each final benchmark's direction/activity/volatility alongside
+  confirmed session-owned entries, exits, after-cost PnL, strategy and exit
+  breakdowns, entry-regime coverage, and local-session match quality. Refresh
+  it on final regime collection and startup. Reports expose the latest quality
+  row and stale structured policy-review count.
+- Higher trade frequency remains rejected. Current 14-day account exits are 95
+  domestic at a 21% win rate and -276,195 KRW, and 69 US at a 26% win rate and
+  -2,844,012 KRW. Six completed inverse shadows are all negative, including a
+  roughly -0.994% domestic `114800` path on August 3, so inverse trading stays
+  shadow-only. Zero tracked terminal API failures also rejects another pacing
+  change despite 158 recovered failed attempts.
+- Claude's retained review correctly warns that improved observability has not
+  established profitability and that `liquidity_lab.py` has regrown to 10,532
+  lines. New bounded capabilities should use helper modules and must answer a
+  named safety or expectancy question. More instrumentation by itself is not
+  an improvement objective.
+- Falsification: review domestic blocked paths at 15/30/60 minutes and narrow
+  or revert the floor after at least three final sessions if positive blocked
+  opportunity exceeds avoided losses without lowering post-CB repetition.
+  Review the 168-hour US guard against retained blocked after-cost paths and
+  revert if opportunity cost dominates avoided losses across at least three
+  final sessions. New entries target 100% regime-context coverage and local
+  date match; investigate any miss. Execution 292 met its condition through
+  two reads 16 seconds apart: zero balance, zero current open orders, no target
+  position, and historical filled quantity zero. It is finalized as an audited
+  session-expiry no-fill while preserving KIS VPS's stale remainder 73 and
+  absent broker cancellation flag.
+- The implementation passed 815 tests and `git diff --check`. No controlled
+  smaller-model A/B was run, so reasoning-size superiority remains unverified.
+
+## Previous decision checkpoint (2026-08-01 KST)
 
 - The July 31 domestic session closed with 33 confirmed exits and
   +92,302.73 KRW net in a KOSPI `strong_up|normal|extreme` final regime
-  (+17.91%). The July 31 US session closed with 12 confirmed exits and
-  -1,738,865.34 KRW net in a NASDAQ `up|active|normal` final regime
-  (+1.00%). Final-market direction therefore remains context, not a blanket
-  explanation for symbol-level entry and exit quality.
+  (+17.91%). This checkpoint originally mislabeled a KST-date US aggregate as
+  the July 31 Nasdaq session. The corrected New York-local session has two
+  confirmed exits and -1,459,481.84 KRW net in a NASDAQ
+  `up|active|normal` final regime (+1.00%). Final-market direction therefore
+  remains context, not a blanket explanation for symbol-level entry and exit
+  quality.
 - US `VOL+RSI` has 12 session-owned exits across four sessions, one win and
   -$1,265.24 net. Add it to the existing US-only rolling strategy guard.
   Keep `VWAP+RSI` unchanged because its 13 exits remain positive in aggregate,
@@ -913,8 +977,9 @@ the current direction is wrong.
 - Repository startup and group finalization now canonicalize finalized broker
   rows whose terminal quantities already prove cancellation or completion.
   Reconciliation also accepts a domestic terminal cancel event when broker
-  history lags. These changes do not force unresolved execution 292 terminal
-  while the market is closed; verify its broker state at the next KRX session.
+  history lags. At this checkpoint execution 292 was intentionally unresolved;
+  the 2026-08-03 audit above later resolved it from two next-session balance and
+  current-open-order reads while preserving the stale historical remainder.
 - The implementation passed 813 tests, `compileall`, and `git diff --check`.
   A controlled smaller-model A/B was not run, so model-size superiority is
   unverified. The high-context review did identify a material order-lifecycle
@@ -925,7 +990,8 @@ the current direction is wrong.
   blocked after-cost opportunities exceed avoided losses; and review every
   close-guard cancellation at 15/30/60 minutes for opportunity cost. At the
   next KRX open, independently reconcile execution 292 before allowing its
-  local state to influence capacity or performance.
+  local state to influence capacity or performance. This condition was met by
+  the 2026-08-03 audited session-expiry finalization above.
 - The 10,000-credit reset boundary first arrived before deployment preflight,
   but the user's subsequent explicit deployment request completed the held
   checkpoint. Two broker reads more than ten seconds apart found two domestic
@@ -936,10 +1002,11 @@ the current direction is wrong.
   Commit `af2ad02` was pushed before restart. Service PID 1540887 remained
   active with no restart failure, and the closed-market observation window
   produced zero new KIS calls, orders, or error events. Telegram deployment
-  report row 1704 succeeded. Local execution 292 stays unresolved until the
-  next KRX-session broker reconciliation and must not be treated as a fill.
+  report row 1704 succeeded. Execution 292 remained unresolved at deployment
+  and was never treated as a fill; its later audited resolution is recorded in
+  the current checkpoint.
 
-## Previous decision checkpoint (2026-07-30 KST)
+## Earlier decision checkpoint (2026-07-30 KST)
 
 - CPRX is not an ordinary `time_exit_cost_floor_hold` sample. The virtual
   position has 118 shares at $31.48, 10,135 cycle observations confined to

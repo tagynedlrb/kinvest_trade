@@ -7211,7 +7211,51 @@ def test_post_cb_reentry_gate_waits_for_fresh_benchmark_recovery() -> None:
     assert stale_reason == "post_cb_regime_stale"
     assert next_session_reason == ""
     assert domestic_reason == ""
-    assert domestic_detail["enabled"] is False
+    assert domestic_detail["enabled"] is True
+    assert domestic_detail["benchmark_floor_pct"] == -3.0
+
+
+def test_domestic_post_cb_reentry_requires_recovery_above_market_floor() -> None:
+    service = _build_run_service()
+    now = datetime.now(timezone.utc)
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    session_date = service._market_session_date("domestic", now)
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date=session_date,
+        return_pct=-3.2,
+        trend_regime="strong_down",
+    )
+    regime = service.repository.get_market_regime("domestic", session_date)
+    assert regime is not None
+    regime["captured_at"] = (now - timedelta(seconds=30)).isoformat()
+    service.repository.upsert_market_regime(regime)
+    service._get_circuit_breaker().load_state(
+        last_cb_released_at_by_market={
+            "domestic": now - timedelta(minutes=1),
+        }
+    )
+
+    blocked_reason, blocked_detail = service._post_cb_reentry_regime_gate(
+        "domestic",
+        now=now,
+    )
+    regime["return_pct"] = -2.9
+    regime["captured_at"] = (now + timedelta(minutes=4)).isoformat()
+    service.repository.upsert_market_regime(regime)
+    recovered_reason, _ = service._post_cb_reentry_regime_gate(
+        "domestic",
+        now=now + timedelta(minutes=5),
+    )
+
+    assert blocked_reason == "post_cb_benchmark_not_recovered"
+    assert blocked_detail["benchmark_floor_pct"] == -3.0
+    assert recovered_reason == ""
 
 
 def test_post_cb_reentry_gate_stops_long_entries_after_two_session_fires() -> None:

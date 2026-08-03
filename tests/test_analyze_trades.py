@@ -606,6 +606,7 @@ def test_market_regime_performance_requires_multiple_days_before_policy_evaluati
         net_pnl_krw=-20.0,
         is_session_trade=0,
     )
+    assert repository.refresh_final_market_session_reviews() == 3
 
     output = summarize_market_regime_performance(repository.db_path)
 
@@ -619,6 +620,9 @@ def test_market_regime_performance_requires_multiple_days_before_policy_evaluati
     assert "Net=+1.000%" in output
     assert "평가가능" in output
     assert "단일 장세 결과로 자동변경 금지" in output
+    assert "[시장환경 기록 품질]" in output
+    assert "domestic 2026-07-22 진입환경=0/0(100%)" in output
+    assert "정책평가원장=비어있음" in output
 
 
 def test_market_regime_performance_marks_one_day_sample_insufficient(

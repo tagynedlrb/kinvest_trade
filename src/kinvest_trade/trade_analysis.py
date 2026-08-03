@@ -1026,6 +1026,97 @@ def summarize_market_regime_performance(
                 f"레짐={_regime_label(latest)}"
             )
 
+        result.append("[시장환경 기록 품질]")
+        if not _has_table(conn, "market_session_reviews"):
+            result.append("  일별총평원장=미생성")
+        else:
+            review_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM market_session_reviews
+                    ORDER BY session_date DESC, market ASC
+                    """
+                ).fetchall()
+            ]
+            for market in ("domestic", "overseas"):
+                review = next(
+                    (
+                        row
+                        for row in review_rows
+                        if str(row.get("market") or "").lower() == market
+                    ),
+                    None,
+                )
+                if review is None:
+                    result.append(f"  {market:<8} 일별총평=미생성")
+                    continue
+                entries = int(review.get("confirmed_entry_count") or 0)
+                contexts = int(review.get("entry_regime_context_count") or 0)
+                matches = int(
+                    review.get("entry_regime_session_match_count") or 0
+                )
+                exits = int(review.get("confirmed_exit_count") or 0)
+                wins = int(review.get("win_count") or 0)
+                coverage = contexts / entries * 100 if entries else 100.0
+                match_rate = matches / contexts * 100 if contexts else 100.0
+                pnl_text = (
+                    f"Net={float(review.get('net_pnl_krw') or 0):+,.0f}원"
+                    if market == "domestic"
+                    else (
+                        f"Net=${float(review.get('net_pnl_usd') or 0):+,.2f}/"
+                        f"{float(review.get('net_pnl_krw') or 0):+,.0f}원"
+                    )
+                )
+                result.append(
+                    f"  {market:<8} {review['session_date']} "
+                    f"진입환경={contexts}/{entries}({coverage:.0f}%) "
+                    f"현지일치={matches}/{contexts}({match_rate:.0f}%) "
+                    f"청산={exits} 승률={(wins / exits * 100 if exits else 0):.0f}% "
+                    f"{pnl_text}"
+                )
+        if not _has_table(conn, "policy_evaluation_log"):
+            result.append("  정책평가원장=미생성")
+        else:
+            latest_evaluation = conn.execute(
+                """
+                SELECT id, created_at, market, subject, decision, git_commit
+                FROM policy_evaluation_log
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            pending_evaluations = conn.execute(
+                """
+                SELECT validation_due_at
+                FROM policy_evaluation_log
+                WHERE reviewed_at IS NULL
+                  AND COALESCE(validation_due_at, '') != ''
+                """
+            ).fetchall()
+            now_utc = datetime.now(timezone.utc)
+            overdue = 0
+            for pending in pending_evaluations:
+                try:
+                    due_at = datetime.fromisoformat(
+                        str(pending["validation_due_at"]).replace("Z", "+00:00")
+                    )
+                    if due_at.tzinfo is None:
+                        due_at = due_at.replace(tzinfo=timezone.utc)
+                    overdue += int(due_at.astimezone(timezone.utc) < now_utc)
+                except ValueError:
+                    continue
+            if latest_evaluation is None:
+                result.append("  정책평가원장=비어있음")
+            else:
+                result.append(
+                    f"  정책평가원장=최신#{latest_evaluation['id']} "
+                    f"{latest_evaluation['created_at']} "
+                    f"대상={latest_evaluation['market']}:{latest_evaluation['subject']} "
+                    f"기한경과미검토={overdue}건"
+                )
+
         result.append("[시장 레짐별 세션소유 KIS 체결확정 손익]")
         where = [
             "action_bias = 'SELL_REAL'",

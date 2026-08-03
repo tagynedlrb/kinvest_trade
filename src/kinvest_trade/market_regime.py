@@ -960,6 +960,27 @@ class MarketRegimeCollector:
             )
             for record in records:
                 self.repository.upsert_market_regime(record)
+            review_refreshed = 0
+            refresh_review = getattr(
+                self.repository,
+                "refresh_market_session_review",
+                None,
+            )
+            final_records = [
+                record for record in records if int(record.get("is_final") or 0)
+            ]
+            if callable(refresh_review) and final_records:
+                latest_final = max(
+                    final_records,
+                    key=lambda record: str(record.get("session_date") or ""),
+                )
+                review_refreshed = int(
+                    refresh_review(
+                        market=market,
+                        session_date=str(latest_final["session_date"]),
+                    )
+                    is not None
+                )
             current_session = local_date.isoformat()
             current_record = next(
                 (
@@ -977,19 +998,21 @@ class MarketRegimeCollector:
             )
             final_count = sum(int(record["is_final"]) for record in records)
             _logger.info(
-                "[REGIME][%s] benchmark=%s fetched=%d merged=%d final=%d observation=%d",
+                "[REGIME][%s] benchmark=%s fetched=%d merged=%d final=%d observation=%d review=%d",
                 market,
                 config["benchmark_name"],
                 len(fetched_rows),
                 len(records),
                 final_count,
                 observation_saved,
+                review_refreshed,
             )
             return {
                 "status": "updated",
                 "records": len(records),
                 "final_records": final_count,
                 "observations": observation_saved,
+                "reviews": review_refreshed,
             }
         except Exception as exc:  # noqa: BLE001
             _logger.warning("[REGIME][%s] refresh_failed error=%s", market, exc)

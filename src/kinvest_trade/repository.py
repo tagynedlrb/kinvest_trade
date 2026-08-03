@@ -11,6 +11,7 @@ from .auto_trade_math import (
     estimate_domestic_trade_costs,
 )
 from .inverse_policy import INVERSE_BENCHMARK_ALIGNMENT_VERSION
+from .market_review import build_market_session_review
 from .market_sessions import KST, NEW_YORK
 from .time_utils import ensure_timezone, parse_datetime
 
@@ -133,6 +134,7 @@ class SqliteRepository:
         "lab_symbol_state",
         "market_regime_observations",
         "market_regimes",
+        "market_session_reviews",
         "inverse_benchmark_observations",
         "inverse_benchmark_regimes",
         "policy_evaluation_log",
@@ -676,6 +678,42 @@ class SqliteRepository:
                     ON market_regime_observations(
                         market, regime_key, captured_at
                     );
+
+                CREATE TABLE IF NOT EXISTS market_session_reviews (
+                    market TEXT NOT NULL,
+                    session_date TEXT NOT NULL,
+                    benchmark_code TEXT NOT NULL,
+                    benchmark_name TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    regime_captured_at TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL,
+                    close_price REAL,
+                    return_pct REAL,
+                    volume INTEGER,
+                    turnover REAL,
+                    volume_ratio_20 REAL,
+                    range_pct REAL,
+                    range_ratio_20 REAL,
+                    regime_key TEXT NOT NULL,
+                    confirmed_entry_count INTEGER NOT NULL DEFAULT 0,
+                    entry_regime_context_count INTEGER NOT NULL DEFAULT 0,
+                    entry_regime_session_match_count INTEGER NOT NULL DEFAULT 0,
+                    confirmed_exit_count INTEGER NOT NULL DEFAULT 0,
+                    win_count INTEGER NOT NULL DEFAULT 0,
+                    gross_pnl_pct_sum REAL NOT NULL DEFAULT 0,
+                    net_pnl_pct_sum REAL NOT NULL DEFAULT 0,
+                    net_pnl_usd REAL NOT NULL DEFAULT 0,
+                    net_pnl_krw REAL NOT NULL DEFAULT 0,
+                    strategy_summary_json TEXT NOT NULL DEFAULT '{}',
+                    exit_reason_summary_json TEXT NOT NULL DEFAULT '{}',
+                    quality_json TEXT NOT NULL DEFAULT '{}',
+                    calculation_version TEXT NOT NULL,
+                    PRIMARY KEY (market, session_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_market_session_reviews_date
+                    ON market_session_reviews(session_date, market);
+                CREATE INDEX IF NOT EXISTS idx_market_session_reviews_regime
+                    ON market_session_reviews(market, regime_key, session_date);
 
                 CREATE TABLE IF NOT EXISTS inverse_benchmark_regimes (
                     market TEXT NOT NULL,
@@ -1626,6 +1664,239 @@ class SqliteRepository:
                 ),
             ).fetchone()
         return int(row["cnt"] or 0) if row is not None else 0
+
+    @staticmethod
+    def _market_session_utc_bounds(
+        market: str,
+        session_date: str,
+    ) -> tuple[str, str]:
+        local_day = datetime.strptime(str(session_date), "%Y-%m-%d").date()
+        local_timezone = KST if str(market).lower() == "domestic" else NEW_YORK
+        start_local = datetime.combine(
+            local_day,
+            datetime.min.time(),
+            tzinfo=local_timezone,
+        )
+        end_local = start_local + timedelta(days=1)
+        return (
+            start_local.astimezone(timezone.utc).isoformat(),
+            end_local.astimezone(timezone.utc).isoformat(),
+        )
+
+    def refresh_market_session_review(
+        self,
+        *,
+        market: str,
+        session_date: str,
+        reviewed_at: datetime | str | None = None,
+    ) -> dict | None:
+        market_key = str(market).strip().lower()
+        regime = self.get_market_regime(
+            market_key,
+            str(session_date),
+            final_only=True,
+        )
+        if regime is None:
+            return None
+        start_at, end_at = self._market_session_utc_bounds(
+            market_key,
+            str(session_date),
+        )
+        with self._connect() as conn:
+            entries = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT *
+                    FROM cycle_log
+                    WHERE market = ?
+                      AND logged_at >= ?
+                      AND logged_at < ?
+                      AND action_bias = 'BUY_REAL'
+                      AND COALESCE(qty_executed, 0) > 0
+                      AND COALESCE(is_session_trade, 0) = 1
+                      AND ({CONFIRMED_BUY_CYCLE_PREDICATE})
+                    ORDER BY logged_at, id
+                    """,
+                    (market_key, start_at, end_at),
+                ).fetchall()
+            ]
+            exits = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT *
+                    FROM cycle_log
+                    WHERE market = ?
+                      AND logged_at >= ?
+                      AND logged_at < ?
+                      AND action_bias = 'SELL_REAL'
+                      AND COALESCE(qty_executed, 0) > 0
+                      AND ({CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE})
+                    ORDER BY logged_at, id
+                    """,
+                    (market_key, start_at, end_at),
+                ).fetchall()
+            ]
+            group_ids = sorted(
+                {
+                    str(row.get("execution_group_id") or "")
+                    for row in entries
+                    if str(row.get("execution_group_id") or "")
+                }
+            )
+            entry_context_by_group: dict[str, object] = {}
+            if group_ids:
+                placeholders = ", ".join("?" for _ in group_ids)
+                context_rows = conn.execute(
+                    f"""
+                    SELECT execution_group_id, context_json
+                    FROM broker_order_executions
+                    WHERE side = 'BUY'
+                      AND filled_qty > 0
+                      AND execution_group_id IN ({placeholders})
+                    ORDER BY id
+                    """,
+                    group_ids,
+                ).fetchall()
+                for row in context_rows:
+                    group_id = str(row["execution_group_id"] or "")
+                    context_text = row["context_json"]
+                    if group_id and group_id not in entry_context_by_group:
+                        entry_context_by_group[group_id] = context_text
+
+        if isinstance(reviewed_at, datetime):
+            reviewed_at_text = ensure_timezone(reviewed_at).astimezone(
+                timezone.utc
+            ).isoformat()
+        elif reviewed_at:
+            reviewed_at_text = str(reviewed_at)
+        else:
+            reviewed_at_text = datetime.now(timezone.utc).isoformat()
+        review = build_market_session_review(
+            regime=regime,
+            entries=entries,
+            exits=exits,
+            entry_context_by_group=entry_context_by_group,
+            reviewed_at=reviewed_at_text,
+        )
+        columns = (
+            "market",
+            "session_date",
+            "benchmark_code",
+            "benchmark_name",
+            "source",
+            "regime_captured_at",
+            "reviewed_at",
+            "close_price",
+            "return_pct",
+            "volume",
+            "turnover",
+            "volume_ratio_20",
+            "range_pct",
+            "range_ratio_20",
+            "regime_key",
+            "confirmed_entry_count",
+            "entry_regime_context_count",
+            "entry_regime_session_match_count",
+            "confirmed_exit_count",
+            "win_count",
+            "gross_pnl_pct_sum",
+            "net_pnl_pct_sum",
+            "net_pnl_usd",
+            "net_pnl_krw",
+            "strategy_summary_json",
+            "exit_reason_summary_json",
+            "quality_json",
+            "calculation_version",
+        )
+        json_columns = {
+            "strategy_summary_json",
+            "exit_reason_summary_json",
+            "quality_json",
+        }
+        values = [
+            (
+                json.dumps(review[column], ensure_ascii=False, default=str)
+                if column in json_columns
+                else review[column]
+            )
+            for column in columns
+        ]
+        assignments = ", ".join(
+            f"{column} = excluded.{column}" for column in columns[2:]
+        )
+        with self._connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO market_session_reviews ({", ".join(columns)})
+                VALUES ({", ".join("?" for _ in columns)})
+                ON CONFLICT(market, session_date) DO UPDATE SET
+                    {assignments}
+                """,
+                values,
+            )
+        return review
+
+    def refresh_final_market_session_reviews(self, *, limit: int = 500) -> int:
+        refreshed = 0
+        for regime in self.list_market_regimes(
+            final_only=True,
+            limit=max(1, int(limit)),
+        ):
+            review = self.refresh_market_session_review(
+                market=str(regime["market"]),
+                session_date=str(regime["session_date"]),
+            )
+            refreshed += int(review is not None)
+        return refreshed
+
+    def list_market_session_reviews(
+        self,
+        *,
+        market: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 250,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        if market:
+            where.append("market = ?")
+            params.append(str(market).strip().lower())
+        if start_date:
+            where.append("session_date >= ?")
+            params.append(str(start_date))
+        if end_date:
+            where.append("session_date <= ?")
+            params.append(str(end_date))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM market_session_reviews
+                {where_sql}
+                ORDER BY session_date DESC, market ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            for column in (
+                "strategy_summary_json",
+                "exit_reason_summary_json",
+                "quality_json",
+            ):
+                try:
+                    item[column] = json.loads(item.get(column) or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    item[column] = {}
+            result.append(item)
+        return result
 
     def has_outdated_market_regime_calculation(
         self,

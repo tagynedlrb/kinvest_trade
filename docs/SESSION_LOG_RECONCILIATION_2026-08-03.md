@@ -191,3 +191,26 @@ private credentials or full conversational transcripts.
   zero terminal failures.
 - Telegram control start row 1818 and explicit deployment report row 1820 both
   succeeded. Structured policy evaluations are ids 89 through 92.
+
+## 2026-08-04 Follow-up
+
+- A second timeline audit rejected the initial suspicion that ITGR entered
+  after the second US circuit-breaker. US fires occurred at 13:50:19Z and
+  15:21:10Z; no BUY followed the second fire. The existing two-fire gate worked
+  exactly as configured.
+- The first release still admitted two FERG and two ITGR entries. Three closed
+  at `-276,410.64 KRW` after costs and the remaining ITGR position was below
+  the round-trip cost floor. Domestic independently produced 19 post-first-fire
+  exits, one winner, and `-65,603.24 KRW`.
+- Each market now owns a one-fire local-session loss budget for ordinary longs.
+  Existing exits, inverse shadows, pre-fire entries, and the next market-local
+  session remain available. Structured evaluations 93 and 94 retain separate
+  evidence and three-final-session rollback tests.
+- Eleven overdue evaluation rows were resolved with explicit evidence. Rows
+  lacking a natural cross-risk-day fill, natural multi-page balance, or mature
+  inverse sample remain labeled `inconclusive`; the old 48-hour US guard window
+  is labeled `superseded`, not silently confirmed.
+- Commit `f6baed2` passed 816 tests and was pushed before restarting service PID
+  1580482. Runtime audit confirmed domestic next-session reset and active US
+  `post_cb_session_loss_limit_reached` from event ids 6971/7033. Telegram report
+  row 1823 succeeded.

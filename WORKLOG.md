@@ -80,6 +80,24 @@
   독립 보존한다. 직접 소형모델 A/B는 수행하지 않았으므로 고비용 추론
   자체의 우월성은 `unverified`이며 배포 뒤 전향 반사실로 평가한다.
 
+### 통합배포와 런타임 경계 확인
+- 구현·근거 커밋 `f6baed2`를 `git_token.txt`를 노출하지 않는
+  credential helper로 원격 `master`에 푸시한 뒤 서비스를
+  `2026-08-03T17:46:36Z`, PID `1580482`로 재시작했다.
+  `active/running`, `NRestarts=0`, `last_error=None`이다.
+- 첫 자연 사이클은 신규주문 없이 완료됐고 ITGR 66·NPAC 396·CCRN
+  281의 기존 보유 청산 감시를 계속했다. 최초 API 50회 중 실패 시도
+  1회는 회복됐고 종단 실패는 0이다. 일별 총평 157행, 정책평가 94행,
+  미확정 실행 0행을 유지했다.
+- 실제 runtime state의 CB 해제시각과 운영 이벤트를 새 게이트로 직접
+  감사했다. 국장은 KST 다음 현지일이라 `reason=""`, 최대 1회로 정상
+  초기화됐다. 미장은 뉴욕 8월 3일 이벤트 `6971/7033`을 읽어
+  `post_cb_session_loss_limit_reached`, 최대 1회로 차단됐다.
+- Telegram 시작 `id=1821`, TV Scanner `id=1822`, 명시 배포보고
+  `id=1823`이 모두 성공했다. 정책평가 `93/94`는
+  `deployed_forward_validation_pending_no_direct_model_ab`로 두고
+  세 최종 세션의 회피손실·차단기회비용을 계속 비교한다.
+
 ## [2026-08-03] 세션 로그 복원과 시장별 일일 총평 원장
 
 ### GPT·Claude·운영기록 교차 감사

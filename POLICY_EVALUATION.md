@@ -934,6 +934,17 @@ the current direction is wrong.
   SHA-256
   `67cf485f4a998622a99911c0cedc9769be299fa7e54f1e35350c484343d6901c`,
   integrity `ok`, and zero foreign-key violations.
+- Commit `f6baed2` was pushed before restart. Service PID 1580482 started at
+  17:46:36Z and remains active with `NRestarts=0`. The first natural cycle
+  created no order and retained exit monitoring for ITGR, NPAC, and CCRN. Its
+  initial 50 API attempts had one recovered failed attempt and zero terminal
+  failures.
+- A runtime-state audit resolved the market-local reset boundary directly:
+  domestic returned no block because KST had advanced to the next session;
+  overseas returned `post_cb_session_loss_limit_reached`, maximum one, from
+  event ids 6971 and 7033 in the still-current New York session. Telegram
+  deployment report row 1823 succeeded. Evaluations 93 and 94 remain
+  `deployed_forward_validation_pending_no_direct_model_ab`.
 
 ## Previous decision checkpoint (2026-08-03 KST)
 

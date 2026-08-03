@@ -878,6 +878,37 @@ an actually executed lower-context/model review. Never invent another model's
 result. Every later review should actively ask what evidence would show that
 the current direction is wrong.
 
+## Current validation checkpoint (2026-08-04 KST)
+
+- The durable daily review already joins final benchmark character to
+  market-local after-cost trading results, but pending policy evaluations only
+  exposed a wall-clock due date. That cannot prove a three-session test when a
+  market was closed, its benchmark remained provisional, the breaker did not
+  fire, or no otherwise-ready signal was blocked.
+- Add `policy_evaluation_log.validation_spec_json`. Each pending policy can now
+  preserve its anchor local session, target final-session count, block reason,
+  episode gap, forward horizon, price tolerance, and orderable-session profile.
+  Existing rows remain compatible with an empty specification.
+- Evaluations 93 and 94 use separate domestic and overseas specifications with
+  the same initial protocol: sessions strictly after 2026-08-03, three mature
+  final blocked-entry sessions, five-minute episode deduplication, and a
+  60-minute forward price checked against the market's minimum round-trip cost.
+- The strategy report separates elapsed final reviews, actual consecutive-loss
+  breaker sessions, blocked WAIT/SKIP episodes, mature forward sessions,
+  after-cost positive sessions, and the final regime of each blocked session.
+  A calendar deadline therefore triggers review but does not manufacture a
+  sample or an automatic policy verdict.
+- KRX publishes a Korean regular session of 09:00-15:30 and Nasdaq maintains
+  its own trading-hours and holiday schedule. This supports retaining KST and
+  New York session ownership instead of grouping both markets by one UTC or
+  KST calendar date
+  ([KRX](https://global.krx.co.kr/contents/GLB/06/0602/0602010201/GLB0602010201T1.jsp),
+  [Nasdaq](https://www.nasdaq.com/market-activity/stock-market-holiday-schedule)).
+- This is measurement infrastructure only. It changes no entry frequency,
+  circuit-breaker threshold, exit, or inverse policy. Before deployment, all
+  817 tests, `compileall`, and `git diff --check` passed. With no new mature
+  final session yet, the one-fire policy remains ungraded rather than confirmed.
+
 ## Current decision checkpoint (2026-08-04 KST)
 
 - Post-deployment reconstruction confirms that the US circuit-breaker fired at

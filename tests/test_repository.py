@@ -2336,6 +2336,12 @@ def test_policy_evaluation_log_preserves_reasoning_and_later_validation(tmp_path
         confidence=0.82,
         falsification_criteria="Revisit after five exits across three final sessions.",
         validation_due_at="2026-07-31T23:59:00+09:00",
+        validation_spec={
+            "basis": "blocked_entry_final_sessions",
+            "anchor_session_date": "2026-07-28",
+            "target_final_sessions": 3,
+            "block_reason": "post_cb_session_loss_limit_reached",
+        },
         reasoning_mode="high_context",
         comparison_baseline="unchanged_policy_checklist",
         comparative_value_status="unverified",
@@ -2351,6 +2357,17 @@ def test_policy_evaluation_log_preserves_reasoning_and_later_validation(tmp_path
         "avoid one-day overfit",
     ]
     assert pending[0]["comparative_value_status"] == "unverified"
+    assert pending[0]["validation_spec_json"]["target_final_sessions"] == 3
+
+    repository.update_policy_evaluation_validation_spec(
+        evaluation_id,
+        validation_spec={
+            **pending[0]["validation_spec_json"],
+            "target_final_sessions": 5,
+        },
+    )
+    updated = repository.list_policy_evaluations(pending_only=True)
+    assert updated[0]["validation_spec_json"]["target_final_sessions"] == 5
 
     repository.update_policy_evaluation_outcome(
         evaluation_id,

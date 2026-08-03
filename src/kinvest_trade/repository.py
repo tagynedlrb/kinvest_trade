@@ -823,6 +823,7 @@ class SqliteRepository:
                     confidence REAL,
                     falsification_criteria TEXT NOT NULL DEFAULT '',
                     validation_due_at TEXT,
+                    validation_spec_json TEXT NOT NULL DEFAULT '{}',
                     reasoning_mode TEXT NOT NULL DEFAULT '',
                     comparison_baseline TEXT NOT NULL DEFAULT '',
                     comparative_value_status TEXT NOT NULL DEFAULT 'unverified',
@@ -925,6 +926,12 @@ class SqliteRepository:
                 "api_call_log",
                 "client_source",
                 "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "policy_evaluation_log",
+                "validation_spec_json",
+                "TEXT NOT NULL DEFAULT '{}'",
             )
             conn.execute(
                 """
@@ -1938,6 +1945,7 @@ class SqliteRepository:
         confidence: float | None = None,
         falsification_criteria: str = "",
         validation_due_at: str | None = None,
+        validation_spec: dict | list | None = None,
         reasoning_mode: str = "",
         comparison_baseline: str = "",
         comparative_value_status: str = "unverified",
@@ -1954,10 +1962,11 @@ class SqliteRepository:
                     created_at, market, evaluation_kind, window_start, window_end,
                     subject, decision, hypothesis, evidence_json,
                     financial_principles_json, alternatives_json, confidence,
-                    falsification_criteria, validation_due_at, reasoning_mode,
-                    comparison_baseline, comparative_value_status, outcome_json,
-                    reviewed_at, git_commit
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    falsification_criteria, validation_due_at,
+                    validation_spec_json, reasoning_mode, comparison_baseline,
+                    comparative_value_status, outcome_json, reviewed_at,
+                    git_commit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -1978,6 +1987,11 @@ class SqliteRepository:
                     confidence,
                     falsification_criteria,
                     validation_due_at,
+                    json.dumps(
+                        validation_spec or {},
+                        ensure_ascii=False,
+                        default=str,
+                    ),
                     reasoning_mode,
                     comparison_baseline,
                     comparative_value_status,
@@ -1987,6 +2001,29 @@ class SqliteRepository:
                 ),
             )
             return int(cursor.lastrowid)
+
+    def update_policy_evaluation_validation_spec(
+        self,
+        evaluation_id: int,
+        *,
+        validation_spec: dict | list,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE policy_evaluation_log
+                SET validation_spec_json = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(
+                        validation_spec,
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                    int(evaluation_id),
+                ),
+            )
 
     def update_policy_evaluation_outcome(
         self,
@@ -2055,6 +2092,7 @@ class SqliteRepository:
                 "evidence_json",
                 "financial_principles_json",
                 "alternatives_json",
+                "validation_spec_json",
                 "outcome_json",
             ):
                 try:

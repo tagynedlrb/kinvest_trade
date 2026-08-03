@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import statistics
 from bisect import bisect_right
@@ -943,6 +944,256 @@ def _cycle_session_date(row: dict[str, object]) -> str | None:
     return logged_at.astimezone(local_timezone).date().isoformat()
 
 
+def _load_json_dict(value: object) -> dict[str, object]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _matches_validation_block_reason(action_reason: object, reason: str) -> bool:
+    value = str(action_reason or "").strip()
+    return value in {reason, f"buy:{reason}"} or value.endswith(f"] {reason}")
+
+
+def _policy_validation_progress_lines(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    if (
+        not _has_table(conn, "policy_evaluation_log")
+        or not _has_table(conn, "market_session_reviews")
+        or not _has_column(
+            conn,
+            "policy_evaluation_log",
+            "validation_spec_json",
+        )
+    ):
+        return []
+    evaluations = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT id, market, subject, validation_spec_json
+            FROM policy_evaluation_log
+            WHERE reviewed_at IS NULL
+              AND COALESCE(validation_spec_json, '') NOT IN ('', '{}')
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+    ]
+    if not evaluations:
+        return []
+
+    review_rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT market, session_date, regime_key
+            FROM market_session_reviews
+            ORDER BY session_date
+            """
+        ).fetchall()
+    ]
+    result = ["[정책 전향검증]"]
+    for evaluation in reversed(evaluations):
+        spec = _load_json_dict(evaluation.get("validation_spec_json"))
+        if str(spec.get("basis") or "") != "blocked_entry_final_sessions":
+            continue
+        market = str(evaluation.get("market") or "").strip().lower()
+        anchor_date = str(spec.get("anchor_session_date") or "").strip()
+        reason = str(spec.get("block_reason") or "").strip()
+        if market not in {"domestic", "overseas"} or not anchor_date or not reason:
+            continue
+        target_sessions = max(1, int(spec.get("target_final_sessions") or 3))
+        horizon = max(1, int(spec.get("horizon_minutes") or 60))
+        gap = timedelta(minutes=max(1, int(spec.get("episode_gap_minutes") or 5)))
+        tolerance = timedelta(
+            minutes=max(1, int(spec.get("price_tolerance_minutes") or 5))
+        )
+        orderable_env = str(spec.get("orderable_env") or "vps").strip().lower()
+        if orderable_env not in {"vps", "prod"}:
+            orderable_env = "vps"
+
+        final_review_by_date = {
+            str(row["session_date"]): row
+            for row in review_rows
+            if str(row.get("market") or "").strip().lower() == market
+            and str(row.get("session_date") or "") > anchor_date
+        }
+        final_dates = set(final_review_by_date)
+        cycle_rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, logged_at, market, symbol, action_bias,
+                       action_reason, price, strategy_flag
+                FROM cycle_log
+                WHERE LOWER(market) = ?
+                  AND logged_at >= ?
+                  AND COALESCE(price, 0) > 0
+                ORDER BY logged_at, id
+                """,
+                (market, f"{anchor_date}T00:00:00+00:00"),
+            ).fetchall()
+        ]
+        parsed_rows: list[dict[str, object]] = []
+        for row in cycle_rows:
+            logged_at = _parse_logged_at(row.get("logged_at"))
+            if logged_at is None:
+                continue
+            session_date = _cycle_session_date(row)
+            if session_date not in final_dates:
+                continue
+            if market == "domestic" and not is_krx_regular_session(logged_at):
+                continue
+            if market == "overseas" and not is_us_orderable_session_for_env(
+                logged_at,
+                orderable_env,
+            ):
+                continue
+            row["_logged_at"] = logged_at
+            row["_session_date"] = session_date
+            parsed_rows.append(row)
+
+        sequence_rows: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+        for row in parsed_rows:
+            sequence_rows[
+                (
+                    str(row.get("symbol") or "").strip().upper(),
+                    str(row.get("_session_date") or ""),
+                )
+            ].append(row)
+        sequences = {
+            key: (
+                [row["_logged_at"] for row in rows],
+                rows,
+            )
+            for key, rows in sequence_rows.items()
+        }
+
+        episodes: list[dict[str, object]] = []
+        last_blocked_at: dict[tuple[str, str], datetime] = {}
+        for row in parsed_rows:
+            if str(row.get("action_bias") or "").upper() not in {"WAIT", "SKIP"}:
+                continue
+            if not _matches_validation_block_reason(row.get("action_reason"), reason):
+                continue
+            logged_at = row.get("_logged_at")
+            if not isinstance(logged_at, datetime):
+                continue
+            key = (
+                str(row.get("symbol") or "").strip().upper(),
+                str(row.get("_session_date") or ""),
+            )
+            previous = last_blocked_at.get(key)
+            last_blocked_at[key] = logged_at
+            if previous is None or logged_at - previous >= gap:
+                episodes.append(row)
+
+        gross_by_date: dict[str, list[float]] = defaultdict(list)
+        for episode in episodes:
+            logged_at = episode.get("_logged_at")
+            if not isinstance(logged_at, datetime):
+                continue
+            session_date = str(episode.get("_session_date") or "")
+            sequence_key = (
+                str(episode.get("symbol") or "").strip().upper(),
+                session_date,
+            )
+            times, rows = sequences.get(sequence_key, ([], []))
+            target_at = logged_at + timedelta(minutes=horizon)
+            if not times or target_at > times[-1]:
+                continue
+            index = bisect_right(times, target_at) - 1
+            if index < 0:
+                continue
+            future = rows[index]
+            future_at = future.get("_logged_at")
+            if not isinstance(future_at, datetime) or target_at - future_at > tolerance:
+                continue
+            entry_price = float(episode.get("price") or 0.0)
+            future_price = float(future.get("price") or 0.0)
+            if entry_price > 0 and future_price > 0:
+                gross_by_date[session_date].append(future_price / entry_price - 1.0)
+
+        cb_dates: set[str] = set()
+        if _has_table(conn, "event_log"):
+            cb_rows = conn.execute(
+                """
+                SELECT logged_at, market, detail
+                FROM event_log
+                WHERE event_type = 'cb_fired'
+                  AND logged_at >= ?
+                ORDER BY logged_at
+                """,
+                (f"{anchor_date}T00:00:00+00:00",),
+            ).fetchall()
+            for cb_row in cb_rows:
+                detail = _load_json_dict(cb_row["detail"])
+                row_market = str(cb_row["market"] or detail.get("market") or "")
+                if row_market.strip().lower() != market:
+                    continue
+                if str(detail.get("type") or "") != "consecutive":
+                    continue
+                session_date = _cycle_session_date(
+                    {"logged_at": cb_row["logged_at"], "market": market}
+                )
+                if session_date in final_dates:
+                    cb_dates.add(str(session_date))
+
+        blocked_dates = {
+            str(row.get("_session_date") or "") for row in episodes
+        }
+        minimum_cost = _minimum_round_trip_cost_pct(market)
+        session_net = [
+            statistics.fmean(values) - minimum_cost
+            for values in gross_by_date.values()
+            if values
+        ]
+        net_text = (
+            f"{statistics.fmean(session_net) * 100:+.3f}%"
+            if session_net
+            else "-"
+        )
+        positive_sessions = sum(value > 0 for value in session_net)
+        maturity = len(session_net)
+        readiness = (
+            "평가가능"
+            if maturity >= target_sessions
+            else f"관찰계속({maturity}/{target_sessions}세션)"
+        )
+        regime_counts: dict[str, int] = defaultdict(int)
+        for session_date in blocked_dates:
+            regime = final_review_by_date.get(session_date, {})
+            regime_counts[str(regime.get("regime_key") or "unknown")] += 1
+        regime_text = (
+            ",".join(
+                f"{_regime_key_label(key)}:{count}"
+                for key, count in sorted(
+                    regime_counts.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:3]
+            )
+            if regime_counts
+            else "-"
+        )
+        result.append(
+            f"  #{int(evaluation['id'])} {market:<8} "
+            f"기준>{anchor_date} 확정경과={len(final_dates)} "
+            f"CB개입={len(cb_dates)} 차단={len(blocked_dates)}세션/"
+            f"{len(episodes)}ep {horizon}m성숙={maturity} "
+            f"최소비용Net={net_text} 양수={positive_sessions}/{maturity} "
+            f"{readiness}"
+        )
+        result.append(f"    차단세션레짐={regime_text}")
+    return result if len(result) > 1 else []
+
+
 def _recorded_net_pct(row: dict[str, object]) -> float:
     market = str(row.get("market") or "").strip().lower()
     try:
@@ -1116,6 +1367,7 @@ def summarize_market_regime_performance(
                     f"대상={latest_evaluation['market']}:{latest_evaluation['subject']} "
                     f"기한경과미검토={overdue}건"
                 )
+            result.extend(_policy_validation_progress_lines(conn))
 
         result.append("[시장 레짐별 세션소유 KIS 체결확정 손익]")
         where = [

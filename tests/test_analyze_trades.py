@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -559,6 +561,104 @@ def _save_final_domestic_regime(
             "raw_json": {},
         }
     )
+
+
+def test_market_regime_report_tracks_policy_validation_by_final_local_session(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "policy_validation_progress.db")
+    session_dates = ("2026-07-29", "2026-07-30")
+    for session_date in session_dates:
+        _save_final_domestic_regime(repository, session_date)
+    assert repository.refresh_final_market_session_reviews() == 2
+
+    for session_date, blocked_reason, future_price in (
+        (
+            "2026-07-29",
+            "[VWAP] post_cb_session_loss_limit_reached",
+            101.0,
+        ),
+        (
+            "2026-07-30",
+            "buy:post_cb_session_loss_limit_reached",
+            99.0,
+        ),
+    ):
+        repository.save_cycle_log(
+            logged_at=f"{session_date}T00:00:00+00:00",
+            market="domestic",
+            symbol="005930",
+            exchange_code="KRX",
+            action_bias="WAIT" if blocked_reason.startswith("[") else "SKIP",
+            action_reason=blocked_reason,
+            strategy_flag="VWAP",
+            price=100.0,
+        )
+        repository.save_cycle_log(
+            logged_at=f"{session_date}T00:01:00+00:00",
+            market="domestic",
+            symbol="005930",
+            exchange_code="KRX",
+            action_bias="WAIT",
+            action_reason="[VWAP] post_cb_session_loss_limit_reached",
+            strategy_flag="VWAP",
+            price=100.0,
+        )
+        repository.save_cycle_log(
+            logged_at=f"{session_date}T01:00:00+00:00",
+            market="domestic",
+            symbol="005930",
+            exchange_code="KRX",
+            action_bias="HOLD",
+            action_reason="watch",
+            strategy_flag="VWAP",
+            price=future_price,
+        )
+    with sqlite3.connect(repository.db_path) as conn:
+        for session_date in session_dates:
+            conn.execute(
+                """
+                INSERT INTO event_log (
+                    logged_at, session_id, event_type, market,
+                    symbol, detail, cycle_no
+                ) VALUES (?, '', 'cb_fired', 'domestic', '', ?, 1)
+                """,
+                (
+                    f"{session_date}T00:05:00+00:00",
+                    json.dumps({"type": "consecutive", "market": "domestic"}),
+                ),
+            )
+    repository.save_policy_evaluation(
+        created_at="2026-07-28T07:00:00+00:00",
+        market="domestic",
+        evaluation_kind="risk_policy",
+        subject="single_cb_session_loss_budget",
+        decision="hold pending forward validation",
+        hypothesis="A first-fire stop avoids repeated after-cost loss.",
+        validation_due_at="2026-08-10T00:00:00+00:00",
+        validation_spec={
+            "basis": "blocked_entry_final_sessions",
+            "anchor_session_date": "2026-07-28",
+            "target_final_sessions": 3,
+            "block_reason": "post_cb_session_loss_limit_reached",
+            "horizon_minutes": 60,
+            "episode_gap_minutes": 5,
+            "price_tolerance_minutes": 5,
+            "orderable_env": "vps",
+        },
+    )
+
+    output = summarize_market_regime_performance(repository.db_path)
+
+    assert "[정책 전향검증]" in output
+    assert "#1 domestic" in output
+    assert "확정경과=2" in output
+    assert "CB개입=2" in output
+    assert "차단=2세션/2ep" in output
+    assert "60m성숙=2" in output
+    assert "최소비용Net=-0.030%" in output
+    assert "양수=1/2 관찰계속(2/3세션)" in output
+    assert "차단세션레짐=급락/매우활발/극단변동:2" in output
 
 
 def test_market_regime_performance_requires_multiple_days_before_policy_evaluation(

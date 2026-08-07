@@ -615,6 +615,10 @@ class OverseasOrderHelper:
             "entry_market_regime": service._market_regime_context(
                 "overseas"
             ),
+            "entry_sector_context": service._entry_sector_context(
+                "overseas",
+                candidate.symbol,
+            ),
         }
         service._record_broker_order_event(
             market="overseas",

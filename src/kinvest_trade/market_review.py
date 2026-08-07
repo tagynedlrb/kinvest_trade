@@ -66,13 +66,18 @@ def _performance_summary(rows: Iterable[dict], key_name: str) -> dict[str, dict]
     return {key: dict(grouped[key]) for key in sorted(grouped)}
 
 
-def _load_entry_regime(context_text: object) -> dict:
+def _load_entry_context(context_text: object) -> dict:
     try:
         context = json.loads(str(context_text or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     if not isinstance(context, dict):
         return {}
+    return context
+
+
+def _load_entry_regime(context_text: object) -> dict:
+    context = _load_entry_context(context_text)
     regime = context.get("entry_market_regime")
     return regime if isinstance(regime, dict) else {}
 
@@ -89,17 +94,36 @@ def build_market_session_review(
     session_date = str(regime.get("session_date") or "")
     context_count = 0
     session_match_count = 0
+    sector_context_count = 0
+    sector_evaluable_count = 0
+    sector_supportive_count = 0
     for entry in entries:
         group_id = str(entry.get("execution_group_id") or "")
-        entry_regime = _load_entry_regime(entry_context_by_group.get(group_id))
-        if not bool(entry_regime.get("available")):
-            continue
-        context_count += 1
-        if (
-            str(entry_regime.get("market") or "").strip().lower() == market
-            and str(entry_regime.get("session_date") or "") == session_date
+        entry_context = _load_entry_context(
+            entry_context_by_group.get(group_id)
+        )
+        entry_regime = entry_context.get("entry_market_regime")
+        if not isinstance(entry_regime, dict):
+            entry_regime = {}
+        if bool(entry_regime.get("available")):
+            context_count += 1
+            if (
+                str(entry_regime.get("market") or "").strip().lower() == market
+                and str(entry_regime.get("session_date") or "") == session_date
+            ):
+                session_match_count += 1
+
+        entry_sector = entry_context.get("entry_sector_context")
+        if not isinstance(entry_sector, dict) or not bool(
+            entry_sector.get("available")
         ):
-            session_match_count += 1
+            continue
+        sector_context_count += 1
+        if bool(entry_sector.get("evaluable")):
+            sector_evaluable_count += 1
+            sector_supportive_count += int(
+                entry_sector.get("supportive_for_long") is True
+            )
 
     exit_count = len(exits)
     net_pnl_pct_sum = sum(_net_pnl_pct(row) for row in exits)
@@ -120,6 +144,15 @@ def build_market_session_review(
         ),
         "entry_regime_session_match_pct": (
             session_match_count / context_count if context_count else 1.0
+        ),
+        "entry_sector_context_count": sector_context_count,
+        "entry_sector_context_missing_count": max(
+            0, len(entries) - sector_context_count
+        ),
+        "entry_sector_evaluable_count": sector_evaluable_count,
+        "entry_sector_supportive_count": sector_supportive_count,
+        "entry_sector_coverage_pct": (
+            sector_context_count / len(entries) if entries else 1.0
         ),
         "trade_source": "confirmed_session_owned_cycle_log",
     }

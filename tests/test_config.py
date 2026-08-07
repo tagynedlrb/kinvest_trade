@@ -141,6 +141,10 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.close_guard_cancel_window_minutes == 0
     assert domestic.post_cb_reentry_benchmark_floor_pct == -3.0
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
+    assert domestic.entry_require_same_session_regime is False
+    assert overseas.entry_require_same_session_regime is True
+    assert domestic.entry_regime_max_age_sec == 600
+    assert overseas.entry_regime_max_age_sec == 600
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
     assert domestic.post_cb_max_fires_per_session == 1

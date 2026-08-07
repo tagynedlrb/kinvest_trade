@@ -176,6 +176,15 @@
 - Domestic and overseas policies are independently owned and versioned.
 - Shared policy values are an initial baseline only. A result from one market
   is not evidence for changing the other market.
+- An ordinary US long requires a same-New-York-session Nasdaq observation no
+  older than 600 seconds. This is a data-readiness gate, not a fixed opening
+  delay. Dedicated inverse entries are exempt. The domestic switch remains
+  off until domestic evidence independently justifies it.
+- Sector and industry context is a shadow feature. US entries may evaluate
+  alignment only against the selected relative-volume pool; domestic entries
+  retain KIS sector identity without a breadth score. Neither market may use a
+  live sector threshold before its own forward sample meets the documented
+  minimum and after-cost comparison.
 - Operational diagnostics that may initiate a policy review are also
   market-specific. Exit-reason ratios, minimum-hold warnings, and their audit
   events must group by market and display that market's configured value;

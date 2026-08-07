@@ -4107,6 +4107,22 @@ def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None
             }
         ]
     )
+    service._dynamic_overseas_pool = [
+        {
+            "symbol": "PLTR",
+            "exchange_code": "NASD",
+            "sector_name": "Technology Services",
+            "industry_name": "Packaged Software",
+            "scanner_change_pct": 2.5,
+        },
+        {
+            "symbol": "MSFT",
+            "exchange_code": "NASD",
+            "sector_name": "Technology Services",
+            "industry_name": "Packaged Software",
+            "scanner_change_pct": 1.5,
+        },
+    ]
     candidate = OverseasScanResult(
         symbol="PLTR",
         exchange_code="NASD",
@@ -4141,6 +4157,12 @@ def test_place_overseas_buy_order_cancels_stale_conflicting_sell_order() -> None
     assert entry_regime["session_date"] == overseas_session
     assert entry_regime["benchmark_name"] == "NASDAQ Composite"
     assert entry_regime["regime_key"] == "up|active|high"
+    entry_sector = broker_rows[0]["payload_json"]["execution_context"][
+        "entry_sector_context"
+    ]
+    assert entry_sector["evaluable"] is True
+    assert entry_sector["supportive_for_long"] is True
+    assert entry_sector["cohort_count"] == 2
 
 
 def test_place_overseas_buy_order_skips_when_recent_pending_buy_exists() -> None:
@@ -5816,6 +5838,7 @@ def test_domestic_buy_uses_slot_sizing_when_balance_is_available() -> None:
         intraday_turnover_krw=120_000_000_000,
         volume_sum=600_000,
         activity_score=12.0,
+        sector_name="전기전자",
     )
 
     result = asyncio.run(service._place_domestic_test_order(candidate))
@@ -5861,6 +5884,7 @@ def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
         intraday_turnover_krw=120_000_000_000,
         volume_sum=600_000,
         activity_score=12.0,
+        sector_name="전기전자",
     )
 
     result = asyncio.run(service._place_domestic_test_order(candidate))
@@ -5913,6 +5937,12 @@ def test_domestic_buy_saves_buy_real_only_after_fill() -> None:
     assert entry_regime["session_date"] == domestic_session
     assert entry_regime["benchmark_name"] == "KOSPI"
     assert entry_regime["regime_key"] == "down|active|high"
+    entry_sector = broker_rows[0]["payload_json"]["execution_context"][
+        "entry_sector_context"
+    ]
+    assert entry_sector["available"] is True
+    assert entry_sector["sector_name"] == "전기전자"
+    assert entry_sector["evaluable"] is False
 
 
 def test_domestic_execution_treats_confirmed_cancel_qty_as_terminal() -> None:
@@ -6657,7 +6687,7 @@ def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
             symbol="AAPL",
             signal_snapshot=None,
         )
-        == ""
+        == "entry_market_regime_unavailable"
     )
     assert (
         service._entry_formula_block_reason(
@@ -7048,6 +7078,7 @@ def _save_test_regime(
     return_pct: float,
     trend_regime: str,
 ) -> None:
+    captured_at = datetime.now(timezone.utc).isoformat()
     service.repository.upsert_market_regime(
         {
             "market": market,
@@ -7055,7 +7086,7 @@ def _save_test_regime(
             "benchmark_code": "0001" if market == "domestic" else "COMP",
             "benchmark_name": "KOSPI" if market == "domestic" else "NASDAQ Composite",
             "source": "test",
-            "captured_at": f"{session_date}T05:00:00+00:00",
+            "captured_at": captured_at,
             "is_final": 0,
             "return_pct": return_pct,
             "trend_regime": trend_regime,
@@ -7350,6 +7381,10 @@ def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:
             {},
         )
     )
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "observation_age_sec": 30,
+    }
     service._is_inverse_symbol = (
         lambda market, symbol: market == "overseas" and symbol == "SQQQ"
     )
@@ -7367,6 +7402,76 @@ def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:
 
     assert ordinary_reason == "post_cb_session_loss_limit_reached"
     assert inverse_reason == ""
+
+
+def test_overseas_entry_requires_fresh_same_session_market_regime() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    context = {"available": False, "reason": "same_session_regime_missing"}
+    service._market_regime_context = lambda *_args, **_kwargs: dict(context)
+
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="NVDA",
+            signal_snapshot=None,
+        )
+        == "entry_market_regime_unavailable"
+    )
+
+    context.update({"available": True, "observation_age_sec": 601})
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="NVDA",
+            signal_snapshot=None,
+        )
+        == "entry_market_regime_stale"
+    )
+
+    context["observation_age_sec"] = 600
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="NVDA",
+            signal_snapshot=None,
+        )
+        == ""
+    )
+
+
+def test_entry_market_regime_gate_is_market_specific_and_exempts_inverse() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": False,
+        "reason": "same_session_regime_missing",
+    }
+
+    assert (
+        service._entry_formula_block_reason(
+            market="domestic",
+            symbol="005930",
+            signal_snapshot=None,
+        )
+        == ""
+    )
+    assert (
+        service._entry_formula_block_reason(
+            market="overseas",
+            symbol="SQQQ",
+            signal_snapshot=None,
+        )
+        == ""
+    )
 
 
 def test_post_cb_reentry_gate_fails_closed_without_same_session_regime() -> None:

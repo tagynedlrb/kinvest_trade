@@ -293,6 +293,8 @@ class MarketPolicyDefinition:
     auto_trade: AutoTradeConfig
     max_consecutive_losses: int
     circuit_breaker_cooldown_minutes: int
+    entry_require_same_session_regime: bool = False
+    entry_regime_max_age_sec: int = 600
     post_cb_reentry_benchmark_floor_pct: float | None = None
     post_cb_reentry_regime_max_age_sec: int = 600
     post_cb_max_fires_per_session: int | None = None
@@ -744,6 +746,8 @@ def _load_market_policy_definition(
     allowed_risk_fields = {
         "max_consecutive_losses",
         "circuit_breaker_cooldown_minutes",
+        "entry_require_same_session_regime",
+        "entry_regime_max_age_sec",
         "post_cb_reentry_benchmark_floor_pct",
         "post_cb_reentry_regime_max_age_sec",
         "post_cb_max_fires_per_session",
@@ -760,6 +764,14 @@ def _load_market_policy_definition(
     if not isinstance(inverse_require_symbol_benchmark, bool):
         raise ValueError(
             f"{market} inverse_require_symbol_benchmark must be a boolean"
+        )
+    entry_require_same_session_regime = raw_risk.get(
+        "entry_require_same_session_regime",
+        False,
+    )
+    if not isinstance(entry_require_same_session_regime, bool):
+        raise ValueError(
+            f"{market} entry_require_same_session_regime must be a boolean"
         )
     corporate_actions = _load_corporate_actions(
         market=market,
@@ -784,6 +796,11 @@ def _load_market_policy_definition(
                 "circuit_breaker_cooldown_minutes",
                 base_risk.circuit_breaker_cooldown_minutes,
             )
+        ),
+        entry_require_same_session_regime=entry_require_same_session_regime,
+        entry_regime_max_age_sec=max(
+            1,
+            int(raw_risk.get("entry_regime_max_age_sec", 600)),
         ),
         post_cb_reentry_benchmark_floor_pct=(
             None

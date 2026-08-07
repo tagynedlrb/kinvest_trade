@@ -311,6 +311,11 @@ class DomesticOrderHelper:
             "entry_market_regime": service._market_regime_context(
                 "domestic"
             ),
+            "entry_sector_context": service._entry_sector_context(
+                "domestic",
+                candidate.stock_code,
+                sector_name=candidate.sector_name,
+            ),
         }
         service._record_broker_order_event(
             market="domestic",

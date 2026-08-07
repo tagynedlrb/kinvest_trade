@@ -1945,7 +1945,14 @@ def test_market_session_review_persists_regime_trade_and_quality_snapshot(
                             "session_date": "2026-08-03",
                             "observation_id": 17,
                             "return_pct": -4.2,
-                        }
+                        },
+                        "entry_sector_context": {
+                            "available": True,
+                            "evaluable": False,
+                            "market": "domestic",
+                            "sector_name": "전기전자",
+                            "supportive_for_long": None,
+                        },
                     }
                 ),
             ),
@@ -2006,6 +2013,8 @@ def test_market_session_review_persists_regime_trade_and_quality_snapshot(
     assert stored["win_count"] == 1
     assert stored["net_pnl_krw"] == pytest.approx(1.5)
     assert stored["quality_json"]["entry_regime_coverage_pct"] == 1.0
+    assert stored["quality_json"]["entry_sector_context_count"] == 1
+    assert stored["quality_json"]["entry_sector_evaluable_count"] == 0
     assert stored["strategy_summary_json"]["VWAP+RSI"]["count"] == 1
     assert stored["exit_reason_summary_json"]["trend_filter_lost"]["wins"] == 1
 

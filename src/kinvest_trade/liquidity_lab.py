@@ -70,6 +70,10 @@ from .momentum_policy import (
 )
 from .notifier import TelegramNotifier
 from .repository import SqliteRepository
+from .sector_context import (
+    build_domestic_sector_context,
+    build_overseas_sector_context,
+)
 from .strategy import PriorityStrategyManager, STRATEGY_LABEL, StrategyID
 from .technical_signals import (
     MovingAverageSnapshot,
@@ -116,6 +120,7 @@ class DomesticScanResult:
     activity_score: float
     stock_name: str = ""
     product_type: str = ""
+    sector_name: str = ""
     etf_nav: float | None = None
     etf_nav_deviation_pct: float | None = None
     etf_tracking_multiplier: float | None = None
@@ -285,7 +290,7 @@ class LiquidityLabService:
         self._dynamic_domestic_codes: list[str] | None = None
         self._dynamic_domestic_names: dict[str, str] = {}
         self._domestic_scan_cycle_count: int = 0
-        self._dynamic_overseas_pool: list[dict[str, str]] | None = None
+        self._dynamic_overseas_pool: list[dict[str, object]] | None = None
         self._awaiting_relist: bool = False
         self._manual_overseas_pool: list[dict[str, str]] | None = None
         self._overseas_scan_cycle_count: int = 0
@@ -1470,6 +1475,23 @@ class LiquidityLabService:
             ),
             "session_range_position": session_range_position,
         }
+
+    def _entry_sector_context(
+        self,
+        market: str,
+        symbol: str,
+        *,
+        sector_name: str = "",
+    ) -> dict[str, object]:
+        market_key = normalize_market_name(market)
+        if market_key == "domestic":
+            return build_domestic_sector_context(sector_name)
+        pool_rows = (
+            getattr(self, "_manual_overseas_pool", None)
+            or getattr(self, "_dynamic_overseas_pool", None)
+            or []
+        )
+        return build_overseas_sector_context(symbol, pool_rows)
 
     def _inverse_regime_decision(
         self,
@@ -3015,12 +3037,37 @@ class LiquidityLabService:
             return ""
         market_key = normalize_market_name(market)
         policy = self._get_market_policy(market_key)
+        definition = policy.definition
         auto_trade = policy.auto_trade
         if auto_trade is None:
             return ""
 
         is_inverse = self._is_inverse_symbol(market_key, symbol)
         if not is_inverse:
+            if bool(
+                getattr(
+                    definition,
+                    "entry_require_same_session_regime",
+                    False,
+                )
+            ):
+                regime = self._market_regime_context(market_key)
+                if not bool(regime.get("available")):
+                    return "entry_market_regime_unavailable"
+                age_sec = regime.get("observation_age_sec")
+                max_age_sec = max(
+                    1,
+                    int(
+                        getattr(
+                            definition,
+                            "entry_regime_max_age_sec",
+                            600,
+                        )
+                    ),
+                )
+                if age_sec is None or int(age_sec) > max_age_sec:
+                    return "entry_market_regime_stale"
+
             post_cb_reason, _ = self._post_cb_reentry_regime_gate(
                 market_key,
             )
@@ -4205,7 +4252,7 @@ class LiquidityLabService:
         self,
         *,
         min_rel_volume: float | None = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, object]]:
         client = getattr(self.client, "_client", None)
         if client is None:
             return []
@@ -4225,7 +4272,7 @@ class LiquidityLabService:
             max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
         )
 
-    async def _scan_tv_dynamic_pool_with_fallback(self) -> list[dict[str, str]]:
+    async def _scan_tv_dynamic_pool_with_fallback(self) -> list[dict[str, object]]:
         ll_cfg = self.config.liquidity_lab
         target_n = max(1, getattr(ll_cfg, "tv_top_n", 30))
         min_fallback_n = max(1, int(target_n * 0.3))
@@ -6878,6 +6925,7 @@ class LiquidityLabService:
             activity_score=round(activity_score, 4),
             stock_name=stock_name,
             product_type=str(current.get("product_type", "") or "").strip(),
+            sector_name=str(current.get("sector_name", "") or "").strip(),
         )
         self._prepare_domestic_cycle_caches()
         self._domestic_quote_cache[stock_code] = result
@@ -7418,6 +7466,7 @@ class LiquidityLabService:
             activity_score=round(activity_score, 4),
             stock_name=quote_snapshot.stock_name,
             product_type=quote_snapshot.product_type,
+            sector_name=quote_snapshot.sector_name,
             etf_nav=quote_snapshot.etf_nav,
             etf_nav_deviation_pct=quote_snapshot.etf_nav_deviation_pct,
             etf_tracking_multiplier=quote_snapshot.etf_tracking_multiplier,

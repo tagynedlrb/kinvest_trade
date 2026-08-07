@@ -1308,6 +1308,16 @@ def summarize_market_regime_performance(
                 matches = int(
                     review.get("entry_regime_session_match_count") or 0
                 )
+                quality = _load_json_dict(review.get("quality_json"))
+                sector_contexts = int(
+                    quality.get("entry_sector_context_count") or 0
+                )
+                sector_evaluable = int(
+                    quality.get("entry_sector_evaluable_count") or 0
+                )
+                sector_supportive = int(
+                    quality.get("entry_sector_supportive_count") or 0
+                )
                 exits = int(review.get("confirmed_exit_count") or 0)
                 wins = int(review.get("win_count") or 0)
                 coverage = contexts / entries * 100 if entries else 100.0
@@ -1324,6 +1334,8 @@ def summarize_market_regime_performance(
                     f"  {market:<8} {review['session_date']} "
                     f"진입환경={contexts}/{entries}({coverage:.0f}%) "
                     f"현지일치={matches}/{contexts}({match_rate:.0f}%) "
+                    f"섹터환경={sector_contexts}/{entries} "
+                    f"정렬={sector_supportive}/{sector_evaluable} "
                     f"청산={exits} 승률={(wins / exits * 100 if exits else 0):.0f}% "
                     f"{pnl_text}"
                 )

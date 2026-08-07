@@ -17,12 +17,45 @@ def test_check_connectivity_returns_true_on_http_200() -> None:
     assert asyncio.run(run_case()) is True
 
 
-def _row(ticker: str, typespecs: list[str] | None = None) -> dict:
+def _row(
+    ticker: str,
+    typespecs: list[str] | None = None,
+    *,
+    sector: str = "Technology Services",
+    industry: str = "Packaged Software",
+) -> dict:
     # Mirrors the real TradingView scanner.tradingview.com/america/scan shape:
     # the exchange lives only in the top-level "s" ticker (e.g. "NASDAQ:AAPL"),
     # never in the "d"/"name" column, which is a bare symbol.
     name = ticker.split(":", 1)[1]
-    return {"s": ticker, "d": [name, 10.0, 1_000_000, 3.0, 1.0, 5e8, typespecs or ["common"]]}
+    return {
+        "s": ticker,
+        "d": [
+            name,
+            10.0,
+            1_000_000,
+            3.0,
+            1.0,
+            5e8,
+            sector,
+            industry,
+            typespecs or ["common"],
+        ],
+    }
+
+
+def _expected(symbol: str, exchange_code: str) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "exchange_code": exchange_code,
+        "sector_name": "Technology Services",
+        "industry_name": "Packaged Software",
+        "scanner_price": 10.0,
+        "scanner_volume": 1_000_000,
+        "scanner_relative_volume": 3.0,
+        "scanner_change_pct": 1.0,
+        "scanner_market_cap": 5e8,
+    }
 
 
 def test_scan_top_volume_surge_parses_supported_exchange_symbols() -> None:
@@ -39,15 +72,15 @@ def test_scan_top_volume_surge_parses_supported_exchange_symbols() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    async def run_case() -> list[dict[str, str]]:
+    async def run_case() -> list[dict[str, object]]:
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
             return await scan_top_volume_surge(client, top_n=5)
 
     assert asyncio.run(run_case()) == [
-        {"symbol": "NVDA", "exchange_code": "NASD"},
-        {"symbol": "PLTR", "exchange_code": "NYSE"},
-        {"symbol": "SOXL", "exchange_code": "AMEX"},
+        _expected("NVDA", "NASD"),
+        _expected("PLTR", "NYSE"),
+        _expected("SOXL", "AMEX"),
     ]
 
 
@@ -64,14 +97,14 @@ def test_scan_top_volume_surge_excludes_preferred_and_non_symbol_tickers() -> No
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    async def run_case() -> list[dict[str, str]]:
+    async def run_case() -> list[dict[str, object]]:
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
             return await scan_top_volume_surge(client, top_n=10)
 
     assert asyncio.run(run_case()) == [
-        {"symbol": "XOMA", "exchange_code": "NASD"},
-        {"symbol": "ERIC", "exchange_code": "NASD"},
+        _expected("XOMA", "NASD"),
+        _expected("ERIC", "NASD"),
     ]
 
 
@@ -84,7 +117,7 @@ def test_scan_top_volume_surge_ignores_bare_name_column_without_exchange() -> No
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    async def run_case() -> list[dict[str, str]]:
+    async def run_case() -> list[dict[str, object]]:
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
             return await scan_top_volume_surge(client, top_n=5)

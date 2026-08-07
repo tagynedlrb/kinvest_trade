@@ -87,7 +87,7 @@ async def scan_top_volume_surge(
     min_market_cap: float = 3e8,
     max_market_cap: float = 2e12,
     max_change_pct: float = 20.0,
-) -> list[dict[str, str]]:
+) -> list[dict[str, object]]:
     payload = {
         "filter": [
             {
@@ -123,6 +123,8 @@ async def scan_top_volume_surge(
             "relative_volume_10d_calc",
             "change",
             "market_cap_basic",
+            "sector",
+            "industry",
             "typespecs",
         ],
         "sort": {"sortBy": "relative_volume_10d_calc", "sortOrder": "desc"},
@@ -142,7 +144,7 @@ async def scan_top_volume_surge(
             logger.warning("[TV] scan_failed http=%s", response.status_code)
             return []
         body: dict[str, Any] = response.json()
-        results: list[dict[str, str]] = []
+        results: list[dict[str, object]] = []
         seen: set[str] = set()
         for item in body.get("data", []) or []:
             if not isinstance(item, dict):
@@ -153,7 +155,7 @@ async def scan_top_volume_surge(
             if parsed is None:
                 continue
             data = item.get("d", []) or []
-            typespecs = data[6] if len(data) > 6 else None
+            typespecs = data[8] if len(data) > 8 else None
             if isinstance(typespecs, list) and any(
                 spec in {"preferred", "warrant", "right", "unit"} for spec in typespecs
             ):
@@ -162,7 +164,18 @@ async def scan_top_volume_surge(
             if symbol in seen or "/" in symbol or "." in symbol:
                 continue
             seen.add(symbol)
-            results.append(parsed)
+            results.append(
+                {
+                    **parsed,
+                    "sector_name": str(data[6] or "").strip() if len(data) > 6 else "",
+                    "industry_name": str(data[7] or "").strip() if len(data) > 7 else "",
+                    "scanner_price": data[1] if len(data) > 1 else None,
+                    "scanner_volume": data[2] if len(data) > 2 else None,
+                    "scanner_relative_volume": data[3] if len(data) > 3 else None,
+                    "scanner_change_pct": data[4] if len(data) > 4 else None,
+                    "scanner_market_cap": data[5] if len(data) > 5 else None,
+                }
+            )
             if len(results) >= top_n:
                 break
         logger.info("[TV] scan_complete count=%s", len(results))

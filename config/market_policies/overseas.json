@@ -173,6 +173,8 @@
   "risk": {
     "max_consecutive_losses": 3,
     "circuit_breaker_cooldown_minutes": 30,
+    "entry_require_same_session_regime": true,
+    "entry_regime_max_age_sec": 600,
     "post_cb_reentry_benchmark_floor_pct": -1.0,
     "post_cb_reentry_regime_max_age_sec": 600,
     "post_cb_max_fires_per_session": 1

@@ -145,3 +145,16 @@
   entry-time KOSPI asymmetry, and credential-bearing error log. This value is
   recorded as operationally useful but not as superior to another model: no
   direct controlled model A/B was performed.
+
+## Deployment result
+
+- Implementation commit `2e1c6df` was pushed to remote `master`. The service
+  restarted at 2026-08-11 13:31:30 UTC with PID 1675409, active/running and
+  zero restarts.
+- The first guard event activated the four expected domestic and four expected
+  overseas formula guards. Two natural cycles made 116 API attempts with zero
+  failed attempts, zero terminal failures, and zero new orders.
+- Existing `CCRN` and `NPAC` positions continued through
+  `time_exit_cost_floor_hold`; exit monitoring was not blocked.
+- Telegram deployment report row 2171 succeeded. Policy evaluations 99 and 100
+  retain `reviewed_at=NULL` until their three new final local sessions mature.

@@ -61,8 +61,19 @@
   `data/trading_backup_20260811_132953_pre_persistent_loss_control_deploy.db`,
   526,446,592바이트, SHA-256
   `0312b2498353d823ffc6f455d7e37150fdaf2ef22d17c010f39a2ed50b4f1360`,
-  무결성 정상·외래키 위반 0이다. 푸시·재기동·Telegram 결과는 배포
-  직후 이 절에 이어 기록한다.
+  무결성 정상·외래키 위반 0이다.
+- 구현·근거 커밋 `2e1c6df`를 `git_token.txt` 임시 credential
+  helper로 원격 `master`에 푸시했다. 서비스를
+  `2026-08-11T13:31:30Z`, PID `1675409`로 재기동했고
+  `active/running`, `NRestarts=0`이다.
+- 첫 사이클 `strategy_guard_active` 이벤트 `10764`는 복제검증과 같은
+  국장 4개·미장 4개 공식 및 독립 임계값을 저장했다. 두 자연 사이클
+  API 116회는 실패시도·종단실패 모두 0, 신규 주문 0이다. 기존
+  `CCRN/NPAC`은 `time_exit_cost_floor_hold`로 청산 감시 중이라 신규
+  진입가드가 exit 경로를 막지 않았다.
+- Telegram 배포보고 `telegram_message_log.id=2171`은 성공했다.
+  전향평가 `99/100` outcome에 커밋·백업·PID·가드·API·Telegram을
+  연결했고 `reviewed_at`은 비워 세 최종 현지세션 검증을 계속한다.
 
 ## [2026-08-07] 시장우선 진입 준비조건과 섹터 그림자 원장
 

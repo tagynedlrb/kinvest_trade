@@ -52,6 +52,10 @@
   entry-time KOSPI asymmetry, and a credential-bearing Telegram error string.
   Record this as useful operational output, not direct model superiority; no
   controlled model A/B was performed.
+- Commit `2e1c6df` is deployed. Policy ledger rows 99 and 100 link the backup,
+  active guard sets, PID 1675409, two clean natural cycles, 116 successful API
+  attempts, zero new orders, and Telegram report row 2171. They remain pending
+  until three new final local sessions satisfy their validation clocks.
 
 ## API reliability measurement
 

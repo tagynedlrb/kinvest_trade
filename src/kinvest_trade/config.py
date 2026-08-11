@@ -295,6 +295,7 @@ class MarketPolicyDefinition:
     circuit_breaker_cooldown_minutes: int
     entry_require_same_session_regime: bool = False
     entry_regime_max_age_sec: int = 600
+    entry_benchmark_floor_pct: float | None = None
     post_cb_reentry_benchmark_floor_pct: float | None = None
     post_cb_reentry_regime_max_age_sec: int = 600
     post_cb_max_fires_per_session: int | None = None
@@ -748,6 +749,7 @@ def _load_market_policy_definition(
         "circuit_breaker_cooldown_minutes",
         "entry_require_same_session_regime",
         "entry_regime_max_age_sec",
+        "entry_benchmark_floor_pct",
         "post_cb_reentry_benchmark_floor_pct",
         "post_cb_reentry_regime_max_age_sec",
         "post_cb_max_fires_per_session",
@@ -801,6 +803,11 @@ def _load_market_policy_definition(
         entry_regime_max_age_sec=max(
             1,
             int(raw_risk.get("entry_regime_max_age_sec", 600)),
+        ),
+        entry_benchmark_floor_pct=(
+            None
+            if raw_risk.get("entry_benchmark_floor_pct") is None
+            else float(raw_risk["entry_benchmark_floor_pct"])
         ),
         post_cb_reentry_benchmark_floor_pct=(
             None

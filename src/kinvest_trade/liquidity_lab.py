@@ -3044,13 +3044,19 @@ class LiquidityLabService:
 
         is_inverse = self._is_inverse_symbol(market_key, symbol)
         if not is_inverse:
-            if bool(
+            benchmark_floor_value = getattr(
+                definition,
+                "entry_benchmark_floor_pct",
+                None,
+            )
+            require_market_regime = bool(
                 getattr(
                     definition,
                     "entry_require_same_session_regime",
                     False,
                 )
-            ):
+            ) or benchmark_floor_value is not None
+            if require_market_regime:
                 regime = self._market_regime_context(market_key)
                 if not bool(regime.get("available")):
                     return "entry_market_regime_unavailable"
@@ -3067,6 +3073,14 @@ class LiquidityLabService:
                 )
                 if age_sec is None or int(age_sec) > max_age_sec:
                     return "entry_market_regime_stale"
+                if benchmark_floor_value is not None:
+                    benchmark_return_pct = self._parse_optional_float(
+                        regime.get("return_pct")
+                    )
+                    if benchmark_return_pct is None:
+                        return "entry_market_regime_unavailable"
+                    if benchmark_return_pct < float(benchmark_floor_value):
+                        return "entry_benchmark_below_floor"
 
             post_cb_reason, _ = self._post_cb_reentry_regime_gate(
                 market_key,
@@ -10369,6 +10383,16 @@ class LiquidityLabService:
             "exit_cooldown_remaining": self._cooldown_remaining_minutes(market, symbol),
             "cb_active": self._cb_active_flag(market),
         }
+        records_policy_regime = (
+            reason.startswith("entry_market_")
+            or reason.startswith("entry_benchmark_")
+            or reason.startswith("post_cb_")
+            or reason == "recent_strategy_underperformance"
+        )
+        if side == "buy" and records_policy_regime:
+            detail["entry_market_regime"] = self._market_regime_context(
+                market
+            )
         if error:
             detail["error"] = error[:160]
         if extra_detail:

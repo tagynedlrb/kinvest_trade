@@ -5585,6 +5585,7 @@ def test_place_domestic_test_order_rechecks_vwap_confirmation_before_submission(
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    _set_fresh_positive_entry_regime(service)
     service.client = FailingDomesticClient()
     snapshot = _snapshot(
         price=4_405.0,
@@ -5658,6 +5659,7 @@ def test_place_domestic_test_order_rechecks_leveraged_trend_before_submission(
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    _set_fresh_positive_entry_regime(service)
     service.client = FailingDomesticClient()
     snapshot = _snapshot(
         price=78_055.0,
@@ -6322,6 +6324,18 @@ def _build_run_service() -> LiquidityLabService:
     return service
 
 
+def _set_fresh_positive_entry_regime(
+    service: LiquidityLabService,
+) -> None:
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "market": "domestic",
+        "session_date": "2026-08-11",
+        "observation_age_sec": 30,
+        "return_pct": 0.5,
+    }
+
+
 def _configure_test_corporate_action_service(
     service: LiquidityLabService,
 ) -> None:
@@ -6695,7 +6709,7 @@ def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
             symbol="CPRX",
             signal_snapshot=None,
         )
-        == ""
+        == "entry_market_regime_unavailable"
     )
 
 
@@ -7462,6 +7476,14 @@ def test_entry_market_regime_gate_is_market_specific_and_exempts_inverse() -> No
             symbol="005930",
             signal_snapshot=None,
         )
+        == "entry_market_regime_unavailable"
+    )
+    assert (
+        service._entry_formula_block_reason(
+            market="domestic",
+            symbol="114800",
+            signal_snapshot=None,
+        )
         == ""
     )
     assert (
@@ -7472,6 +7494,78 @@ def test_entry_market_regime_gate_is_market_specific_and_exempts_inverse() -> No
         )
         == ""
     )
+
+
+def test_domestic_ordinary_entry_requires_nonnegative_fresh_benchmark() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    context = {
+        "available": True,
+        "observation_age_sec": 30,
+        "return_pct": -0.0001,
+    }
+    service._market_regime_context = lambda *_args, **_kwargs: dict(context)
+
+    assert (
+        service._entry_formula_block_reason(
+            market="domestic",
+            symbol="005930",
+            signal_snapshot=None,
+        )
+        == "entry_benchmark_below_floor"
+    )
+
+    context["return_pct"] = 0.0
+    assert (
+        service._entry_formula_block_reason(
+            market="domestic",
+            symbol="005930",
+            signal_snapshot=None,
+        )
+        == ""
+    )
+
+    context["return_pct"] = None
+    assert (
+        service._entry_formula_block_reason(
+            market="domestic",
+            symbol="005930",
+            signal_snapshot=None,
+        )
+        == "entry_market_regime_unavailable"
+    )
+
+
+def test_policy_trade_skip_records_market_regime_context() -> None:
+    service = _build_run_service()
+    context = {
+        "available": True,
+        "market": "domestic",
+        "session_date": "2026-08-11",
+        "return_pct": -1.03,
+        "activity_regime": "normal",
+        "volatility_regime": "calm",
+    }
+    service._market_regime_context = lambda *_args, **_kwargs: dict(context)
+
+    service._record_trade_skip(
+        market="domestic",
+        symbol="005930",
+        exchange_code=None,
+        reason="entry_benchmark_below_floor",
+        side="buy",
+        strategy_flag="VWAP+RSI",
+    )
+
+    event = service.repository.list_event_log(
+        event_type="trade_skip",
+        limit=1,
+    )[0]
+    assert json.loads(event["detail"])["entry_market_regime"] == context
 
 
 def test_post_cb_reentry_gate_fails_closed_without_same_session_regime() -> None:
@@ -8907,6 +9001,7 @@ def test_build_watch_target_status_confirms_domestic_standalone_vwap() -> None:
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot(
         price=20_000.0,
         volume_ratio=0.06,
@@ -8950,6 +9045,7 @@ def test_build_watch_target_status_allows_confirmed_domestic_vwap() -> None:
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot()
 
     class FakeStrategyManager:
@@ -8988,6 +9084,7 @@ def test_build_watch_target_status_requires_leveraged_trend_confirmation() -> No
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
+    _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot(
         price=78_055.0,
         daily_ma_fast=134_123.0,
@@ -9034,6 +9131,7 @@ def test_build_watch_target_status_allows_confirmed_leveraged_trend() -> None:
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
+    _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot(
         price=20_000.0,
         daily_ma_fast=19_800.0,

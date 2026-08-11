@@ -141,10 +141,12 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.close_guard_cancel_window_minutes == 0
     assert domestic.post_cb_reentry_benchmark_floor_pct == -3.0
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
-    assert domestic.entry_require_same_session_regime is False
+    assert domestic.entry_require_same_session_regime is True
     assert overseas.entry_require_same_session_regime is True
     assert domestic.entry_regime_max_age_sec == 600
     assert overseas.entry_regime_max_age_sec == 600
+    assert domestic.entry_benchmark_floor_pct == 0.0
+    assert overseas.entry_benchmark_floor_pct is None
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
     assert domestic.post_cb_max_fires_per_session == 1
@@ -184,16 +186,20 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert cprx_action.currency == "USD"
     assert cprx_action.status == "effective"
     assert len(cprx_action.reference_urls) == 2
-    assert domestic.auto_trade.strategy_guard_lookback_hours == 48
-    assert overseas.auto_trade.strategy_guard_lookback_hours == 168
+    assert domestic.auto_trade.strategy_guard_lookback_hours == 336
+    assert overseas.auto_trade.strategy_guard_lookback_hours == 336
     assert domestic.auto_trade.strategy_guard_min_trades == 3
     assert overseas.auto_trade.strategy_guard_min_trades == 3
     assert domestic.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.003
-    assert overseas.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.003
+    assert overseas.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.0025
     assert domestic.auto_trade.strategy_guard_strategy_flags == [
         "VWAP",
         "RSI",
         "VOL",
+        "VWAP+VOL",
+        "VOL+RSI",
+        "VWAP+RSI",
+        "VWAP+VOL+RSI",
     ]
     assert overseas.auto_trade.strategy_guard_strategy_flags == [
         "VWAP",
@@ -201,6 +207,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "VOL",
         "VWAP+VOL",
         "VOL+RSI",
+        "VWAP+RSI",
+        "VWAP+VOL+RSI",
     ]
     assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
     assert overseas.auto_trade.entry_confirmation_strategy_flags == []

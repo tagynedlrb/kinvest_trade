@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -38,10 +39,25 @@ class TelegramNotifier:
                 direction="sent",
                 text=text,
                 success=success,
-                error=error,
+                error=self._sanitize_error(error),
             )
         except Exception:  # noqa: BLE001
             pass
+
+    def _sanitize_error(self, error: object) -> str:
+        redacted = str(error or "")
+        token = str(self.config.telegram_bot_token or "")
+        if token:
+            redacted = redacted.replace(token, "<redacted>")
+        redacted = re.sub(
+            r"(https://api\.telegram\.org/bot)[^/\s'\"?]+",
+            r"\1<redacted>",
+            redacted,
+        )
+        return redacted[:200]
+
+    def _redacted_error(self, exc: Exception) -> RuntimeError:
+        return RuntimeError(self._sanitize_error(exc))
 
     async def send(
         self,
@@ -65,8 +81,8 @@ class TelegramNotifier:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            self._log_outbound(message, success=False, error=str(exc)[:200])
-            raise
+            self._log_outbound(message, success=False, error=str(exc))
+            raise self._redacted_error(exc) from None
         self._log_outbound(message, success=True)
         return True
 
@@ -89,10 +105,13 @@ class TelegramNotifier:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            body = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                body = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise self._redacted_error(exc) from None
         return bool(body.get("ok"))
 
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> bool:
@@ -104,10 +123,13 @@ class TelegramNotifier:
         if text:
             payload["text"] = text
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            body = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                body = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise self._redacted_error(exc) from None
         return bool(body.get("ok"))
 
     async def set_commands(self, commands: list[dict[str, str]]) -> bool:
@@ -117,10 +139,13 @@ class TelegramNotifier:
         url = self._api_url("setMyCommands")
         payload = {"commands": commands}
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            body = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                body = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise self._redacted_error(exc) from None
         return bool(body.get("ok"))
 
     async def get_updates(
@@ -146,10 +171,13 @@ class TelegramNotifier:
             write=5.0,
             pool=5.0,
         )
-        async with httpx.AsyncClient(timeout=request_timeout) as client:
-            response = await client.get(self._api_url("getUpdates"), params=params)
-            response.raise_for_status()
-            payload = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
+                response = await client.get(self._api_url("getUpdates"), params=params)
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise self._redacted_error(exc) from None
 
         if not payload.get("ok"):
             return []

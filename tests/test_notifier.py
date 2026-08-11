@@ -242,6 +242,46 @@ def test_send_logs_outbound_failure_and_reraises(tmp_path) -> None:
     assert "network down" in messages[0]["error"]
 
 
+def test_send_redacts_bot_token_from_logged_and_raised_error(tmp_path) -> None:
+    class FailingAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            raise RuntimeError(f"502 for {url}")
+
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FailingAsyncClient()  # type: ignore[assignment]
+    repository = SqliteRepository(tmp_path / "notifier_redaction.db")
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="secret-token-123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        ),
+        repository=repository,
+    )
+    try:
+        try:
+            asyncio.run(notifier.send("[KIS][TEST] secret"))
+        except RuntimeError as exc:
+            raised_error = str(exc)
+        else:
+            raise AssertionError("expected RuntimeError to propagate")
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    saved_error = repository.list_telegram_messages()[0]["error"]
+    assert "secret-token-123" not in raised_error
+    assert "secret-token-123" not in saved_error
+    assert "bot<redacted>/sendMessage" in raised_error
+    assert "bot<redacted>/sendMessage" in saved_error
+
+
 def test_send_without_repository_does_not_error() -> None:
     calls: list[tuple[str, dict]] = []
     original_async_client = notifier_module.httpx.AsyncClient

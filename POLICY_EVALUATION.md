@@ -12,6 +12,47 @@
   inspect evidence, document the decision, test, back up mutable production
   data, commit, push, restart, send a Telegram report, and recheck health.
 
+## Current loss-control checkpoint (2026-08-11 UTC)
+
+- Treat the loss as persistent over the complete confirmed strategy ledger,
+  not as an August 10-11 anomaly. Since July 27, domestic has 133 exits,
+  30 net winners, -0.305% average net, and -367,497.69 KRW. Overseas has
+  83 exits, 18 net winners, -0.575% average net, and -3,299.78 USD.
+- Domestic entry-time KOSPI direction is discriminating: 34 ordinary-long
+  exits entered below 0% produced two wins and about -128,882 KRW. Require a
+  fresh same-session KOSPI observation and return at least 0.0% for ordinary
+  longs. Keep domestic inverse products exempt and shadow-only.
+- US entry-time Nasdaq return is not discriminating: below 0%, 0-1%, and above
+  1% buckets are all near -0.60% average net. Do not copy the domestic index
+  floor to the US policy.
+- Exact composite strategy labels must be present in each market's guard scope.
+  Use 336 hours and three confirmed exits in both markets for this checkpoint;
+  keep the domestic loss boundary at -0.30%, but use -0.25% overseas because
+  the observed gross-to-net gap is about 0.50 percentage points per trade.
+  These equal lookback values are separately owned and may diverge after each
+  market's forward evidence.
+- Frequency expansion is rejected while gross and net expectancy are negative.
+  Transaction fees apply per trade and reduce returns
+  ([SEC investor bulletin](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins/updated));
+  frequent day trading can accumulate material commissions
+  ([FINRA Rule 2270 disclosure](https://www.finra.org/rules-guidance/rulebooks/finra-rules/2270)).
+- Inverse live promotion is rejected: five domestic shadows average -0.614%
+  net and three US shadows average -0.990%. Keep market-specific shadow
+  collection and exact benchmark requirements.
+- Every policy-generated buy skip must retain its contemporaneous market regime
+  so three-final-session reviews can separate avoided loss from opportunity
+  cost by direction, activity, and volatility. Repeated scans are grouped into
+  five-minute episodes.
+- Revert or narrow the domestic 0% floor if blocked after-cost opportunity
+  exceeds avoided loss across at least three new final KOSPI sessions without
+  reducing correlated losses. Narrow the 336-hour guards if blocked after-cost
+  opportunity dominates avoided loss across three final sessions or if exits
+  or inverse paths are affected.
+- The high-context review found an exact-label coverage gap, weekend aging,
+  entry-time KOSPI asymmetry, and a credential-bearing Telegram error string.
+  Record this as useful operational output, not direct model superiority; no
+  controlled model A/B was performed.
+
 ## API reliability measurement
 
 - KIS API health separates transport/API attempts from logical requests. Every

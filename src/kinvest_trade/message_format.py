@@ -115,6 +115,7 @@ REASON_KOREAN_MAP = {
     "overseas_circuit_breaker_halted": "미장 연속손실 서킷브레이커 활성",
     "entry_market_regime_unavailable": "당일 시장환경 수집 전 진입 보류",
     "entry_market_regime_stale": "시장환경 관측치 갱신 대기",
+    "entry_benchmark_below_floor": "시장지수 진입 하한 미달",
     "post_cb_session_loss_limit_reached": "동일 시장 세션 반복손실 한도 도달",
     "domestic_order_reject_halted": "국장 매수 주문거부 차단 활성",
     "overseas_order_reject_halted": "미장 매수 주문거부 차단 활성",

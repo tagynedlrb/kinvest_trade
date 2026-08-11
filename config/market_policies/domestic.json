@@ -116,10 +116,10 @@
     "capital_gains_tax_rate": 0.22,
     "usd_krw_fallback_rate": 1350.0,
     "stale_run_grace_minutes": 180,
-    "strategy_guard_lookback_hours": 48,
+    "strategy_guard_lookback_hours": 336,
     "strategy_guard_min_trades": 3,
     "strategy_guard_max_avg_net_pnl_pct": -0.003,
-    "strategy_guard_strategy_flags": ["VWAP", "RSI", "VOL"],
+    "strategy_guard_strategy_flags": ["VWAP", "RSI", "VOL", "VWAP+VOL", "VOL+RSI", "VWAP+RSI", "VWAP+VOL+RSI"],
     "strategy_guard_min_final_sessions": 3,
     "entry_confirmation_strategy_flags": ["VWAP"],
     "stale_order_cancel_minutes": 30,
@@ -151,8 +151,9 @@
   "risk": {
     "max_consecutive_losses": 3,
     "circuit_breaker_cooldown_minutes": 30,
-    "entry_require_same_session_regime": false,
+    "entry_require_same_session_regime": true,
     "entry_regime_max_age_sec": 600,
+    "entry_benchmark_floor_pct": 0.0,
     "post_cb_reentry_benchmark_floor_pct": -3.0,
     "post_cb_reentry_regime_max_age_sec": 600,
     "post_cb_max_fires_per_session": 1

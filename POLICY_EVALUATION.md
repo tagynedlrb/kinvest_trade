@@ -40,6 +40,13 @@
   `docs/TRADE_FREQUENCY_ANALYSIS_2026-08-12.md`. The reasoning found a real
   diagnostic error but has no controlled small-model or token-budget A/B, so
   comparative value remains `unverified`.
+- Commit `6ba34f0` is deployed from remote `master`. Evaluation rows 101 and
+  102 link the domestic keep decision and overseas forward experiment. The
+  service restarted at 2026-08-12 17:54:47 UTC as PID 1694348 and completed
+  three natural cycles with no new order or probe submission. In 204 API
+  attempts, one VPS rate-limit attempt recovered and no logical request ended
+  in failure. Telegram rows 2239 and 2240 confirm the corrected frequency
+  reason and explicit deployment report. Evaluation 102 remains pending.
 
 ## Current loss-control checkpoint (2026-08-11 UTC)
 

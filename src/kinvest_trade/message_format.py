@@ -53,6 +53,7 @@ def format_side_korean(side: str) -> str:
         "hold": "보유중",
         "BUY_SETUP": "매수준비",
         "SELL_SETUP": "매도준비",
+        "BUY_REJECTED": "매수거부",
         "SELL_REJECTED": "매도거부",
     }
     return mapping.get(side, side)

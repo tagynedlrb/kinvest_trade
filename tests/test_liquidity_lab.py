@@ -3262,6 +3262,78 @@ def test_place_overseas_sell_order_no_telegram_on_failure() -> None:
     assert service.notifier.messages == []
 
 
+def test_overseas_sell_suppresses_positive_stale_balance_after_recent_submit() -> None:
+    service = _build_sell_service()
+    created_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    event_id = service.repository.save_broker_order_event(
+        created_at=created_at.isoformat(),
+        market="overseas",
+        symbol="SVV",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="aggressive_limit",
+        requested_qty=75,
+        requested_price=10.79,
+        status="SUBMITTED",
+        reason="trend_filter_lost",
+        broker_order_no="0000041121",
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at.isoformat(),
+        market="overseas",
+        symbol="SVV",
+        exchange_code="NASD",
+        side="SELL",
+        broker_order_no="0000041121",
+        requested_qty=75,
+        requested_price=10.79,
+    )
+    assert execution is not None
+    candidate = OverseasScanResult(
+        symbol="SVV",
+        exchange_code="NASD",
+        last_price=10.79,
+        bid=10.78,
+        ask=10.80,
+        spread_pct=0.0019,
+        change_rate_pct=-1.0,
+        volume=1_000_000,
+        orderable_qty=0,
+        fx_rate_krw=1380.0,
+        activity_score=10.0,
+    )
+    held = OverseasHeldPosition(
+        symbol="SVV",
+        exchange_code="NASD",
+        quantity=12,
+        orderable_qty=12,
+        avg_price=10.76,
+        current_price=10.79,
+        pnl_pct=(10.79 - 10.76) / 10.76,
+    )
+
+    result = _run_orderable_overseas_sell(
+        service,
+        candidate,
+        held,
+        "trend_filter_lost",
+    )
+
+    assert result["submitted"] is False
+    assert result["reason"] == "recent_sell_awaiting_broker_confirmation"
+    assert service.client.order_calls == []
+    assert len(service.repository.list_broker_order_events(limit=10)) == 1
+    events = service.repository.list_event_log(
+        event_type="post_submit_stale_balance_suppressed",
+        limit=1,
+    )
+    detail = json.loads(events[0]["detail"])
+    assert detail["pending_requested_qty"] == 75
+    assert detail["stale_holding_qty"] == 12
+    assert detail["stale_orderable_qty"] == 12
+
+
 def test_place_overseas_sell_order_mock_balance_missing_treated_as_no_orderable() -> None:
     service = _build_sell_service(
         error=KisApiError("VTTT1001U error: 40240000 모의투자 잔고내역이 없습니다.")
@@ -4907,6 +4979,75 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     assert "수익률=+2.44%" in message
     assert service.client.order_calls[0]["price"] == 0
     assert service.client.order_calls[0]["order_division"] == "01"
+
+
+def test_domestic_sell_suppresses_positive_stale_balance_after_recent_submit() -> None:
+    service = _build_domestic_sell_service()
+    created_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    event_id = service.repository.save_broker_order_event(
+        created_at=created_at.isoformat(),
+        market="domestic",
+        symbol="360750",
+        exchange_code=None,
+        side="SELL",
+        order_kind="market",
+        requested_qty=35,
+        requested_price=0.0,
+        status="SUBMITTED",
+        reason="trend_filter_lost",
+        broker_order_no="0000028677",
+    )
+    execution = service.repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at.isoformat(),
+        market="domestic",
+        symbol="360750",
+        exchange_code=None,
+        side="SELL",
+        broker_order_no="0000028677",
+        requested_qty=35,
+        requested_price=0.0,
+    )
+    assert execution is not None
+    candidate = DomesticScanResult(
+        stock_code="360750",
+        current_price=27120,
+        best_ask=27125,
+        best_bid=27120,
+        spread_pct=0.0002,
+        minute_change_pct=-0.001,
+        intraday_turnover_krw=50_000_000_000,
+        volume_sum=300_000,
+        activity_score=12.0,
+        stock_name="TIGER 미국S&P500",
+    )
+    held = DomesticHeldPosition(
+        stock_code="360750",
+        quantity=9,
+        orderable_qty=9,
+        avg_price=27130.0,
+        current_price=27120.0,
+        pnl_pct=(27120.0 - 27130.0) / 27130.0,
+    )
+
+    result = asyncio.run(
+        service._place_domestic_sell_order(candidate, held, "trend_filter_lost")
+    )
+
+    assert result["submitted"] is False
+    assert result["reason"] == "recent_sell_awaiting_broker_confirmation"
+    assert service.client.order_calls == []
+    assert len(service.repository.list_broker_order_events(limit=10)) == 1
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
+    assert rows[0]["action_reason"] == "sell:recent_sell_awaiting_broker_confirmation"
+    events = service.repository.list_event_log(
+        event_type="post_submit_stale_balance_suppressed",
+        limit=1,
+    )
+    detail = json.loads(events[0]["detail"])
+    assert detail["pending_requested_qty"] == 35
+    assert detail["stale_holding_qty"] == 9
+    assert detail["stale_orderable_qty"] == 9
 
 
 def test_place_domestic_sell_order_records_realized_pnl_only_after_fill() -> None:
@@ -12278,6 +12419,37 @@ def test_send_summary_skips_when_action_raw_is_wait() -> None:
     assert service.notifier.messages == []
 
 
+def test_send_summary_suppresses_policy_watch_wait_notice() -> None:
+    service = _build_run_service()
+    report = LiquidityLabReport(
+        scanned_at="2026-08-13 04:51:00 KST",
+        krx_market_open=False,
+        us_market_open=True,
+        us_market_session="regular",
+        us_orderable_in_profile=True,
+        primary_market="overseas",
+        primary_target=None,
+        primary_selection_reason="watch:[VWAP+VOL] recent_strategy_underperformance",
+        domestic_ranked=[],
+        overseas_ranked=[],
+        domestic_excluded=[],
+        overseas_excluded=[],
+        domestic_positions=[],
+        overseas_positions=[],
+        watch_targets=[],
+        estimated_api_calls_per_cycle=0,
+        domestic_order={"skipped": True, "reason": "no_action"},
+        overseas_order={
+            "skipped": True,
+            "reason": "watch:[VWAP+VOL] recent_strategy_underperformance",
+        },
+    )
+
+    asyncio.run(service._send_summary(report))
+
+    assert service.notifier.messages == []
+
+
 def test_send_summary_skips_when_overseas_sell_already_notified() -> None:
     service = _build_run_service()
     report = LiquidityLabReport(
@@ -12345,10 +12517,9 @@ def _net_profit_below_cost_report() -> LiquidityLabReport:
 
 
 def test_send_summary_collapses_repeated_net_profit_below_cost_notice() -> None:
-    # Regression test: a position stuck at ~0% net P&L after fees can hit
-    # net_profit_below_cost on every single scan cycle forever, which used to
-    # emit an identical "동작=주문거부" notice every cycle. Only the first one
-    # in the cooldown window should be sent.
+    # A position stuck at ~0% net P&L after fees can hit this internal guard
+    # forever. Report it as an execution skip, not a broker rejection, and
+    # collapse repeated copies within the cooldown window.
     service = _build_run_service()
 
     asyncio.run(service._send_summary(_net_profit_below_cost_report()))
@@ -12357,6 +12528,9 @@ def test_send_summary_collapses_repeated_net_profit_below_cost_notice() -> None:
 
     assert len(service.notifier.messages) == 1
     assert "net_profit_below_cost" in service.notifier.messages[0]
+    assert "동작=매매미실행" in service.notifier.messages[0]
+    assert "미실행=1건" in service.notifier.messages[0]
+    assert "주문거부" not in service.notifier.messages[0]
 
 
 def test_send_summary_resends_net_profit_below_cost_after_cooldown_expires() -> None:
@@ -12672,6 +12846,26 @@ def test_format_order_summary_sell_rejected_returns_sell_rejected_action() -> No
 
     assert summary["action_raw"] == "SELL_REJECTED"
     assert summary["action"] == "매도거부"
+
+
+def test_format_order_summary_buy_rejected_returns_buy_rejected_action() -> None:
+    service = _build_sell_service()
+
+    summary = service._format_order_summary(
+        {
+            "submitted": False,
+            "skipped": True,
+            "side": "buy",
+            "candidate": {"symbol": "NVDA", "last_price": 196.96},
+            "qty": 1,
+            "reason": "order_rejected",
+            "error": "broker rejected",
+        },
+        currency="USD",
+    )
+
+    assert summary["action_raw"] == "BUY_REJECTED"
+    assert summary["action"] == "매수거부"
 
 
 def test_send_summary_sends_message_for_sell_rejected() -> None:

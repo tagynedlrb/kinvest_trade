@@ -588,6 +588,54 @@ class DomesticOrderHelper:
                     held.quantity,
                     int(pending_sell_order.get("open_qty") or held.quantity),
                 )
+        else:
+            recent_sell_reason = ""
+            if service._suppress_recent_pending_sell_stale_balance(
+                market="domestic",
+                symbol=candidate.stock_code,
+                holding_qty=held.quantity,
+                orderable_qty=held.orderable_qty,
+                defer_no_orderable=False,
+            ):
+                recent_sell_reason = "recent_sell_awaiting_broker_confirmation"
+            elif service._suppress_recent_full_sell_stale_balance(
+                market="domestic",
+                symbol=candidate.stock_code,
+                holding_qty=held.quantity,
+                orderable_qty=held.orderable_qty,
+                defer_no_orderable=False,
+            ):
+                recent_sell_reason = "recent_full_sell_balance_pending"
+            if recent_sell_reason:
+                service._record_trade_skip(
+                    market="domestic",
+                    symbol=candidate.stock_code,
+                    exchange_code=None,
+                    reason=recent_sell_reason,
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    stock_name=candidate.stock_name,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "domestic",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": (
+                        None if signal_snapshot is None else asdict(signal_snapshot)
+                    ),
+                    "exit_reason": exit_reason,
+                    "reason": recent_sell_reason,
+                }
         if sell_qty <= 0:
             service._record_trade_skip(
                 market="domestic",

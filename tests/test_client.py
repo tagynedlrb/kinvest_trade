@@ -641,7 +641,6 @@ def test_vps_rate_limit_temporarily_adds_response_completion_floor(
     assert adaptive_wait_ms == 0
     assert balance_active is False
     assert balance_wait_ms == 0
-
     client._record_response_completion()
     client._activate_adaptive_rate_limit_pacing()
     started_at = time.monotonic()
@@ -655,6 +654,10 @@ def test_vps_rate_limit_temporarily_adds_response_completion_floor(
     assert adaptive_wait_ms >= 20
     assert balance_active is False
     assert balance_wait_ms == 0
+
+
+def test_vps_default_adaptive_pacing_covers_full_market_session() -> None:
+    assert KisRestClient._vps_adaptive_window_sec >= 8 * 60 * 60
 
 
 def test_vps_consecutive_overseas_balance_adds_preventive_response_floor(

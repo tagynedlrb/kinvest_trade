@@ -1148,6 +1148,54 @@ class OverseasOrderHelper:
             )
             replacement_note = "미체결 매도 정정 후 재주문"
             is_exit_replacement = True
+        else:
+            recent_sell_reason = ""
+            if service._suppress_recent_pending_sell_stale_balance(
+                market="overseas",
+                symbol=candidate.symbol,
+                holding_qty=held.quantity,
+                orderable_qty=held.orderable_qty,
+                defer_no_orderable=False,
+            ):
+                recent_sell_reason = "recent_sell_awaiting_broker_confirmation"
+            elif service._suppress_recent_full_sell_stale_balance(
+                market="overseas",
+                symbol=candidate.symbol,
+                holding_qty=held.quantity,
+                orderable_qty=held.orderable_qty,
+                defer_no_orderable=False,
+            ):
+                recent_sell_reason = "recent_full_sell_balance_pending"
+            if recent_sell_reason:
+                service._record_trade_skip(
+                    market="overseas",
+                    symbol=candidate.symbol,
+                    exchange_code=candidate.exchange_code,
+                    reason=recent_sell_reason,
+                    side="sell",
+                    price=sell_price,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=exit_by,
+                    stock_name=candidate.symbol,
+                    activity_score=candidate.activity_score,
+                    orderable_qty=held.orderable_qty,
+                    holding_qty=held.quantity,
+                )
+                return {
+                    "submitted": False,
+                    "skipped": True,
+                    "market": "overseas",
+                    "side": "sell",
+                    "candidate": asdict(candidate),
+                    "held_position": asdict(held),
+                    "signal_snapshot": (
+                        None if signal_snapshot is None else asdict(signal_snapshot)
+                    ),
+                    "exit_reason": exit_reason,
+                    "reason": recent_sell_reason,
+                }
 
         try:
             response = await service.client.place_overseas_order_for_current_session(

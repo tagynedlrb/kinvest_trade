@@ -4176,7 +4176,7 @@ class LiquidityLabService:
     @staticmethod
     def _display_trade_action(action_raw: str, action_text: str, *, skip_count: int = 0) -> str:
         if action_raw == "WAIT" and skip_count > 0:
-            return "주문거부"
+            return "매매미실행"
         mapping = {
             "BUY": "매수접수",
             "SELL": "매도접수",
@@ -9639,10 +9639,15 @@ class LiquidityLabService:
             lines.append(f"지표={action['indicator']}")
             lines.append(f"사유={action['reason']}")
         if skip_count > 0:
-            lines.append(f"주문거부={skip_count}건 ({skip_top_reasons})")
+            skip_label = (
+                "주문거부"
+                if action["action_raw"] in {"BUY_REJECTED", "SELL_REJECTED"}
+                else "미실행"
+            )
+            lines.append(f"{skip_label}={skip_count}건 ({skip_top_reasons})")
         if action.get("replacement_note"):
             lines.append(f"참고={action['replacement_note']}")
-        if action["action_raw"] == "SELL_REJECTED":
+        if action["action_raw"] in {"BUY_REJECTED", "SELL_REJECTED"}:
             lines.append("참고=주문이 거부되어 실제로 체결되지 않았습니다")
         if action["action_raw"] == "WAIT" and skip_count > 0 and not self._should_send_repeated_skip_notice(
             market=display_market_key,
@@ -9655,7 +9660,7 @@ class LiquidityLabService:
     def _should_send_repeated_skip_notice(self, *, market: str, symbol: str, signature: str) -> bool:
         # A held position can be perpetually ineligible to exit (e.g. net profit
         # after fees stays <= 0 while price is flat), which would otherwise emit
-        # an identical "주문거부" notice every scan cycle forever. Collapse repeats
+        # an identical no-execution notice every scan cycle forever. Collapse repeats
         # of the same (market, symbol, reason) into one notice per cooldown window.
         last_notified = getattr(self, "_repeated_skip_notify_last", None)
         if last_notified is None:
@@ -9700,6 +9705,8 @@ class LiquidityLabService:
             # designed, not a broker rejection -- don't badge it "주문거부".
             "overseas_position_cap_reached",
             "total_position_cap_reached",
+            "recent_sell_awaiting_broker_confirmation",
+            "recent_full_sell_balance_pending",
         }
     )
 
@@ -9710,6 +9717,8 @@ class LiquidityLabService:
         if not order.get("skipped") and not order.get("error"):
             return False
         reason = str(order.get("reason") or order.get("error") or "unknown")
+        if reason.startswith("watch:"):
+            return False
         return reason not in cls._IGNORED_SKIP_REASONS
 
     def _summarize_skipped_orders(self, report: LiquidityLabReport) -> tuple[int, str]:
@@ -9808,12 +9817,12 @@ class LiquidityLabService:
                 action = "BUY_SETUP"
             elif side == "SELL" and str(order.get("reason")) == "dry_run_enabled":
                 action = "SELL_SETUP"
-            elif side == "SELL" and reason_raw in {
+            elif side in {"BUY", "SELL"} and reason_raw in {
                 "session_not_orderable_in_profile",
                 "order_rejected",
                 "no_orderable_qty",
             }:
-                action = "SELL_REJECTED"
+                action = f"{side}_REJECTED"
         price_value = candidate.get("last_price") or candidate.get("current_price") or held.get("current_price")
         qty_value = order.get("qty") or held.get("quantity") or "-"
 
@@ -10295,6 +10304,8 @@ class LiquidityLabService:
         market: str,
         symbol: str,
         holding_qty: int,
+        orderable_qty: int = 0,
+        defer_no_orderable: bool = True,
         now: datetime | None = None,
         window_sec: int = 300,
     ) -> bool:
@@ -10349,16 +10360,18 @@ class LiquidityLabService:
                     "target_qty": target_qty,
                     "filled_qty": filled_qty,
                     "stale_holding_qty": int(holding_qty),
+                    "stale_orderable_qty": int(orderable_qty),
                     "execution_updated_at": execution.get("latest_updated_at"),
                     "window_sec": max(1, int(window_sec)),
                 },
             )
-        self._defer_no_orderable_position(
-            market=market,
-            symbol=symbol,
-            holding_qty=int(holding_qty),
-            orderable_qty=0,
-        )
+        if defer_no_orderable:
+            self._defer_no_orderable_position(
+                market=market,
+                symbol=symbol,
+                holding_qty=int(holding_qty),
+                orderable_qty=int(orderable_qty),
+            )
         return True
 
     def _suppress_recent_pending_sell_stale_balance(
@@ -10367,6 +10380,8 @@ class LiquidityLabService:
         market: str,
         symbol: str,
         holding_qty: int,
+        orderable_qty: int = 0,
+        defer_no_orderable: bool = True,
         now: datetime | None = None,
         window_sec: int = 480,
     ) -> bool:
@@ -10428,18 +10443,20 @@ class LiquidityLabService:
                     "pending_requested_qty": pending_requested_qty,
                     "filled_qty": int(execution.get("filled_qty") or 0),
                     "stale_holding_qty": int(holding_qty),
+                    "stale_orderable_qty": int(orderable_qty),
                     "execution_created_at": execution.get(
                         "latest_created_at"
                     ),
                     "window_sec": max(1, int(window_sec)),
                 },
             )
-        self._defer_no_orderable_position(
-            market=market,
-            symbol=symbol,
-            holding_qty=int(holding_qty),
-            orderable_qty=0,
-        )
+        if defer_no_orderable:
+            self._defer_no_orderable_position(
+                market=market,
+                symbol=symbol,
+                holding_qty=int(holding_qty),
+                orderable_qty=int(orderable_qty),
+            )
         return True
 
     def _get_entry_context(

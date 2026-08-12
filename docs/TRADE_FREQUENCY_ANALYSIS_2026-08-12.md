@@ -113,6 +113,11 @@
 
 ## Verification
 
+- Forward update: the first probe completed during the final August 12 Nasdaq
+  `up|normal|calm` session (`+0.5409%`). `SVV` returned `+0.2323%` gross but
+  `-$2.18135` after modeled costs. Keep the bounded probe unchanged and count
+  this as one of the required five completed probes/final sessions, not as a
+  reason to release the ordinary guard.
 - Targeted configuration, strategy-guard, order, frequency-diagnostic, and
   Telegram tests passed.
 - Full repository suite after the final diagnostic patch: 827 passed in

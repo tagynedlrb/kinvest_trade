@@ -12,6 +12,31 @@
   inspect evidence, document the decision, test, back up mutable production
   data, commit, push, restart, send a Telegram report, and recheck health.
 
+## Order rejection reliability checkpoint (2026-08-12 UTC)
+
+- Eighteen post-deployment `watch:` Telegram notices were policy WAIT states,
+  not broker orders. Preserve them in cycle and low-frequency evidence, but do
+  not emit individual trade notices or label them as rejections.
+- All three real no-balance sell rejections in the last seven days followed an
+  accepted sell by 63-143 seconds and were later covered by a confirmed full
+  fill. Suppress a second domestic or overseas sell when the recent execution
+  ledger covers the transient positive balance. Keep live open-order
+  replacement behavior unchanged.
+- Label internal skips as no execution. Reserve buy/sell rejection wording and
+  rejection circuit-breaker input for a broker-facing failure.
+- The 15 VPS rate-limit attempts since deployment all recovered, but recurred
+  after the two-minute adaptive window. Once triggered, retain the measured
+  response-completion floor for eight hours. Production pacing and POST replay
+  policy remain unchanged.
+- The first US guard probe completed in final `up|normal|calm` Nasdaq conditions
+  (`+0.5409%`). `SVV` earned `+0.2323%` gross but lost `$2.18135` after modeled
+  costs. Keep the one-per-session 10% probe unchanged; one sample does not meet
+  the five-final-session review rule.
+- Validation must show no duplicate submission for a positive stale balance,
+  no policy-WAIT rejection notice, no terminal API failure, and no legitimate
+  exit blocked beyond the bounded reconciliation window. Detailed evidence is
+  in `docs/ORDER_REJECTION_ANALYSIS_2026-08-12.md`.
+
 ## Frequency recovery checkpoint (2026-08-12 UTC)
 
 - The domestic policy produced 14 confirmed entries and exits, six net wins,

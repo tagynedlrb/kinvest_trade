@@ -129,11 +129,12 @@ class KisRestClient:
     # request-start pacing.
     _vps_balance_pair_response_interval_sec: float = 0.85
     # Timed VPS evidence showed no rate-limit response when the next dispatch
-    # followed the previous response completion by at least 950ms. Activate
-    # this second boundary only briefly after a natural rate-limit response;
-    # the normal path continues to use request-start pacing alone.
+    # followed the previous response completion by at least 950ms. Once VPS
+    # proves the stricter boundary is active, retain it for a full market
+    # session; a two-minute window repeatedly expired and caused the same
+    # recovered EGW00201 response throughout the session.
     _vps_adaptive_response_interval_sec: float = 0.95
-    _vps_adaptive_window_sec: float = 120.0
+    _vps_adaptive_window_sec: float = 8 * 60 * 60
     # KIS's official inquire_ccnl example pauses before each continuation page.
     # Live VPS logs showed that the existing request-start throttle alone was
     # insufficient, while every one-second rate-limit retry succeeded.

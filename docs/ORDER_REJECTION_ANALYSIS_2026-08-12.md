@@ -71,6 +71,14 @@
   is created.
 - Notification tests cover silent policy WAIT, internal-skip wording, and
   explicit buy/sell rejection wording.
+- The full suite passed 832 tests in 216.26 seconds; `compileall` and
+  `git diff --check` also passed. Commit `e71a04c` was pushed before service
+  restart.
+- Two natural post-restart cycles completed with 107 successful API attempts
+  for 107 logical requests, zero terminal failures, zero new broker orders or
+  rejections, and zero false `watch:` trade notices. The service remained
+  `active/running` as PID `1699600` with `NRestarts=0`; Telegram deployment
+  report `id=2266` succeeded.
 - Revert or narrow only if a legitimate sell remains blocked after both the
   broker open-order view and execution reconciliation show the preceding sell
   terminal without a full fill. Keep the eight-minute bound; do not turn it

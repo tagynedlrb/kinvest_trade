@@ -45,6 +45,17 @@
   556,281,856바이트, SHA-256
   `8accbc9739014deab1f736578ab1bdf1c632c0a18a43b181a0b886a1652e148b`,
   `quick_check=ok`, 외래키 위반 0이며 평가 `id=103` 포함을 확인했다.
+- 구현·분석 커밋 `e71a04c`를 `/home/ubuntu/git_token.txt` 일회성
+  credential helper로 원격 `master`에 푸시했다. 서비스를
+  `2026-08-12T21:08:44Z`, PID `1699600`으로 재기동했고
+  `active/running`, `NRestarts=0`이다.
+- 배포 뒤 자연 사이클 2회에서 정책봉 갱신 뒤 감시 주기로 정상
+  전환했다. API 시도 107회·논리요청 107건이 모두 성공했고 종단실패,
+  신규 주문, 증권사 거부, 허위 `watch:` 거래알림은 모두 0건이다.
+- 텔레그램 배포보고 `telegram_message_log.id=2266`은 성공했다. 평가
+  `id=103` outcome에 커밋·백업·PID·자연사이클·API·Telegram을
+  연결했고, 평가 `id=102`에는 첫 `SVV` 검증청산을 기록했다. 두
+  평가의 `reviewed_at`은 비워 전향검증을 계속한다.
 
 ## [2026-08-12] 시장별 거래빈도 재평가와 미장 모의 검증 통로
 

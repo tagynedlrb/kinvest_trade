@@ -2501,6 +2501,31 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def count_strategy_guard_probe_submissions(
+        self,
+        *,
+        market: str,
+        session_date: str,
+    ) -> int:
+        market_key = str(market).strip().lower()
+        start_at, end_at = self._market_session_utc_bounds(
+            market_key,
+            session_date,
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM event_log
+                WHERE event_type = 'strategy_guard_probe_submitted'
+                  AND market = ?
+                  AND logged_at >= ?
+                  AND logged_at < ?
+                """,
+                (market_key, start_at, end_at),
+            ).fetchone()
+        return int(row["cnt"] or 0) if row is not None else 0
+
     def has_inverse_policy_observation(
         self,
         *,

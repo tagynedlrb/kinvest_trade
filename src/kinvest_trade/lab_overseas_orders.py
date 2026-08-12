@@ -192,6 +192,15 @@ class OverseasOrderHelper:
                 "reason": block_reason,
             }
 
+        probe_context = service._strategy_guard_probe_context(
+            market="overseas",
+            strategy_flag=strategy_flag,
+        )
+        if bool(probe_context.get("admitted")):
+            buy_reason = (
+                f"strategy_guard_probe:{strategy_flag}|{buy_reason}"
+            )
+
         liquidity_block_reason = service._entry_liquidity_block_reason(
             market="overseas",
             signal_snapshot=signal_snapshot,
@@ -278,6 +287,7 @@ class OverseasOrderHelper:
         )
         if 0 < size_multiplier < 1 and qty > 0:
             qty = max(1, int(qty * size_multiplier))
+        qty = service._strategy_guard_probe_qty(qty, probe_context)
         if qty <= 0:
             return {"skipped": True, "reason": "overseas_test_order_qty_zero"}
         if service.config.credentials.dry_run:
@@ -619,6 +629,7 @@ class OverseasOrderHelper:
                 "overseas",
                 candidate.symbol,
             ),
+            "strategy_guard_probe": probe_context,
         }
         service._record_broker_order_event(
             market="overseas",
@@ -640,6 +651,14 @@ class OverseasOrderHelper:
             execution_context=execution_context,
             replacement_for_order_no=replacement_for_order_no,
         )
+        if bool(probe_context.get("admitted")):
+            service._record_strategy_guard_probe_submission(
+                market="overseas",
+                symbol=candidate.symbol,
+                qty=qty,
+                context=probe_context,
+                is_virtual=False,
+            )
         service._queue_trade_notification(
             " ".join(
                 [
@@ -694,6 +713,7 @@ class OverseasOrderHelper:
             "submit_price": submit_price,
             "reference_price": buy_price,
             "response": response,
+            "strategy_guard_probe": probe_context,
         }
 
     async def place_sell_order(
@@ -1595,6 +1615,15 @@ class OverseasOrderHelper:
                 "candidate": asdict(candidate),
                 "reason": block_reason,
             }
+        probe_context = service._strategy_guard_probe_context(
+            market="overseas",
+            strategy_flag=strategy_flag,
+        )
+        virtual_reason = "session_not_orderable_in_profile"
+        if bool(probe_context.get("admitted")):
+            virtual_reason = (
+                f"strategy_guard_probe:{strategy_flag}|{virtual_reason}"
+            )
         liquidity_block_reason = service._entry_liquidity_block_reason(
             market="overseas",
             signal_snapshot=snapshot,
@@ -1714,6 +1743,7 @@ class OverseasOrderHelper:
                     "reason": "slot_budget_insufficient",
                     "available_usd": available_usd,
                 }
+        qty = service._strategy_guard_probe_qty(qty, probe_context)
         if qty <= 0:
             return {
                 "skipped": True,
@@ -1741,7 +1771,7 @@ class OverseasOrderHelper:
             fill_price=candidate.last_price,
             currency="USD",
             session=session,
-            reason="session_not_orderable_in_profile",
+            reason=virtual_reason,
             created_at=created_at,
         )
         if position is None:
@@ -1764,13 +1794,31 @@ class OverseasOrderHelper:
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             status="RECORDED",
-            reason="session_not_orderable_in_profile",
+            reason=virtual_reason,
             is_virtual=True,
             payload={
                 "rejected_error": rejected_error,
                 "virtual_position": asdict(position),
             },
+            execution_context={
+                "strategy_guard_probe": probe_context,
+                "entry_market_regime": service._market_regime_context(
+                    "overseas"
+                ),
+                "entry_sector_context": service._entry_sector_context(
+                    "overseas",
+                    candidate.symbol,
+                ),
+            },
         )
+        if bool(probe_context.get("admitted")):
+            service._record_strategy_guard_probe_submission(
+                market="overseas",
+                symbol=candidate.symbol,
+                qty=qty,
+                context=probe_context,
+                is_virtual=True,
+            )
         service._queue_trade_notification(
             " ".join(
                 [
@@ -1800,7 +1848,7 @@ class OverseasOrderHelper:
             exchange_code=candidate.exchange_code,
             action_bias="VIRTUAL_BUY",
             signal_state="BUY",
-            note="session_not_orderable_in_profile",
+            note=virtual_reason,
             holding_qty=qty,
             last_price=candidate.last_price,
             pnl_pct=0.0,
@@ -1818,11 +1866,12 @@ class OverseasOrderHelper:
             "candidate": asdict(candidate),
             "signal_snapshot": None if snapshot is None else asdict(snapshot),
             "qty": qty,
-            "reason": "session_not_orderable_in_profile",
+            "reason": virtual_reason,
             "session": session,
             "strategy_flag": strategy_flag,
             "entry_by": entry_by,
             "virtual_position": asdict(position),
+            "strategy_guard_probe": probe_context,
         }
 
     async def record_virtual_sell(

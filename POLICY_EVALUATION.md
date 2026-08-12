@@ -12,6 +12,35 @@
   inspect evidence, document the decision, test, back up mutable production
   data, commit, push, restart, send a Telegram report, and recheck health.
 
+## Frequency recovery checkpoint (2026-08-12 UTC)
+
+- The domestic policy produced 14 confirmed entries and exits, six net wins,
+  and +40,177.50 KRW in the first full forward session. KOSPI closed +3.680%
+  in `strong_up|normal|normal`. Keep the domestic 0% floor and exact-label
+  guards; do not loosen frequency from one favorable session.
+- The US low-frequency alert incorrectly summarized a zero selected-target
+  cycle as `no_overseas_candidate`. Candidates and WAIT states existed. Report
+  an actionable policy WAIT first, otherwise the dominant WAIT reason, and
+  retain ranked/watch counts. This is an observability fix, not a signal change.
+- Reject broad US guard release. The canonical 83-exit ledger remains negative,
+  the extended 179-row path review is negative for every labeled formula, and
+  recent blocked-signal forward returns remain below the cost floor.
+- Add one bounded exploration path to the independently owned overseas policy:
+  exact `VWAP+RSI`, `vps` only, same-session Nasdaq >= 0.0%, regime age <= 600
+  seconds, one accepted probe per New York session, and 10% of ordinary slot
+  size. No production account can use it. Existing formula, liquidity, risk,
+  position, CB, and exit gates remain mandatory.
+- Persist every accepted probe as `strategy_guard_probe_submitted` and in its
+  broker execution context. `/lab_guard` exposes policy and session usage.
+- Evaluate after five completed probes in five final Nasdaq sessions. Do not
+  increase exposure before ten completed probes. Disable or narrow if the
+  first five average <= -0.50% net, contain no net winner, bypass another risk
+  gate, or violate the restart-persistent session limit.
+- The full rationale and entry/exit evidence are in
+  `docs/TRADE_FREQUENCY_ANALYSIS_2026-08-12.md`. The reasoning found a real
+  diagnostic error but has no controlled small-model or token-budget A/B, so
+  comparative value remains `unverified`.
+
 ## Current loss-control checkpoint (2026-08-11 UTC)
 
 - Treat the loss as persistent over the complete confirmed strategy ledger,

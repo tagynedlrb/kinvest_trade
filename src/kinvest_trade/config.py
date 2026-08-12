@@ -207,6 +207,12 @@ class AutoTradeConfig:
         default_factory=lambda: ["VWAP", "RSI", "VOL"]
     )
     strategy_guard_min_final_sessions: int = 3
+    strategy_guard_probe_enabled: bool = False
+    strategy_guard_probe_strategy_flags: list[str] = field(default_factory=list)
+    strategy_guard_probe_max_entries_per_session: int = 0
+    strategy_guard_probe_slot_multiplier: float = 0.10
+    strategy_guard_probe_benchmark_floor_pct: float = 0.0
+    strategy_guard_probe_regime_max_age_sec: int = 600
     entry_confirmation_strategy_flags: list[str] = field(default_factory=list)
     dynamic_pool_approved_leveraged_symbols: list[str] = field(
         default_factory=list
@@ -624,6 +630,9 @@ def _load_market_policy_definition(
         leveraged_etf_symbols=list(base_auto_trade.leveraged_etf_symbols),
         strategy_guard_strategy_flags=list(
             base_auto_trade.strategy_guard_strategy_flags
+        ),
+        strategy_guard_probe_strategy_flags=list(
+            base_auto_trade.strategy_guard_probe_strategy_flags
         ),
         entry_confirmation_strategy_flags=list(
             base_auto_trade.entry_confirmation_strategy_flags

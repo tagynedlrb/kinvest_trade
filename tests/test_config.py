@@ -210,6 +210,17 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "VWAP+RSI",
         "VWAP+VOL+RSI",
     ]
+    assert domestic.auto_trade.strategy_guard_probe_enabled is False
+    assert domestic.auto_trade.strategy_guard_probe_strategy_flags == []
+    assert domestic.auto_trade.strategy_guard_probe_max_entries_per_session == 0
+    assert overseas.auto_trade.strategy_guard_probe_enabled is True
+    assert overseas.auto_trade.strategy_guard_probe_strategy_flags == [
+        "VWAP+RSI"
+    ]
+    assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 1
+    assert overseas.auto_trade.strategy_guard_probe_slot_multiplier == 0.10
+    assert overseas.auto_trade.strategy_guard_probe_benchmark_floor_pct == 0.0
+    assert overseas.auto_trade.strategy_guard_probe_regime_max_age_sec == 600
     assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
     assert overseas.auto_trade.entry_confirmation_strategy_flags == []
     assert domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == [
@@ -262,12 +273,14 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic.auto_trade.take_profit_pct = 0.123
     domestic.auto_trade.inverse_etf_symbols.append("KRX_TEST")
     domestic.auto_trade.strategy_guard_strategy_flags.append("KRX_TEST")
+    domestic.auto_trade.strategy_guard_probe_strategy_flags.append("KRX_PROBE")
     domestic.auto_trade.entry_confirmation_strategy_flags.append("KRX_TEST")
     domestic.auto_trade.dynamic_pool_approved_leveraged_symbols.append("KRX_TEST")
 
     assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert "KRX_TEST" not in overseas.auto_trade.inverse_etf_symbols
     assert "KRX_TEST" not in overseas.auto_trade.strategy_guard_strategy_flags
+    assert "KRX_PROBE" not in overseas.auto_trade.strategy_guard_probe_strategy_flags
     assert "KRX_TEST" not in overseas.auto_trade.entry_confirmation_strategy_flags
     assert (
         "KRX_TEST"

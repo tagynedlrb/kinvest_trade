@@ -2994,7 +2994,7 @@ class LiquidityLabService:
         self._last_strategy_guard_blocked_keys = blocked
         return blocked
 
-    def _entry_strategy_block_reason(
+    def _entry_strategy_raw_block_reason(
         self,
         *,
         market: str,
@@ -3022,6 +3022,197 @@ class LiquidityLabService:
         if (market_key, strategy) in self._strategy_guard_blocked_keys():
             return "recent_strategy_underperformance"
         return ""
+
+    def _strategy_guard_probe_context(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+        block_reason: str = "",
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        market_key = normalize_market_name(market)
+        strategy = str(strategy_flag or "").strip().upper()
+        original_block_reason = block_reason or self._entry_strategy_raw_block_reason(
+            market=market_key,
+            strategy_flag=strategy,
+        )
+        detail: dict[str, object] = {
+            "admitted": False,
+            "market": market_key,
+            "strategy_flag": strategy,
+            "guard_reason": original_block_reason,
+        }
+        if original_block_reason != "recent_strategy_underperformance":
+            detail["reason"] = "unsupported_guard_reason"
+            return detail
+
+        policy = self._get_market_policy(market_key).auto_trade
+        if policy is None or not bool(
+            getattr(policy, "strategy_guard_probe_enabled", False)
+        ):
+            detail["reason"] = "probe_disabled"
+            return detail
+        configured_flags = {
+            str(flag).strip().upper()
+            for flag in getattr(
+                policy,
+                "strategy_guard_probe_strategy_flags",
+                [],
+            )
+            if str(flag).strip()
+        }
+        if strategy not in configured_flags:
+            detail["reason"] = "strategy_not_configured"
+            return detail
+        credentials = getattr(self.config, "credentials", object())
+        if str(getattr(credentials, "env", "")).strip().lower() != "vps":
+            detail["reason"] = "paper_environment_required"
+            return detail
+
+        max_entries = max(
+            0,
+            int(
+                getattr(
+                    policy,
+                    "strategy_guard_probe_max_entries_per_session",
+                    0,
+                )
+                or 0
+            ),
+        )
+        if max_entries <= 0:
+            detail["reason"] = "session_limit_disabled"
+            return detail
+
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        regime = self._market_regime_context(market_key, now=current)
+        detail["entry_market_regime"] = regime
+        if not bool(regime.get("available")):
+            detail["reason"] = "same_session_regime_required"
+            return detail
+        regime_age = regime.get("observation_age_sec")
+        max_age_sec = max(
+            1,
+            int(
+                getattr(
+                    policy,
+                    "strategy_guard_probe_regime_max_age_sec",
+                    600,
+                )
+                or 600
+            ),
+        )
+        if regime_age is None or int(regime_age) > max_age_sec:
+            detail["reason"] = "fresh_regime_required"
+            detail["regime_max_age_sec"] = max_age_sec
+            return detail
+        benchmark_return_pct = self._parse_optional_float(regime.get("return_pct"))
+        benchmark_floor_pct = float(
+            getattr(
+                policy,
+                "strategy_guard_probe_benchmark_floor_pct",
+                0.0,
+            )
+            or 0.0
+        )
+        detail["benchmark_floor_pct"] = benchmark_floor_pct
+        if (
+            benchmark_return_pct is None
+            or benchmark_return_pct < benchmark_floor_pct
+        ):
+            detail["reason"] = "benchmark_floor_not_met"
+            return detail
+
+        repository = getattr(self, "repository", None)
+        counter = getattr(
+            repository,
+            "count_strategy_guard_probe_submissions",
+            None,
+        )
+        if not callable(counter):
+            detail["reason"] = "persistent_counter_unavailable"
+            return detail
+        session_date = self._market_session_date(market_key, current)
+        submitted_count = int(
+            counter(market=market_key, session_date=session_date) or 0
+        )
+        detail.update(
+            {
+                "session_date": session_date,
+                "submitted_count": submitted_count,
+                "max_entries_per_session": max_entries,
+            }
+        )
+        if submitted_count >= max_entries:
+            detail["reason"] = "session_limit_reached"
+            return detail
+
+        detail["admitted"] = True
+        detail["reason"] = "paper_probe_admitted"
+        detail["slot_multiplier"] = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    getattr(
+                        policy,
+                        "strategy_guard_probe_slot_multiplier",
+                        0.10,
+                    )
+                    or 0.0
+                ),
+            ),
+        )
+        return detail
+
+    @staticmethod
+    def _strategy_guard_probe_qty(qty: int, context: dict[str, object]) -> int:
+        if qty <= 0 or not bool(context.get("admitted")):
+            return qty
+        multiplier = max(0.0, min(1.0, float(context.get("slot_multiplier") or 0.0)))
+        if multiplier <= 0:
+            return 0
+        return max(1, int(qty * multiplier))
+
+    def _record_strategy_guard_probe_submission(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        qty: int,
+        context: dict[str, object],
+        is_virtual: bool,
+    ) -> None:
+        self._save_event(
+            event_type="strategy_guard_probe_submitted",
+            market=market,
+            symbol=symbol,
+            detail={
+                **context,
+                "qty": qty,
+                "is_virtual": is_virtual,
+            },
+        )
+
+    def _entry_strategy_block_reason(
+        self,
+        *,
+        market: str,
+        strategy_flag: str,
+    ) -> str:
+        block_reason = self._entry_strategy_raw_block_reason(
+            market=market,
+            strategy_flag=strategy_flag,
+        )
+        if not block_reason:
+            return ""
+        probe = self._strategy_guard_probe_context(
+            market=market,
+            strategy_flag=strategy_flag,
+            block_reason=block_reason,
+        )
+        return "" if bool(probe.get("admitted")) else block_reason
 
     def _entry_formula_block_reason(
         self,
@@ -6319,6 +6510,22 @@ class LiquidityLabService:
                 held_positions=monitored_overseas_positions,
             )
             overseas_buy_target = overseas_buy_targets[0] if overseas_buy_targets else None
+            if not overseas_buy_targets:
+                overseas_entry_block_reason = (
+                    self._dominant_entry_wait_reason(
+                        overseas_watch_targets,
+                        market="overseas",
+                    )
+                    or (
+                        "no_overseas_ready_signal"
+                        if overseas_ranked
+                        else "no_overseas_candidate"
+                    )
+                )
+                overseas_entry_block_detail = {
+                    "ranked_candidates": len(overseas_ranked),
+                    "watch_targets": len(overseas_watch_targets),
+                }
         domestic_order: dict = {
             "skipped": True,
             "reason": (
@@ -10003,6 +10210,45 @@ class LiquidityLabService:
             eligible_markets=eligible_markets,
         )
         self._sync_runtime_legacy_state(runtime)
+
+    @staticmethod
+    def _dominant_entry_wait_reason(
+        watch_targets: list[WatchTargetStatus],
+        *,
+        market: str,
+    ) -> str:
+        policy_markers = (
+            "recent_strategy_underperformance",
+            "standalone_",
+            "entry_market_",
+            "entry_benchmark_",
+            "post_cb_",
+            "corporate_action_",
+        )
+        all_counts: dict[str, int] = {}
+        policy_counts: dict[str, int] = {}
+        market_key = normalize_market_name(market)
+        for target in watch_targets:
+            if (
+                normalize_market_name(target.market) != market_key
+                or target.action_bias != "WAIT"
+                or int(target.holding_qty or 0) > 0
+            ):
+                continue
+            reason = str(target.note or target.signal_state or "wait").strip()
+            if not reason:
+                reason = "wait"
+            all_counts[reason] = all_counts.get(reason, 0) + 1
+            if any(marker in reason for marker in policy_markers):
+                policy_counts[reason] = policy_counts.get(reason, 0) + 1
+        selected = policy_counts or all_counts
+        if not selected:
+            return ""
+        reason = min(
+            selected,
+            key=lambda item: (-selected[item], item),
+        )
+        return f"watch:{reason}"
 
     def _track_rsi_threshold_blocks(self, watch_targets: list[WatchTargetStatus]) -> None:
         runtime = self._get_runtime_manager()

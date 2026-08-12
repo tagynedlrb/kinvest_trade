@@ -15,6 +15,7 @@ from .market_policy import (
     get_market_strategy_guard_policy,
 )
 from .market_sessions import (
+    NEW_YORK,
     determine_loop_interval_sec,
     minutes_until_regular_session_close,
     minutes_until_next_tradeable_session,
@@ -1823,6 +1824,95 @@ class ReportHelper:
             lines.insert(
                 basis_index,
                 f"고정차단={','.join(hard_blocks)}",
+            )
+        for market in report_markets:
+            auto_trade = get_market_auto_trade_config(
+                controller.config,
+                market,
+            )
+            if auto_trade is None or not bool(
+                getattr(auto_trade, "strategy_guard_probe_enabled", False)
+            ):
+                continue
+            flags = [
+                str(flag).strip().upper()
+                for flag in getattr(
+                    auto_trade,
+                    "strategy_guard_probe_strategy_flags",
+                    [],
+                )
+                if str(flag).strip()
+            ]
+            max_entries = max(
+                0,
+                int(
+                    getattr(
+                        auto_trade,
+                        "strategy_guard_probe_max_entries_per_session",
+                        0,
+                    )
+                    or 0
+                ),
+            )
+            session_date_resolver = getattr(
+                controller.lab_service,
+                "_market_session_date",
+                None,
+            )
+            session_date = (
+                session_date_resolver(market, now)
+                if callable(session_date_resolver)
+                else now.astimezone(
+                    KST if market == "domestic" else NEW_YORK
+                ).date().isoformat()
+            )
+            submitted = (
+                controller.repository.count_strategy_guard_probe_submissions(
+                    market=market,
+                    session_date=session_date,
+                )
+                if hasattr(
+                    controller.repository,
+                    "count_strategy_guard_probe_submissions",
+                )
+                else 0
+            )
+            environment = str(
+                getattr(controller.config.credentials, "env", "")
+            ).strip().lower()
+            environment_state = "허용" if environment == "vps" else "차단"
+            slot_multiplier = float(
+                getattr(
+                    auto_trade,
+                    "strategy_guard_probe_slot_multiplier",
+                    0.0,
+                )
+                or 0.0
+            )
+            benchmark_floor = float(
+                getattr(
+                    auto_trade,
+                    "strategy_guard_probe_benchmark_floor_pct",
+                    0.0,
+                )
+                or 0.0
+            )
+            max_age_sec = int(
+                getattr(
+                    auto_trade,
+                    "strategy_guard_probe_regime_max_age_sec",
+                    600,
+                )
+                or 600
+            )
+            lines.append(
+                f"검증진입={format_market_korean(market)} "
+                f"{environment}전용({environment_state}) "
+                f"전략={','.join(flags) or '-'} "
+                f"세션={submitted}/{max_entries} "
+                f"슬롯={slot_multiplier:.0%} "
+                f"지수하한={benchmark_floor:+.2f}% "
+                f"지표≤{max_age_sec}초"
             )
         reject_cb = getattr(controller.lab_service, "cb", None)
         reject_status = reject_cb.order_reject_status() if reject_cb is not None else {}

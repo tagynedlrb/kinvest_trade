@@ -2623,6 +2623,12 @@ def test_lab_guard_command_reports_divergent_market_policies(
         commission_rate=0.0025,
         overseas_commission_rate=0.0025,
         sec_fee_rate=0.0000206,
+        strategy_guard_probe_enabled=True,
+        strategy_guard_probe_strategy_flags=["VWAP+RSI"],
+        strategy_guard_probe_max_entries_per_session=1,
+        strategy_guard_probe_slot_multiplier=0.10,
+        strategy_guard_probe_benchmark_floor_pct=0.0,
+        strategy_guard_probe_regime_max_age_sec=600,
     )
     controller = TelegramLiquidityLabController(
         config=SimpleNamespace(
@@ -2661,6 +2667,10 @@ def test_lab_guard_command_reports_divergent_market_policies(
     assert "차단조건=시장별 정책" in message
     assert "국내정책=24시간/4건/-0.40% 이하/VWAP" in message
     assert "해외정책=72시간/5건/-0.60% 이하/VWAP+RSI" in message
+    assert (
+        "검증진입=해외 vps전용(허용) 전략=VWAP+RSI "
+        "세션=0/1 슬롯=10% 지수하한=+0.00% 지표≤600초"
+    ) in message
     assert "성과=없음" in message
 
 

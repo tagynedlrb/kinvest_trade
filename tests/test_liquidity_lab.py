@@ -8548,6 +8548,49 @@ def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
     assert service._recent_order_reason_counts == {}
 
 
+def test_dominant_entry_wait_reason_prefers_actionable_policy_block() -> None:
+    targets = [
+        SimpleNamespace(
+            market="overseas",
+            action_bias="WAIT",
+            holding_qty=0,
+            note="volume_low",
+            signal_state="WAIT",
+        )
+        for _ in range(8)
+    ]
+    targets.extend(
+        [
+            SimpleNamespace(
+                market="overseas",
+                action_bias="WAIT",
+                holding_qty=0,
+                note="[VWAP+RSI] recent_strategy_underperformance",
+                signal_state="WAIT",
+            ),
+            SimpleNamespace(
+                market="overseas",
+                action_bias="WAIT",
+                holding_qty=0,
+                note="[VWAP+RSI] recent_strategy_underperformance",
+                signal_state="WAIT",
+            ),
+            SimpleNamespace(
+                market="overseas",
+                action_bias="HOLD",
+                holding_qty=10,
+                note="time_exit_cost_floor_hold",
+                signal_state="HOLD",
+            ),
+        ]
+    )
+
+    assert LiquidityLabService._dominant_entry_wait_reason(
+        targets,
+        market="overseas",
+    ) == "watch:[VWAP+RSI] recent_strategy_underperformance"
+
+
 def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() -> None:
     async def run_case() -> None:
         service = _build_run_service()
@@ -13881,6 +13924,115 @@ def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before
     rows = service.repository.query_cycle_log(action_bias="SKIP", limit=5)
     assert rows[0]["symbol"] == "PLTR"
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
+
+
+def test_overseas_strategy_guard_probe_is_small_paper_only_and_once_per_session() -> None:
+    class ProbeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def place_overseas_order_for_current_session(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"output": {"ODNO": "0000009901"}, **kwargs}
+
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_markets = ["overseas"]
+    service.config.liquidity_lab.overseas_min_strategy_volume_ratio = 0.8
+    service.config.liquidity_lab.overseas_block_standalone_vwap = True
+    service.config.liquidity_lab.overseas_block_standalone_rsi = True
+    service.config.liquidity_lab.overseas_block_standalone_vol = True
+    service.config.liquidity_lab.overseas_test_order_qty = 100
+    service.config.liquidity_lab.use_slot_sizing = False
+    service.client = ProbeClient()
+
+    async def no_open_orders(**_kwargs):
+        return {"BUY": None, "SELL": None}
+
+    service._open_overseas_orders_by_side = no_open_orders  # type: ignore[method-assign]
+    now = datetime.now(timezone.utc)
+    session_date = service._market_session_date("overseas", now)
+    _save_test_regime(
+        service,
+        market="overseas",
+        session_date=session_date,
+        return_pct=0.6,
+        trend_regime="up",
+    )
+    service.repository.activate_strategy_guard_state(
+        market="overseas",
+        strategy_flag="VWAP+RSI",
+        activated_at=now,
+        activation_session_date=session_date,
+        trigger_trade_count=67,
+        trigger_avg_net_pnl_pct=-0.00587,
+    )
+    snapshot = _snapshot(
+        price=25.0,
+        vwap=24.9,
+        rsi14=45.0,
+        volume_ratio=1.5,
+    )
+    candidate = OverseasScanResult(
+        symbol="PLTR",
+        exchange_code="NYSE",
+        last_price=25.0,
+        bid=24.99,
+        ask=25.01,
+        spread_pct=0.0008,
+        change_rate_pct=1.0,
+        volume=1_500_000,
+        orderable_qty=100,
+        fx_rate_krw=1350.0,
+        activity_score=16.0,
+    )
+    watch_target = WatchTargetStatus(
+        market="overseas",
+        code="PLTR",
+        exchange_code="NYSE",
+        price=25.0,
+        activity_score=16.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 9>21",
+        note="[VWAP+RSI] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+    )
+
+    result = asyncio.run(
+        service._place_overseas_test_order(
+            candidate,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["submitted"] is True
+    assert result["qty"] == 10
+    assert result["reason"].startswith("strategy_guard_probe:VWAP+RSI|")
+    assert service.client.calls[0]["qty"] == 10
+    assert result["strategy_guard_probe"]["entry_market_regime"]["return_pct"] == 0.6
+    assert service.repository.count_strategy_guard_probe_submissions(
+        market="overseas",
+        session_date=session_date,
+    ) == 1
+    assert service._entry_strategy_block_reason(
+        market="overseas",
+        strategy_flag="VWAP+RSI",
+    ) == "recent_strategy_underperformance"
+
+    service.config.credentials.env = "prod"
+    service._cycle_count = getattr(service, "_cycle_count", 0) + 1
+    assert service._entry_strategy_block_reason(
+        market="overseas",
+        strategy_flag="VWAP+RSI",
+    ) == "recent_strategy_underperformance"
 
 
 def test_virtual_overseas_buy_rechecks_formula_guard_before_recording() -> None:

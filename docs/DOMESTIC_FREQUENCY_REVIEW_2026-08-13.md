@@ -79,7 +79,13 @@
   monitoring continue.
 - Targeted risk, notification, and liquidity-lab regression coverage passed
   316 tests. The full suite passed 835 tests in 208.13 seconds; deployment
-  evidence is appended after rollout.
+  commit `058009a` was pushed to `origin/master`.
+- The service restarted at `2026-08-13T08:33:47Z` as PID `1708947`. Six
+  natural cycles completed with 61/61 successful API requests, no terminal
+  failure, no new order intent or execution, and no warning-level journal
+  entry. Telegram deployment report `id=2311` succeeded. Because KRX was
+  closed, next-session non-carryover and the revised domestic reason remain
+  forward-validation items rather than claimed deployment evidence.
 
 ## Falsification and Follow-up
 

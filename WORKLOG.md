@@ -50,6 +50,19 @@
   커밋, 재시작, 자연 사이클, Telegram 보고는 배포 후속 기록에 추가한다.
 - 상세 근거와 반증조건은
   `docs/DOMESTIC_FREQUENCY_REVIEW_2026-08-13.md`에 기록했다.
+- 구현·분석 커밋 `058009a`를 `/home/ubuntu/git_token.txt` 일회성
+  credential helper로 원격 `master`에 푸시했다. 서비스를
+  `2026-08-13T08:33:47Z`, PID `1708947`로 재기동했고
+  `active/running`, `NRestarts=0`, warning 이상 journal 0건이다.
+- 배포 뒤 자연 주기 6회에서 새 세션 `1e42d58103e5`가 기존 미장 보유
+  2종목의 청산 감시를 계속했다. API 61회·논리요청 61건이 전부
+  성공했고 종단실패, 신규 주문의도, 체결원장 추가는 모두 0건이다.
+  국장은 마감 상태여서 새 원인표시와 전일 CB 비이월 여부는 다음 KRX
+  세션 전향검증으로 남긴다.
+- Telegram 시작·Scanner·명시 배포보고는 모두 성공했고 배포보고는
+  `telegram_message_log.id=2311`이다. 평가 `id=104` outcome에 커밋,
+  백업, PID, 자연 주기, API, Telegram을 연결했으며 `reviewed_at`은
+  비워 3개 개입 세션 검증을 계속한다.
 
 ## [2026-08-12] 주문거부 실원인·허위알림 분리와 중복매도 방지
 

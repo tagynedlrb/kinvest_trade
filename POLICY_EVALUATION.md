@@ -45,6 +45,10 @@
   `docs/DOMESTIC_FREQUENCY_REVIEW_2026-08-13.md`. This audit used high-context
   reasoning but no controlled smaller-model A/B, so comparative value remains
   `unverified`.
+- Diagnostic-only commit `058009a` is deployed. PID `1708947` completed six
+  natural cycles with 61/61 API success and no new order or terminal failure;
+  Telegram report `2311` succeeded. Evaluation `id=104` remains pending until
+  the next KRX reset and three intervention sessions provide forward evidence.
 
 ## Order rejection reliability checkpoint (2026-08-12 UTC)
 

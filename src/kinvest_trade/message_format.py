@@ -119,6 +119,7 @@ REASON_KOREAN_MAP = {
     "entry_benchmark_below_floor": "시장지수 진입 하한 미달",
     "post_cb_session_loss_limit_reached": "동일 시장 세션 반복손실 한도 도달",
     "recent_strategy_underperformance": "최근 전략 성과 저조",
+    "submission_limit_reached": "세션 검증주문 제출 한도 도달",
     "standalone_vwap_blocked": "단독 VWAP 전략 중단",
     "standalone_rsi_blocked": "단독 RSI 전략 중단",
     "standalone_vol_blocked": "단독 거래량 전략 중단",

@@ -2526,6 +2526,80 @@ class SqliteRepository:
             ).fetchone()
         return int(row["cnt"] or 0) if row is not None else 0
 
+    def get_strategy_guard_probe_usage(
+        self,
+        *,
+        market: str,
+        session_date: str,
+    ) -> dict[str, int]:
+        """Separate probe attempts from entries that created or may create exposure."""
+        market_key = str(market).strip().lower()
+        start_at, end_at = self._market_session_utc_bounds(
+            market_key,
+            session_date,
+        )
+        with self._connect() as conn:
+            submission_rows = conn.execute(
+                """
+                SELECT detail
+                FROM event_log
+                WHERE event_type = 'strategy_guard_probe_submitted'
+                  AND market = ?
+                  AND logged_at >= ?
+                  AND logged_at < ?
+                """,
+                (market_key, start_at, end_at),
+            ).fetchall()
+            execution_groups = conn.execute(
+                """
+                SELECT
+                    execution_group_id,
+                    MAX(CASE WHEN COALESCE(filled_qty, 0) > 0 THEN 1 ELSE 0 END)
+                        AS has_fill,
+                    MAX(CASE WHEN finalized_at IS NULL THEN 1 ELSE 0 END)
+                        AS is_open
+                FROM broker_order_executions
+                WHERE market = ?
+                  AND UPPER(side) = 'BUY'
+                  AND created_at >= ?
+                  AND created_at < ?
+                  AND reason LIKE 'strategy_guard_probe:%'
+                GROUP BY execution_group_id
+                """,
+                (market_key, start_at, end_at),
+            ).fetchall()
+
+        virtual_entries = 0
+        for row in submission_rows:
+            try:
+                detail = json.loads(str(row["detail"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                detail = {}
+            if isinstance(detail, dict) and bool(detail.get("is_virtual")):
+                virtual_entries += 1
+
+        filled_entries = sum(
+            int(row["has_fill"] or 0) for row in execution_groups
+        )
+        open_entries = sum(
+            1
+            for row in execution_groups
+            if not int(row["has_fill"] or 0) and int(row["is_open"] or 0)
+        )
+        no_fill_finalized = sum(
+            1
+            for row in execution_groups
+            if not int(row["has_fill"] or 0) and not int(row["is_open"] or 0)
+        )
+        return {
+            "submission_attempts": len(submission_rows),
+            "effective_entries": virtual_entries + filled_entries + open_entries,
+            "filled_entries": filled_entries,
+            "open_entries": open_entries,
+            "virtual_entries": virtual_entries,
+            "no_fill_finalized": no_fill_finalized,
+        }
+
     def has_inverse_policy_observation(
         self,
         *,

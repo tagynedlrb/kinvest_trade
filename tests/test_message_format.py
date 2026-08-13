@@ -64,6 +64,10 @@ def test_format_side_market_and_reason_korean() -> None:
         format_reason_korean("recent_strategy_underperformance")
         == "최근 전략 성과 저조"
     )
+    assert (
+        format_reason_korean("submission_limit_reached")
+        == "세션 검증주문 제출 한도 도달"
+    )
     assert format_reason_korean("no_domestic_candidate") == "국내 후보 없음"
     assert format_reason_korean("stale_live_overseas_order_cancel") == "해외 장기미체결 취소"
     assert format_reason_korean("stale_live_overseas_order_cancel_failed") == "해외 장기미체결 취소거부"

@@ -3084,6 +3084,17 @@ class LiquidityLabService:
         if max_entries <= 0:
             detail["reason"] = "session_limit_disabled"
             return detail
+        max_submissions = max(
+            max_entries,
+            int(
+                getattr(
+                    policy,
+                    "strategy_guard_probe_max_submissions_per_session",
+                    0,
+                )
+                or max_entries
+            ),
+        )
 
         current = ensure_timezone(now or datetime.now(timezone.utc))
         regime = self._market_regime_context(market_key, now=current)
@@ -3124,28 +3135,59 @@ class LiquidityLabService:
             detail["reason"] = "benchmark_floor_not_met"
             return detail
 
+        session_date = self._market_session_date(market_key, current)
         repository = getattr(self, "repository", None)
+        usage_reader = getattr(
+            repository,
+            "get_strategy_guard_probe_usage",
+            None,
+        )
         counter = getattr(
             repository,
             "count_strategy_guard_probe_submissions",
             None,
         )
-        if not callable(counter):
+        if callable(usage_reader):
+            usage = usage_reader(
+                market=market_key,
+                session_date=session_date,
+            )
+        elif callable(counter):
+            submitted_count = int(
+                counter(market=market_key, session_date=session_date) or 0
+            )
+            usage = {
+                "submission_attempts": submitted_count,
+                "effective_entries": submitted_count,
+                "filled_entries": 0,
+                "open_entries": submitted_count,
+                "virtual_entries": 0,
+                "no_fill_finalized": 0,
+            }
+        else:
             detail["reason"] = "persistent_counter_unavailable"
             return detail
-        session_date = self._market_session_date(market_key, current)
-        submitted_count = int(
-            counter(market=market_key, session_date=session_date) or 0
-        )
+        submitted_count = int(usage.get("submission_attempts") or 0)
+        effective_entries = int(usage.get("effective_entries") or 0)
         detail.update(
             {
                 "session_date": session_date,
                 "submitted_count": submitted_count,
+                "submission_attempts": submitted_count,
+                "effective_entries": effective_entries,
+                "filled_entries": int(usage.get("filled_entries") or 0),
+                "open_entries": int(usage.get("open_entries") or 0),
+                "virtual_entries": int(usage.get("virtual_entries") or 0),
+                "no_fill_finalized": int(usage.get("no_fill_finalized") or 0),
                 "max_entries_per_session": max_entries,
+                "max_submissions_per_session": max_submissions,
             }
         )
-        if submitted_count >= max_entries:
+        if effective_entries >= max_entries:
             detail["reason"] = "session_limit_reached"
+            return detail
+        if submitted_count >= max_submissions:
+            detail["reason"] = "submission_limit_reached"
             return detail
 
         detail["admitted"] = True

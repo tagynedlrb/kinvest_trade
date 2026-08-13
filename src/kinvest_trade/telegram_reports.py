@@ -1854,6 +1854,17 @@ class ReportHelper:
                     or 0
                 ),
             )
+            max_submissions = max(
+                max_entries,
+                int(
+                    getattr(
+                        auto_trade,
+                        "strategy_guard_probe_max_submissions_per_session",
+                        0,
+                    )
+                    or max_entries
+                ),
+            )
             session_date_resolver = getattr(
                 controller.lab_service,
                 "_market_session_date",
@@ -1866,17 +1877,35 @@ class ReportHelper:
                     KST if market == "domestic" else NEW_YORK
                 ).date().isoformat()
             )
-            submitted = (
-                controller.repository.count_strategy_guard_probe_submissions(
+            usage_reader = getattr(
+                controller.repository,
+                "get_strategy_guard_probe_usage",
+                None,
+            )
+            if callable(usage_reader):
+                usage = usage_reader(
                     market=market,
                     session_date=session_date,
                 )
-                if hasattr(
-                    controller.repository,
-                    "count_strategy_guard_probe_submissions",
+            else:
+                submitted = (
+                    controller.repository.count_strategy_guard_probe_submissions(
+                        market=market,
+                        session_date=session_date,
+                    )
+                    if hasattr(
+                        controller.repository,
+                        "count_strategy_guard_probe_submissions",
+                    )
+                    else 0
                 )
-                else 0
-            )
+                usage = {
+                    "submission_attempts": submitted,
+                    "effective_entries": submitted,
+                    "filled_entries": 0,
+                    "open_entries": submitted,
+                    "no_fill_finalized": 0,
+                }
             environment = str(
                 getattr(controller.config.credentials, "env", "")
             ).strip().lower()
@@ -1909,7 +1938,11 @@ class ReportHelper:
                 f"검증진입={format_market_korean(market)} "
                 f"{environment}전용({environment_state}) "
                 f"전략={','.join(flags) or '-'} "
-                f"세션={submitted}/{max_entries} "
+                f"진입={int(usage.get('effective_entries') or 0)}/{max_entries} "
+                f"제출={int(usage.get('submission_attempts') or 0)}/{max_submissions} "
+                f"체결={int(usage.get('filled_entries') or 0)} "
+                f"열림={int(usage.get('open_entries') or 0)} "
+                f"미체결종료={int(usage.get('no_fill_finalized') or 0)} "
                 f"슬롯={slot_multiplier:.0%} "
                 f"지수하한={benchmark_floor:+.2f}% "
                 f"지표≤{max_age_sec}초"

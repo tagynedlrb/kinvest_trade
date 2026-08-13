@@ -12,6 +12,29 @@
   inspect evidence, document the decision, test, back up mutable production
   data, commit, push, restart, send a Telegram report, and recheck health.
 
+## Bounded trade-frequency recovery checkpoint (2026-08-13 UTC)
+
+- Correct the operational bottleneck: the accepted `TBBB` probe filled zero
+  shares and was canceled, but the old submission counter still exhausted the
+  only US probe entry. Separate accepted attempts from filled or still-open
+  exposure so no-fill finalization returns an entry slot.
+- Keep domestic unchanged because it already filled and closed 10 positions on
+  August 13. Keep ordinary US strategy guards because the best current guarded
+  path, `VWAP+RSI`, is still 33 exits, 10 wins, `-0.313%` average net, and
+  `-703.97 USD`; current-session blocked forward returns are also negative.
+- Expand only overseas `vps` `VWAP+RSI` probes from one to three effective
+  entries per New York session, retain 10% sizing, and cap accepted submissions
+  at six. Nasdaq >= 0%, freshness, liquidity, portfolio, CB, and loss controls
+  remain mandatory; production and every other guarded formula remain blocked.
+- Review after five completed probes across at least three final sessions.
+  Disable if average net is <= `-0.50%`, no winner appears, accounting limits
+  fail, or additional probes only reproduce guarded losses. Do not enlarge
+  size merely because order count improves.
+- Detailed evidence is in
+  `docs/TRADE_FREQUENCY_RECOVERY_2026-08-13.md`. The change implements the
+  user's explicit preference for more activity while keeping total probe
+  allocation below one ordinary slot and preserving market independence.
+
 ## Domestic frequency and session-stop checkpoint (2026-08-13 UTC)
 
 - Correct the premise: the KRX session had 12 accepted buy submissions, 10

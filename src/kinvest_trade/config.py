@@ -210,6 +210,7 @@ class AutoTradeConfig:
     strategy_guard_probe_enabled: bool = False
     strategy_guard_probe_strategy_flags: list[str] = field(default_factory=list)
     strategy_guard_probe_max_entries_per_session: int = 0
+    strategy_guard_probe_max_submissions_per_session: int = 0
     strategy_guard_probe_slot_multiplier: float = 0.10
     strategy_guard_probe_benchmark_floor_pct: float = 0.0
     strategy_guard_probe_regime_max_age_sec: int = 600

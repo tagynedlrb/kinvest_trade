@@ -14159,7 +14159,7 @@ def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
-def test_overseas_strategy_guard_probe_is_small_paper_only_and_once_per_session() -> None:
+def test_overseas_strategy_guard_probe_is_small_paper_only_and_exposure_limited() -> None:
     class ProbeClient:
         def __init__(self) -> None:
             self.calls: list[dict] = []
@@ -14181,6 +14181,9 @@ def test_overseas_strategy_guard_probe_is_small_paper_only_and_once_per_session(
     service.config.liquidity_lab.overseas_block_standalone_vol = True
     service.config.liquidity_lab.overseas_test_order_qty = 100
     service.config.liquidity_lab.use_slot_sizing = False
+    overseas_policy = service.config.market_policies.overseas.auto_trade
+    overseas_policy.strategy_guard_probe_max_entries_per_session = 1
+    overseas_policy.strategy_guard_probe_max_submissions_per_session = 2
     service.client = ProbeClient()
 
     async def no_open_orders(**_kwargs):
@@ -14255,10 +14258,41 @@ def test_overseas_strategy_guard_probe_is_small_paper_only_and_once_per_session(
         market="overseas",
         session_date=session_date,
     ) == 1
+    assert service.repository.get_strategy_guard_probe_usage(
+        market="overseas",
+        session_date=session_date,
+    )["effective_entries"] == 1
     assert service._entry_strategy_block_reason(
         market="overseas",
         strategy_flag="VWAP+RSI",
     ) == "recent_strategy_underperformance"
+
+    execution = service.repository.list_broker_order_executions(limit=1)[0]
+    checked_at = datetime.now(timezone.utc).isoformat()
+    service.repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=0,
+        filled_amount=0.0,
+        avg_fill_price=None,
+        remaining_qty=0,
+        canceled_qty=10,
+        rejected_qty=0,
+        status="CANCELED",
+        history={},
+        checked_at=checked_at,
+    )
+    service.repository.finalize_broker_execution_group_without_fill(
+        str(execution["execution_group_id"]),
+        finalized_at=checked_at,
+    )
+    retry_context = service._strategy_guard_probe_context(
+        market="overseas",
+        strategy_flag="VWAP+RSI",
+    )
+    assert retry_context["admitted"] is True
+    assert retry_context["submission_attempts"] == 1
+    assert retry_context["effective_entries"] == 0
+    assert retry_context["no_fill_finalized"] == 1
 
     service.config.credentials.env = "prod"
     service._cycle_count = getattr(service, "_cycle_count", 0) + 1

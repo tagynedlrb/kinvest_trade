@@ -463,6 +463,87 @@ def test_broker_execution_order_date_uses_each_market_trading_date(tmp_path) -> 
     assert overseas["order_date"] == "2026-07-27"
 
 
+def test_strategy_guard_probe_usage_releases_no_fill_entry_exposure(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "probe_usage.db")
+    created_at = datetime.now(timezone.utc).isoformat()
+    session_date = repository._broker_order_date(created_at, "overseas")
+    repository.save_event(
+        event_type="strategy_guard_probe_submitted",
+        market="overseas",
+        symbol="TBBB",
+        detail={"strategy_flag": "VWAP+RSI", "is_virtual": False},
+    )
+    event_id = repository.save_broker_order_event(
+        created_at=created_at,
+        market="overseas",
+        symbol="TBBB",
+        exchange_code="NYSE",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=17,
+        requested_price=47.755,
+        status="SUBMITTED",
+        reason="strategy_guard_probe:VWAP+RSI|strategy_buy_signal",
+        broker_order_no="43301",
+    )
+    execution = repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at=created_at,
+        market="overseas",
+        symbol="TBBB",
+        exchange_code="NYSE",
+        side="BUY",
+        broker_order_no="43301",
+        requested_qty=17,
+        requested_price=47.755,
+        reason="strategy_guard_probe:VWAP+RSI|strategy_buy_signal",
+    )
+    assert execution is not None
+
+    pending = repository.get_strategy_guard_probe_usage(
+        market="overseas",
+        session_date=session_date,
+    )
+    assert pending == {
+        "submission_attempts": 1,
+        "effective_entries": 1,
+        "filled_entries": 0,
+        "open_entries": 1,
+        "virtual_entries": 0,
+        "no_fill_finalized": 0,
+    }
+
+    repository.update_broker_order_execution(
+        int(execution["id"]),
+        filled_qty=0,
+        filled_amount=0.0,
+        avg_fill_price=None,
+        remaining_qty=0,
+        canceled_qty=17,
+        rejected_qty=0,
+        status="CANCELED",
+        history={},
+        checked_at=created_at,
+    )
+    repository.finalize_broker_execution_group_without_fill(
+        str(execution["execution_group_id"]),
+        finalized_at=created_at,
+    )
+
+    canceled = repository.get_strategy_guard_probe_usage(
+        market="overseas",
+        session_date=session_date,
+    )
+    assert canceled == {
+        "submission_attempts": 1,
+        "effective_entries": 0,
+        "filled_entries": 0,
+        "open_entries": 0,
+        "virtual_entries": 0,
+        "no_fill_finalized": 1,
+    }
+
+
 def test_telegram_message_log_can_be_saved_and_listed(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_telegram_message(

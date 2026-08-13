@@ -2626,6 +2626,7 @@ def test_lab_guard_command_reports_divergent_market_policies(
         strategy_guard_probe_enabled=True,
         strategy_guard_probe_strategy_flags=["VWAP+RSI"],
         strategy_guard_probe_max_entries_per_session=1,
+        strategy_guard_probe_max_submissions_per_session=2,
         strategy_guard_probe_slot_multiplier=0.10,
         strategy_guard_probe_benchmark_floor_pct=0.0,
         strategy_guard_probe_regime_max_age_sec=600,
@@ -2669,7 +2670,8 @@ def test_lab_guard_command_reports_divergent_market_policies(
     assert "해외정책=72시간/5건/-0.60% 이하/VWAP+RSI" in message
     assert (
         "검증진입=해외 vps전용(허용) 전략=VWAP+RSI "
-        "세션=0/1 슬롯=10% 지수하한=+0.00% 지표≤600초"
+        "진입=0/1 제출=0/2 체결=0 열림=0 미체결종료=0 "
+        "슬롯=10% 지수하한=+0.00% 지표≤600초"
     ) in message
     assert "성과=없음" in message
 

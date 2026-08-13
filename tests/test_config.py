@@ -213,11 +213,13 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert domestic.auto_trade.strategy_guard_probe_enabled is False
     assert domestic.auto_trade.strategy_guard_probe_strategy_flags == []
     assert domestic.auto_trade.strategy_guard_probe_max_entries_per_session == 0
+    assert domestic.auto_trade.strategy_guard_probe_max_submissions_per_session == 0
     assert overseas.auto_trade.strategy_guard_probe_enabled is True
     assert overseas.auto_trade.strategy_guard_probe_strategy_flags == [
         "VWAP+RSI"
     ]
-    assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 1
+    assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 3
+    assert overseas.auto_trade.strategy_guard_probe_max_submissions_per_session == 6
     assert overseas.auto_trade.strategy_guard_probe_slot_multiplier == 0.10
     assert overseas.auto_trade.strategy_guard_probe_benchmark_floor_pct == 0.0
     assert overseas.auto_trade.strategy_guard_probe_regime_max_age_sec == 600

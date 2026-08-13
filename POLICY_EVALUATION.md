@@ -34,6 +34,11 @@
   `docs/TRADE_FREQUENCY_RECOVERY_2026-08-13.md`. The change implements the
   user's explicit preference for more activity while keeping total probe
   allocation below one ordinary slot and preserving market independence.
+- Commit `9a59696` is deployed as PID `1718366`. Four orderable natural cycles
+  and 252/252 API calls completed without terminal failure or rejection. Live
+  admission is open at effective entries 0/3 and submissions 1/6; the canceled
+  TBBB order is retained as one no-fill attempt but no exposure. Telegram
+  report `2322` succeeded and evaluation `id=105` remains pending.
 
 ## Domestic frequency and session-stop checkpoint (2026-08-13 UTC)
 

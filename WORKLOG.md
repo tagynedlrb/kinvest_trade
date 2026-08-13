@@ -36,6 +36,20 @@
   `704df22373f9e34d4888a2a19b6b87d104a539e9d48b096441b7965b5fe739da`,
   `quick_check=ok`, 외래키 위반 0이며 평가 `id=105` 포함을 확인했다.
   커밋, 재기동, 자연 주기와 Telegram 결과는 이어서 추가한다.
+- 구현·분석 커밋 `9a59696`을 `/home/ubuntu/git_token.txt` 일회성
+  credential helper로 원격 `master`에 푸시했다. 서비스를
+  `2026-08-13T18:04:31Z`, PID `1718366`으로 재기동했고
+  `active/running`, `NRestarts=0`, warning 이상 journal 0건이다.
+- 배포 뒤 미장 정규장 자연 주기 4회에서 admission은 허용됐다. 운영
+  원장은 `제출=1/6`, `유효진입=0/3`, `체결=0`, `열림=0`,
+  `미체결종료=1`로 TBBB 슬롯 반환을 확인했다. 새 네 주기의
+  `VWAP+RSI` 후보는 모두 `overseas_volume_floor`여서 강제 주문 없이
+  WAIT했고, 기존 보유 2종목 청산감시는 계속됐다.
+- API 252회·논리요청 252건은 전부 성공했고 종단실패, 신규 broker
+  event/execution, 주문거부는 0건이다. Telegram 배포보고
+  `telegram_message_log.id=2322`도 성공했다. 평가 `id=105` outcome에
+  커밋·백업·PID·자연 주기·admission·API·Telegram을 연결했고
+  `reviewed_at`은 비워 전향검증을 계속한다.
 
 ## [2026-08-13] 국장 장후반 미거래 원인과 세션정지 진단 개선
 

@@ -78,5 +78,13 @@
 - Focused configuration, repository, admission, Telegram, and reason-format
   tests cover independent market settings, pending exposure, zero-fill slot
   release, and the split usage display. Fifteen focused tests and the full
-  **836-test** suite passed in 212.75 seconds. Deployment evidence is appended
-  in the worklog after rollout.
+  **836-test** suite passed in 212.75 seconds.
+- Commit `9a59696` was pushed and deployed at `2026-08-13T18:04:31Z` as PID
+  `1718366`. Four orderable US natural cycles completed with 252/252 API
+  success, no terminal failure or rejection, and no new broker order. The
+  live admission check returned attempts 1/6, effective entries 0/3, and one
+  finalized no-fill entry, proving that the prior TBBB cancellation no longer
+  consumes exposure. Current `VWAP+RSI` candidates remained below the volume
+  floor, so absence of a forced order is expected signal behavior.
+- Telegram deployment report `id=2322` succeeded. Evaluation `id=105` remains
+  open for five completed probes across at least three final Nasdaq sessions.

@@ -14,6 +14,7 @@ import kinvest_trade.liquidity_lab as liquidity_lab_module
 import pytest
 from kinvest_trade.config import load_app_config
 from kinvest_trade.lab_positions import VirtualPosition
+from kinvest_trade.lab_runtime import LabRuntimeManager
 from kinvest_trade.liquidity_lab import (
     DomesticHeldPosition,
     DomesticScanResult,
@@ -8732,6 +8733,39 @@ def test_dominant_entry_wait_reason_prefers_actionable_policy_block() -> None:
     ) == "watch:[VWAP+RSI] recent_strategy_underperformance"
 
 
+def test_dominant_entry_wait_reason_exposes_domestic_post_cb_session_stop() -> None:
+    targets = [
+        SimpleNamespace(
+            market="domestic",
+            action_bias="WAIT",
+            holding_qty=0,
+            note="[VOL] post_cb_session_loss_limit_reached",
+            signal_state="WAIT",
+        ),
+        SimpleNamespace(
+            market="domestic",
+            action_bias="WAIT",
+            holding_qty=0,
+            note="volume_low",
+            signal_state="WAIT",
+        ),
+    ]
+
+    assert LiquidityLabService._dominant_entry_wait_reason(
+        targets,
+        market="domestic",
+    ) == "watch:[VOL] post_cb_session_loss_limit_reached"
+
+
+def test_low_frequency_reason_formats_policy_wait_in_korean() -> None:
+    assert LabRuntimeManager._format_frequency_reason(
+        "skip:watch:[VOL] post_cb_session_loss_limit_reached"
+    ) == "정책대기:[VOL] 동일 시장 세션 반복손실 한도 도달"
+    assert LabRuntimeManager._format_frequency_reason(
+        "skip:overseas_position_cap_reached"
+    ) == "미실행:해외 동시보유 한도 도달(정상)"
+
+
 def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() -> None:
     async def run_case() -> None:
         service = _build_run_service()
@@ -8748,7 +8782,7 @@ def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() 
         assert len(service.notifier.messages) == 1
         assert "매매 빈도 낮음" in service.notifier.messages[0]
         assert "시장=미장" in service.notifier.messages[0]
-        assert "skip:overseas_position_cap_reached 50회" in service.notifier.messages[0]
+        assert "미실행:해외 동시보유 한도 도달(정상) 50회" in service.notifier.messages[0]
         assert service._last_low_trade_frequency_alert_cycle == 200
 
         service._cycle_count = 300
@@ -11366,6 +11400,11 @@ def test_run_does_not_crash_when_circuit_breaker_has_halted_trading() -> None:
     # positions right when the circuit breaker most needed to still watch them.
     service = _build_run_service()
     service._consecutive_losses = service.config.risk.max_consecutive_losses
+    service._consecutive_losses_by_market = {
+        "domestic": service.config.risk.max_consecutive_losses,
+        "overseas": 0,
+    }
+    service._confirmed_risk_state_restored = True
 
     async def fake_scan_domestic():
         return []
@@ -11414,7 +11453,7 @@ def test_run_does_not_crash_when_circuit_breaker_has_halted_trading() -> None:
         )
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
-    assert report.domestic_order["reason"] == "no_action"
+    assert report.domestic_order["reason"] == "domestic_circuit_breaker_halted"
 
 
 def test_run_reports_overseas_position_cap_reached_when_slots_full() -> None:

@@ -181,6 +181,44 @@ def test_latched_consecutive_breaker_releases_with_reset_streak() -> None:
     assert events[0][1]["market"] == "overseas"
 
 
+def test_market_cb_release_notice_explains_single_fire_session_stop() -> None:
+    messages: list[str] = []
+    events: list[tuple[str, dict]] = []
+    config = _build_config()
+    config.market_policies = SimpleNamespace(
+        domestic=SimpleNamespace(
+            max_consecutive_losses=3,
+            circuit_breaker_cooldown_minutes=30,
+            post_cb_max_fires_per_session=1,
+        )
+    )
+    manager = CircuitBreakerManager(
+        config,
+        event_hook=lambda event_type, detail: events.append(
+            (event_type, detail)
+        ),
+        notify_hook=lambda message: messages.append(message),
+    )
+    manager.load_state(
+        consecutive_losses_by_market={"domestic": 0},
+        halted_at_by_market={
+            "domestic": datetime.now(timezone.utc) - timedelta(minutes=31)
+        },
+    )
+
+    assert manager.is_halted("domestic") is False
+    assert messages == [
+        "✅ 서킷브레이커 시간쿨다운 해제\n"
+        "시장=국장 쿨다운=30분 완료\n"
+        "세션손실한도=1회 도달\n"
+        "일반 신규매수=다음 시장 세션까지 중단\n"
+        "기존포지션 청산·인버스 감시는 계속"
+    ]
+    assert events[0][0] == "cb_released"
+    assert events[0][1]["post_cb_max_fires_per_session"] == 1
+    assert events[0][1]["session_entry_stop_active"] is True
+
+
 def test_circuit_breaker_daily_limit_keeps_block_after_consecutive_release() -> None:
     manager = CircuitBreakerManager(_build_config())
     manager.load_state(

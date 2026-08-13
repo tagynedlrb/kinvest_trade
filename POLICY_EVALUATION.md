@@ -12,6 +12,40 @@
   inspect evidence, document the decision, test, back up mutable production
   data, commit, push, restart, send a Telegram report, and recheck health.
 
+## Domestic frequency and session-stop checkpoint (2026-08-13 UTC)
+
+- Correct the premise: the KRX session had 12 accepted buy submissions, 10
+  fills, two no-fill cancellations, and 10 confirmed exits. It ended with five
+  net winners and `+8,050.97 KRW`; inactivity began only after the last 10:26
+  KST entry.
+- The domestic breaker fired at 10:42 KST after three consecutive net losses.
+  The 30-minute timer released at 11:12, but the independently configured
+  one-fire local-session loss budget continued to block ordinary longs as
+  intended. Existing exits added `+12,509.49 KRW` after the fire and recovered
+  the session from `-4,458.52 KRW` to a small profit.
+- Keep the one-fire stop. Today's main post-CB formula buckets were negative
+  after the optimistic minimum cost floor at both 30 and 60 minutes. The full
+  recent domestic boundary also remains negative at 118 exits, 30% win rate,
+  and `-168,830 KRW`. Increasing frequency would lack positive expectancy.
+- Fix the explanation path instead. Domestic no-order cycles must preserve the
+  active CB, post-CB session stop, exact policy WAIT, or true candidate/signal
+  absence. Low-frequency Telegram text translates those raw keys. A cooldown
+  release under a one-fire policy explicitly says that ordinary new buys remain
+  stopped until the next local session while exits and inverse monitoring stay
+  active.
+- KOSPI finalized `+3.5613%`, volume ratio `1.1716`, regime
+  `strong_up|normal|normal`. Today's 10 exits earned `+8,050.97 KRW`, so retain
+  this environment with the performance result instead of judging the policy
+  from trade count alone.
+- Do not add a blanket RSI ceiling to standalone VOL. Three confirmed VOL
+  entries above RSI 90 across two sessions total `+51,906.82 KRW`; that is too
+  small and selected to prove superiority, but it directly rejects an urgent
+  claim that this route is uniformly harmful. Keep it as a recorded defer.
+- Detailed evidence and falsification criteria are in
+  `docs/DOMESTIC_FREQUENCY_REVIEW_2026-08-13.md`. This audit used high-context
+  reasoning but no controlled smaller-model A/B, so comparative value remains
+  `unverified`.
+
 ## Order rejection reliability checkpoint (2026-08-12 UTC)
 
 - Eighteen post-deployment `watch:` Telegram notices were policy WAIT states,

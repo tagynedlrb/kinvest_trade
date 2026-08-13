@@ -6450,6 +6450,32 @@ class LiquidityLabService:
             max_concurrent=domestic_budget,
         )
         domestic_buy_target = domestic_buy_targets[0] if domestic_buy_targets else None
+        domestic_entry_block_reason = ""
+        domestic_entry_block_detail: dict[str, object] = {}
+        if not domestic_buy_targets and krx_cycle_open:
+            if domestic_cb_halted:
+                domestic_entry_block_reason = "domestic_circuit_breaker_halted"
+            elif domestic_reject_halted:
+                domestic_entry_block_reason = "domestic_order_reject_halted"
+            else:
+                post_cb_reason, post_cb_detail = self._post_cb_reentry_regime_gate(
+                    "domestic",
+                )
+                if post_cb_reason:
+                    domestic_entry_block_reason = f"watch:{post_cb_reason}"
+                    domestic_entry_block_detail = post_cb_detail
+                else:
+                    domestic_entry_block_reason = (
+                        self._dominant_entry_wait_reason(
+                            domestic_watch_targets,
+                            market="domestic",
+                        )
+                        or (
+                            "no_domestic_ready_signal"
+                            if domestic_ranked
+                            else "no_domestic_candidate"
+                        )
+                    )
 
         _max_os = getattr(config_ll, "max_concurrent_overseas_orders", 20)
         remaining_overseas_slots = self._remaining_overseas_entry_slots(
@@ -6531,13 +6557,11 @@ class LiquidityLabService:
             "reason": (
                 "market_session_changed_during_cycle"
                 if "domestic" in session_changed_markets
-                else "domestic_circuit_breaker_halted"
-                if domestic_cb_halted
-                else "domestic_order_reject_halted"
-                if domestic_reject_halted
-                else "no_action"
+                else domestic_entry_block_reason or "no_action"
             ),
         }
+        if domestic_entry_block_detail:
+            domestic_order["entry_block_detail"] = domestic_entry_block_detail
         overseas_order: dict = {"skipped": True, "reason": "no_action"}
         domestic_orders: list[dict] = []
         overseas_orders: list[dict] = []

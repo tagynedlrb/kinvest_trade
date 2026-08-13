@@ -429,20 +429,41 @@ class CircuitBreakerManager:
                 self._sync_aggregate_consecutive_losses()
                 self._sync_aggregate_halted_at()
             self._last_cb_released_at = now
+            max_fires = self._market_risk_value(
+                market,
+                "post_cb_max_fires_per_session",
+                0,
+            )
+            session_entry_stop_active = market is not None and max_fires == 1
             detail = {
                 "elapsed_min": round(elapsed_minutes, 1),
                 "trigger": "auto_cooldown",
                 "type": "consecutive",
+                "post_cb_max_fires_per_session": max_fires or None,
+                "session_entry_stop_active": session_entry_stop_active,
             }
             if market is not None:
                 detail["market"] = market
             self._emit_event("cb_released", detail)
-            market_line = f"시장={market} " if market is not None else ""
-            self._schedule_notification(
-                f"✅ 서킷브레이커 자동 해제\n"
-                f"{market_line}시간쿨다운 {cooldown_minutes}분 완료 "
-                "→ 시장별 진입조건 재검사"
-            )
+            market_label = {
+                "domestic": "국장",
+                "overseas": "미장",
+            }.get(str(market or ""), str(market or "전체"))
+            if session_entry_stop_active:
+                self._schedule_notification(
+                    "✅ 서킷브레이커 시간쿨다운 해제\n"
+                    f"시장={market_label} 쿨다운={cooldown_minutes}분 완료\n"
+                    "세션손실한도=1회 도달\n"
+                    "일반 신규매수=다음 시장 세션까지 중단\n"
+                    "기존포지션 청산·인버스 감시는 계속"
+                )
+            else:
+                market_line = f"시장={market_label} " if market is not None else ""
+                self._schedule_notification(
+                    "✅ 서킷브레이커 자동 해제\n"
+                    f"{market_line}시간쿨다운 {cooldown_minutes}분 완료 "
+                    "→ 시장별 진입조건 재검사"
+                )
             return False
 
         if consecutive_losses < max_consecutive:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Callable
 
 from .config import AppConfig
 from .market_policy import get_market_auto_trade_config
-from .message_format import format_market_korean
+from .message_format import format_market_korean, format_reason_korean
 from .time_utils import ensure_timezone
 
 if TYPE_CHECKING:
@@ -263,7 +263,8 @@ class LabRuntimeManager:
             default=0,
         )
         top_reason_text = ", ".join(
-            f"{reason} {count}회" for reason, count in list(top_reasons.items())[:3]
+            f"{self._format_frequency_reason(reason)} {count}회"
+            for reason, count in list(top_reasons.items())[:3]
         )
         market_label = "국장" if market == "domestic" else "미장"
         loop.create_task(
@@ -280,6 +281,25 @@ class LabRuntimeManager:
                 )
             )
         )
+
+    @staticmethod
+    def _format_frequency_reason(reason_key: str) -> str:
+        raw = str(reason_key or "").strip()
+        if raw.startswith("trade:"):
+            side = raw.removeprefix("trade:")
+            return f"주문:{'매수' if side == 'buy' else '매도' if side == 'sell' else side}"
+
+        reason = raw.removeprefix("skip:")
+        label = "미실행"
+        if reason.startswith("watch:"):
+            reason = reason.removeprefix("watch:")
+            label = "정책대기"
+
+        strategy = ""
+        if reason.startswith("[") and "] " in reason:
+            strategy, reason = reason.split("] ", 1)
+            strategy = f"{strategy}] "
+        return f"{label}:{strategy}{format_reason_korean(reason)}"
 
     def track_rsi_threshold_blocks(self, watch_targets: list["WatchTargetStatus"]) -> None:
         overseas_policy = get_market_auto_trade_config(self._config, "overseas")

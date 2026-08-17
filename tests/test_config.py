@@ -238,6 +238,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.virtual_settlement_retry_cooldown_minutes == 15
     assert domestic.auto_trade.virtual_settlement_max_submissions_per_session == 3
     assert overseas.auto_trade.virtual_settlement_max_submissions_per_session == 3
+    assert domestic.auto_trade.post_fill_stale_balance_minutes == 10
+    assert overseas.auto_trade.post_fill_stale_balance_minutes == 30
     assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
     assert overseas.auto_trade.entry_confirmation_strategy_flags == []
     assert domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == [

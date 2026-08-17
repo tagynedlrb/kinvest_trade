@@ -116,6 +116,7 @@
     "capital_gains_tax_rate": 0.22,
     "usd_krw_fallback_rate": 1350.0,
     "stale_run_grace_minutes": 180,
+    "post_fill_stale_balance_minutes": 10,
     "strategy_guard_lookback_hours": 336,
     "strategy_guard_min_trades": 3,
     "strategy_guard_max_avg_net_pnl_pct": -0.003,

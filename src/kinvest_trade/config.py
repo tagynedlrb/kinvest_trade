@@ -182,6 +182,7 @@ class AutoTradeConfig:
     stale_run_grace_minutes: int
     inverse_etf_symbols: list[str]
     leveraged_etf_symbols: list[str]
+    post_fill_stale_balance_minutes: int = 5
     inverse_regime_enabled: bool = False
     inverse_execution_mode: str = "disabled"
     inverse_entry_formula: str = "strategy_consensus_v1"
@@ -1298,6 +1299,10 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                 auto_trade_raw.get("usd_krw_fallback_rate", 1350.0)
             ),
             stale_run_grace_minutes=int(auto_trade_raw.get("stale_run_grace_minutes", 180)),
+            post_fill_stale_balance_minutes=max(
+                1,
+                int(auto_trade_raw.get("post_fill_stale_balance_minutes", 5)),
+            ),
             # Legacy defaults for the shared scanner. Market policy files clone
             # and override these lists independently for KRX and US products.
             inverse_etf_symbols=[

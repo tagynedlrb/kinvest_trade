@@ -10588,11 +10588,23 @@ class LiquidityLabService:
         orderable_qty: int = 0,
         defer_no_orderable: bool = True,
         now: datetime | None = None,
-        window_sec: int = 300,
+        window_sec: int | None = None,
     ) -> bool:
         """Suppress a duplicate sell while KIS balance lags a confirmed full fill."""
         if holding_qty <= 0:
             return False
+        if window_sec is None:
+            default_minutes = 30 if market.strip().lower() == "overseas" else 10
+            try:
+                market_auto_trade = self._get_market_policy(market).auto_trade
+                configured_minutes = getattr(
+                    market_auto_trade,
+                    "post_fill_stale_balance_minutes",
+                    default_minutes,
+                )
+                window_sec = max(1, int(configured_minutes)) * 60
+            except (AttributeError, RuntimeError, ValueError):
+                window_sec = default_minutes * 60
         repository = getattr(self, "repository", None)
         getter = getattr(repository, "get_recent_completed_sell_execution", None)
         if not callable(getter):

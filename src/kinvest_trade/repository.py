@@ -3829,31 +3829,47 @@ class SqliteRepository:
         symbol: str,
         after_updated_at: str,
     ) -> dict | None:
-        """Return a recent execution group only when its full sell target filled."""
+        """Return a recent full sell unless a later confirmed buy reopened it."""
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT
-                    execution_group_id,
-                    MAX(group_target_qty) AS target_qty,
-                    SUM(COALESCE(filled_qty, 0)) AS filled_qty,
-                    MAX(updated_at) AS latest_updated_at,
-                    MAX(fill_recorded_at) AS latest_fill_recorded_at
-                FROM broker_order_executions
-                WHERE market = ?
-                  AND symbol = ?
-                  AND side = 'SELL'
-                  AND updated_at >= ?
-                GROUP BY execution_group_id
-                HAVING MAX(group_target_qty) > 0
-                   AND SUM(COALESCE(filled_qty, 0)) >= MAX(group_target_qty)
-                ORDER BY latest_updated_at DESC
+                WITH completed_sells AS (
+                    SELECT
+                        execution_group_id,
+                        MAX(group_target_qty) AS target_qty,
+                        SUM(COALESCE(filled_qty, 0)) AS filled_qty,
+                        MAX(created_at) AS latest_created_at,
+                        MAX(updated_at) AS latest_updated_at,
+                        MAX(fill_recorded_at) AS latest_fill_recorded_at
+                    FROM broker_order_executions
+                    WHERE market = ?
+                      AND symbol = ?
+                      AND side = 'SELL'
+                      AND updated_at >= ?
+                    GROUP BY execution_group_id
+                    HAVING MAX(group_target_qty) > 0
+                       AND SUM(COALESCE(filled_qty, 0)) >= MAX(group_target_qty)
+                )
+                SELECT completed_sells.*
+                FROM completed_sells
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM broker_order_executions AS later_buy
+                    WHERE later_buy.market = ?
+                      AND later_buy.symbol = ?
+                      AND later_buy.side = 'BUY'
+                      AND later_buy.filled_qty > 0
+                      AND later_buy.created_at > completed_sells.latest_created_at
+                )
+                ORDER BY completed_sells.latest_updated_at DESC
                 LIMIT 1
                 """,
                 (
                     str(market).strip().lower(),
                     str(symbol).strip().upper(),
                     str(after_updated_at),
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
                 ),
             ).fetchone()
         return dict(row) if row is not None else None

@@ -1183,6 +1183,18 @@ def test_select_overseas_exit_targets_suppresses_stale_balance_after_full_fill()
         checked_at=now.isoformat(),
         fill_recorded_at=now.isoformat(),
     )
+    assert service._suppress_recent_full_sell_stale_balance(
+        market="overseas",
+        symbol="ARX",
+        holding_qty=417,
+        now=now + timedelta(minutes=20),
+    )
+    assert not service._suppress_recent_full_sell_stale_balance(
+        market="overseas",
+        symbol="ARX",
+        holding_qty=417,
+        now=now + timedelta(minutes=31),
+    )
     ranked = [
         OverseasScanResult(
             symbol="ARX",
@@ -1530,6 +1542,95 @@ def test_recent_completed_sell_requires_full_execution_group_fill() -> None:
     result = repository.get_recent_completed_sell_execution(
         market="overseas",
         symbol="PART",
+        after_updated_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+
+    assert result is None
+
+
+def test_recent_completed_sell_is_ignored_after_later_confirmed_buy() -> None:
+    repository = _build_repository()
+    now = datetime.now(timezone.utc)
+    sell_event_id = repository.save_broker_order_event(
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="REOPEN",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=10,
+        requested_price=20.0,
+        status="SUBMITTED",
+        broker_order_no="reopen-sell-1",
+    )
+    sell_execution = repository.save_broker_order_execution(
+        broker_event_id=sell_event_id,
+        created_at=now.isoformat(),
+        market="overseas",
+        symbol="REOPEN",
+        exchange_code="NASD",
+        side="SELL",
+        broker_order_no="reopen-sell-1",
+        requested_qty=10,
+        requested_price=20.0,
+    )
+    assert sell_execution is not None
+    repository.update_broker_order_execution(
+        int(sell_execution["id"]),
+        filled_qty=10,
+        filled_amount=200.0,
+        avg_fill_price=20.0,
+        remaining_qty=0,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="FILLED",
+        history={"test": True},
+        checked_at=now.isoformat(),
+        fill_recorded_at=now.isoformat(),
+    )
+
+    buy_at = now + timedelta(minutes=10)
+    buy_event_id = repository.save_broker_order_event(
+        created_at=buy_at.isoformat(),
+        market="overseas",
+        symbol="REOPEN",
+        exchange_code="NASD",
+        side="BUY",
+        order_kind="limit",
+        requested_qty=4,
+        requested_price=19.0,
+        status="SUBMITTED",
+        broker_order_no="reopen-buy-1",
+    )
+    buy_execution = repository.save_broker_order_execution(
+        broker_event_id=buy_event_id,
+        created_at=buy_at.isoformat(),
+        market="overseas",
+        symbol="REOPEN",
+        exchange_code="NASD",
+        side="BUY",
+        broker_order_no="reopen-buy-1",
+        requested_qty=4,
+        requested_price=19.0,
+    )
+    assert buy_execution is not None
+    repository.update_broker_order_execution(
+        int(buy_execution["id"]),
+        filled_qty=4,
+        filled_amount=76.0,
+        avg_fill_price=19.0,
+        remaining_qty=0,
+        canceled_qty=0,
+        rejected_qty=0,
+        status="FILLED",
+        history={"test": True},
+        checked_at=buy_at.isoformat(),
+        fill_recorded_at=buy_at.isoformat(),
+    )
+
+    result = repository.get_recent_completed_sell_execution(
+        market="overseas",
+        symbol="REOPEN",
         after_updated_at=(now - timedelta(minutes=1)).isoformat(),
     )
 

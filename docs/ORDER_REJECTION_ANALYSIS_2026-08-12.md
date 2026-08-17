@@ -83,3 +83,22 @@
   broker open-order view and execution reconciliation show the preceding sell
   terminal without a full fill. Keep the eight-minute bound; do not turn it
   into an indefinite position lock.
+
+## Follow-up - 2026-08-18
+
+- The Aug. 17 overseas `DLO` lifecycle exposed a second stale-balance interval:
+  a 509-share full sell was accepted at `19:02:04Z`, while no-balance sell
+  rejections followed at `19:15:03Z` and `19:20:54Z`. The five-minute
+  post-fill guard was therefore too short for the observed US paper-account
+  balance lag.
+- Keep the unfinalized-order guard at eight minutes, but split the confirmed
+  full-sell guard by market: 10 minutes for domestic and 30 minutes for
+  overseas. These bounds cover the observed 143-second domestic and
+  18-minute overseas lag with margin without creating an indefinite lock.
+- A confirmed buy created after the completed sell now invalidates the guard.
+  A genuinely reopened position can therefore exit immediately; only a stale
+  copy of the old sold balance is suppressed.
+- This follow-up complements the Aug. 18 execution-history pagination repair.
+  No terminal broker rejection occurred in the Aug. 17 session after the DLO
+  cases, but the explicit market-scoped window closes the remaining known
+  recurrence path rather than relying on reconciliation speed alone.

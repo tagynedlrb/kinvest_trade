@@ -544,6 +544,63 @@ def test_strategy_guard_probe_usage_releases_no_fill_entry_exposure(tmp_path) ->
     }
 
 
+def test_virtual_settlement_submission_usage_is_session_and_symbol_scoped(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "settlement_usage.db")
+    for created_at, symbol, reason, status in (
+        (
+            "2026-08-17T13:31:00+00:00",
+            "NPAC",
+            "virtual_sell_settlement",
+            "SUBMITTED",
+        ),
+        (
+            "2026-08-17T14:01:00+00:00",
+            "NPAC",
+            "virtual_sell_settlement",
+            "SUBMITTED",
+        ),
+        (
+            "2026-08-17T14:02:00+00:00",
+            "OTHER",
+            "virtual_sell_settlement",
+            "SUBMITTED",
+        ),
+        (
+            "2026-08-17T14:03:00+00:00",
+            "NPAC",
+            "stale_virtual_sell_settlement",
+            "CANCELED",
+        ),
+    ):
+        repository.save_broker_order_event(
+            created_at=created_at,
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            side="SELL",
+            order_kind="cancel" if status == "CANCELED" else "limit",
+            requested_qty=10,
+            requested_price=10.0,
+            status=status,
+            reason=reason,
+            broker_order_no="1001",
+            is_virtual=0,
+        )
+
+    usage = repository.get_virtual_settlement_submission_usage(
+        market="overseas",
+        symbol="NPAC",
+        session_date="2026-08-17",
+    )
+
+    assert usage == {
+        "submission_count": 2,
+        "last_submitted_at": "2026-08-17T14:01:00+00:00",
+    }
+
+
 def test_telegram_message_log_can_be_saved_and_listed(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_telegram_message(

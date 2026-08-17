@@ -2876,6 +2876,8 @@ class LiquidityLabService:
                 activation_session_date = str(
                     state.get("activation_session_date") or ""
                 )
+                recovery_trade_count = 0
+                recovery_avg_net_pnl_pct = 0.0
                 if (
                     (guard_markets and market not in guard_markets)
                     or guard_policy is None
@@ -2901,8 +2903,51 @@ class LiquidityLabService:
                         market=market,
                         start_date=activation_session_date,
                     )
-                    should_release = final_sessions >= min_final_sessions
-                    release_reason = "minimum_final_sessions_observed"
+                    if guard_policy.release_requires_recovery:
+                        recovery_rows = (
+                            repository.get_recent_strategy_guard_performance(
+                                after_logged_at=str(
+                                    state.get("activated_at") or ""
+                                ),
+                                cost_pct=guard_policy.fallback_cost_pct,
+                                market=market,
+                            )
+                        )
+                        recovery_row = next(
+                            (
+                                row
+                                for row in recovery_rows
+                                if str(
+                                    row.get("strategy_flag") or ""
+                                ).strip().upper()
+                                == strategy
+                            ),
+                            None,
+                        )
+                        recovery_trade_count = int(
+                            (recovery_row or {}).get("trade_count") or 0
+                        )
+                        recovery_avg_net_pnl_pct = float(
+                            (recovery_row or {}).get("avg_net_pnl_pct") or 0.0
+                        )
+                    recovery_confirmed = (
+                        not guard_policy.release_requires_recovery
+                        or (
+                            recovery_trade_count
+                            >= guard_policy.release_min_trades
+                            and recovery_avg_net_pnl_pct
+                            > guard_policy.release_min_avg_net_pnl_pct
+                        )
+                    )
+                    should_release = (
+                        final_sessions >= min_final_sessions
+                        and recovery_confirmed
+                    )
+                    release_reason = (
+                        "post_activation_recovery_confirmed"
+                        if guard_policy.release_requires_recovery
+                        else "minimum_final_sessions_observed"
+                    )
 
                 if should_release:
                     if repository.release_strategy_guard_state(
@@ -2919,6 +2964,11 @@ class LiquidityLabService:
                                 "final_sessions": final_sessions,
                                 "min_final_sessions": min_final_sessions,
                                 "reason": release_reason,
+                                "recovery_trade_count": recovery_trade_count,
+                                "recovery_avg_net_pnl_pct": round(
+                                    recovery_avg_net_pnl_pct,
+                                    6,
+                                ),
                             }
                         )
                     continue
@@ -2937,10 +2987,31 @@ class LiquidityLabService:
                             ),
                             6,
                         ),
-                        "retention_source": "minimum_final_session_hold",
+                        "retention_source": (
+                            "recovery_evidence_hold"
+                            if (
+                                final_sessions >= min_final_sessions
+                                and guard_policy.release_requires_recovery
+                            )
+                            else "minimum_final_session_hold"
+                        ),
                         "activation_session_date": activation_session_date,
                         "final_sessions": final_sessions,
                         "min_final_sessions": min_final_sessions,
+                        "release_requires_recovery": (
+                            guard_policy.release_requires_recovery
+                        ),
+                        "recovery_trade_count": recovery_trade_count,
+                        "recovery_min_trades": (
+                            guard_policy.release_min_trades
+                        ),
+                        "recovery_avg_net_pnl_pct": round(
+                            recovery_avg_net_pnl_pct,
+                            6,
+                        ),
+                        "recovery_min_avg_net_pnl_pct": (
+                            guard_policy.release_min_avg_net_pnl_pct
+                        ),
                     }
                 )
 
@@ -2974,6 +3045,15 @@ class LiquidityLabService:
                             ),
                             "min_final_sessions": (
                                 policy.min_final_sessions
+                            ),
+                            "release_requires_recovery": (
+                                policy.release_requires_recovery
+                            ),
+                            "release_min_trades": (
+                                policy.release_min_trades
+                            ),
+                            "release_min_avg_net_pnl_pct": (
+                                policy.release_min_avg_net_pnl_pct
                             ),
                             "fallback_cost_pct": (
                                 policy.fallback_cost_pct
@@ -5048,6 +5128,7 @@ class LiquidityLabService:
                 "finalized": 0,
                 "no_fill": 0,
                 "terminal_followups": 0,
+                "expired_day_orders": 0,
                 "failed_markets": 0,
             }
         repository = getattr(self, "repository", None)
@@ -5130,6 +5211,7 @@ class LiquidityLabService:
                     "finalized": 0,
                     "no_fill": 0,
                     "terminal_followups": 0,
+                    "expired_day_orders": 0,
                     "failed_markets": 0,
                 }
         self._last_execution_reconcile_at = now
@@ -5182,6 +5264,116 @@ class LiquidityLabService:
                 return execution
         return None
 
+    def _virtual_settlement_retry_policy(self) -> dict[str, int]:
+        try:
+            auto_trade = self._get_market_policy("overseas").auto_trade
+        except (AttributeError, KeyError, RuntimeError, ValueError):
+            auto_trade = None
+        return {
+            "stale_order_minutes": max(
+                1,
+                int(
+                    getattr(
+                        auto_trade,
+                        "virtual_settlement_stale_order_minutes",
+                        5,
+                    )
+                    or 5
+                ),
+            ),
+            "retry_cooldown_minutes": max(
+                1,
+                int(
+                    getattr(
+                        auto_trade,
+                        "virtual_settlement_retry_cooldown_minutes",
+                        15,
+                    )
+                    or 15
+                ),
+            ),
+            "max_submissions_per_session": max(
+                1,
+                int(
+                    getattr(
+                        auto_trade,
+                        "virtual_settlement_max_submissions_per_session",
+                        3,
+                    )
+                    or 3
+                ),
+            ),
+        }
+
+    def _virtual_settlement_retry_gate(
+        self,
+        *,
+        symbol: str,
+        now: datetime,
+    ) -> tuple[bool, dict]:
+        current = ensure_timezone(now)
+        session_date = self._market_session_date("overseas", current)
+        policy = self._virtual_settlement_retry_policy()
+        usage = self.repository.get_virtual_settlement_submission_usage(
+            market="overseas",
+            symbol=symbol,
+            session_date=session_date,
+        )
+        submission_count = int(usage.get("submission_count") or 0)
+        detail: dict[str, object] = {
+            "session_date": session_date,
+            "submission_count": submission_count,
+            **policy,
+        }
+        if submission_count >= policy["max_submissions_per_session"]:
+            detail["reason"] = "session_submission_limit"
+            return False, detail
+
+        last_submitted_at = parse_datetime(
+            str(usage.get("last_submitted_at") or "")
+        )
+        if last_submitted_at is not None:
+            retry_after = ensure_timezone(last_submitted_at) + timedelta(
+                minutes=policy["retry_cooldown_minutes"]
+            )
+            if current < retry_after:
+                detail.update(
+                    {
+                        "reason": "retry_cooldown",
+                        "last_submitted_at": ensure_timezone(
+                            last_submitted_at
+                        ).isoformat(),
+                        "retry_after_at": retry_after.isoformat(),
+                    }
+                )
+                return False, detail
+        detail["reason"] = "allowed"
+        return True, detail
+
+    def _record_virtual_settlement_deferred(
+        self,
+        *,
+        symbol: str,
+        detail: dict,
+    ) -> None:
+        key = (
+            str(detail.get("session_date") or ""),
+            symbol.upper(),
+            str(detail.get("reason") or ""),
+            int(detail.get("submission_count") or 0),
+        )
+        emitted = getattr(self, "_virtual_settlement_defer_event_keys", set())
+        if key in emitted:
+            return
+        emitted.add(key)
+        self._virtual_settlement_defer_event_keys = emitted
+        self._save_event(
+            event_type="virtual_pending_settlement_deferred",
+            market="overseas",
+            symbol=symbol,
+            detail={**detail, "pending_preserved": True},
+        )
+
     async def _cancel_stale_virtual_sell_settlement(
         self,
         *,
@@ -5204,7 +5396,11 @@ class LiquidityLabService:
             0.0,
             (current - ensure_timezone(created_at)).total_seconds(),
         )
-        if age_sec < 45.0:
+        stale_after_sec = (
+            self._virtual_settlement_retry_policy()["stale_order_minutes"]
+            * 60.0
+        )
+        if age_sec < stale_after_sec:
             return False
 
         symbol = str(execution.get("symbol") or "").strip().upper()
@@ -5223,6 +5419,7 @@ class LiquidityLabService:
                     "reason": "open_order_lookup_failed",
                     "broker_order_no": execution.get("broker_order_no"),
                     "age_sec": round(age_sec, 3),
+                    "stale_after_sec": stale_after_sec,
                     "error": str(exc)[:200],
                 },
             )
@@ -9400,7 +9597,9 @@ class LiquidityLabService:
         self,
         *,
         overseas_positions: list[OverseasHeldPosition],
+        now: datetime | None = None,
     ) -> None:
+        current = ensure_timezone(now or datetime.now(timezone.utc))
         pending_rows = self.repository.list_virtual_sell_pending(market="overseas")
         if not pending_rows:
             return
@@ -9437,6 +9636,7 @@ class LiquidityLabService:
                         or active_settlement.get("exchange_code")
                         or ""
                     ),
+                    now=current,
                 )
                 continue
 
@@ -9481,6 +9681,16 @@ class LiquidityLabService:
                 )
                 continue
             if settle_qty > 0 and real is not None:
+                retry_allowed, retry_detail = self._virtual_settlement_retry_gate(
+                    symbol=symbol,
+                    now=current,
+                )
+                if not retry_allowed:
+                    self._record_virtual_settlement_deferred(
+                        symbol=symbol,
+                        detail=retry_detail,
+                    )
+                    continue
                 try:
                     response = (
                         await self.client.place_overseas_order_for_current_session(
@@ -9601,6 +9811,11 @@ class LiquidityLabService:
                         "requested_price": real.current_price,
                         "pending_qty": pending_qty,
                         "pending_preserved_until_fill": True,
+                        "submission_number": int(
+                            retry_detail.get("submission_count") or 0
+                        )
+                        + 1,
+                        "retry_policy": retry_detail,
                     },
                 )
                 await self.notifier.send(

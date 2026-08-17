@@ -2600,6 +2600,44 @@ class SqliteRepository:
             "no_fill_finalized": no_fill_finalized,
         }
 
+    def get_virtual_settlement_submission_usage(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        session_date: str,
+    ) -> dict[str, object]:
+        """Return durable accepted-settlement usage for one market session."""
+        market_key = str(market).strip().lower()
+        symbol_key = str(symbol).strip().upper()
+        start_at, end_at = self._market_session_utc_bounds(
+            market_key,
+            session_date,
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS submission_count,
+                    MAX(created_at) AS last_submitted_at
+                FROM broker_order_events
+                WHERE market = ?
+                  AND symbol = ?
+                  AND UPPER(side) = 'SELL'
+                  AND LOWER(order_kind) != 'cancel'
+                  AND UPPER(status) = 'SUBMITTED'
+                  AND reason = 'virtual_sell_settlement'
+                  AND COALESCE(is_virtual, 0) = 0
+                  AND created_at >= ?
+                  AND created_at < ?
+                """,
+                (market_key, symbol_key, start_at, end_at),
+            ).fetchone()
+        return {
+            "submission_count": int(row["submission_count"] or 0),
+            "last_submitted_at": str(row["last_submitted_at"] or ""),
+        }
+
     def has_inverse_policy_observation(
         self,
         *,

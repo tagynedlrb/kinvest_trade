@@ -1799,7 +1799,14 @@ class ReportHelper:
                     f"{format_market_korean(market)}정책="
                     f"{policy.lookback_hours}시간/{policy.min_trades}건/"
                     f"{format_pct(policy.max_avg_net_pnl_pct)} 이하/"
-                    f"{','.join(sorted(policy.strategy_flags))}"
+                    f"{','.join(sorted(policy.strategy_flags))} "
+                    f"해제={policy.min_final_sessions}세션"
+                    + (
+                        f"+회복{policy.release_min_trades}건/"
+                        f"평균순>{format_pct(policy.release_min_avg_net_pnl_pct)}"
+                        if policy.release_requires_recovery
+                        else ""
+                    )
                 )
         lines.append(
             "기준=세션소유 KIS 체결확정 SELL_REAL, "

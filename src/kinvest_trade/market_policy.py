@@ -25,6 +25,9 @@ class StrategyGuardPolicy:
     max_avg_net_pnl_pct: float
     strategy_flags: frozenset[str]
     min_final_sessions: int
+    release_requires_recovery: bool
+    release_min_trades: int
+    release_min_avg_net_pnl_pct: float
     fallback_cost_pct: float
 
 
@@ -175,6 +178,32 @@ def get_market_strategy_guard_policy(
                 )
                 or 0
             ),
+        ),
+        release_requires_recovery=bool(
+            getattr(
+                auto_trade,
+                "strategy_guard_release_requires_recovery",
+                False,
+            )
+        ),
+        release_min_trades=max(
+            1,
+            int(
+                getattr(
+                    auto_trade,
+                    "strategy_guard_release_min_trades",
+                    3,
+                )
+                or 3
+            ),
+        ),
+        release_min_avg_net_pnl_pct=float(
+            getattr(
+                auto_trade,
+                "strategy_guard_release_min_avg_net_pnl_pct",
+                0.0,
+            )
+            or 0.0
         ),
         fallback_cost_pct=max(0.0, fallback_cost_pct),
     )

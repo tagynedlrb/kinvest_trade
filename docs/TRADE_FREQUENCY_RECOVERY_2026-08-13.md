@@ -88,3 +88,18 @@
   floor, so absence of a forced order is expected signal behavior.
 - Telegram deployment report `id=2322` succeeded. Evaluation `id=105` remains
   open for five completed probes across at least three final Nasdaq sessions.
+
+## 2026-08-18 Forward Correction
+
+- Three `VWAP+RSI` probes completed across the August 13-14 final sessions:
+  PLGO `-0.568%`, BLSH `-0.652%`, and TSSI `+2.165%` modeled net, for one
+  winner and `+0.315%` mean. The five-probe/three-session validation minimum
+  is not met, so evaluation 105 remains open and size stays at 10%.
+- Full KIS pagination later restored hidden `VOL+RSI` and `VWAP+VOL` fills.
+  This does not invalidate the probe accounting, but it invalidates the old
+  conclusion that ordinary US activity was absent. The system was submitting
+  and filling orders while the local execution ledger was truncated.
+- The probe list now includes every guarded overseas composite formula, still
+  sharing the same three-entry/six-submission session budget. This preserves
+  bounded learning after `VOL+RSI` was re-guarded; it does not increase the
+  existing aggregate probe exposure.

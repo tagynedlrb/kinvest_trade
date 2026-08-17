@@ -1316,10 +1316,50 @@ def test_get_overseas_order_history_follows_kis_continuation_pages(
 
     assert [row["odno"] for row in history["orders"]] == ["100", "101"]
     assert history["page_count"] == 2
+    assert history["pagination_truncated"] is False
     assert calls[0]["params"]["CTX_AREA_NK200"] == ""
     assert calls[1]["params"]["CTX_AREA_NK200"] == "NEXT"
     assert calls[1]["extra_headers"] == {"tr_cont": "N"}
     assert continuation_delays == [1.0]
+
+
+def test_get_overseas_order_history_reports_pagination_truncation(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+
+    async def fake_request(*_args, **_kwargs):
+        return {
+            "output": [{"odno": "100", "pdno": "PDI"}],
+            "ctx_area_fk200": "NEXT_FK",
+            "ctx_area_nk200": "NEXT_NK",
+            "_response_headers": {"tr_cont": "F"},
+        }
+
+    client._request = fake_request  # type: ignore[method-assign]
+    history = asyncio.run(
+        client.get_overseas_order_history(
+            start_date="20260814",
+            end_date="20260817",
+            max_pages=1,
+        )
+    )
+
+    assert history["page_count"] == 1
+    assert history["pagination_truncated"] is True
 
 
 def test_get_overseas_balance_follows_kis_continuation_pages(

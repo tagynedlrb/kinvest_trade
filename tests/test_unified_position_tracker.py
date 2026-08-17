@@ -676,7 +676,7 @@ def test_reconcile_partial_terminal_fill_reduces_only_confirmed_quantity() -> No
     assert detail["remaining_pending_qty"] == 3
 
 
-def test_reconcile_no_fill_preserves_pending_and_allows_retry() -> None:
+def test_reconcile_no_fill_preserves_pending_and_defers_immediate_retry() -> None:
     service = _build_service()
     service.repository.upsert_virtual_sell_pending(
         market="overseas",
@@ -717,7 +717,76 @@ def test_reconcile_no_fill_preserves_pending_and_allows_retry() -> None:
     assert json.loads(event["detail"])["retry_allowed"] is True
 
     asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    assert len(service.client.order_calls) == 1
+    deferred = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_deferred",
+        limit=1,
+    )[0]
+    assert json.loads(deferred["detail"])["reason"] == "retry_cooldown"
+
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            now=datetime.now(timezone.utc) + timedelta(minutes=16),
+        )
+    )
     assert len(service.client.order_calls) == 2
+
+
+def test_virtual_settlement_submission_limit_is_durable_per_session() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NVDA",
+        exchange_code="NASD",
+        qty=2,
+        avg_sell_price=115.0,
+        currency="USD",
+        updated_at="2026-08-17 20:00:00 KST",
+    )
+    for minute in (31, 46, 59):
+        service.repository.save_broker_order_event(
+            created_at=f"2026-08-17T14:{minute:02d}:00+00:00",
+            market="overseas",
+            symbol="NVDA",
+            exchange_code="NASD",
+            side="SELL",
+            order_kind="limit",
+            requested_qty=2,
+            requested_price=111.0,
+            status="SUBMITTED",
+            reason="virtual_sell_settlement",
+            broker_order_no=f"10{minute}",
+            is_virtual=0,
+        )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NVDA",
+            exchange_code="NASD",
+            quantity=2,
+            orderable_qty=2,
+            avg_price=100.0,
+            current_price=111.0,
+            pnl_pct=0.11,
+        )
+    ]
+
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            now=datetime(2026, 8, 17, 15, 30, tzinfo=timezone.utc),
+        )
+    )
+
+    assert service.client.order_calls == []
+    event = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_deferred",
+        limit=1,
+    )[0]
+    detail = json.loads(event["detail"])
+    assert detail["reason"] == "session_submission_limit"
+    assert detail["submission_count"] == 3
+    assert detail["pending_preserved"] is True
 
 
 def test_stale_virtual_settlement_is_canceled_without_clearing_pending() -> None:
@@ -773,6 +842,40 @@ def test_stale_virtual_settlement_is_canceled_without_clearing_pending() -> None
         limit=1,
     )[0]
     assert json.loads(event["detail"])["pending_preserved_until_history_confirmation"]
+
+
+def test_virtual_settlement_is_not_canceled_before_policy_age() -> None:
+    service = _build_service()
+    now = datetime(2026, 8, 17, 14, 0, tzinfo=timezone.utc)
+    execution = {
+        "created_at": (now - timedelta(minutes=4)).isoformat(),
+        "execution_group_id": "settlement-group",
+        "market": "overseas",
+        "symbol": "NVDA",
+        "exchange_code": "NASD",
+        "side": "SELL",
+        "broker_order_no": "0000000001",
+    }
+    service.client.pending_orders = [
+        {
+            "pdno": "NVDA",
+            "sll_buy_dvsn_cd": "01",
+            "nccs_qty": "2",
+            "odno": "0000000001",
+            "ft_ord_unpr3": "111.0",
+        }
+    ]
+
+    canceled = asyncio.run(
+        service._cancel_stale_virtual_sell_settlement(
+            execution=execution,
+            exchange_code="NASD",
+            now=now,
+        )
+    )
+
+    assert canceled is False
+    assert service.client.cancel_calls == []
 
 
 def test_stale_virtual_settlement_preserves_order_when_lookup_fails() -> None:

@@ -2656,6 +2656,41 @@ def test_overseas_terminal_followup_does_not_finalize_without_history() -> None:
     assert len(service.repository.list_unfinalized_broker_executions()) == 1
 
 
+def test_overseas_previous_session_open_remainder_expires_as_day_order() -> None:
+    service = _build_sell_service(
+        pending_orders=[
+            _pending_overseas_history_row(
+                symbol="FSUN",
+                order_no="46162",
+                order_date="20260728",
+                domestic_order_date="20260729",
+                qty=157,
+            )
+        ]
+    )
+    _save_pending_overseas_execution(
+        service,
+        symbol="FSUN",
+        order_no="0000046162",
+        created_at="2026-07-28T19:29:14+00:00",
+        qty=157,
+    )
+
+    stats = asyncio.run(
+        BrokerExecutionReconciler(service).reconcile(
+            now=datetime(2026, 7, 29, 20, 30, tzinfo=timezone.utc),
+            force=True,
+        )
+    )
+
+    assert stats["expired_day_orders"] == 1
+    assert stats["no_fill"] == 1
+    assert service.repository.list_unfinalized_broker_executions() == []
+    execution = service.repository.list_broker_order_executions(limit=1)[0]
+    assert execution["status"] == "CANCELED"
+    assert execution["history_json"]["_system_day_order_expired"] is True
+
+
 def test_overseas_reconcile_scopes_reused_order_number_by_order_date() -> None:
     service = _build_sell_service(
         pending_orders=[
@@ -2770,9 +2805,11 @@ def test_execution_reconciler_queries_only_selected_market() -> None:
     class OverseasOnlyHistoryClient:
         def __init__(self) -> None:
             self.overseas_calls = 0
+            self.overseas_kwargs = None
 
-        async def get_overseas_order_history(self, **_kwargs):
+        async def get_overseas_order_history(self, **kwargs):
             self.overseas_calls += 1
+            self.overseas_kwargs = kwargs
             return {"orders": []}
 
         async def get_domestic_order_history(self, **_kwargs):
@@ -2797,6 +2834,7 @@ def test_execution_reconciler_queries_only_selected_market() -> None:
     assert stats["pending"] == 1
     assert stats["missing"] == 1
     assert client.overseas_calls == 1
+    assert client.overseas_kwargs["max_pages"] == 50
     assert repository.checked_ids == [2]
 
 
@@ -5651,6 +5689,74 @@ def test_strategy_guard_stays_blocked_until_three_final_market_sessions() -> Non
     detail = json.loads(releases[0]["detail"])
     assert detail["final_sessions"] == 3
     assert detail["reason"] == "minimum_final_sessions_observed"
+
+
+def test_overseas_strategy_guard_release_requires_positive_recovery_trades(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_markets = ["overseas"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["VOL+RSI"]
+    service.config.auto_trade.strategy_guard_min_final_sessions = 3
+    service.config.auto_trade.strategy_guard_release_requires_recovery = True
+    service.config.auto_trade.strategy_guard_release_min_trades = 3
+    service.config.auto_trade.strategy_guard_release_min_avg_net_pnl_pct = 0.0
+    service.repository.activate_strategy_guard_state(
+        market="overseas",
+        strategy_flag="VOL+RSI",
+        activated_at="2026-07-29T13:30:00+00:00",
+        activation_session_date="2026-07-29",
+        trigger_trade_count=9,
+        trigger_avg_net_pnl_pct=-0.007,
+    )
+    for session_date in ("2026-07-29", "2026-07-30", "2026-07-31"):
+        _save_test_regime(
+            service,
+            market="overseas",
+            session_date=session_date,
+            return_pct=0.5,
+            trend_regime="up",
+        )
+        regime = service.repository.get_market_regime(
+            "overseas",
+            session_date,
+        )
+        assert regime is not None
+        regime["is_final"] = 1
+        service.repository.upsert_market_regime(regime)
+
+    assert service._strategy_guard_blocked_keys() == {
+        ("overseas", "VOL+RSI")
+    }
+    blocked = service._strategy_guard_cache["blocked_detail"][0]
+    assert blocked["retention_source"] == "recovery_evidence_hold"
+    assert blocked["recovery_trade_count"] == 0
+
+    for index in range(3):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=f"2026-07-31T1{index}:00:00+00:00",
+            market="overseas",
+            symbol=f"REC{index}",
+            exchange_code="NASD",
+            action_reason="take_profit",
+            strategy_flag="VOL+RSI",
+            pnl_pct=0.01,
+            entry_price=100.0,
+            qty_executed=1,
+        )
+    service._cycle_count = 1
+
+    assert service._strategy_guard_blocked_keys() == set()
+    released = service.repository.list_event_log(
+        event_type="strategy_guard_released",
+        limit=1,
+    )[0]
+    detail = json.loads(released["detail"])
+    assert detail["reason"] == "post_activation_recovery_confirmed"
+    assert detail["recovery_trade_count"] == 3
+    assert detail["recovery_avg_net_pnl_pct"] > 0
 
 
 def test_strategy_guard_uses_independent_market_policy_parameters(

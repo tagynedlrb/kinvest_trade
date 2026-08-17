@@ -1527,6 +1527,15 @@ class KisRestClient:
                 (payload.get("_response_headers", {}) or {}).get("tr_cont") or ""
             ),
             "page_count": page_count,
+            "pagination_truncated": bool(
+                paginate
+                and page_count >= page_limit
+                and str(
+                    (payload.get("_response_headers", {}) or {}).get("tr_cont")
+                    or ""
+                ).strip().upper()
+                in {"M", "F"}
+            ),
             "raw": payload,
         }
 

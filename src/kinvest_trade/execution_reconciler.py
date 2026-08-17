@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from .client import parse_kis_number
-from .market_sessions import KST
+from .market_sessions import KST, NEW_YORK
 
 if TYPE_CHECKING:
     from .liquidity_lab import LiquidityLabService
@@ -19,6 +19,7 @@ _TERMINAL_STATUSES = {
     "PARTIAL_CANCELED",
     "REJECTED",
 }
+_OVERSEAS_HISTORY_MAX_PAGES = 50
 
 
 def _as_float(value: object) -> float:
@@ -60,6 +61,7 @@ class BrokerExecutionReconciler:
             "finalized": 0,
             "no_fill": 0,
             "terminal_followups": 0,
+            "expired_day_orders": 0,
             "failed_markets": 0,
         }
         if not executions:
@@ -117,6 +119,11 @@ class BrokerExecutionReconciler:
                 terminal_followup = terminal_followups.get(
                     int(execution.get("broker_event_id") or 0)
                 )
+                past_session = self._is_expired_day_order(
+                    market,
+                    execution,
+                    current,
+                )
                 snapshot = self._execution_snapshot(
                     market,
                     execution,
@@ -125,9 +132,16 @@ class BrokerExecutionReconciler:
                         order_key in canceled_originals
                         or ("", normalized) in canceled_originals
                         or terminal_followup is not None
+                        or past_session
                     ),
                 )
                 stored_history = dict(history_row)
+                if past_session and snapshot["status"] in {
+                    "CANCELED",
+                    "PARTIAL_CANCELED",
+                }:
+                    stored_history["_system_day_order_expired"] = True
+                    stats["expired_day_orders"] += 1
                 if terminal_followup is not None:
                     stored_history["_terminal_followup"] = {
                         "event_id": int(terminal_followup.get("id") or 0),
@@ -218,11 +232,44 @@ class BrokerExecutionReconciler:
                 exchange_code="",
                 sort_sqn="DS",
                 paginate=True,
-                max_pages=10,
+                max_pages=_OVERSEAS_HISTORY_MAX_PAGES,
             )
+            if bool(history.get("pagination_truncated")):
+                detail = {
+                    "market": market,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "page_count": int(history.get("page_count") or 0),
+                    "page_limit": _OVERSEAS_HISTORY_MAX_PAGES,
+                    "pending_execution_count": len(executions),
+                }
+                self.service._save_event(
+                    event_type="execution_history_pagination_truncated",
+                    market=market,
+                    detail=detail,
+                )
+                raise RuntimeError(
+                    "overseas execution history exceeded pagination limit"
+                )
         return [
             row for row in history.get("orders", []) if isinstance(row, dict)
         ]
+
+    @staticmethod
+    def _is_expired_day_order(
+        market: str,
+        execution: dict,
+        now: datetime,
+    ) -> bool:
+        """Standard overseas orders have no GTC field and expire by session."""
+        if market != "overseas":
+            return False
+        order_date = str(execution.get("order_date") or "").strip()
+        try:
+            order_day = datetime.strptime(order_date, "%Y-%m-%d").date()
+        except ValueError:
+            return False
+        return order_day < now.astimezone(NEW_YORK).date()
 
     def _index_history(
         self,

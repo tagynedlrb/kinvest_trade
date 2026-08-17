@@ -216,13 +216,28 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert domestic.auto_trade.strategy_guard_probe_max_submissions_per_session == 0
     assert overseas.auto_trade.strategy_guard_probe_enabled is True
     assert overseas.auto_trade.strategy_guard_probe_strategy_flags == [
-        "VWAP+RSI"
+        "VWAP+RSI",
+        "VOL+RSI",
+        "VWAP+VOL",
+        "VWAP+VOL+RSI",
     ]
     assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 3
     assert overseas.auto_trade.strategy_guard_probe_max_submissions_per_session == 6
     assert overseas.auto_trade.strategy_guard_probe_slot_multiplier == 0.10
     assert overseas.auto_trade.strategy_guard_probe_benchmark_floor_pct == 0.0
     assert overseas.auto_trade.strategy_guard_probe_regime_max_age_sec == 600
+    assert domestic.auto_trade.strategy_guard_release_requires_recovery is False
+    assert overseas.auto_trade.strategy_guard_release_requires_recovery is True
+    assert domestic.auto_trade.strategy_guard_release_min_trades == 3
+    assert overseas.auto_trade.strategy_guard_release_min_trades == 3
+    assert domestic.auto_trade.strategy_guard_release_min_avg_net_pnl_pct == 0.0
+    assert overseas.auto_trade.strategy_guard_release_min_avg_net_pnl_pct == 0.0
+    assert domestic.auto_trade.virtual_settlement_stale_order_minutes == 5
+    assert overseas.auto_trade.virtual_settlement_stale_order_minutes == 5
+    assert domestic.auto_trade.virtual_settlement_retry_cooldown_minutes == 15
+    assert overseas.auto_trade.virtual_settlement_retry_cooldown_minutes == 15
+    assert domestic.auto_trade.virtual_settlement_max_submissions_per_session == 3
+    assert overseas.auto_trade.virtual_settlement_max_submissions_per_session == 3
     assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
     assert overseas.auto_trade.entry_confirmation_strategy_flags == []
     assert domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == [

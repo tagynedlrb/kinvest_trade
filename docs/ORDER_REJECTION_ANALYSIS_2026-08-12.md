@@ -102,3 +102,16 @@
   No terminal broker rejection occurred in the Aug. 17 session after the DLO
   cases, but the explicit market-scoped window closes the remaining known
   recurrence path rather than relying on reconciliation speed alone.
+- Commit `800878d` passed all 843 tests in 232.33 seconds, compiled cleanly,
+  passed `git diff --check`, and was pushed to `origin/master` before restart.
+- Pre-restart backup
+  `data/trading_backup_20260817_211807_pre_stale_guard_deploy.db` passed
+  `quick_check` with zero foreign-key violations; SHA-256 is
+  `d103654df9904e45d7b1bf425eeff2f47603b61ef635140a06a8119e822f6d95`.
+- The service restarted at `2026-08-17T21:18:20Z` as PID `1759845` with zero
+  restarts. Two natural closed-market cycles recorded 89/89 successful API
+  attempts, zero terminal failures, and zero unfinalized executions. The five
+  pending virtual settlements remained queued for the next regular US session.
+- Policy evaluation `#107` now owns forward validation; evaluation `#103` was
+  closed as partially validated and superseded. Telegram report log `#2531`
+  succeeded.

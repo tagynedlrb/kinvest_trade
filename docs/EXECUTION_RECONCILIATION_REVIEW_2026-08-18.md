@@ -58,15 +58,15 @@
   `sideways|normal|calm`. After missing fills were restored, eight strategy
   exits produced two winners and -210.45 USD, not the previously visible
   +145.73 USD.
-- August 17 Nasdaq: -0.3152%, volume unavailable,
-  `down|unknown|calm`. Fourteen confirmed account exits produced two winners
-  and -411.25 USD. Strategy-owned exits lost 116.16 USD; delayed virtual
-  settlements lost another 295.09 USD.
+- August 17 Nasdaq: -0.3152%, volume ratio 0.8680,
+  `down|normal|calm`. Eleven strategy-owned exits produced two winners and
+  -69.10 USD; three delayed virtual settlements lost another 295.09 USD, for
+  14 account exits and -364.19 USD in total.
 - The August 14-17 `VOL+RSI` forward set had nine exits, one winner, and
   -313.89 USD. Across the 336-hour policy window it had 11 exits, one winner,
   -0.5908% average net return, and -448.31 USD. Full-size continuation is
   rejected; small probes preserve learning and trade flow.
-- `VWAP+VOL` had nine August 17 exits, two winners, and -30.13 USD, while its
+- `VWAP+VOL` had nine August 17 exits, two winners, and +16.93 USD, while its
   unweighted average net return remained +0.1813%. This is near-flat rather
   than a sufficient loss signal, so it remains tradable unless the normal
   rolling guard threshold is breached.
@@ -96,3 +96,29 @@
 - It is not evidence that a more expensive model is inherently superior. No
   controlled model or token-budget comparison was run, so comparative value
   remains unverified.
+
+## Deployment Verification
+
+- Full suite: 842 passed in 232.08 seconds. `compileall` and
+  `git diff --check` passed; `ruff` was not installed.
+- Implementation commit `288b0cd` was pushed to `origin/master` before the
+  service restart.
+- Pre-deploy backup:
+  `data/trading_backup_20260817_210209_pre_execution_reconcile_deploy.db`,
+  592,257,024 bytes, SHA-256
+  `b721134f0d13b565ebe357b8a50a93d9a2abf35b7c61488d7a426ffdb66d13ae`.
+  SQLite quick check passed with zero foreign-key violations.
+- Production-ledger reconciliation matched all 51 pending rows, finalized 44
+  filled groups and six no-fill groups, restored 19 sells, and left zero
+  unfinalized executions.
+- Service restarted at `2026-08-17T21:03:15Z` as PID 1757755. After natural
+  closed-market cycles it retained zero unfinalized executions, zero service
+  restarts, and 70/70 successful API attempts.
+- The restored 336-hour ledger reactivated the overseas `VOL+RSI` guard with
+  11 exits and -0.5908% average net return. The active-guard event records the
+  domestic time-based release rule and the overseas recovery-evidence rule
+  separately.
+- Telegram deployment report 2528 succeeded. Policy evaluation 106 stores the
+  incident, corrected market-conditioned results, rejected alternatives,
+  deployment evidence, and forward validation contract. Evaluations 91, 96,
+  100, 102, 104, and 105 were reconciled or updated from the corrected ledger.

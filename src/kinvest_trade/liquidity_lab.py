@@ -7837,10 +7837,7 @@ class LiquidityLabService:
                 "overseas",
                 symbol,
             )
-            if (
-                symbol not in monitored_symbols
-                and corporate_action is not None
-            ):
+            if corporate_action is not None:
                 excluded.append(
                     ExcludedCandidate(
                         market="overseas",
@@ -7849,6 +7846,7 @@ class LiquidityLabService:
                         snapshot={
                             "symbol": symbol,
                             "exchange_code": candidate.exchange_code,
+                            "held": symbol in held_symbols,
                             "corporate_action": (
                                 self._corporate_action_snapshot(
                                     corporate_action
@@ -8451,16 +8449,23 @@ class LiquidityLabService:
                 quote = quote_map.get(symbol)
                 if avg_price <= 0:
                     continue
-                current_price = (
-                    quote.last_price
-                    if quote is not None
-                    else max(
-                        self._parse_float(row.get("ovrs_now_pric")),
-                        self._parse_float(row.get("ovrs_now_pric1")),
-                        self._parse_float(row.get("now_pric2")),
-                        self._parse_float(row.get("last_price")),
-                    )
+                corporate_action = self._effective_corporate_action(
+                    "overseas",
+                    symbol,
                 )
+                if corporate_action is not None:
+                    current_price = float(corporate_action.cash_consideration)
+                else:
+                    current_price = (
+                        quote.last_price
+                        if quote is not None
+                        else max(
+                            self._parse_float(row.get("ovrs_now_pric")),
+                            self._parse_float(row.get("ovrs_now_pric1")),
+                            self._parse_float(row.get("now_pric2")),
+                            self._parse_float(row.get("last_price")),
+                        )
+                    )
                 if current_price <= 0:
                     current_price = avg_price
                 pnl_pct = (current_price - avg_price) / avg_price if avg_price > 0 else 0.0

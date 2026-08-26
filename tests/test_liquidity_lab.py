@@ -6936,6 +6936,92 @@ def test_corporate_action_real_position_requires_review_without_settlement() -> 
     assert "자동정산하지 않음" in service.notifier.messages[0]
 
 
+def test_effective_corporate_action_marks_real_holding_and_blocks_strategy_exit() -> None:
+    service = _build_run_service()
+    _configure_test_corporate_action_service(service)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="CCRN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="previous_state",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        holding_qty=281,
+        last_price=13.25,
+        pnl_pct=(13.25 - 13.235) / 13.235,
+        entry_price=13.235,
+        peak_price=13.26,
+        has_position=1,
+        snapshot_json=asdict(_snapshot(price=13.25)),
+        updated_at="2026-08-26T13:10:28+00:00",
+    )
+    service._overseas_balance_cache = {
+        "cycle": 7,
+        "data": {
+            "NASD": {
+                "positions": [
+                    {
+                        "ovrs_pdno": "CCRN",
+                        "ovrs_excg_cd": "NASD",
+                        "ovrs_cblc_qty": "281",
+                        "ord_psbl_qty": "281",
+                        "pchs_avg_pric": "13.235",
+                        "ovrs_now_pric": "0",
+                    }
+                ]
+            }
+        },
+    }
+    positions = asyncio.run(service._load_overseas_positions([]))
+    assert len(positions) == 1
+    held = positions[0]
+    assert held.current_price == 13.25
+    assert held.pnl_pct == pytest.approx((13.25 - 13.235) / 13.235)
+    quote = OverseasScanResult(
+        symbol="CCRN",
+        exchange_code="NASD",
+        last_price=12.0,
+        bid=11.99,
+        ask=12.01,
+        spread_pct=0.001,
+        change_rate_pct=-9.0,
+        volume=100,
+        orderable_qty=281,
+        fx_rate_krw=1350.0,
+        activity_score=0.0,
+    )
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="CCRN",
+        exchange_code="NASD",
+        price=0.0,
+        activity_score=0.0,
+        signal_snapshot=_snapshot(price=12.0),
+        held_position=held,
+        holding_qty=281,
+    )
+    exits = asyncio.run(
+        service._select_overseas_exit_targets(
+            [quote],
+            [held],
+            max_exits=5,
+        )
+    )
+
+    assert watch_target.action_bias == "HOLD"
+    assert watch_target.signal_state == "CORPORATE_ACTION_REVIEW"
+    assert watch_target.price == 13.25
+    assert watch_target.signal_snapshot is None
+    assert (
+        watch_target.decision_reason
+        == "corporate_action_real_position_review_required"
+    )
+    assert exits == []
+
+
 def test_corporate_action_reconcile_defers_on_stale_balance_cache() -> None:
     service = _build_run_service()
     _configure_test_corporate_action_service(service)
@@ -7080,7 +7166,7 @@ def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
     scanned: list[str] = []
 
     async def fake_held_map():
-        return {}
+        return {"CPRX": "NASD"}
 
     async def fake_scan(candidate):
         scanned.append(candidate.symbol)
@@ -7109,11 +7195,12 @@ def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
 
     assert scanned == ["AAPL"]
     assert [row.symbol for row in ranked] == ["AAPL"]
-    assert held == set()
+    assert held == {"CPRX"}
     excluded = next(
         row for row in service._overseas_excluded if row.code == "CPRX"
     )
     assert excluded.reasons == ["corporate_action_effective"]
+    assert excluded.snapshot["held"] is True
     assert (
         excluded.snapshot["corporate_action"]["cash_consideration"]
         == 31.50
@@ -11319,12 +11406,13 @@ def test_held_position_shows_hold_not_wait() -> None:
 
 def test_held_position_with_invalid_live_price_logs_last_validated_state() -> None:
     service = _build_run_service()
+    symbol = "HALT"
     persisted_at = "2026-08-26T12:59:00+00:00"
     persisted_pnl = (13.25 - 13.235) / 13.235
     persisted_snapshot = _snapshot(price=13.25, volume_ratio=1.2)
     service.repository.upsert_lab_symbol_state(
         market="overseas",
-        symbol="CCRN",
+        symbol=symbol,
         exchange_code="NASD",
         action_bias="HOLD",
         signal_state="HOLD",
@@ -11342,7 +11430,7 @@ def test_held_position_with_invalid_live_price_logs_last_validated_state() -> No
         updated_at=persisted_at,
     )
     held = OverseasHeldPosition(
-        symbol="CCRN",
+        symbol=symbol,
         exchange_code="NASD",
         quantity=281,
         orderable_qty=281,
@@ -11353,7 +11441,7 @@ def test_held_position_with_invalid_live_price_logs_last_validated_state() -> No
 
     watch_target = service._build_watch_target_status(
         market="overseas",
-        code="CCRN",
+        code=symbol,
         exchange_code="NASD",
         price=0.0,
         activity_score=0.0,
@@ -11377,7 +11465,7 @@ def test_held_position_with_invalid_live_price_logs_last_validated_state() -> No
     assert cycle["action_reason"] == "invalid_live_price_hold"
     assert cycle["price"] == pytest.approx(13.25)
     assert cycle["pnl_pct"] == pytest.approx(persisted_pnl)
-    persisted = service.repository.get_lab_symbol_state("overseas", "CCRN")
+    persisted = service.repository.get_lab_symbol_state("overseas", symbol)
     assert persisted["updated_at"] == persisted_at
     assert persisted["last_price"] == pytest.approx(13.25)
 

@@ -41,6 +41,18 @@
         "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-485",
         "https://www.sec.gov/Archives/edgar/data/1369568/000119312526210587/d90722ddefa14a.htm"
       ]
+    },
+    "CCRN": {
+      "action_type": "cash_merger",
+      "effective_date": "2026-07-21",
+      "last_trading_date": "2026-07-20",
+      "cash_consideration": 13.25,
+      "currency": "USD",
+      "status": "effective",
+      "reference_urls": [
+        "https://www.nasdaqtrader.com/TraderNews.aspx?id=ECA2026-513",
+        "https://www.sec.gov/Archives/edgar/data/1141103/000114036126025249/ny20073866x2_defm14a.htm"
+      ]
     }
   },
   "parameters": {

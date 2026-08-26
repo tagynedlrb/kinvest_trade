@@ -190,6 +190,15 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert cprx_action.currency == "USD"
     assert cprx_action.status == "effective"
     assert len(cprx_action.reference_urls) == 2
+    ccrn_action = overseas.corporate_actions["CCRN"]
+    assert ccrn_action.action_type == "cash_merger"
+    assert ccrn_action.effective_date == "2026-07-21"
+    assert ccrn_action.last_trading_date == "2026-07-20"
+    assert ccrn_action.cash_consideration == 13.25
+    assert ccrn_action.status == "effective"
+    assert ccrn_action.reference_urls[0].startswith(
+        "https://www.nasdaqtrader.com/"
+    )
     assert domestic.auto_trade.strategy_guard_lookback_hours == 336
     assert overseas.auto_trade.strategy_guard_lookback_hours == 336
     assert domestic.auto_trade.strategy_guard_min_trades == 3

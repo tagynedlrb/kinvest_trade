@@ -675,6 +675,37 @@ class WatchStateHelper:
         holding_qty: int = 0,
     ) -> "WatchTargetStatus":
         service = self.service
+        corporate_action = (
+            service._effective_corporate_action(market, code)
+            if market == "overseas" and held_position is not None
+            else None
+        )
+        if corporate_action is not None:
+            persisted = self.get_persisted_symbol_state(market, code) or {}
+            consideration = float(corporate_action.cash_consideration)
+            return service._make_watch_target_status(
+                market=market,
+                code=code,
+                exchange_code=exchange_code,
+                price=consideration,
+                activity_score=activity_score,
+                signal_score=0.0,
+                action_bias="HOLD",
+                signal_state="CORPORATE_ACTION_REVIEW",
+                ma_summary="-",
+                note=(
+                    "corporate_action_real_position_review_required"
+                    f"|cash_consideration={consideration:.4f}"
+                ),
+                holding_qty=holding_qty,
+                signal_snapshot=None,
+                strategy_flag=str(persisted.get("strategy_flag", "") or ""),
+                entry_by=str(persisted.get("entry_by", "") or ""),
+                decision_reason=(
+                    "corporate_action_real_position_review_required"
+                ),
+                is_virtual=bool(getattr(held_position, "is_virtual", False)),
+            )
         if market == "overseas" and held_position is not None and price <= 0:
             persisted = self.get_persisted_symbol_state(market, code) or {}
             try:
@@ -1399,6 +1430,17 @@ class WatchStateHelper:
                 symbols_to_check.add(position.symbol.upper())
 
         for symbol in symbols_to_check:
+            if (
+                service._effective_corporate_action(
+                    "overseas",
+                    symbol,
+                )
+                is not None
+            ):
+                skip_policy_exit_symbols.add(symbol)
+                service._clear_no_orderable_retry("overseas", symbol)
+                service._reset_no_orderable_stall("overseas", symbol)
+                continue
             quote = quote_map.get(symbol)
             real = real_by_symbol.get(symbol)
             if quote is None:

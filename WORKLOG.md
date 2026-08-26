@@ -67,6 +67,18 @@
   647,405,568바이트, mode 600, SHA-256
   `501a38275b7cd9ab19db3b5d60a60249c00490eb901a41ba125a2fa230304406`이며
   `quick_check=ok`, FK 위반 0이다.
+- 최종 보정 커밋 `43f3e3c544459cb3c8f246ed8b781cea63c91b16`도
+  원격 `master`와 일치한다. 17:13:49 UTC부터 PID 1893888,
+  `active/running`, `NRestarts=0`, runtime `last_error=null`이다.
+  자연 사이클에서 NPAC은 `zero_volume_after_repeated_no_fill` 이벤트 1건과
+  Telegram 1건만 남겼고 추가 정산 주문은 0건이다. 두 번째 사이클 뒤에도
+  양쪽 건수는 1로 유지됐다.
+- 최종 재배포 뒤 API 127시도·127논리요청은 전부 성공했고 종단실패 0,
+  warning/error journal 0, 유휴 DB/WAL FD 0이다. `quick_check=ok`, FK 위반,
+  미종결 실행, 실행/이벤트 고아, 수량오류, 정산 귀속 누락은 모두 0이다.
+- 구조화 평가 118의 커밋을 최종 구현 `43f3e3c`로 갱신했고 전향 검증 전이라
+  `reviewed_at`은 비워 뒀다. 자동 NPAC 보류 보고는 Telegram 원장 `id=2913`,
+  종합 감사 보고는 `id=2914`, 901자이며 둘 다 `success=1`이다.
 - 상세 수치와 반증조건은
   `docs/FULL_DATA_AND_SETTLEMENT_AUDIT_2026-08-26.md`에 보존한다.
 

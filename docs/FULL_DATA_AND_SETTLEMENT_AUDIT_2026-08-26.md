@@ -151,3 +151,16 @@ Sources: [Nasdaq NPAC](https://www.nasdaq.com/market-activity/stocks/npac),
   `data/trading_backup_20260826_171259_pre_zero_volume_precedence_deploy.db`,
   SHA-256 `501a38275b7cd9ab19db3b5d60a60249c00490eb901a41ba125a2fa230304406`,
   with `quick_check=ok` and zero foreign-key violations.
+- Final implementation commit
+  `43f3e3c544459cb3c8f246ed8b781cea63c91b16` matches remote `master`.
+  The service has run from 17:13:49 UTC as PID 1893888 with `NRestarts=0` and
+  `last_error=null`.
+- Forward observation produced exactly one NPAC
+  `zero_volume_after_repeated_no_fill` event, one successful Telegram notice,
+  and zero new settlement submissions. A later cycle kept both notice counts at
+  one. Post-deployment API telemetry reached 127/127 successful logical requests
+  with zero terminal failures; warning/error journal matches and idle DB/WAL file
+  descriptors were zero.
+- Telegram audit records: automatic NPAC notice `id=2913`; consolidated report
+  `id=2914`, 901 characters; both `success=1`. Policy evaluation `id=118` points
+  to the final implementation commit and remains open for forward validation.

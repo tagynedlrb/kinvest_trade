@@ -168,8 +168,29 @@ both equal-trade average net return and `sum(net PnL) / sum(entry notional)`.
 ## Deployment Record
 
 - Pre-deploy implementation validation: 573 related tests passed, followed by
-  focused coverage for gateway retries, weighted guards, settlement pricing,
-  and cross-session breaker attribution. `compileall` and `git diff --check`
+  852/852 full-suite tests in 226.97 seconds. Focused coverage includes gateway
+  retries, typed transport errors, weighted guards, settlement pricing, and
+  cross-session breaker attribution. `compileall` and `git diff --check`
   passed; Black was not installed.
-- Backup, commit, restart, natural-cycle, Telegram, and policy-ledger results
-  are appended after deployment rather than claimed in advance.
+- Online SQLite backup:
+  `data/trading_backup_20260826_111720_pre_reliability_weighted_guard_deploy.db`,
+  647,385,088 bytes, SHA-256
+  `d676ea5fbf2a08889f85572a1a20d69ebe5334671726bdd009d1f6b1b1666eb3`.
+  `quick_check` was `ok` with zero foreign-key violations.
+- Implementation commit `80d6f49` was pushed and independently matched against
+  remote `master` before restart. The user service restarted at
+  2026-08-26 11:18:24 UTC as PID 1846564, active/running with zero restarts.
+- The first live guard audit activated overseas `VWAP+RSI` and `VWAP+VOL` from
+  their capital-weighted losses while retaining the existing `VOL+RSI` and
+  `VWAP+VOL+RSI` states. Domestic formulas remained eligible.
+- Natural post-restart cycles made 73/73 successful API attempts, with zero
+  failed attempts, zero terminal failures, zero unfinalized executions, and no
+  warning-level service journal entries.
+- Policy evaluations 97, 98, 99, 104, 105, 106, and 107 were closed with
+  observed outcomes. New forward evaluations are 108 (overseas weighted guard
+  and settlement), 109 (same-session breaker attribution), and 110 (KIS GET
+  routing retry). Comparative model value remains unverified without an A/B.
+- Telegram deployment report 2875 succeeded. NPAC remains pending before the
+  next VPS-orderable regular session; the first `aggressive_limit` submission
+  and its fill/slippage are explicitly forward-validation evidence, not
+  preclaimed success.

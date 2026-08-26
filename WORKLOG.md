@@ -49,21 +49,68 @@
 - 상세 수치, 거부 결정, 반증조건은
   `docs/FULL_SERVICE_AND_DOMESTIC_FREQUENCY_AUDIT_2026-08-26.md`에 기록했다.
 
-### 검증·배포 전 상태
+### 검증·배포 및 전향관측
 - 고정종목 엔진의 일봉·분봉 `KisApiError`도 무음 처리하지 않고 종목과 원인을
   journald WARNING에 남기도록 보완했다.
-- 새 운영 `.venv`에서 전체 **866개** 테스트(최종 116.26초), 영향 모듈 559개와
+- 새 운영 `.venv`에서 전체 **869개** 테스트(최종 118.45초), 영향 모듈 559개와
+  기업행동·유동성 focused 315개,
   보안 로그·Telegram 회귀 169개, 최종 권한·저장소·클라이언트 회귀 98개,
   전략가드·연결종료 저장소 회귀 49개, `compileall`, Ruff 치명검사, JSON 파싱, ShellCheck, systemd verify,
   `git diff --check`가 모두 통과했다.
 - DB 스냅샷은 `quick_check=ok`, 외래키 위반·미종결 체결·수량오류·체결가누락·
-  주문고아·최종시장리뷰 누락이 모두 0이다. Bandit 고위험 0, 전용 환경
+  실행추적 배포 이후 주문고아·최종시장리뷰 누락이 모두 0이다. 실행추적 도입 전
+  제출 이벤트 279개는 당시 execution 행을 만들지 않던 레거시 이력이다. Bandit 고위험 0, 전용 환경
   `pip-audit` 알려진 취약점 0이다.
-- 배포 전 서비스는 PID 1846564, `active/running`, `NRestarts=0`, runtime
-  `last_error=null`이다. NPAC 396주와 UTZ 56주는 미장 정규장 정산 검증 대기다.
+- 최종 서비스는 `2026-08-26T13:43:46Z`부터 PID 1872415,
+  `active/running`, `NRestarts=0`, runtime `last_error=null`이다. 14:00 UTC까지
+  자연 사이클 최소 27회, API 시도 805회·논리요청 804회, 성공 시도 804회,
+  회복 재시도 1회, 종단실패 0회다. warning 이상 journal과 민감 URL/Bearer 형태는
+  0건이며 유휴 DB/WAL FD도 0개다.
 - 구조화 평가 111(RSI/VWAP/국장 빈도), 112(시장별 인버스 후행 그림자),
-  113(런타임·SQLite·로그 내구성)를 백업 전 원장에 추가한다. Git, 백업,
-  재기동, 자연사이클, Telegram 결과는 배포 뒤 이 항목에 이어 기록한다.
+  113(런타임·SQLite·로그 내구성), 114(민감로그·권한), 116(CCRN 현금합병)를
+  추가했다. 평가 108/113/114/116에는 아래 실관측을 구조화해 보존했으며, 다음
+  최종시장 세션·토큰 교체·기업행동 정산 전까지 `reviewed_at`은 비워 둔다.
+
+### 후속 전수감사 수정
+- 운영 PID가 `trading.db` FD 52개를 계속 쥐던 원인은 sqlite context 종료가
+  commit/rollback만 하고 connection을 닫지 않았기 때문이다. 모든 저장소 연결과
+  backup target을 명시적으로 닫도록 수정한 커밋은 `9dd1a2d`다. 격리 500회 호출과
+  배포 PID 유휴 관측에서 DB/WAL FD가 모두 0임을 확인했다.
+- 해외 실보유 종목의 현재가가 0 이하이면 저장된 마지막 정상가로 `HOLD /
+  PRICE_WAIT`하고 상태 신선도·인버스 shadow를 갱신하지 않도록 `0017a8f`에서
+  방어했다. 실보유 잔고 조회 fallback의 무음 예외도 `a227aab`에서 warning과
+  `maintenance_skip`으로 바꿨다.
+- CCRN 가격 0은 일시 장애가 아니었다. Nasdaq 기업행동 공지와 SEC 합병위임장으로
+  7월 21일 현금합병 완료, 최종거래일 7월 20일, 주당 현금 $13.25를 확인했다.
+  `b2e30a4`에서 효력 발생 기업행동 종목을 시세·신호·전략매도에서 제외하고,
+  실보유는 공식 대가로만 `CORPORATE_ACTION_REVIEW` 상태를 표시한다. 브로커 잔고나
+  현금을 합성하지 않는다.
+- 배포 뒤 CCRN 281주는 이벤트 `17560`, Telegram `2894`, 27개 자연 관측에서
+  $13.25·HOLD로 일관됐다. 지표 계산과 브로커 주문은 0건이다. 예상 총 현금
+  $3,723.25의 실제 입금과 수량 0은 평가 116의 미완료 조건으로 남겼다.
+- 첫 정산 시도에서 NPAC 396주와 UTZ 56주는 모두 미체결 취소됐다. 15분 뒤 두 번째
+  시도에서 NPAC은 실패세션 8회·50bp 공격적 지정가 $10.4136도 미체결 취소돼
+  대기 396주를 보존했다. UTZ는 평균 $14.23에 56주 전량 체결됐다. execution 835,
+  `cycle_log` 518563, 그룹 `886bbfb8fb7e425984f2585930fac66c`가 정확히 한 번
+  연결됐고 대기는 0이다. 실차익 +$0.56, 계좌 순손익 -$3.439416(-4,643.21원)을
+  비세션 계좌위험으로 기록했으며 앞선 가상 전략성과를 중복 계산하지 않았다.
+
+### 로그·백업 보존
+- 현재 생존 판정은 구형 `heartbeats` 마지막 행이 아니라 systemd PID/상태,
+  `state/runtime_state.json` 수정시각과 `telegram_control.last_completed_at`, 이어지는
+  `cycle_log`·`api_call_log`를 함께 사용한다. 이 네 경로는 배포 뒤 계속 갱신됐다.
+- CCRN 배포 전 온라인 백업은
+  `data/trading_backup_20260826_134336_pre_ccrn_corporate_action_deploy.db`,
+  SHA-256 `84bf017746161230ca6927ea921a2007afaf2b5a9a08a40fe29171dc4b2f3aea`다.
+  실정산·평가원장 변경 전 최종 온라인 백업은
+  `data/trading_backup_20260826_135830_pre_final_audit_ledger.db`, 647,405,568바이트,
+  SHA-256 `991ba105b993e754d4709694af5ef3c576bf772688da016a50d809976506d1d9`다.
+  두 백업 모두 mode 600, `quick_check=ok`, 외래키 위반 0이다.
+- 백업 112개·32.19GiB 중 14일 초과 원본 DB 98개·25,964,158,976바이트를 dry-run으로
+  식별했다. `scripts/archive_db_backups.sh`는 기본 dry-run이고, `--apply`에서 각 DB
+  quick-check, 저우선순위 단일 스레드 zstd, 압축검사, SHA-256을 모두 통과한 뒤에만
+  원본을 제거한다. 임시 DB 압축·복원 검증은 통과했지만 미장 운영 중 실제 보관 작업은
+  실행하지 않았다.
 
 ## [2026-08-13] 미장 미체결 한도 반환과 제한적 빈도 회복
 

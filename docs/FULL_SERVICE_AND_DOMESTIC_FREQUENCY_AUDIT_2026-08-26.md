@@ -75,6 +75,9 @@ RSI 워밍업 봉을 확보한다. 기존 VWAP은 이 전체 배열을 사용해
   넘는 후보 신호를 종가까지 차단했다.
 - 앞선 배포의 세션 귀속 수정은 이 발동을 교차 세션으로 분류한다. 30분 보호와 신선한
   KOSPI 회복 조건은 유지하지만 종일 차단에는 쓰지 않는다.
+- 운영 DB의 온라인 격리 복제본에서 실제 00:32 UTC 해제 직후를 재생했다. 결과는
+  `fire_count=1`, `session_loss_fire_count=0`, `cross_session_fire_count=1`,
+  `same_session_loss_streak=1`, `session_stop_exempted=true`, 최종 차단사유 없음이었다.
 - 8월 13일과 14일처럼 같은 세션에 실제 3연속 확정 손실이 있으면 종일 차단은 그대로다.
 - 다음 KRX 세션에는 `same_session_loss_streak < 3`인 CB 해제 뒤 신규 진입이 가능한지,
   RSI/VWAP 수정으로 신호 분류가 어떻게 달라지는지 평가 109와 새 평가 원장에 연결한다.
@@ -119,6 +122,8 @@ SQLite `DELETE` 저널과 기본 5초 잠금에서 감사 읽기와 쓰기 잠�
 
 - 저장소 기본을 WAL로 전환
 - 모든 저장소 연결의 busy timeout을 30초로 상향
+- Python sqlite context 종료 뒤 연결을 명시적으로 close. 기존 운영 PID의 지속 DB FD
+  52개와 달리 격리 프로세스 500회 연속 조회 뒤 열린 DB FD 0개 확인
 - 온라인 backup API도 같은 대기 정책 사용
 - 현재 약 29,458개 free page는 재사용 가능하고 디스크 여유가 142GB라 운영 중
   `VACUUM`은 수행하지 않는다.
@@ -145,7 +150,7 @@ SQLite `DELETE` 저널과 기본 5초 잠금에서 감사 읽기와 쓰기 잠�
 - `.venv` 전용 Python과 `scripts/bootstrap_runtime_env.sh`
 - `pip check` 통과, 전용 환경 `pip-audit` 알려진 취약점 0
 - systemd `NoNewPrivileges`, `PrivateTmp`, read-only home/system 및 `data/`, `logs/`,
-  `state/`만 쓰기 허용
+  `state/` 쓰기 허용 속성을 선언
 - API/Telegram DB 로그 저장 실패를 journald ERROR로 남기는 2차 경로 추가
 - `KINVEST_LOG_LEVEL=INFO`로 기동, 시장수집, 체결조정 상태를 journald에서도 확인
 - 요청 URL에 자격정보가 포함될 수 있는 `httpx`, `httpcore`, `urllib3`는 WARNING 이상으로
@@ -156,6 +161,12 @@ SQLite `DELETE` 저널과 기본 5초 잠금에서 감사 읽기와 쓰기 잠�
 - 고정종목 엔진의 일봉·분봉 KIS 갱신 실패도 journald WARNING으로 대체 기록
 - 서비스 유닛은 disabled 상태였으나 이번 감사에서 enable해 재부팅 자동기동을 복구
 
+실제 비허용 경로 쓰기 probe에서는 현재 user systemd manager가 mount 기반
+`ProtectHome/ProtectSystem/ReadWritePaths`를 강제하지 않았다. bubblewrap도 비특권 user
+namespace 제한으로 실행할 수 없어 설치를 되돌렸고, 데몬에 sudo 권한을 주는 우회는
+채택하지 않았다. 따라서 이 속성은 방어 의도 설정이지 현재 보안 경계가 아니다.
+`/proc`에서 확인한 `NoNewPrivs=1`, 디렉터리 700, 비밀·DB·백업 600이 현재 실효 경계다.
+
 Bandit은 고위험 0건이었다. 동적 SQL 경고는 상수 테이블 목록과 내부 생성 컬럼만 쓰는
 경로였고 외부 입력이 식별자로 들어가지 않는다. ShellCheck와 systemd 유닛 검증도 통과했다.
 기존 동적 딕셔너리 타입 때문에 전체 mypy 기준선은 410건으로, 이번 변경의 합격 기준으로
@@ -163,12 +174,13 @@ Bandit은 고위험 0건이었다. 동적 SQL 경고는 상수 테이블 목록�
 
 ## 검증
 
-- 새 `.venv` 전체 테스트: 865 passed
+- 새 `.venv` 전체 테스트: 866 passed
 - 영향 모듈 확대 테스트: 559 passed
 - focused RSI/VWAP/가드/SQLite/인버스 테스트: 통과
 - `compileall`: 통과
 - Ruff `E9,F63,F7,F82`: 통과
 - JSON 전체 파싱, ShellCheck, `systemd-analyze --user verify`, `git diff --check`: 통과
+- systemd 허용경로 쓰기 smoke: 통과; 비허용경로 거부 probe: 실패(호스트 제약으로 보류)
 - `doctor`: vps/paper, dry-run false, paper 주문 제출 활성, 경고 없음
 
 ## 배포 후 전향검증
@@ -180,3 +192,12 @@ Bandit은 고위험 0건이었다. 동적 SQL 경고는 상수 테이블 목록�
 5. WAL 전환 뒤 DB lock, API/Telegram 로그 누락, service restart 수를 계속 감시한다.
 
 광범위한 빈도 상향, CB 제거, 인버스 실거래 승격은 위 전향검증 전에는 시행하지 않는다.
+
+## 미장 빈도와 가드 재평가
+
+최근 336시간 확정 청산의 자본가중 순성과는 `VOL+RSI` 11건 -0.484%,
+`VWAP+VOL` 28건 -0.131%, `VWAP+RSI` 7건 -0.679%다. 특히 `VWAP+RSI`는
+거래별 단순평균이 +0.108%여도 큰 포지션 손실 때문에 총 순손익이 -$129.74다.
+현재 네 복합 공식의 활성 가드는 이 손실 비대칭을 반영하고 있으며, 제한적 검증진입만
+회복 증거를 수집한다. 거래 횟수를 늘리기 위한 가드 해제는 순기대값과 자본가중 성과가
+동시에 양수가 되기 전에는 시행하지 않는다.

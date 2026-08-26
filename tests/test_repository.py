@@ -26,6 +26,16 @@ def test_repository_uses_wal_and_extended_busy_timeout(tmp_path) -> None:
     assert backup_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_repository_connection_context_closes_after_transaction(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "closed_connection.db")
+
+    with repository._connect() as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
 def test_prune_operational_logs_preserves_trade_history(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_api_call(

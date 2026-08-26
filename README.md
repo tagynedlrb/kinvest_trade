@@ -126,8 +126,11 @@
     참조값을 함께 비교한다.
 18. **운영 서비스는 시스템 Python이 아니라 감사된 전용 환경과 WAL 원장을 사용한다.**
     `requirements-runtime.lock`과 `.venv`를 통해 OS 패키지와 거래 의존성을 분리하고,
-    systemd는 `data/`, `logs/`, `state/`만 쓸 수 있다. SQLite는 WAL과 30초 잠금 대기를 사용해
-    거래 기록, Telegram 조회, 백업이 서로 막힐 가능성을 낮춘다. DB 로그 저장 실패는
+    systemd unit은 `data/`, `logs/`, `state/`만 쓰도록 선언한다. 다만 현재 호스트의
+    user manager에서는 mount 기반 `ProtectHome/ProtectSystem/ReadWritePaths`가 실제 쓰기
+    경계로 강제되지 않으므로 보안 경계로 간주하지 않는다. 현재 실효 보호는
+    `NoNewPrivileges`, `UMask=0077`, 소유자 전용 파일권한이다. SQLite는 WAL과 30초 잠금
+    대기를 사용해 거래 기록, Telegram 조회, 백업이 서로 막힐 가능성을 낮춘다. DB 로그 저장 실패는
     거래를 중단시키지 않되 journald에 반드시 대체 기록한다. 설치 시 `keys/`, `data/`,
     `logs/`, `state/`는 소유자 외 접근 권한을 제거하고 새 서비스 파일은 `UMask=0077`로 만든다.
 

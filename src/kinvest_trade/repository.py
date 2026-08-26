@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 from .auto_trade_math import (
     DOMESTIC_COST_CALCULATION_VERSION,
@@ -101,14 +103,19 @@ class SqliteRepository:
         self._initialize()
         self.db_path.chmod(0o600)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(
             self.db_path,
             timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000,
         )
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def backup_db(self, suffix: str = "") -> Path:
         from datetime import datetime, timezone
@@ -116,10 +123,11 @@ class SqliteRepository:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         tag = f"_{suffix}" if suffix else ""
         backup_path = self.db_path.parent / f"{self.db_path.stem}_backup_{ts}{tag}.db"
-        with self._connect() as source, sqlite3.connect(
+        target_connection = sqlite3.connect(
             backup_path,
             timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000,
-        ) as target:
+        )
+        with self._connect() as source, closing(target_connection) as target:
             source.backup(target)
         backup_path.chmod(0o600)
         return backup_path

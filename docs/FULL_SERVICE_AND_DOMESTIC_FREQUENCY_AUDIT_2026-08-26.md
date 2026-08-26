@@ -247,6 +247,16 @@ fallback 변경을 재검토한다. 이 결정과 반증조건은 정책평가 1
 `951813c8055fbee17b4c20768aa6098eedc7b9bf8572396b23ba81047c4bbf48`이며
 mode 600, `quick_check=ok`, 외래키 위반·미종결 실행 0이다.
 
+구현 커밋 `6393322`를 원격 `master`에 푸시한 뒤 서비스는 14:20:52 UTC부터
+PID 1881955, `active/running`, `NRestarts=0`이다. 자연 사이클 23회와 API
+263시도/263논리요청은 전부 성공했고 종단실패·회복재시도·미종결 실행·warning 이상
+journal·민감 URL/Bearer 형태·유휴 DB/WAL FD는 0이다.
+
+자연 재스캔 `event_log.id=17591`은 1차 1개→fallback 6개를, `id=17598`은
+1차 1개→fallback 9개를 실제 임계값과 심볼까지 기록했다. 정책 1.8→1.08을 더
+완화하지 않고 두 번째 재스캔에서 최소 목표 9개가 회복됐다. 후속 Telegram 보고는
+`telegram_message_log.id=2904`, `success=1`이다.
+
 ### 생존 신호와 백업 보존
 
 레거시 `heartbeats` 테이블의 마지막 행은 현재 데몬 생존 판정 기준이 아니다. 운영 상태는

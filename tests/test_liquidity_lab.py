@@ -9229,6 +9229,41 @@ def test_record_cycle_trade_frequency_saves_low_frequency_event() -> None:
     assert service._recent_order_reason_counts == {}
 
 
+def test_low_frequency_event_separates_entry_blocks_from_position_maintenance() -> None:
+    async def run_case() -> None:
+        service = _build_run_service()
+        service._cycle_count = 200
+
+        for cycle in range(50):
+            reason = "watch:virtual_sell_pending" if cycle < 27 else "watch:volume_low"
+            service._record_cycle_trade_frequency(
+                domestic_orders=[],
+                overseas_orders=[{"skipped": True, "reason": reason}],
+                eligible_markets={"overseas"},
+            )
+        await asyncio.sleep(0)
+
+        events = service.repository.list_event_log(
+            event_type="low_trade_frequency",
+            limit=1,
+        )
+        detail = json.loads(events[0]["detail"])
+        assert detail["top_reasons"] == {
+            "skip:watch:virtual_sell_pending": 27,
+            "skip:watch:volume_low": 23,
+        }
+        assert detail["top_entry_reasons"] == {"skip:watch:volume_low": 23}
+        assert detail["top_maintenance_reasons"] == {
+            "skip:watch:virtual_sell_pending": 27
+        }
+        assert detail["entry_block_observations"] == 23
+        assert detail["maintenance_observations"] == 27
+        assert "진입차단=정책대기:거래량 부족 23회" in service.notifier.messages[0]
+        assert "보유/정산관측=정책대기:가상청산 후 실정산 대기 27회" in service.notifier.messages[0]
+
+    asyncio.run(run_case())
+
+
 def test_dominant_entry_wait_reason_prefers_actionable_policy_block() -> None:
     targets = [
         SimpleNamespace(

@@ -956,6 +956,59 @@ def test_refresh_overseas_dynamic_pool_relaxes_relative_volume_when_results_are_
 
     assert calls == [2.0, 1.2]
     assert len(service._dynamic_overseas_pool) == 9
+    detail = service._tv_scan_event_detail(service._dynamic_overseas_pool)
+    assert detail["primary_threshold"] == 2.0
+    assert detail["primary_count"] == 2
+    assert detail["fallback_attempted"] is True
+    assert detail["fallback_threshold"] == 1.2
+    assert detail["fallback_count"] == 9
+    assert detail["minimum_target_count"] == 9
+    assert detail["selected_count"] == 9
+    assert detail["selected_source"] == "fallback"
+    assert detail["fallback_used"] is True
+    assert detail["symbols"] == [
+        "AAA",
+        "BBB",
+        "CCC",
+        "DDD",
+        "EEE",
+        "FFF",
+        "GGG",
+        "HHH",
+        "III",
+    ]
+
+
+def test_tv_fallback_keeps_larger_primary_result_when_responses_are_inconsistent() -> None:
+    service = _build_service()
+    service._tv_available = True
+    service.client._client = object()
+    calls = 0
+
+    async def fake_scan_top_volume_surge(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return [
+                {"symbol": "AAA", "exchange_code": "NASD"},
+                {"symbol": "BBB", "exchange_code": "NASD"},
+            ]
+        return [{"symbol": "AAA", "exchange_code": "NASD"}]
+
+    original = liquidity_lab_module.scan_top_volume_surge
+    liquidity_lab_module.scan_top_volume_surge = fake_scan_top_volume_surge
+    try:
+        selected = asyncio.run(service._scan_tv_dynamic_pool_with_fallback())
+    finally:
+        liquidity_lab_module.scan_top_volume_surge = original
+
+    assert [row["symbol"] for row in selected] == ["AAA", "BBB"]
+    detail = service._tv_scan_event_detail(selected)
+    assert detail["primary_count"] == 2
+    assert detail["fallback_count"] == 1
+    assert detail["selected_count"] == 2
+    assert detail["selected_source"] == "primary"
+    assert detail["fallback_used"] is False
 
 
 def test_scan_overseas_retries_dynamic_refresh_even_with_manual_pool() -> None:

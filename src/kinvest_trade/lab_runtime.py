@@ -191,15 +191,38 @@ class LabRuntimeManager:
                     key=lambda item: (-int(item[1]), str(item[0])),
                 )[:8]
             )
+            entry_reason_counts = {
+                reason: count
+                for reason, count in reason_counts.items()
+                if not self._is_frequency_maintenance_reason(reason)
+            }
+            maintenance_reason_counts = {
+                reason: count
+                for reason, count in reason_counts.items()
+                if self._is_frequency_maintenance_reason(reason)
+            }
+            top_entry_reasons = dict(
+                sorted(
+                    entry_reason_counts.items(),
+                    key=lambda item: (-int(item[1]), str(item[0])),
+                )[:8]
+            )
+            top_maintenance_reasons = dict(
+                sorted(
+                    maintenance_reason_counts.items(),
+                    key=lambda item: (-int(item[1]), str(item[0])),
+                )[:8]
+            )
             if trade_ratio < 0.01:
                 _logger.warning(
                     "[FREQ][%s] 최근 %d 주문가능 사이클 주문접수율 %.1f%% "
-                    "(trade_count=%d, reasons=%s)",
+                    "(trade_count=%d, entry_reasons=%s, maintenance=%s)",
                     market,
                     cycle_count,
                     trade_ratio * 100.0,
                     trade_count,
-                    top_reasons,
+                    top_entry_reasons,
+                    top_maintenance_reasons,
                 )
                 self.save_event(
                     event_type="low_trade_frequency",
@@ -211,6 +234,12 @@ class LabRuntimeManager:
                         "trade_count": trade_count,
                         "ratio": round(trade_ratio, 4),
                         "top_reasons": top_reasons,
+                        "top_entry_reasons": top_entry_reasons,
+                        "top_maintenance_reasons": top_maintenance_reasons,
+                        "entry_block_observations": sum(entry_reason_counts.values()),
+                        "maintenance_observations": sum(
+                            maintenance_reason_counts.values()
+                        ),
                     },
                 )
                 self._maybe_notify_low_trade_frequency(
@@ -218,7 +247,8 @@ class LabRuntimeManager:
                     cycle_count=cycle_count,
                     trade_count=trade_count,
                     trade_ratio=trade_ratio,
-                    top_reasons=top_reasons,
+                    top_reasons=top_entry_reasons,
+                    maintenance_reasons=top_maintenance_reasons,
                 )
             self.recent_trade_count_by_market[market] = 0
             self.recent_cycle_count_by_market[market] = 0
@@ -239,6 +269,7 @@ class LabRuntimeManager:
         trade_count: int,
         trade_ratio: float,
         top_reasons: dict[str, int],
+        maintenance_reasons: dict[str, int] | None = None,
     ) -> None:
         notifier = self._notifier
         if notifier is None:
@@ -266,6 +297,10 @@ class LabRuntimeManager:
             f"{self._format_frequency_reason(reason)} {count}회"
             for reason, count in list(top_reasons.items())[:3]
         )
+        maintenance_reason_text = ", ".join(
+            f"{self._format_frequency_reason(reason)} {count}회"
+            for reason, count in list((maintenance_reasons or {}).items())[:2]
+        )
         market_label = "국장" if market == "domestic" else "미장"
         loop.create_task(
             notifier.send(
@@ -275,10 +310,24 @@ class LabRuntimeManager:
                         f"시장={market_label}",
                         f"범위=최근 {cycle_count} 주문가능 사이클",
                         f"주문접수={trade_count}건 비율={trade_ratio * 100:.1f}%",
-                        f"주요원인={top_reason_text or '-'}",
+                        f"진입차단={top_reason_text or '-'}",
+                        f"보유/정산관측={maintenance_reason_text or '-'}",
                         "확인=/lab_status /lab_report compare 2026-07-10",
                     ]
                 )
+            )
+        )
+
+    @staticmethod
+    def _is_frequency_maintenance_reason(reason_key: str) -> bool:
+        reason = str(reason_key or "").strip().removeprefix("skip:")
+        reason = reason.removeprefix("watch:")
+        return reason.startswith(
+            (
+                "virtual_sell_pending",
+                "corporate_action_",
+                "price_wait",
+                "time_exit_cost_floor_hold",
             )
         )
 

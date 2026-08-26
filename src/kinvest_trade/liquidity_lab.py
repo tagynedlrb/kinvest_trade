@@ -4878,14 +4878,25 @@ class LiquidityLabService:
         ll_cfg = self.config.liquidity_lab
         target_n = max(1, getattr(ll_cfg, "tv_top_n", 30))
         min_fallback_n = max(1, int(target_n * 0.3))
+        primary_rel_vol = float(getattr(ll_cfg, "tv_min_rel_volume", 2.0))
         tv_rows = await self._scan_tv_dynamic_pool()
         if tv_rows and len(tv_rows) >= min_fallback_n:
             self._last_tv_scan_used_fallback = False
+            self._last_tv_scan_diagnostics = {
+                "primary_threshold": primary_rel_vol,
+                "primary_count": len(tv_rows),
+                "fallback_attempted": False,
+                "fallback_threshold": None,
+                "fallback_count": None,
+                "minimum_target_count": min_fallback_n,
+                "selected_count": len(tv_rows),
+                "selected_source": "primary",
+            }
             return tv_rows
 
         fallback_rel_vol = max(
             1.0,
-            float(getattr(ll_cfg, "tv_min_rel_volume", 2.0)) * 0.6,
+            primary_rel_vol * 0.6,
         )
         _logger.info(
             "[TV] 결과 부족 (%s개 < %s) -> min_rel_volume=%.1f 완화 재시도",
@@ -4896,8 +4907,44 @@ class LiquidityLabService:
         fallback_rows = await self._scan_tv_dynamic_pool(
             min_rel_volume=fallback_rel_vol,
         )
-        self._last_tv_scan_used_fallback = bool(fallback_rows)
-        return fallback_rows or tv_rows or []
+        if fallback_rows and len(fallback_rows) >= len(tv_rows):
+            selected_rows = fallback_rows
+            selected_source = "fallback"
+        elif tv_rows:
+            selected_rows = tv_rows
+            selected_source = "primary"
+        else:
+            selected_rows = []
+            selected_source = "none"
+        self._last_tv_scan_used_fallback = selected_source == "fallback"
+        self._last_tv_scan_diagnostics = {
+            "primary_threshold": primary_rel_vol,
+            "primary_count": len(tv_rows),
+            "fallback_attempted": True,
+            "fallback_threshold": fallback_rel_vol,
+            "fallback_count": len(fallback_rows),
+            "minimum_target_count": min_fallback_n,
+            "selected_count": len(selected_rows),
+            "selected_source": selected_source,
+        }
+        return selected_rows
+
+    def _tv_scan_event_detail(
+        self,
+        tv_rows: list[dict[str, object]],
+    ) -> dict[str, object]:
+        diagnostics = dict(getattr(self, "_last_tv_scan_diagnostics", {}) or {})
+        return {
+            "pool_size": len(tv_rows),
+            "symbols": [str(row.get("symbol") or "") for row in tv_rows],
+            "threshold": float(
+                getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)
+            ),
+            "fallback_used": bool(
+                getattr(self, "_last_tv_scan_used_fallback", False)
+            ),
+            **diagnostics,
+        }
 
     async def _refresh_overseas_dynamic_pool(self) -> None:
         manual_pool = getattr(self, "_manual_overseas_pool", None)
@@ -4911,15 +4958,7 @@ class LiquidityLabService:
                     self._save_event(
                         event_type="tv_scan",
                         market="overseas",
-                        detail={
-                            "pool_size": len(tv_rows),
-                            "threshold": float(
-                                getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)
-                            ),
-                            "fallback_used": bool(
-                                getattr(self, "_last_tv_scan_used_fallback", False)
-                            ),
-                        },
+                        detail=self._tv_scan_event_detail(tv_rows),
                     )
                     preview = ", ".join(row["symbol"] for row in tv_rows[:5])
                     _logger.info(
@@ -4957,15 +4996,7 @@ class LiquidityLabService:
                 self._save_event(
                     event_type="tv_scan",
                     market="overseas",
-                    detail={
-                        "pool_size": len(tv_rows),
-                        "threshold": float(
-                            getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)
-                        ),
-                        "fallback_used": bool(
-                            getattr(self, "_last_tv_scan_used_fallback", False)
-                        ),
-                    },
+                    detail=self._tv_scan_event_detail(tv_rows),
                 )
                 preview = ", ".join(row["symbol"] for row in tv_rows[:5])
                 _logger.info(
@@ -5003,7 +5034,7 @@ class LiquidityLabService:
             self._save_event(
                 event_type="tv_scan",
                 market="overseas",
-                detail={"pool_size": 0, "threshold": float(getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)), "fallback_used": bool(getattr(self, "_last_tv_scan_used_fallback", False))},
+                detail=self._tv_scan_event_detail([]),
             )
             _logger.warning("[풀] 해외 동적 풀 없음 — relist 요청")
             notifier = getattr(self, "notifier", None)

@@ -2603,8 +2603,45 @@ def test_lab_guard_command_reports_persistent_final_session_hold(
 
 def test_lab_guard_command_reports_divergent_market_policies(
     tmp_path,
+    save_confirmed_buy,
+    save_confirmed_sell,
 ) -> None:
     repository = SqliteRepository(tmp_path / "telegram_guard_markets.db")
+    entry_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    exit_at = entry_at + timedelta(minutes=10)
+    save_confirmed_buy(
+        repository,
+        logged_at=entry_at.isoformat(),
+        market="overseas",
+        symbol="PROBE",
+        exchange_code="NASD",
+        action_bias="BUY_REAL",
+        action_reason="strategy_guard_probe:VWAP+RSI|strategy_buy_signal",
+        price=10.0,
+        entry_price=10.0,
+        entry_time=entry_at.isoformat(),
+        qty_executed=10,
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at=exit_at.isoformat(),
+        market="overseas",
+        symbol="PROBE",
+        exchange_code="NASD",
+        action_bias="SELL_REAL",
+        action_reason="take_profit",
+        price=10.2,
+        entry_price=10.0,
+        entry_time=entry_at.isoformat(),
+        qty_executed=10,
+        net_pnl_usd=1.0,
+        net_pnl_krw=1380.0,
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+        is_session_trade=1,
+    )
     notifier = DummyNotifier()
     domestic = SimpleNamespace(
         strategy_guard_lookback_hours=24,
@@ -2672,10 +2709,15 @@ def test_lab_guard_command_reports_divergent_market_policies(
     assert "해외정책=72시간/5건/-0.60% 이하/VWAP+RSI" in message
     assert (
         "검증진입=해외 vps전용(허용) 전략=VWAP+RSI "
-        "진입=0/1 제출=0/2 체결=0 열림=0 미체결종료=0 "
+        "진입=1/1 제출=0/2 체결=1 열림=0 미체결종료=0 "
         "슬롯=10% 지수하한=+0.00% 지표≤600초"
     ) in message
-    assert "성과=없음" in message
+    assert (
+        "검증성과=해외 청산=1/체결=1 승=1 평균순=+1.00% "
+        "중앙=+1.00% 자본가중=+1.00% 누적=+$1.00 "
+        "장세=unknown:temporary:1"
+    ) in message
+    assert "해외 VWAP+RSI 상태=감시 1건" in message
 
 
 def test_build_recent_order_events_message_formats_submission_cancel_and_virtual(tmp_path) -> None:

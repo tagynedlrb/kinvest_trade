@@ -244,6 +244,10 @@ class UnifiedPositionTracker:
         can_execute_real: bool,
         created_at: str,
         reference_avg_price: float | None = None,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        entry_reason: str = "",
+        entry_time: str | None = None,
     ) -> dict:
         del real_qty
         virtual_buy = self.virtual_trades.get_position(market, symbol)
@@ -303,6 +307,10 @@ class UnifiedPositionTracker:
             avg_sell_price=next_avg,
             currency=currency,
             updated_at=created_at,
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            entry_reason=entry_reason,
+            entry_time=entry_time,
         )
         pending_realized_pnl = 0.0
         pending_realized_pnl_pct = 0.0

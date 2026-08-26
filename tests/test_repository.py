@@ -570,6 +570,156 @@ def test_strategy_guard_probe_usage_releases_no_fill_entry_exposure(tmp_path) ->
     }
 
 
+def test_virtual_settlement_backfill_restores_probe_attribution_and_performance(
+    tmp_path,
+    save_confirmed_buy,
+    save_confirmed_sell,
+) -> None:
+    db_path = tmp_path / "settlement_attribution.db"
+    repository = SqliteRepository(db_path)
+    entry_time = "2026-08-25T13:42:56+00:00"
+    exit_time = "2026-08-26T13:46:49+00:00"
+    save_confirmed_buy(
+        repository,
+        logged_at=entry_time,
+        market="overseas",
+        symbol="UTZ",
+        exchange_code="NYSE",
+        action_bias="BUY_REAL",
+        action_reason=(
+            "strategy_guard_probe:VWAP+VOL+RSI|[VWAP+VOL+RSI] pullback_buy"
+        ),
+        price=14.22,
+        entry_price=14.22,
+        qty_executed=56,
+        strategy_flag="VWAP+VOL+RSI",
+        entry_by="VWAP",
+        entry_time=entry_time,
+    )
+    save_confirmed_sell(
+        repository,
+        logged_at=exit_time,
+        market="overseas",
+        symbol="UTZ",
+        exchange_code="NYSE",
+        action_bias="SELL_REAL",
+        action_reason="virtual_sell_settlement",
+        price=14.23,
+        entry_price=14.22,
+        qty_executed=56,
+        net_pnl_usd=-3.44,
+        net_pnl_krw=-4747.2,
+        strategy_flag="",
+        entry_by="",
+        entry_time=None,
+        is_session_trade=0,
+    )
+
+    repository = SqliteRepository(db_path)
+
+    settlement = repository.query_cycle_log(action_bias="SELL_REAL", limit=1)[0]
+    assert settlement["strategy_flag"] == "VWAP+VOL+RSI"
+    assert settlement["entry_by"] == "VWAP"
+    assert settlement["entry_time"] == entry_time
+    execution = repository.list_broker_order_executions(limit=1)[0]
+    assert execution["strategy_flag"] == "VWAP+VOL+RSI"
+    assert execution["entry_by"] == "VWAP"
+    assert execution["entry_time"] == entry_time
+    event = repository.list_broker_order_events(limit=1)[0]
+    assert event["strategy_flag"] == "VWAP+VOL+RSI"
+    assert event["entry_by"] == "VWAP"
+
+    performance = repository.get_strategy_guard_probe_performance(
+        after_logged_at="2026-08-25T00:00:00+00:00",
+        market="overseas",
+    )
+
+    assert len(performance) == 1
+    row = performance[0]
+    assert row["strategy_flag"] == "VWAP+VOL+RSI"
+    assert row["filled_entries"] == 1
+    assert row["closed_entries"] == 1
+    assert row["open_entries"] == 0
+    assert row["win_count"] == 0
+    assert row["total_net_usd"] == pytest.approx(-3.44)
+    assert row["capital_weighted_net_pnl_pct"] == pytest.approx(
+        -3.44 / (14.22 * 56)
+    )
+
+
+def test_virtual_settlement_backfill_uses_legacy_position_state_without_buy_log(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy_settlement_attribution.db"
+    repository = SqliteRepository(db_path)
+    entry_time = "2026-07-28T19:07:41+00:00"
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        action_bias="WAIT",
+        signal_state="SETTLEMENT_PENDING",
+        note="virtual_sell_pending",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        entry_price=10.49,
+        entry_time=entry_time,
+        updated_at="2026-08-14T13:00:00+00:00",
+    )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        qty=396,
+        avg_sell_price=10.49,
+        currency="USD",
+        updated_at="2026-08-14T13:00:00+00:00",
+    )
+    event_id = repository.save_broker_order_event(
+        created_at="2026-08-14T13:31:00+00:00",
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        side="SELL",
+        order_kind="limit",
+        requested_qty=396,
+        requested_price=10.46,
+        status="SUBMITTED",
+        reason="virtual_sell_settlement",
+        broker_order_no="9911",
+    )
+    repository.save_broker_order_execution(
+        broker_event_id=event_id,
+        created_at="2026-08-14T13:31:00+00:00",
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        side="SELL",
+        broker_order_no="9911",
+        requested_qty=396,
+        requested_price=10.46,
+        reason="virtual_sell_settlement",
+        entry_price=10.38,
+        context={"execution_role": "virtual_sell_settlement"},
+    )
+
+    repository = SqliteRepository(db_path)
+
+    pending = repository.get_virtual_sell_pending("overseas", "NPAC")
+    execution = repository.list_unfinalized_broker_executions(limit=1)[0]
+    event = repository.list_broker_order_events(limit=1)[0]
+    assert pending is not None
+    assert pending["strategy_flag"] == "VWAP+VOL"
+    assert pending["entry_reason"] == "legacy_position_state"
+    assert pending["entry_time"] == entry_time
+    assert execution["strategy_flag"] == "VWAP+VOL"
+    assert execution["entry_by"] == "VWAP"
+    assert execution["entry_time"] == entry_time
+    assert execution["context_json"]["entry_reason"] == "legacy_position_state"
+    assert event["strategy_flag"] == "VWAP+VOL"
+    assert event["exit_by"] == "virtual_sell_settlement"
+
+
 def test_virtual_settlement_submission_usage_is_session_and_symbol_scoped(
     tmp_path,
 ) -> None:

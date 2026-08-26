@@ -210,6 +210,38 @@ def test_overseas_speculative_reasons_flag_low_volume_and_spread() -> None:
     ]
 
 
+def test_overseas_scan_does_not_reward_missing_two_sided_quote() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.overseas_min_volume = 100_000
+
+    class QuoteClient:
+        quote: dict
+
+        async def get_overseas_price(self, _symbol: str, _exchange: str) -> dict:
+            return self.quote
+
+    client = QuoteClient()
+    service.client = client
+    candidate = SimpleNamespace(symbol="TEST", exchange_code="NASD")
+    base_quote = {
+        "last_price": "10.0",
+        "change_rate": "0.0",
+        "volume": "100000",
+    }
+    client.quote = {**base_quote, "bid": None, "ask": None}
+    service._vol_history = {}
+    missing_quote = asyncio.run(service._scan_single_overseas(candidate))
+    client.quote = {**base_quote, "bid": "10.0", "ask": "10.0"}
+    service._vol_history = {}
+    observed_tight_quote = asyncio.run(service._scan_single_overseas(candidate))
+
+    assert missing_quote.spread_pct == 0.0
+    assert observed_tight_quote.spread_pct == 0.0
+    assert observed_tight_quote.activity_score == pytest.approx(
+        missing_quote.activity_score + 1.0
+    )
+
+
 def test_overseas_speculative_reasons_flag_thin_turnover() -> None:
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.config = type(

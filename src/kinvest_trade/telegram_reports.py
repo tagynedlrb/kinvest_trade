@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import statistics
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -1960,6 +1961,98 @@ class ReportHelper:
                 f"지수하한={benchmark_floor:+.2f}% "
                 f"지표≤{max_age_sec}초"
             )
+            performance_reader = getattr(
+                controller.repository,
+                "get_strategy_guard_probe_performance",
+                None,
+            )
+            if callable(performance_reader):
+                performance_rows = performance_reader(
+                    after_logged_at=(
+                        now
+                        - timedelta(
+                            hours=guard_policies[market].lookback_hours
+                        )
+                    ).isoformat(),
+                    market=market,
+                )
+                if isinstance(performance_rows, list) and performance_rows:
+                    closed_returns = [
+                        float(value)
+                        for row in performance_rows
+                        for value in row.get("closed_net_pnl_pcts", [])
+                    ]
+                    filled_entries = sum(
+                        int(row.get("filled_entries") or 0)
+                        for row in performance_rows
+                    )
+                    closed_entries = sum(
+                        int(row.get("closed_entries") or 0)
+                        for row in performance_rows
+                    )
+                    win_count = sum(
+                        int(row.get("win_count") or 0)
+                        for row in performance_rows
+                    )
+                    realized_notional = sum(
+                        float(row.get("realized_entry_notional") or 0.0)
+                        for row in performance_rows
+                    )
+                    total_net = sum(
+                        float(
+                            row.get(
+                                "total_net_usd"
+                                if market == "overseas"
+                                else "total_net_krw"
+                            )
+                            or 0.0
+                        )
+                        for row in performance_rows
+                    )
+                    weighted_return = (
+                        total_net / realized_notional
+                        if realized_notional > 0
+                        else 0.0
+                    )
+                    regime_counts: dict[str, int] = {}
+                    for row in performance_rows:
+                        for regime, count in dict(
+                            row.get("regime_counts") or {}
+                        ).items():
+                            regime_counts[str(regime)] = (
+                                regime_counts.get(str(regime), 0)
+                                + int(count or 0)
+                            )
+                    regime_text = ",".join(
+                        f"{name}:{count}"
+                        for name, count in sorted(
+                            regime_counts.items(),
+                            key=lambda item: (-item[1], item[0]),
+                        )[:3]
+                    ) or "-"
+                    mean_return = (
+                        statistics.fmean(closed_returns)
+                        if closed_returns
+                        else 0.0
+                    )
+                    median_return = (
+                        statistics.median(closed_returns)
+                        if closed_returns
+                        else 0.0
+                    )
+                    net_text = (
+                        format_usd(total_net)
+                        if market == "overseas"
+                        else format_krw(total_net)
+                    )
+                    lines.append(
+                        f"검증성과={format_market_korean(market)} "
+                        f"청산={closed_entries}/체결={filled_entries} "
+                        f"승={win_count} 평균순={format_pct(mean_return)} "
+                        f"중앙={format_pct(median_return)} "
+                        f"자본가중={format_pct(weighted_return)} "
+                        f"누적={net_text} 장세={regime_text}"
+                    )
         reject_cb = getattr(controller.lab_service, "cb", None)
         reject_status = reject_cb.order_reject_status() if reject_cb is not None else {}
         active_rejects = {key: v for key, v in reject_status.items() if v.get("halted")}

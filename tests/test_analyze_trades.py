@@ -408,11 +408,14 @@ def test_wait_forward_performance_deduplicates_scans_and_uses_market_cost_floor(
     assert "[WAIT 선행성과]" in output
     assert "주문가능세션=vps" in output
     assert "raw=3 ep=2" in output
+    assert "스프레드>0=0/2" in output
     assert "급락/매우활발/극단변동·확정" in output
     assert "15m n=2/2(100%)" in output
     assert "Gross=+0.500%" in output
+    assert "절사Gross=+0.500%" in output
     assert "양수=50%" in output
     assert "최소비용Net=+0.470%" in output
+    assert "절사Net=+0.470%" in output
     assert "국장 0.03%·미장 0.50%" in output
 
 

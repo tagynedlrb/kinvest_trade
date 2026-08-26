@@ -164,12 +164,20 @@ def test_apply_sell_overflow_to_virtual_sell_pending() -> None:
         real_qty=10,
         can_execute_real=False,
         created_at="2026-06-30 20:00:00 KST",
+        strategy_flag="VWAP+VOL+RSI",
+        entry_by="VWAP",
+        entry_reason="strategy_guard_probe:VWAP+VOL+RSI|pullback_buy",
+        entry_time="2026-06-30T10:00:00+00:00",
     )
 
     assert virtual_trades.get_position("overseas", "SOXL") is None
     pending = repository.get_virtual_sell_pending("overseas", "SOXL")
     assert pending is not None
     assert int(pending["qty"]) == 3
+    assert pending["strategy_flag"] == "VWAP+VOL+RSI"
+    assert pending["entry_by"] == "VWAP"
+    assert pending["entry_reason"].startswith("strategy_guard_probe:")
+    assert pending["entry_time"] == "2026-06-30T10:00:00+00:00"
     assert result["qty_pending_real"] == 3
 
 
@@ -502,6 +510,92 @@ def test_reconcile_submits_min_of_pending_and_preserves_pending_until_fill() -> 
     assert service.repository.get_virtual_sell_pending("overseas", "NVDA")["qty"] == 5
 
 
+def test_reconcile_defers_repeated_no_fill_settlement_when_volume_is_zero() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        qty=396,
+        avg_sell_price=10.49,
+        currency="USD",
+        updated_at="2026-08-17T13:00:00+00:00",
+    )
+    for created_at, order_no in (
+        ("2026-08-18T13:31:00+00:00", "1001"),
+        ("2026-08-19T13:31:00+00:00", "1002"),
+    ):
+        service.repository.save_broker_order_event(
+            created_at=created_at,
+            market="overseas",
+            symbol="NPAC",
+            exchange_code="NASD",
+            side="SELL",
+            order_kind="limit",
+            requested_qty=396,
+            requested_price=10.45,
+            status="SUBMITTED",
+            reason="virtual_sell_settlement",
+            broker_order_no=order_no,
+        )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NPAC",
+            exchange_code="NASD",
+            quantity=396,
+            orderable_qty=396,
+            avg_price=10.38,
+            current_price=10.4659,
+            pnl_pct=0.008,
+        )
+    ]
+    quotes = [
+        OverseasScanResult(
+            symbol="NPAC",
+            exchange_code="NASD",
+            last_price=10.4659,
+            bid=0.0,
+            ask=0.0,
+            spread_pct=0.0,
+            change_rate_pct=0.0,
+            volume=0,
+            orderable_qty=0,
+            fx_rate_krw=1380.0,
+            activity_score=0.0,
+        )
+    ]
+    now = datetime(2026, 8, 20, 13, 35, tzinfo=timezone.utc)
+
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            overseas_ranked=quotes,
+            now=now,
+        )
+    )
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            overseas_ranked=quotes,
+            now=now + timedelta(minutes=1),
+        )
+    )
+
+    assert service.client.order_calls == []
+    assert service.repository.get_virtual_sell_pending("overseas", "NPAC") is not None
+    events = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_deferred",
+        limit=5,
+    )
+    assert len(events) == 1
+    assert json.loads(events[0]["detail"])["reason"] == (
+        "zero_volume_after_repeated_no_fill"
+    )
+    assert len(service.notifier.messages) == 1
+    assert "거래량 0" in service.notifier.messages[0]
+    assert "거래량 회복 시 자동 재시도" in service.notifier.messages[0]
+
+
 def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
     service = _build_service()
     service.repository.upsert_virtual_sell_pending(
@@ -543,6 +637,7 @@ def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
 
 def test_reconcile_uses_virtual_sell_price_for_pnl_log() -> None:
     service = _build_service()
+    entry_time = "2026-06-30T13:00:00+00:00"
     service.repository.upsert_virtual_sell_pending(
         market="overseas",
         symbol="NVDA",
@@ -551,6 +646,10 @@ def test_reconcile_uses_virtual_sell_price_for_pnl_log() -> None:
         avg_sell_price=115.0,
         currency="USD",
         updated_at="2026-06-30 20:00:00 KST",
+        strategy_flag="VWAP+VOL+RSI",
+        entry_by="VWAP",
+        entry_reason="strategy_guard_probe:VWAP+VOL+RSI|pullback_buy",
+        entry_time=entry_time,
     )
     positions = [
         OverseasHeldPosition(
@@ -565,6 +664,13 @@ def test_reconcile_uses_virtual_sell_price_for_pnl_log() -> None:
     ]
 
     asyncio.run(service._reconcile_pending_virtual_sells(overseas_positions=positions))
+    submitted = service.repository.list_unfinalized_broker_executions()[0]
+    assert submitted["strategy_flag"] == "VWAP+VOL+RSI"
+    assert submitted["entry_by"] == "VWAP"
+    assert submitted["entry_time"] == entry_time
+    assert submitted["context_json"]["entry_reason"].startswith(
+        "strategy_guard_probe:"
+    )
     service.client.pending_orders = [
         {
             "odno": "0000000001",
@@ -595,6 +701,9 @@ def test_reconcile_uses_virtual_sell_price_for_pnl_log() -> None:
     )
     assert len(account_rows) == 1
     assert account_rows[0]["action_reason"] == "virtual_sell_settlement"
+    assert account_rows[0]["strategy_flag"] == "VWAP+VOL+RSI"
+    assert account_rows[0]["entry_by"] == "VWAP"
+    assert account_rows[0]["entry_time"] == entry_time
     assert account_rows[0]["session_id"] == ""
     assert account_rows[0]["is_session_trade"] == 0
     assert service.repository.get_realized_strategy_performance() == []

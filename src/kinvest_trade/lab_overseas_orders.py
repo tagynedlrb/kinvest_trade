@@ -1938,12 +1938,6 @@ class OverseasOrderHelper:
             signal_snapshot,
             "overseas",
         )
-        entry_label, exit_label = service._build_sell_strategy_labels(
-            strategy_flag=strategy_flag,
-            entry_by=entry_by,
-            exit_by=exit_by,
-            exit_reason=exit_reason,
-        )
         tracker = service._get_position_tracker()
         sell_qty = (
             sell_qty_override
@@ -1973,6 +1967,35 @@ class OverseasOrderHelper:
         if closed_result is not None:
             return closed_result
         created_at = format_kst(now) or now.isoformat()
+        entry_price, entry_time_iso, _ = service._get_entry_context(
+            "overseas",
+            candidate.symbol,
+            fallback_price=held.avg_price,
+        )
+        buy_context = service.repository.get_latest_confirmed_buy_context(
+            market="overseas",
+            symbol=candidate.symbol,
+            before_logged_at=created_at,
+            entry_price=entry_price,
+        )
+        entry_reason = ""
+        if buy_context is not None:
+            strategy_flag = strategy_flag or str(
+                buy_context.get("strategy_flag") or ""
+            )
+            entry_by = entry_by or str(buy_context.get("entry_by") or "")
+            entry_time_iso = entry_time_iso or str(
+                buy_context.get("entry_time")
+                or buy_context.get("logged_at")
+                or ""
+            )
+            entry_reason = str(buy_context.get("action_reason") or "")
+        entry_label, exit_label = service._build_sell_strategy_labels(
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
+            exit_by=exit_by,
+            exit_reason=exit_reason,
+        )
         sell_result = (
             tracker.apply_sell(
                 market="overseas",
@@ -1987,6 +2010,10 @@ class OverseasOrderHelper:
                 can_execute_real=False,
                 created_at=created_at,
                 reference_avg_price=held.avg_price,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                entry_reason=entry_reason,
+                entry_time=entry_time_iso,
             )
             if tracker is not None
             else {

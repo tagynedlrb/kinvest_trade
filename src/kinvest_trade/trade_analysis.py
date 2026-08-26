@@ -357,7 +357,7 @@ def summarize_wait_forward_performance(
                 f"""
                 SELECT
                     id, logged_at, market, symbol, action_bias,
-                    action_reason, price, strategy_flag
+                    action_reason, price, strategy_flag, spread_pct
                 FROM cycle_log
                 WHERE {" AND ".join(where)}
                 ORDER BY logged_at ASC, id ASC
@@ -528,11 +528,15 @@ def summarize_wait_forward_performance(
                     )[:3]
                 )
             finality = "확정" if is_final else "임시"
+            positive_spread_count = sum(
+                1 for episode in episodes if float(episode.get("spread_pct") or 0.0) > 0
+            )
             result.append(
                 f"  {market_name:<8} {row_reason:<24} "
                 f"{_regime_key_label(regime_key)}·{finality} "
                 f"raw={int(bucket['raw'])} ep={len(episodes)} "
-                f"{len(symbols)}종목/{len(dates)}일 전략={strategy_text}"
+                f"{len(symbols)}종목/{len(dates)}일 전략={strategy_text} "
+                f"스프레드>0={positive_spread_count}/{len(episodes)}"
             )
             minimum_cost = _minimum_round_trip_cost_pct(market_name)
             for horizon in horizon_values:
@@ -576,6 +580,18 @@ def summarize_wait_forward_performance(
                     continue
                 average = statistics.fmean(gross_returns)
                 median = statistics.median(gross_returns)
+                trim_count = (
+                    max(1, int(len(gross_returns) * 0.1))
+                    if len(gross_returns) >= 10
+                    else 0
+                )
+                ordered_returns = sorted(gross_returns)
+                trimmed_returns = (
+                    ordered_returns[trim_count:-trim_count]
+                    if trim_count > 0
+                    else ordered_returns
+                )
+                trimmed_average = statistics.fmean(trimmed_returns)
                 positive_rate = (
                     sum(value > 0 for value in gross_returns)
                     / len(gross_returns)
@@ -585,8 +601,10 @@ def summarize_wait_forward_performance(
                 result.append(
                     f"    {horizon:>2}m n={len(gross_returns)}/{mature}"
                     f"({coverage:.0f}%) Gross={average * 100:+.3f}% "
+                    f"절사Gross={trimmed_average * 100:+.3f}% "
                     f"중앙={median * 100:+.3f}% 양수={positive_rate:.0f}% "
-                    f"최소비용Net={(average - minimum_cost) * 100:+.3f}%"
+                    f"최소비용Net={(average - minimum_cost) * 100:+.3f}% "
+                    f"절사Net={(trimmed_average - minimum_cost) * 100:+.3f}%"
                 )
             readiness = (
                 "평가가능"
@@ -600,7 +618,7 @@ def summarize_wait_forward_performance(
         )
         result.append(
             "  정책변경조건=확정 동일 레짐 3거래일 이상; "
-            "반복행 수만으로 진입필터 완화 금지"
+            "평균·절사평균·중앙값과 실측 스프레드 검증 전 완화 금지"
         )
         return "\n".join(result)
     finally:

@@ -5683,7 +5683,7 @@ class LiquidityLabService:
         *,
         symbol: str,
         detail: dict,
-    ) -> None:
+    ) -> bool:
         key = (
             str(detail.get("session_date") or ""),
             symbol.upper(),
@@ -5692,7 +5692,7 @@ class LiquidityLabService:
         )
         emitted = getattr(self, "_virtual_settlement_defer_event_keys", set())
         if key in emitted:
-            return
+            return False
         emitted.add(key)
         self._virtual_settlement_defer_event_keys = emitted
         self._save_event(
@@ -5701,6 +5701,7 @@ class LiquidityLabService:
             symbol=symbol,
             detail={**detail, "pending_preserved": True},
         )
+        return True
 
     async def _cancel_stale_virtual_sell_settlement(
         self,
@@ -5850,6 +5851,29 @@ class LiquidityLabService:
             )
             or 0.0
         )
+        strategy_flag = str(
+            first.get("strategy_flag")
+            or context.get("strategy_flag")
+            or (pending or {}).get("strategy_flag")
+            or ""
+        )
+        entry_by = str(
+            first.get("entry_by")
+            or context.get("entry_by")
+            or (pending or {}).get("entry_by")
+            or ""
+        )
+        entry_reason = str(
+            context.get("entry_reason")
+            or (pending or {}).get("entry_reason")
+            or ""
+        )
+        entry_time = str(
+            first.get("entry_time")
+            or context.get("entry_time")
+            or (pending or {}).get("entry_time")
+            or ""
+        ) or None
         remaining_qty = max(0, pending_qty - settled_qty)
 
         if pending is not None and settled_qty > 0:
@@ -5867,6 +5891,10 @@ class LiquidityLabService:
                     avg_sell_price=pending_avg_price,
                     currency=str(pending.get("currency") or "USD"),
                     updated_at=format_kst(confirmed_at),
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    entry_reason=entry_reason,
+                    entry_time=entry_time,
                 )
 
         entry_price = self._parse_optional_float(context.get("entry_price")) or 0.0
@@ -5947,8 +5975,8 @@ class LiquidityLabService:
             commission_usd=sell_fee_usd,
             commission_krw=sell_fee_krw,
             session_id="",
-            strategy_flag="",
-            entry_by="",
+            strategy_flag=strategy_flag,
+            entry_by=entry_by,
             exit_by=_VIRTUAL_SELL_SETTLEMENT_ROLE,
             is_session_trade=0,
             entry_price=entry_price,
@@ -5957,6 +5985,7 @@ class LiquidityLabService:
             orderable_qty=int(context.get("orderable_qty") or filled_qty),
             stock_name=str(context.get("stock_name") or symbol),
             cost_calculation_version=OVERSEAS_COST_CALCULATION_VERSION,
+            entry_time=entry_time,
             execution_group_id=execution_group_id,
         )
         if not inserted:
@@ -6051,6 +6080,10 @@ class LiquidityLabService:
                 "performance_recorded_at_virtual_exit": True,
                 "account_risk_recorded_at_settlement": True,
                 "strategy_owned_sell_real": False,
+                "strategy_flag": strategy_flag,
+                "entry_by": entry_by,
+                "entry_reason": entry_reason,
+                "entry_time": entry_time,
                 "risk_controls_replayed": risk_controls_replayed,
             },
         )
@@ -8324,7 +8357,10 @@ class LiquidityLabService:
             volume_surge_bonus = 1.5
         surge_ratio = self._record_volume_and_get_surge_ratio(candidate.symbol.upper(), int(volume))
         surge_bonus = self._surge_bonus_from_ratio(surge_ratio)
-        tight_spread_bonus = 1.0 if spread_pct < 0.001 else 0.0
+        has_two_sided_quote = bid > 0 and ask > 0
+        tight_spread_bonus = (
+            1.0 if has_two_sided_quote and spread_pct < 0.001 else 0.0
+        )
         activity_score = (
             liquidity_score
             + momentum_score
@@ -10064,6 +10100,32 @@ class LiquidityLabService:
                 )
                 continue
             if settle_qty > 0 and real is not None:
+                strategy_flag = str(row.get("strategy_flag") or "")
+                entry_by = str(row.get("entry_by") or "")
+                entry_reason = str(row.get("entry_reason") or "")
+                entry_time = str(row.get("entry_time") or "") or None
+                if not all((strategy_flag, entry_by, entry_reason, entry_time)):
+                    buy_context = self.repository.get_latest_confirmed_buy_context(
+                        market="overseas",
+                        symbol=symbol,
+                        before_logged_at=current.astimezone(timezone.utc).isoformat(),
+                        entry_price=real.avg_price,
+                    )
+                    if buy_context is not None:
+                        strategy_flag = strategy_flag or str(
+                            buy_context.get("strategy_flag") or ""
+                        )
+                        entry_by = entry_by or str(
+                            buy_context.get("entry_by") or ""
+                        )
+                        entry_reason = entry_reason or str(
+                            buy_context.get("action_reason") or ""
+                        )
+                        entry_time = entry_time or str(
+                            buy_context.get("entry_time")
+                            or buy_context.get("logged_at")
+                            or ""
+                        ) or None
                 retry_allowed, retry_detail = self._virtual_settlement_retry_gate(
                     symbol=symbol,
                     now=current,
@@ -10104,6 +10166,46 @@ class LiquidityLabService:
                     >= retry_policy["aggressive_after_sessions"]
                 )
                 quote = quote_by_symbol.get(symbol)
+                quote_volume = int(
+                    (quote.volume if quote is not None else 0) or 0
+                )
+                if aggressive and quote is not None and quote_volume <= 0:
+                    zero_volume_detail = {
+                        "session_date": self._market_session_date(
+                            "overseas",
+                            current,
+                        ),
+                        "submission_count": int(
+                            history.get("submission_count") or 0
+                        ),
+                        "failed_session_count": failed_session_count,
+                        "aggressive_after_sessions": retry_policy[
+                            "aggressive_after_sessions"
+                        ],
+                        "reason": "zero_volume_after_repeated_no_fill",
+                        "quote_last": float(quote.last_price or 0.0),
+                        "quote_bid": float(quote.bid or 0.0),
+                        "quote_volume": quote_volume,
+                    }
+                    if self._record_virtual_settlement_deferred(
+                        symbol=symbol,
+                        detail=zero_volume_detail,
+                    ):
+                        await self.notifier.send(
+                            "\n".join(
+                                [
+                                    "[KIS][VIRTUAL_SETTLEMENT_DEFERRED]",
+                                    f"시각={format_kst_korean(current)}",
+                                    f"시장={format_market_korean('overseas')}",
+                                    f"종목={symbol}",
+                                    "상태=반복 미체결 후 현재 세션 거래량 0",
+                                    f"미체결세션={failed_session_count}일",
+                                    f"정산대기={pending_qty}주",
+                                    "조치=무효 주문 반복 중단·거래량 회복 시 자동 재시도",
+                                ]
+                            )
+                        )
+                    continue
                 quote_last = float(
                     (quote.last_price if quote is not None else 0.0) or 0.0
                 )
@@ -10162,6 +10264,9 @@ class LiquidityLabService:
                     order_kind=order_kind,
                     requested_qty=settle_qty,
                     requested_price=settlement_price,
+                    strategy_flag=strategy_flag,
+                    entry_by=entry_by,
+                    exit_by=_VIRTUAL_SELL_SETTLEMENT_ROLE,
                     status="SUBMITTED",
                     reason=_VIRTUAL_SELL_SETTLEMENT_ROLE,
                     payload={
@@ -10185,6 +10290,10 @@ class LiquidityLabService:
                         "virtual_sell_avg_price": pending_avg_price,
                         "pending_qty_at_submission": pending_qty,
                         "entry_price": real.avg_price,
+                        "strategy_flag": strategy_flag,
+                        "entry_by": entry_by,
+                        "entry_reason": entry_reason,
+                        "entry_time": entry_time,
                         "fx_rate": float(
                             getattr(
                                 self._get_market_policy(

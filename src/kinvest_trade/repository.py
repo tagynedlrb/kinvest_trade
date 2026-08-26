@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import statistics
 import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -324,6 +325,10 @@ class SqliteRepository:
                     qty INTEGER NOT NULL,
                     avg_sell_price REAL NOT NULL,
                     currency TEXT NOT NULL,
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    entry_reason TEXT NOT NULL DEFAULT '',
+                    entry_time TEXT,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (market, symbol)
                 );
@@ -1045,12 +1050,44 @@ class SqliteRepository:
             )
             self._ensure_column(conn, "lab_symbol_state", "entry_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "entry_time", "TEXT")
+            self._ensure_column(
+                conn,
+                "lab_symbol_state",
+                "strategy_flag",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "lab_symbol_state",
+                "entry_by",
+                "TEXT NOT NULL DEFAULT ''",
+            )
             self._ensure_column(conn, "lab_symbol_state", "peak_price", "REAL")
             self._ensure_column(conn, "lab_symbol_state", "has_position", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "lab_symbol_state", "snapshot_json", "TEXT")
             self._ensure_column(conn, "broker_order_events", "strategy_flag", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "broker_order_events", "entry_by", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "broker_order_events", "exit_by", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(
+                conn,
+                "virtual_sell_pending",
+                "strategy_flag",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "virtual_sell_pending",
+                "entry_by",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                "virtual_sell_pending",
+                "entry_reason",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(conn, "virtual_sell_pending", "entry_time", "TEXT")
+            self._backfill_virtual_settlement_attribution(conn)
             self._backfill_non_trade_cycle_log_flags(conn)
             self._backfill_missing_exit_labels(conn)
             self._normalize_terminal_broker_execution_statuses(
@@ -1081,6 +1118,329 @@ class SqliteRepository:
               AND COALESCE(action_reason, '') != ''
             """
         )
+
+    @staticmethod
+    def _find_prior_confirmed_buy_context(
+        conn: sqlite3.Connection,
+        *,
+        market: str,
+        symbol: str,
+        before_at: str,
+        entry_price: float | None = None,
+    ) -> dict | None:
+        """Find the fill-backed buy that owns a later sell or settlement."""
+        rows = conn.execute(
+            """
+            SELECT buy.*
+            FROM cycle_log AS buy
+            WHERE buy.market = ?
+              AND buy.symbol = ?
+              AND buy.action_bias = 'BUY_REAL'
+              AND COALESCE(buy.execution_group_id, '') != ''
+              AND EXISTS (
+                  SELECT 1
+                  FROM broker_order_executions AS execution
+                  WHERE execution.execution_group_id = buy.execution_group_id
+                    AND UPPER(execution.side) = 'BUY'
+                    AND execution.filled_qty > 0
+              )
+            ORDER BY buy.id DESC
+            """,
+            (
+                str(market).strip().lower(),
+                str(symbol).strip().upper(),
+            ),
+        ).fetchall()
+        before_dt = parse_datetime(before_at)
+        target_price = float(entry_price or 0.0)
+        for row in rows:
+            candidate = dict(row)
+            candidate_at = parse_datetime(candidate.get("logged_at"))
+            if (
+                before_dt is not None
+                and candidate_at is not None
+                and ensure_timezone(candidate_at) > ensure_timezone(before_dt)
+            ):
+                continue
+            if target_price > 0:
+                buy_price = float(
+                    candidate.get("price")
+                    or candidate.get("entry_price")
+                    or 0.0
+                )
+                tolerance = max(0.01, abs(target_price) * 0.001)
+                if buy_price <= 0 or abs(buy_price - target_price) > tolerance:
+                    continue
+            return candidate
+        return None
+
+    @classmethod
+    def _backfill_virtual_settlement_attribution(
+        cls,
+        conn: sqlite3.Connection,
+    ) -> None:
+        """Repair strategy ownership lost by legacy virtual-settlement rows."""
+        counts = {
+            "cycle_log": 0,
+            "broker_order_executions": 0,
+            "broker_order_events": 0,
+            "virtual_sell_pending": 0,
+        }
+
+        settlement_rows = conn.execute(
+            """
+            SELECT *
+            FROM cycle_log
+            WHERE action_bias = 'SELL_REAL'
+              AND action_reason = 'virtual_sell_settlement'
+              AND (
+                  COALESCE(strategy_flag, '') = ''
+                  OR COALESCE(entry_by, '') = ''
+                  OR COALESCE(entry_time, '') = ''
+              )
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in settlement_rows:
+            item = dict(row)
+            buy = cls._find_prior_confirmed_buy_context(
+                conn,
+                market=str(item.get("market") or ""),
+                symbol=str(item.get("symbol") or ""),
+                before_at=str(item.get("logged_at") or ""),
+                entry_price=float(item.get("entry_price") or 0.0),
+            )
+            if buy is None:
+                continue
+            cursor = conn.execute(
+                """
+                UPDATE cycle_log
+                SET strategy_flag = CASE
+                        WHEN COALESCE(strategy_flag, '') = '' THEN ?
+                        ELSE strategy_flag
+                    END,
+                    entry_by = CASE
+                        WHEN COALESCE(entry_by, '') = '' THEN ?
+                        ELSE entry_by
+                    END,
+                    entry_time = COALESCE(NULLIF(entry_time, ''), ?)
+                WHERE id = ?
+                """,
+                (
+                    str(buy.get("strategy_flag") or ""),
+                    str(buy.get("entry_by") or ""),
+                    str(buy.get("entry_time") or buy.get("logged_at") or ""),
+                    int(item["id"]),
+                ),
+            )
+            counts["cycle_log"] += int(cursor.rowcount or 0)
+
+        execution_rows = conn.execute(
+            """
+            SELECT *
+            FROM broker_order_executions
+            WHERE reason = 'virtual_sell_settlement'
+              AND (
+                  COALESCE(strategy_flag, '') = ''
+                  OR COALESCE(entry_by, '') = ''
+                  OR COALESCE(entry_time, '') = ''
+              )
+            ORDER BY id
+            """
+        ).fetchall()
+        for row in execution_rows:
+            item = dict(row)
+            attribution = cls._find_prior_confirmed_buy_context(
+                conn,
+                market=str(item.get("market") or ""),
+                symbol=str(item.get("symbol") or ""),
+                before_at=str(item.get("created_at") or ""),
+                entry_price=float(item.get("entry_price") or 0.0),
+            )
+            if attribution is None:
+                state = conn.execute(
+                    """
+                    SELECT *
+                    FROM lab_symbol_state
+                    WHERE market = ? AND symbol = ?
+                    LIMIT 1
+                    """,
+                    (
+                        str(item.get("market") or ""),
+                        str(item.get("symbol") or ""),
+                    ),
+                ).fetchone()
+                state_item = dict(state) if state is not None else {}
+                if any(
+                    str(state_item.get(key) or "")
+                    for key in ("strategy_flag", "entry_by", "entry_time")
+                ):
+                    attribution = {
+                        "strategy_flag": state_item.get("strategy_flag"),
+                        "entry_by": state_item.get("entry_by"),
+                        "entry_time": state_item.get("entry_time"),
+                        "action_reason": "legacy_position_state",
+                    }
+            if attribution is None:
+                continue
+            try:
+                context = json.loads(str(item.get("context_json") or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                context = {}
+            if not isinstance(context, dict):
+                context = {}
+            context.setdefault(
+                "strategy_flag",
+                str(attribution.get("strategy_flag") or ""),
+            )
+            context.setdefault("entry_by", str(attribution.get("entry_by") or ""))
+            context.setdefault(
+                "entry_reason",
+                str(attribution.get("action_reason") or ""),
+            )
+            context.setdefault(
+                "entry_time",
+                str(
+                    attribution.get("entry_time")
+                    or attribution.get("logged_at")
+                    or ""
+                ),
+            )
+            cursor = conn.execute(
+                """
+                UPDATE broker_order_executions
+                SET strategy_flag = CASE
+                        WHEN COALESCE(strategy_flag, '') = '' THEN ?
+                        ELSE strategy_flag
+                    END,
+                    entry_by = CASE
+                        WHEN COALESCE(entry_by, '') = '' THEN ?
+                        ELSE entry_by
+                    END,
+                    entry_time = COALESCE(NULLIF(entry_time, ''), ?),
+                    context_json = ?
+                WHERE id = ?
+                """,
+                (
+                    str(attribution.get("strategy_flag") or ""),
+                    str(attribution.get("entry_by") or ""),
+                    str(
+                        attribution.get("entry_time")
+                        or attribution.get("logged_at")
+                        or ""
+                    ),
+                    json.dumps(context, ensure_ascii=False, default=str),
+                    int(item["id"]),
+                ),
+            )
+            counts["broker_order_executions"] += int(cursor.rowcount or 0)
+            event_cursor = conn.execute(
+                """
+                UPDATE broker_order_events
+                SET strategy_flag = CASE
+                        WHEN COALESCE(strategy_flag, '') = '' THEN ?
+                        ELSE strategy_flag
+                    END,
+                    entry_by = CASE
+                        WHEN COALESCE(entry_by, '') = '' THEN ?
+                        ELSE entry_by
+                    END,
+                    exit_by = CASE
+                        WHEN COALESCE(exit_by, '') = ''
+                        THEN 'virtual_sell_settlement'
+                        ELSE exit_by
+                    END
+                WHERE id = ?
+                """,
+                (
+                    str(attribution.get("strategy_flag") or ""),
+                    str(attribution.get("entry_by") or ""),
+                    int(item["broker_event_id"]),
+                ),
+            )
+            counts["broker_order_events"] += int(event_cursor.rowcount or 0)
+
+        pending_rows = conn.execute(
+            """
+            SELECT pending.*, state.strategy_flag AS state_strategy_flag,
+                   state.entry_by AS state_entry_by,
+                   state.entry_price AS state_entry_price,
+                   state.entry_time AS state_entry_time
+            FROM virtual_sell_pending AS pending
+            LEFT JOIN lab_symbol_state AS state
+              ON state.market = pending.market
+             AND state.symbol = pending.symbol
+            WHERE COALESCE(pending.strategy_flag, '') = ''
+               OR COALESCE(pending.entry_by, '') = ''
+               OR COALESCE(pending.entry_reason, '') = ''
+               OR COALESCE(pending.entry_time, '') = ''
+            """
+        ).fetchall()
+        for row in pending_rows:
+            item = dict(row)
+            buy = cls._find_prior_confirmed_buy_context(
+                conn,
+                market=str(item.get("market") or ""),
+                symbol=str(item.get("symbol") or ""),
+                before_at=str(item.get("updated_at") or ""),
+                entry_price=float(item.get("state_entry_price") or 0.0),
+            )
+            strategy_flag = str(item.get("state_strategy_flag") or "")
+            entry_by = str(item.get("state_entry_by") or "")
+            entry_time = str(item.get("state_entry_time") or "")
+            entry_reason = ""
+            if buy is not None:
+                strategy_flag = strategy_flag or str(buy.get("strategy_flag") or "")
+                entry_by = entry_by or str(buy.get("entry_by") or "")
+                entry_time = entry_time or str(
+                    buy.get("entry_time") or buy.get("logged_at") or ""
+                )
+                entry_reason = str(buy.get("action_reason") or "")
+            elif any((strategy_flag, entry_by, entry_time)):
+                entry_reason = "legacy_position_state"
+            if not any((strategy_flag, entry_by, entry_reason, entry_time)):
+                continue
+            cursor = conn.execute(
+                """
+                UPDATE virtual_sell_pending
+                SET strategy_flag = CASE
+                        WHEN COALESCE(strategy_flag, '') = '' THEN ?
+                        ELSE strategy_flag
+                    END,
+                    entry_by = CASE
+                        WHEN COALESCE(entry_by, '') = '' THEN ?
+                        ELSE entry_by
+                    END,
+                    entry_reason = CASE
+                        WHEN COALESCE(entry_reason, '') = '' THEN ?
+                        ELSE entry_reason
+                    END,
+                    entry_time = COALESCE(NULLIF(entry_time, ''), ?)
+                WHERE market = ? AND symbol = ?
+                """,
+                (
+                    strategy_flag,
+                    entry_by,
+                    entry_reason,
+                    entry_time,
+                    str(item.get("market") or ""),
+                    str(item.get("symbol") or ""),
+                ),
+            )
+            counts["virtual_sell_pending"] += int(cursor.rowcount or 0)
+
+        if sum(counts.values()) > 0:
+            conn.execute(
+                """
+                INSERT INTO event_log
+                    (logged_at, session_id, event_type, market, symbol, detail, cycle_no)
+                VALUES (?, '', 'ledger_attribution_backfill', '', '', ?, 0)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    json.dumps(counts, ensure_ascii=False),
+                ),
+            )
         conn.execute(
             """
             UPDATE broker_order_events
@@ -2604,6 +2964,26 @@ class SqliteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_latest_confirmed_buy_context(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        before_logged_at: str = "",
+        entry_price: float | None = None,
+    ) -> dict | None:
+        before_at = str(before_logged_at or "").strip()
+        if not before_at:
+            before_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            return self._find_prior_confirmed_buy_context(
+                conn,
+                market=market,
+                symbol=symbol,
+                before_at=before_at,
+                entry_price=entry_price,
+            )
+
     def list_event_log(
         self,
         *,
@@ -2720,6 +3100,276 @@ class SqliteRepository:
             "virtual_entries": virtual_entries,
             "no_fill_finalized": no_fill_finalized,
         }
+
+    def get_strategy_guard_probe_performance(
+        self,
+        *,
+        after_logged_at: str = "",
+        market: str = "",
+    ) -> list[dict]:
+        """Link filled probe entries to their confirmed exits, including settlements."""
+        where = [
+            "cycle_log.action_bias = 'BUY_REAL'",
+            "cycle_log.action_reason LIKE 'strategy_guard_probe:%'",
+            f"({CONFIRMED_BUY_CYCLE_PREDICATE})",
+        ]
+        params: list[object] = []
+        if after_logged_at:
+            where.append("cycle_log.logged_at >= ?")
+            params.append(str(after_logged_at))
+        if market:
+            where.append("cycle_log.market = ?")
+            params.append(str(market).strip().lower())
+
+        with self._connect() as conn:
+            probe_buys = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT cycle_log.*
+                    FROM cycle_log
+                    WHERE {" AND ".join(where)}
+                    ORDER BY cycle_log.logged_at, cycle_log.id
+                    """,
+                    params,
+                ).fetchall()
+            ]
+            if not probe_buys:
+                return []
+            earliest = min(str(row.get("logged_at") or "") for row in probe_buys)
+            sell_rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT cycle_log.*
+                    FROM cycle_log
+                    WHERE cycle_log.action_bias = 'SELL_REAL'
+                      AND cycle_log.logged_at >= ?
+                      AND ({CONFIRMED_SELL_CYCLE_PREDICATE})
+                    ORDER BY cycle_log.logged_at, cycle_log.id
+                    """,
+                    (earliest,),
+                ).fetchall()
+            ]
+            all_buys = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT cycle_log.id, cycle_log.market, cycle_log.symbol,
+                           cycle_log.logged_at
+                    FROM cycle_log
+                    WHERE cycle_log.action_bias = 'BUY_REAL'
+                      AND cycle_log.logged_at >= ?
+                      AND ({CONFIRMED_BUY_CYCLE_PREDICATE})
+                    ORDER BY cycle_log.logged_at, cycle_log.id
+                    """,
+                    (earliest,),
+                ).fetchall()
+            ]
+            regimes = {
+                (str(row["market"]), str(row["session_date"])): dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM market_regimes"
+                ).fetchall()
+            }
+
+        parsed_sells: list[tuple[dict, datetime | None]] = [
+            (row, parse_datetime(row.get("logged_at"))) for row in sell_rows
+        ]
+        parsed_buys: list[tuple[dict, datetime | None]] = [
+            (row, parse_datetime(row.get("logged_at"))) for row in all_buys
+        ]
+        used_sell_qty: dict[int, int] = {}
+        buckets: dict[tuple[str, str], dict[str, object]] = {}
+
+        for buy in probe_buys:
+            market_key = str(buy.get("market") or "").strip().lower()
+            symbol = str(buy.get("symbol") or "").strip().upper()
+            reason = str(buy.get("action_reason") or "")
+            reason_flag = reason.partition(":")[2].partition("|")[0].strip()
+            strategy_flag = (
+                reason_flag
+                or str(buy.get("strategy_flag") or "").strip()
+                or "UNKNOWN"
+            )
+            key = (market_key, strategy_flag)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "market": market_key,
+                    "strategy_flag": strategy_flag,
+                    "filled_entries": 0,
+                    "closed_entries": 0,
+                    "partial_entries": 0,
+                    "open_entries": 0,
+                    "win_count": 0,
+                    "trade_returns": [],
+                    "realized_entry_notional": 0.0,
+                    "total_net_usd": 0.0,
+                    "total_net_krw": 0.0,
+                    "session_dates": set(),
+                    "regime_counts": {},
+                },
+            )
+            bucket["filled_entries"] = int(bucket["filled_entries"]) + 1
+
+            buy_at = parse_datetime(buy.get("logged_at"))
+            buy_time = ensure_timezone(buy_at) if buy_at is not None else None
+            entry_time = str(
+                buy.get("entry_time") or buy.get("logged_at") or ""
+            )
+            entry_time_dt = parse_datetime(entry_time)
+            entry_price = float(
+                buy.get("price") or buy.get("entry_price") or 0.0
+            )
+            entry_qty = max(
+                0,
+                int(buy.get("qty_executed") or buy.get("holding_qty") or 0),
+            )
+            local_timezone = NEW_YORK if market_key == "overseas" else KST
+            if buy_time is not None:
+                session_date = buy_time.astimezone(local_timezone).date().isoformat()
+                session_dates = bucket["session_dates"]
+                if isinstance(session_dates, set):
+                    session_dates.add(session_date)
+                regime = regimes.get((market_key, session_date), {})
+                regime_key = str(regime.get("regime_key") or "unknown")
+                finality = "final" if int(regime.get("is_final") or 0) else "temporary"
+                regime_label = f"{regime_key}:{finality}"
+                regime_counts = bucket["regime_counts"]
+                if isinstance(regime_counts, dict):
+                    regime_counts[regime_label] = int(
+                        regime_counts.get(regime_label, 0)
+                    ) + 1
+
+            next_buy_time: datetime | None = None
+            for other, other_at in parsed_buys:
+                if int(other.get("id") or 0) == int(buy.get("id") or 0):
+                    continue
+                if (
+                    str(other.get("market") or "").strip().lower() != market_key
+                    or str(other.get("symbol") or "").strip().upper() != symbol
+                    or other_at is None
+                    or buy_time is None
+                ):
+                    continue
+                normalized_other_at = ensure_timezone(other_at)
+                if normalized_other_at > buy_time:
+                    next_buy_time = normalized_other_at
+                    break
+
+            remaining_qty = entry_qty
+            entry_net = 0.0
+            entry_net_usd = 0.0
+            entry_net_krw = 0.0
+            for sell, sell_at in parsed_sells:
+                if remaining_qty <= 0:
+                    break
+                if (
+                    str(sell.get("market") or "").strip().lower() != market_key
+                    or str(sell.get("symbol") or "").strip().upper() != symbol
+                    or sell_at is None
+                    or buy_time is None
+                ):
+                    continue
+                normalized_sell_at = ensure_timezone(sell_at)
+                if normalized_sell_at <= buy_time:
+                    continue
+                if next_buy_time is not None and normalized_sell_at >= next_buy_time:
+                    continue
+                sell_entry_time = parse_datetime(sell.get("entry_time"))
+                if sell_entry_time is not None and entry_time_dt is not None:
+                    if abs(
+                        (
+                            ensure_timezone(sell_entry_time)
+                            - ensure_timezone(entry_time_dt)
+                        ).total_seconds()
+                    ) > 1.0:
+                        continue
+                elif entry_price > 0:
+                    sell_entry_price = float(sell.get("entry_price") or 0.0)
+                    tolerance = max(0.01, abs(entry_price) * 0.001)
+                    if (
+                        sell_entry_price <= 0
+                        or abs(sell_entry_price - entry_price) > tolerance
+                    ):
+                        continue
+                sell_id = int(sell.get("id") or 0)
+                sell_qty = max(0, int(sell.get("qty_executed") or 0))
+                available_qty = max(0, sell_qty - used_sell_qty.get(sell_id, 0))
+                take_qty = min(remaining_qty, available_qty)
+                if take_qty <= 0:
+                    continue
+                fraction = take_qty / max(1, sell_qty)
+                net_usd = float(sell.get("net_pnl_usd") or 0.0) * fraction
+                net_krw = float(sell.get("net_pnl_krw") or 0.0) * fraction
+                entry_net_usd += net_usd
+                entry_net_krw += net_krw
+                entry_net += net_usd if market_key == "overseas" else net_krw
+                used_sell_qty[sell_id] = used_sell_qty.get(sell_id, 0) + take_qty
+                remaining_qty -= take_qty
+
+            realized_qty = max(0, entry_qty - remaining_qty)
+            bucket["total_net_usd"] = float(bucket["total_net_usd"]) + entry_net_usd
+            bucket["total_net_krw"] = float(bucket["total_net_krw"]) + entry_net_krw
+            if realized_qty > 0 and entry_price > 0:
+                realized_notional = entry_price * realized_qty
+                bucket["realized_entry_notional"] = (
+                    float(bucket["realized_entry_notional"]) + realized_notional
+                )
+            if remaining_qty <= 0 and entry_qty > 0:
+                bucket["closed_entries"] = int(bucket["closed_entries"]) + 1
+                entry_notional = entry_price * entry_qty
+                trade_return = (
+                    entry_net / entry_notional if entry_notional > 0 else 0.0
+                )
+                trade_returns = bucket["trade_returns"]
+                if isinstance(trade_returns, list):
+                    trade_returns.append(trade_return)
+                if entry_net > 0:
+                    bucket["win_count"] = int(bucket["win_count"]) + 1
+            elif realized_qty > 0:
+                bucket["partial_entries"] = int(bucket["partial_entries"]) + 1
+                bucket["open_entries"] = int(bucket["open_entries"]) + 1
+            else:
+                bucket["open_entries"] = int(bucket["open_entries"]) + 1
+
+        result: list[dict] = []
+        for bucket in buckets.values():
+            trade_returns = bucket.pop("trade_returns")
+            session_dates = bucket.pop("session_dates")
+            realized_notional = float(bucket.pop("realized_entry_notional"))
+            market_key = str(bucket["market"])
+            performance_net = (
+                float(bucket["total_net_usd"])
+                if market_key == "overseas"
+                else float(bucket["total_net_krw"])
+            )
+            returns = trade_returns if isinstance(trade_returns, list) else []
+            bucket["realized_entry_notional"] = realized_notional
+            bucket["closed_net_pnl_pcts"] = returns
+            bucket["mean_net_pnl_pct"] = (
+                statistics.fmean(returns) if returns else None
+            )
+            bucket["median_net_pnl_pct"] = (
+                statistics.median(returns) if returns else None
+            )
+            bucket["capital_weighted_net_pnl_pct"] = (
+                performance_net / realized_notional
+                if realized_notional > 0
+                else None
+            )
+            bucket["session_count"] = (
+                len(session_dates) if isinstance(session_dates, set) else 0
+            )
+            result.append(bucket)
+        result.sort(
+            key=lambda row: (
+                str(row.get("market") or ""),
+                str(row.get("strategy_flag") or ""),
+            )
+        )
+        return result
 
     def get_virtual_settlement_submission_usage(
         self,
@@ -5676,21 +6326,57 @@ class SqliteRepository:
         avg_sell_price: float,
         currency: str,
         updated_at: str,
+        strategy_flag: str = "",
+        entry_by: str = "",
+        entry_reason: str = "",
+        entry_time: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO virtual_sell_pending
-                    (market, symbol, exchange_code, qty, avg_sell_price, currency, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (market, symbol, exchange_code, qty, avg_sell_price, currency,
+                     strategy_flag, entry_by, entry_reason, entry_time, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(market, symbol) DO UPDATE SET
                     qty = excluded.qty,
                     avg_sell_price = excluded.avg_sell_price,
                     exchange_code = excluded.exchange_code,
                     currency = excluded.currency,
+                    strategy_flag = CASE
+                        WHEN COALESCE(excluded.strategy_flag, '') != ''
+                        THEN excluded.strategy_flag
+                        ELSE virtual_sell_pending.strategy_flag
+                    END,
+                    entry_by = CASE
+                        WHEN COALESCE(excluded.entry_by, '') != ''
+                        THEN excluded.entry_by
+                        ELSE virtual_sell_pending.entry_by
+                    END,
+                    entry_reason = CASE
+                        WHEN COALESCE(excluded.entry_reason, '') != ''
+                        THEN excluded.entry_reason
+                        ELSE virtual_sell_pending.entry_reason
+                    END,
+                    entry_time = COALESCE(
+                        NULLIF(excluded.entry_time, ''),
+                        virtual_sell_pending.entry_time
+                    ),
                     updated_at = excluded.updated_at
                 """,
-                (market, symbol, exchange_code, qty, avg_sell_price, currency, updated_at),
+                (
+                    market,
+                    symbol,
+                    exchange_code,
+                    qty,
+                    avg_sell_price,
+                    currency,
+                    strategy_flag,
+                    entry_by,
+                    entry_reason,
+                    entry_time,
+                    updated_at,
+                ),
             )
 
     def get_virtual_sell_pending(self, market: str, symbol: str) -> dict | None:

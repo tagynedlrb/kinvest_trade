@@ -2172,6 +2172,43 @@ def test_strategy_guard_state_persists_activation_until_released(
     assert reactivated["status"] == "ACTIVE"
 
 
+def test_strategy_guard_migration_restores_weighted_trigger_from_activation_event(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "weighted_guard_migration.db"
+    repository = SqliteRepository(db_path)
+    activated_at = datetime.now(timezone.utc)
+    repository.activate_strategy_guard_state(
+        market="overseas",
+        strategy_flag="VWAP+RSI",
+        activated_at=activated_at,
+        activation_session_date="2026-08-25",
+        trigger_trade_count=7,
+        trigger_avg_net_pnl_pct=0.001085,
+    )
+    repository.save_event(
+        event_type="strategy_guard_active",
+        detail={
+            "blocked": [
+                {
+                    "market": "overseas",
+                    "strategy_flag": "VWAP+RSI",
+                    "avg_net_pnl_pct": 0.001085,
+                    "capital_weighted_net_pnl_pct": -0.006788,
+                }
+            ]
+        },
+    )
+
+    reloaded = SqliteRepository(db_path)
+    state = reloaded.list_active_strategy_guard_states()[0]
+
+    assert state["trigger_avg_net_pnl_pct"] == pytest.approx(0.001085)
+    assert state["trigger_capital_weighted_net_pnl_pct"] == pytest.approx(
+        -0.006788
+    )
+
+
 def test_market_session_review_persists_regime_trade_and_quality_snapshot(
     tmp_path,
     save_confirmed_buy,

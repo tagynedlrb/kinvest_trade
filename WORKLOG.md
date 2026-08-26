@@ -20,6 +20,9 @@
 - RSI를 TA-Lib Wilder 결과와 동일한 시간순으로 수정하고 횡보 RSI를 0으로 처리했다.
 - MA/RSI 워밍업은 전일 봉을 유지하되 VWAP은 최신 현지 거래일만 사용한다.
 - 전략가드 영속 상태에 발동 당시 자본가중 순성과를 추가하고 Telegram에 보존 근거를 표시한다.
+  기존 활성 가드는 발동 5분 이내 `strategy_guard_active` 이벤트의 구조화 값으로 복원하고,
+  해당 값이 없는 구형 가드만 단순평균을 대체값으로 유지한다. 운영 원장의 `VWAP+RSI`는
+  평균 +0.108%/자본가중 -0.679%, `VWAP+VOL`은 -0.077%/-0.131%로 교정했다.
 - SQLite를 WAL, busy timeout 30초로 전환한다. 거래·시장·정책 원장은 그대로 보존한다.
 - 런타임 의존성을 `requirements-runtime.lock`과 `.venv`로 격리하고 `data/`, `logs/`,
   `state/`만 쓰도록 systemd를 격리했으며,
@@ -37,9 +40,9 @@
 ### 검증·배포 전 상태
 - 고정종목 엔진의 일봉·분봉 `KisApiError`도 무음 처리하지 않고 종목과 원인을
   journald WARNING에 남기도록 보완했다.
-- 새 운영 `.venv`에서 전체 **864개** 테스트(최종 111.13초), 영향 모듈 559개와
+- 새 운영 `.venv`에서 전체 **865개** 테스트(최종 109.15초), 영향 모듈 559개와
   보안 로그·Telegram 회귀 169개, 최종 권한·저장소·클라이언트 회귀 98개,
-  `compileall`, Ruff 치명검사, JSON 파싱, ShellCheck, systemd verify,
+  전략가드 원장 복원 회귀 48개, `compileall`, Ruff 치명검사, JSON 파싱, ShellCheck, systemd verify,
   `git diff --check`가 모두 통과했다.
 - DB 스냅샷은 `quick_check=ok`, 외래키 위반·미종결 체결·수량오류·체결가누락·
   주문고아·최종시장리뷰 누락이 모두 0이다. Bandit 고위험 0, 전용 환경

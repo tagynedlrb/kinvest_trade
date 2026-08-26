@@ -862,6 +862,7 @@ class SqliteRepository:
                 "trigger_capital_weighted_net_pnl_pct",
                 "REAL",
             )
+            self._restore_strategy_guard_weighted_triggers(conn)
             conn.execute(
                 """
                 UPDATE strategy_guard_state
@@ -1127,6 +1128,92 @@ class SqliteRepository:
             """,
             params,
         )
+
+    @staticmethod
+    def _restore_strategy_guard_weighted_triggers(
+        conn: sqlite3.Connection,
+    ) -> None:
+        states = conn.execute(
+            """
+            SELECT market, strategy_flag, activated_at,
+                   trigger_avg_net_pnl_pct,
+                   trigger_capital_weighted_net_pnl_pct
+            FROM strategy_guard_state
+            WHERE trigger_capital_weighted_net_pnl_pct IS NULL
+               OR ABS(
+                    trigger_capital_weighted_net_pnl_pct
+                    - trigger_avg_net_pnl_pct
+               ) < 0.000000000001
+            """
+        ).fetchall()
+        if not states:
+            return
+        events = conn.execute(
+            """
+            SELECT logged_at, detail
+            FROM event_log
+            WHERE event_type = 'strategy_guard_active'
+            ORDER BY logged_at ASC, id ASC
+            """
+        ).fetchall()
+        for state in states:
+            activated_at = parse_datetime(state["activated_at"])
+            if activated_at is None:
+                continue
+            market = str(state["market"] or "").strip().lower()
+            strategy = str(state["strategy_flag"] or "").strip().upper()
+            closest: tuple[float, float] | None = None
+            for event in events:
+                logged_at = parse_datetime(event["logged_at"])
+                if logged_at is None:
+                    continue
+                distance_sec = abs(
+                    (
+                        ensure_timezone(logged_at)
+                        - ensure_timezone(activated_at)
+                    ).total_seconds()
+                )
+                if distance_sec > 300:
+                    continue
+                try:
+                    payload = json.loads(str(event["detail"] or "{}"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                blocked = (
+                    payload.get("blocked")
+                    if isinstance(payload, dict)
+                    else None
+                )
+                if not isinstance(blocked, list):
+                    continue
+                for item in blocked:
+                    if not isinstance(item, dict):
+                        continue
+                    if (
+                        str(item.get("market") or "").strip().lower()
+                        != market
+                        or str(item.get("strategy_flag") or "").strip().upper()
+                        != strategy
+                        or item.get("capital_weighted_net_pnl_pct") is None
+                    ):
+                        continue
+                    try:
+                        weighted = float(
+                            item["capital_weighted_net_pnl_pct"]
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    if closest is None or distance_sec < closest[0]:
+                        closest = (distance_sec, weighted)
+            if closest is not None:
+                conn.execute(
+                    """
+                    UPDATE strategy_guard_state
+                    SET trigger_capital_weighted_net_pnl_pct = ?
+                    WHERE market = ? AND strategy_flag = ?
+                    """,
+                    (closest[1], market, strategy),
+                )
 
     @staticmethod
     def _ensure_column(

@@ -524,6 +524,9 @@ def test_reconcile_defers_repeated_no_fill_settlement_when_volume_is_zero() -> N
     for created_at, order_no in (
         ("2026-08-18T13:31:00+00:00", "1001"),
         ("2026-08-19T13:31:00+00:00", "1002"),
+        ("2026-08-20T13:00:00+00:00", "1003"),
+        ("2026-08-20T13:05:00+00:00", "1004"),
+        ("2026-08-20T13:10:00+00:00", "1005"),
     ):
         service.repository.save_broker_order_event(
             created_at=created_at,

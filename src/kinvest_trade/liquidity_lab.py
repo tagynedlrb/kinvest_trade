@@ -10126,16 +10126,6 @@ class LiquidityLabService:
                             or buy_context.get("logged_at")
                             or ""
                         ) or None
-                retry_allowed, retry_detail = self._virtual_settlement_retry_gate(
-                    symbol=symbol,
-                    now=current,
-                )
-                if not retry_allowed:
-                    self._record_virtual_settlement_deferred(
-                        symbol=symbol,
-                        detail=retry_detail,
-                    )
-                    continue
                 pending_started_at = parse_datetime(
                     str(row.get("updated_at") or "")
                 )
@@ -10205,6 +10195,16 @@ class LiquidityLabService:
                                 ]
                             )
                         )
+                    continue
+                retry_allowed, retry_detail = self._virtual_settlement_retry_gate(
+                    symbol=symbol,
+                    now=current,
+                )
+                if not retry_allowed:
+                    self._record_virtual_settlement_deferred(
+                        symbol=symbol,
+                        detail=retry_detail,
+                    )
                     continue
                 quote_last = float(
                     (quote.last_price if quote is not None else 0.0) or 0.0

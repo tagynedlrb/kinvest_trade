@@ -133,6 +133,8 @@ Sources: [Nasdaq NPAC](https://www.nasdaq.com/market-activity/stocks/npac),
 ## Verification Before Deployment
 
 - Full test suite: 875 passed in 121.52 seconds.
+- After prioritizing the zero-volume root cause over the already-reached daily
+  submission limit, the full suite passed again: 875 in 121.08 seconds.
 - Affected repository, settlement, analysis, Telegram, and position modules:
   234 passed before the full run.
 - `compileall`, configuration JSON parsing, and `git diff --check`: passed.
@@ -140,3 +142,12 @@ Sources: [Nasdaq NPAC](https://www.nasdaq.com/market-activity/stocks/npac),
   `data/trading_backup_20260826_170710_pre_settlement_attribution_deploy.db`,
   647,405,568 bytes, mode 600, `quick_check=ok`, zero foreign-key violations,
   SHA-256 `3ec1b4a532ffd71797f3f4636ec9b43eb99028959d258253a71af925a7609504`.
+- The first deployment at 17:08:09 UTC migrated the live ledger by exactly
+  21/119/119/1 rows. Its first observed cycle window recorded 34 state rows and
+  89 API attempts, one recovered retry, and zero terminal failures. Structured
+  policy evaluation `id=118` retains the evidence and forward checks.
+- A second online backup after migration and evaluation, before the precedence
+  correction deployment, is
+  `data/trading_backup_20260826_171259_pre_zero_volume_precedence_deploy.db`,
+  SHA-256 `501a38275b7cd9ab19db3b5d60a60249c00490eb901a41ba125a2fa230304406`,
+  with `quick_check=ok` and zero foreign-key violations.

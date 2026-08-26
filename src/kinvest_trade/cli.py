@@ -30,6 +30,9 @@ def _configure_logging() -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    network_level = max(level, logging.WARNING)
+    for logger_name in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(logger_name).setLevel(network_level)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -86,6 +86,30 @@ class FakeAsyncClient:
         return None
 
 
+def test_token_cache_is_owner_read_write_only(tmp_path: Path) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    client = KisRestClient(credentials)
+    client._token = "sensitive-token"
+    client._expires_at = 9_999_999_999.0
+
+    client._save_cached_token()
+
+    assert credentials.token_cache_path.stat().st_mode & 0o777 == 0o600
+    asyncio.run(client.close())
+
+
 def test_request_reissues_token_after_expired_token_response(tmp_path: Path) -> None:
     credentials = KisCredentials(
         env="vps",

@@ -128,7 +128,8 @@
     `requirements-runtime.lock`과 `.venv`를 통해 OS 패키지와 거래 의존성을 분리하고,
     systemd는 `data/`, `logs/`, `state/`만 쓸 수 있다. SQLite는 WAL과 30초 잠금 대기를 사용해
     거래 기록, Telegram 조회, 백업이 서로 막힐 가능성을 낮춘다. DB 로그 저장 실패는
-    거래를 중단시키지 않되 journald에 반드시 대체 기록한다.
+    거래를 중단시키지 않되 journald에 반드시 대체 기록한다. 설치 시 `keys/`, `data/`,
+    `logs/`, `state/`는 소유자 외 접근 권한을 제거하고 새 서비스 파일은 `UMask=0077`로 만든다.
 
 ## 현재 구조
 - `config/fixed_config.json`: 고정 설정

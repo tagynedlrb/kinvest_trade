@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
-from kinvest_trade.cli import get_order_submission_status
+from kinvest_trade.cli import _configure_logging, get_order_submission_status
 
 
 def _config(*, env: str, dry_run: bool, live_trading_enabled: bool) -> SimpleNamespace:
@@ -55,3 +56,23 @@ def test_order_submission_status_allows_prod_when_all_guards_open() -> None:
     assert status["paper_order_submission"] == "not_applicable_prod_env"
     assert status["prod_order_submission"] == "enabled"
     assert status["live_guard_scope"] == "prod_only"
+
+
+def test_info_logging_keeps_network_clients_above_sensitive_request_level(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KINVEST_LOG_LEVEL", "INFO")
+    logger_names = ("httpx", "httpcore", "urllib3")
+    original_levels = {
+        name: logging.getLogger(name).level for name in logger_names
+    }
+    try:
+        _configure_logging()
+
+        assert all(
+            logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+            for name in logger_names
+        )
+    finally:
+        for name, level in original_levels.items():
+            logging.getLogger(name).setLevel(level)

@@ -466,6 +466,7 @@ class KisRestClient:
             "expires_at": self._expires_at,
         }
         cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        cache_path.chmod(0o600)
 
     def _invalidate_token(self) -> None:
         self._token = None

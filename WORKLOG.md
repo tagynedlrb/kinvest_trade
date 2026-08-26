@@ -24,11 +24,18 @@
 - 런타임 의존성을 `requirements-runtime.lock`과 `.venv`로 격리하고 `data/`, `logs/`,
   `state/`만 쓰도록 systemd를 격리했으며,
   journald INFO 및 DB 로그 실패 대체기록을 추가했다. 사용자 서비스 enable도 복구했다.
+- 배포 직후 `httpx` INFO가 Telegram 요청 URL을 기록하는 것을 포착해 서비스를 즉시
+  중지했다. 애플리케이션 INFO는 유지하되 `httpx`, `httpcore`, `urllib3`는 WARNING
+  이상만 기록하도록 분리하고 재배포 전 회귀 테스트로 고정한다.
+- 과거 생성된 `keys/`, OAuth 토큰, 거래 DB·백업·CSV의 `644/664` 권한도 확인해
+  `keys/data/logs/state` 전체에서 group/other 접근을 제거했다. 설치 스크립트가 이후에도
+  같은 권한을 강제하며 서비스의 `UMask=0077`과 함께 새 파일을 소유자 전용으로 만든다.
 - 상세 수치, 거부 결정, 반증조건은
   `docs/FULL_SERVICE_AND_DOMESTIC_FREQUENCY_AUDIT_2026-08-26.md`에 기록했다.
 
 ### 검증·배포 전 상태
-- 새 운영 `.venv`에서 전체 **860개** 테스트(최종 110.34초), 영향 모듈 559개,
+- 새 운영 `.venv`에서 전체 **862개** 테스트(최종 110.67초), 영향 모듈 559개와
+  보안 로그·Telegram 회귀 169개, 최종 권한·저장소·클라이언트 회귀 98개,
   `compileall`, Ruff 치명검사, JSON 파싱, ShellCheck, systemd verify,
   `git diff --check`가 모두 통과했다.
 - DB 스냅샷은 `quick_check=ok`, 외래키 위반·미종결 체결·수량오류·체결가누락·

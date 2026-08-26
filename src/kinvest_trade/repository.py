@@ -99,6 +99,7 @@ class SqliteRepository:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.db_path.chmod(0o600)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
@@ -120,6 +121,7 @@ class SqliteRepository:
             timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000,
         ) as target:
             source.backup(target)
+        backup_path.chmod(0o600)
         return backup_path
 
     def reset_virtual_trades(self) -> dict[str, int]:

@@ -19,6 +19,11 @@ def test_repository_uses_wal_and_extended_busy_timeout(tmp_path) -> None:
 
     assert journal_mode == "wal"
     assert busy_timeout == 30_000
+    assert repository.db_path.stat().st_mode & 0o777 == 0o600
+
+    backup_path = repository.backup_db("permissions")
+
+    assert backup_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_prune_operational_logs_preserves_trade_history(tmp_path) -> None:

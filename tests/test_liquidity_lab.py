@@ -30,6 +30,7 @@ from kinvest_trade.client import KisApiError
 from kinvest_trade.execution_reconciler import BrokerExecutionReconciler
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.technical_signals import MovingAverageSnapshot
+from kinvest_trade.time_utils import parse_datetime
 
 
 @pytest.fixture(autouse=True)
@@ -5729,6 +5730,51 @@ def test_place_domestic_test_order_blocks_recent_underperforming_strategy_before
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
+def test_strategy_guard_blocks_when_capital_weighted_loss_breaches_threshold(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_lookback_hours = 48
+    service.config.liquidity_lab.strategy_guard_min_trades = 3
+    service.config.liquidity_lab.strategy_guard_max_avg_net_pnl_pct = -0.0025
+    service.config.liquidity_lab.strategy_guard_max_capital_weighted_net_pnl_pct = (
+        -0.001
+    )
+    service.config.liquidity_lab.strategy_guard_markets = ["overseas"]
+    service.config.liquidity_lab.strategy_guard_strategy_flags = ["VWAP"]
+    now = datetime.now(timezone.utc).isoformat()
+    for index, (symbol, qty, pnl_pct, net_pnl_usd) in enumerate(
+        (
+            ("SMALL_WIN_A", 1, 0.01, 1.0),
+            ("SMALL_WIN_B", 1, 0.01, 1.0),
+            ("LARGE_LOSS", 100, -0.002, -20.0),
+        )
+    ):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=now,
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP",
+            pnl_pct=pnl_pct,
+            entry_price=100.0,
+            qty_executed=qty,
+            net_pnl_usd=net_pnl_usd,
+            cycle_no=index,
+        )
+
+    assert service._strategy_guard_blocked_keys() == {
+        ("overseas", "VWAP")
+    }
+    detail = service._strategy_guard_cache["blocked_detail"][0]
+    assert detail["avg_net_pnl_pct"] > 0
+    assert detail["capital_weighted_net_pnl_pct"] < -0.001
+    assert detail["max_capital_weighted_net_pnl_pct"] == -0.001
+
+
 def test_strategy_guard_stays_blocked_until_three_final_market_sessions() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.strategy_guard_enabled = True
@@ -7684,6 +7730,73 @@ def test_post_cb_reentry_gate_stops_long_entries_after_one_session_fire() -> Non
     assert len(detail["breaker_session"]["event_ids"]) == 1
     assert "market_regime" not in detail
     assert next_session_reason == ""
+
+
+def test_post_cb_session_stop_ignores_cross_session_loss_streak_fire(
+    save_confirmed_sell,
+) -> None:
+    service = _build_run_service()
+    service.repository.save_event(
+        event_type="cb_fired",
+        detail={
+            "type": "consecutive",
+            "market": "overseas",
+            "consecutive_losses": 3,
+        },
+    )
+    fired = service.repository.list_event_log(
+        event_type="cb_fired",
+        limit=1,
+    )[0]
+    fired_at = parse_datetime(fired["logged_at"])
+    assert fired_at is not None
+    now = fired_at + timedelta(seconds=2)
+    _configure_overseas_post_cb_reentry_gate(
+        service,
+        now=now,
+        return_pct=-0.5,
+    )
+    for index, logged_at in enumerate(
+        (
+            fired_at - timedelta(days=1, minutes=2),
+            fired_at - timedelta(days=1, minutes=1),
+            fired_at - timedelta(seconds=1),
+        )
+    ):
+        save_confirmed_sell(
+            service.repository,
+            logged_at=logged_at.isoformat(),
+            market="overseas",
+            symbol=f"LOSS{index}",
+            exchange_code="NASD",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP+VOL",
+            pnl_pct=-0.01,
+            entry_price=100.0,
+            qty_executed=1,
+            net_pnl_usd=-1.0,
+        )
+
+    reason, detail = service._post_cb_reentry_regime_gate(
+        "overseas",
+        now=now,
+    )
+
+    assert reason == ""
+    summary = detail["breaker_session"]
+    assert summary["fire_count"] == 1
+    assert summary["session_loss_fire_count"] == 0
+    assert summary["cross_session_fire_count"] == 1
+    assert summary["fire_details"][0]["same_session_loss_streak"] == 1
+    assert (
+        summary["fire_details"][0]["qualification_basis"]
+        == "confirmed_session_outcomes"
+    )
+    exemption_events = service.repository.list_event_log(
+        event_type="post_cb_cross_session_streak_exempted",
+        limit=5,
+    )
+    assert len(exemption_events) == 1
 
 
 def test_domestic_post_cb_reentry_gate_stops_after_one_session_fire() -> None:

@@ -1781,7 +1781,9 @@ class ReportHelper:
                     (
                         f"차단조건={common_policy.min_trades}건 이상, "
                         "평균순손익 "
-                        f"{format_pct(common_policy.max_avg_net_pnl_pct)} 이하"
+                        f"{format_pct(common_policy.max_avg_net_pnl_pct)} 이하 "
+                        "또는 자본가중 "
+                        f"{format_pct(common_policy.max_capital_weighted_net_pnl_pct)} 이하"
                     ),
                     (
                         f"감시대상={','.join(sorted(guard_markets))}:"
@@ -1799,11 +1801,15 @@ class ReportHelper:
                     f"{format_market_korean(market)}정책="
                     f"{policy.lookback_hours}시간/{policy.min_trades}건/"
                     f"{format_pct(policy.max_avg_net_pnl_pct)} 이하/"
-                    f"{','.join(sorted(policy.strategy_flags))} "
+                    f"{','.join(sorted(policy.strategy_flags))}"
+                    "(자본가중 "
+                    f"{format_pct(policy.max_capital_weighted_net_pnl_pct)} 이하) "
                     f"해제={policy.min_final_sessions}세션"
                     + (
                         f"+회복{policy.release_min_trades}건/"
                         f"평균순>{format_pct(policy.release_min_avg_net_pnl_pct)}"
+                        "/자본가중>"
+                        f"{format_pct(policy.release_min_capital_weighted_net_pnl_pct)}"
                         if policy.release_requires_recovery
                         else ""
                     )
@@ -1980,7 +1986,14 @@ class ReportHelper:
             )
         rows.sort(
             key=lambda row: (
-                float(row.get("avg_net_pnl_pct") or 0.0),
+                min(
+                    float(row.get("avg_net_pnl_pct") or 0.0),
+                    float(
+                        row.get("capital_weighted_net_pnl_pct")
+                        if row.get("capital_weighted_net_pnl_pct") is not None
+                        else row.get("avg_net_pnl_pct") or 0.0
+                    ),
+                ),
                 -int(row.get("trade_count") or 0),
             )
         )
@@ -2012,6 +2025,11 @@ class ReportHelper:
             trade_count = int(row.get("trade_count") or 0)
             win_count = int(row.get("win_count") or 0)
             avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
+            weighted_net = float(
+                row.get("capital_weighted_net_pnl_pct")
+                if row.get("capital_weighted_net_pnl_pct") is not None
+                else avg_net
+            )
             win_rate = (win_count / trade_count) if trade_count else 0.0
             guard_policy = guard_policies[market]
             monitored = (not guard_markets or market in guard_markets) and (
@@ -2020,7 +2038,11 @@ class ReportHelper:
             )
             threshold_breached = (
                 trade_count >= guard_policy.min_trades
-                and avg_net <= guard_policy.max_avg_net_pnl_pct
+                and (
+                    avg_net <= guard_policy.max_avg_net_pnl_pct
+                    or weighted_net
+                    <= guard_policy.max_capital_weighted_net_pnl_pct
+                )
             )
             blocked = monitored and threshold_breached
             persistent_state = active_by_key.get(key)
@@ -2046,7 +2068,8 @@ class ReportHelper:
             lines.append(
                 f"{format_market_korean(market)} {strategy or '-'} "
                 f"상태={state} {trade_count}건 승률={win_rate * 100:.0f}% "
-                f"평균순={format_pct(avg_net)}"
+                f"평균순={format_pct(avg_net)} "
+                f"자본가중={format_pct(weighted_net)}"
             )
         for key, persistent_state in active_by_key.items():
             if key in seen_keys:

@@ -601,6 +601,44 @@ def test_virtual_settlement_submission_usage_is_session_and_symbol_scoped(
     }
 
 
+def test_virtual_settlement_submission_history_counts_distinct_sessions(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "settlement_history.db")
+    for created_at, status, order_kind in (
+        ("2026-08-17T13:31:00+00:00", "SUBMITTED", "limit"),
+        ("2026-08-17T14:01:00+00:00", "SUBMITTED", "limit"),
+        ("2026-08-18T13:31:00+00:00", "SUBMITTED", "limit"),
+        ("2026-08-18T13:36:00+00:00", "CANCELED", "cancel"),
+    ):
+        repository.save_broker_order_event(
+            created_at=created_at,
+            market="overseas",
+            symbol="NPAC",
+            exchange_code="NASD",
+            side="SELL",
+            order_kind=order_kind,
+            requested_qty=396,
+            requested_price=10.46,
+            status=status,
+            reason="virtual_sell_settlement",
+            broker_order_no="1001",
+            is_virtual=0,
+        )
+
+    history = repository.get_virtual_settlement_submission_history(
+        market="overseas",
+        symbol="npac",
+        after_created_at="2026-08-17T00:00:00+00:00",
+    )
+
+    assert history == {
+        "submission_count": 3,
+        "submission_session_count": 2,
+        "last_submitted_at": "2026-08-18T13:31:00+00:00",
+    }
+
+
 def test_telegram_message_log_can_be_saved_and_listed(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_telegram_message(
@@ -741,28 +779,54 @@ def test_api_call_health_separates_recovered_retry_from_terminal_failure(
         max_attempts=3,
         logical_terminal=True,
     )
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:10+00:00",
+        method="GET",
+        tr_id="BALANCE",
+        success=False,
+        http_status=500,
+        msg_cd="EGW00300",
+        logical_request_id="gateway-routing-recovered",
+        attempt_no=1,
+        max_attempts=3,
+        retry_scheduled=True,
+        retry_reason="gateway_routing",
+        logical_terminal=False,
+    )
+    repository.save_api_call(
+        created_at="2026-07-29T00:00:12+00:00",
+        method="GET",
+        tr_id="BALANCE",
+        success=True,
+        http_status=200,
+        logical_request_id="gateway-routing-recovered",
+        attempt_no=2,
+        max_attempts=3,
+        logical_terminal=True,
+    )
 
     summary = repository.summarize_api_call_health(
         since="2026-07-29T00:00:00+00:00"
     )
 
     assert summary == {
-        "attempt_count": 5,
-        "attempt_failure_count": 3,
-        "tracked_request_count": 3,
+        "attempt_count": 7,
+        "attempt_failure_count": 4,
+        "tracked_request_count": 4,
         "terminal_failure_count": 1,
-        "recovered_request_count": 2,
-        "retry_scheduled_count": 2,
+        "recovered_request_count": 3,
+        "retry_scheduled_count": 3,
         "rate_limit_retry_count": 1,
         "service_delay_retry_count": 1,
+        "gateway_routing_retry_count": 1,
         "adaptive_pacing_attempt_count": 1,
         "adaptive_pacing_wait_count": 1,
         "adaptive_pacing_wait_ms": 125,
         "balance_pair_pacing_attempt_count": 1,
         "balance_pair_pacing_wait_count": 1,
         "balance_pair_pacing_wait_ms": 45,
-        "attempt_failure_rate": pytest.approx(3 / 5),
-        "terminal_failure_rate": pytest.approx(1 / 3),
+        "attempt_failure_rate": pytest.approx(4 / 7),
+        "terminal_failure_rate": pytest.approx(1 / 4),
     }
 
 
@@ -1931,7 +1995,49 @@ def test_get_recent_strategy_guard_performance_prefers_recorded_net_pnl_pct(
     assert row["win_count"] == 1
     assert round(row["avg_gross_pnl_pct"], 6) == 0.10
     assert round(row["avg_net_pnl_pct"], 6) == -0.005
+    assert round(row["capital_weighted_net_pnl_pct"], 6) == -0.005
     assert row["total_net_pnl_krw"] == -100.0
+
+
+def test_strategy_guard_performance_weights_net_pnl_by_deployed_capital(
+    tmp_path,
+    save_confirmed_sell,
+) -> None:
+    repository = SqliteRepository(tmp_path / "strategy_guard_weighted.db")
+    trades = (
+        ("SMALL_WIN_A", 100.0, 1, 1.0, 0.01),
+        ("SMALL_WIN_B", 100.0, 1, 1.0, 0.01),
+        ("LARGE_LOSS", 100.0, 100, -20.0, -0.002),
+    )
+    for index, (symbol, entry_price, qty, net_pnl, pnl_pct) in enumerate(
+        trades
+    ):
+        save_confirmed_sell(
+            repository,
+            logged_at=f"2026-08-25T14:0{index}:00+00:00",
+            market="overseas",
+            symbol=symbol,
+            exchange_code="NASD",
+            action_reason="trend_filter_lost",
+            strategy_flag="VWAP",
+            pnl_pct=pnl_pct,
+            entry_price=entry_price,
+            qty_executed=qty,
+            net_pnl_usd=net_pnl,
+        )
+
+    row = repository.get_recent_strategy_guard_performance(
+        market="overseas",
+        after_logged_at="2026-08-25T00:00:00+00:00",
+        cost_pct=0.0050206,
+    )[0]
+
+    assert row["trade_count"] == 3
+    assert round(row["avg_net_pnl_pct"], 6) == 0.006
+    assert round(row["capital_weighted_net_pnl_pct"], 6) == round(
+        -18.0 / 10_200.0,
+        6,
+    )
 
 
 def test_get_recent_strategy_guard_performance_filters_market_and_uses_its_cost(

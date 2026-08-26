@@ -192,6 +192,14 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.strategy_guard_min_trades == 3
     assert domestic.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.003
     assert overseas.auto_trade.strategy_guard_max_avg_net_pnl_pct == -0.0025
+    assert (
+        domestic.auto_trade.strategy_guard_max_capital_weighted_net_pnl_pct
+        == -0.003
+    )
+    assert (
+        overseas.auto_trade.strategy_guard_max_capital_weighted_net_pnl_pct
+        == -0.001
+    )
     assert domestic.auto_trade.strategy_guard_strategy_flags == [
         "VWAP",
         "RSI",
@@ -223,6 +231,10 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     ]
     assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 3
     assert overseas.auto_trade.strategy_guard_probe_max_submissions_per_session == 6
+    assert domestic.auto_trade.virtual_settlement_aggressive_after_sessions == 2
+    assert overseas.auto_trade.virtual_settlement_aggressive_after_sessions == 2
+    assert domestic.auto_trade.virtual_settlement_aggressive_limit_bps == 50
+    assert overseas.auto_trade.virtual_settlement_aggressive_limit_bps == 50
     assert overseas.auto_trade.strategy_guard_probe_slot_multiplier == 0.10
     assert overseas.auto_trade.strategy_guard_probe_benchmark_floor_pct == 0.0
     assert overseas.auto_trade.strategy_guard_probe_regime_max_age_sec == 600

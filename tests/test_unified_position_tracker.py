@@ -789,6 +789,82 @@ def test_virtual_settlement_submission_limit_is_durable_per_session() -> None:
     assert detail["pending_preserved"] is True
 
 
+def test_virtual_settlement_uses_marketable_limit_after_repeated_sessions() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        qty=396,
+        avg_sell_price=10.49,
+        currency="USD",
+        updated_at="2026-08-14T13:30:00+00:00",
+    )
+    for created_at in (
+        "2026-08-18T13:31:00+00:00",
+        "2026-08-19T13:31:00+00:00",
+    ):
+        service.repository.save_broker_order_event(
+            created_at=created_at,
+            market="overseas",
+            symbol="NPAC",
+            exchange_code="NASD",
+            side="SELL",
+            order_kind="limit",
+            requested_qty=396,
+            requested_price=100.0,
+            status="SUBMITTED",
+            reason="virtual_sell_settlement",
+            broker_order_no=created_at[8:10],
+            is_virtual=0,
+        )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NPAC",
+            exchange_code="NASD",
+            quantity=396,
+            orderable_qty=396,
+            avg_price=98.0,
+            current_price=100.0,
+            pnl_pct=0.02,
+        )
+    ]
+    quotes = [
+        OverseasScanResult(
+            symbol="NPAC",
+            exchange_code="NASD",
+            last_price=100.0,
+            bid=99.9,
+            ask=100.1,
+            spread_pct=0.002,
+            change_rate_pct=0.5,
+            volume=1_000_000,
+            orderable_qty=396,
+            fx_rate_krw=1350.0,
+            activity_score=10.0,
+        )
+    ]
+
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            overseas_ranked=quotes,
+            now=datetime(2026, 8, 20, 14, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert service.client.order_calls[0]["price"] == "99.5000"
+    events = service.repository.list_broker_order_events(limit=1)
+    assert events[0]["order_kind"] == "aggressive_limit"
+    payload = events[0]["payload_json"]
+    pricing = payload["settlement_pricing"]
+    assert pricing["aggressive"] is True
+    assert pricing["failed_session_count"] == 2
+    assert pricing["quote_bid"] == 99.9
+    assert pricing["requested_price"] == 99.5
+    assert "주문방식=aggressive_limit" in service.notifier.messages[-1]
+
+
 def test_stale_virtual_settlement_is_canceled_without_clearing_pending() -> None:
     service = _build_service()
     service.repository.upsert_virtual_sell_pending(

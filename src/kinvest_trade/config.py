@@ -204,6 +204,7 @@ class AutoTradeConfig:
     strategy_guard_lookback_hours: int = 48
     strategy_guard_min_trades: int = 3
     strategy_guard_max_avg_net_pnl_pct: float = -0.003
+    strategy_guard_max_capital_weighted_net_pnl_pct: float = -0.003
     strategy_guard_strategy_flags: list[str] = field(
         default_factory=lambda: ["VWAP", "RSI", "VOL"]
     )
@@ -211,6 +212,7 @@ class AutoTradeConfig:
     strategy_guard_release_requires_recovery: bool = False
     strategy_guard_release_min_trades: int = 3
     strategy_guard_release_min_avg_net_pnl_pct: float = 0.0
+    strategy_guard_release_min_capital_weighted_net_pnl_pct: float = 0.0
     strategy_guard_probe_enabled: bool = False
     strategy_guard_probe_strategy_flags: list[str] = field(default_factory=list)
     strategy_guard_probe_max_entries_per_session: int = 0
@@ -221,6 +223,8 @@ class AutoTradeConfig:
     virtual_settlement_stale_order_minutes: int = 5
     virtual_settlement_retry_cooldown_minutes: int = 15
     virtual_settlement_max_submissions_per_session: int = 3
+    virtual_settlement_aggressive_after_sessions: int = 2
+    virtual_settlement_aggressive_limit_bps: int = 50
     entry_confirmation_strategy_flags: list[str] = field(default_factory=list)
     dynamic_pool_approved_leveraged_symbols: list[str] = field(
         default_factory=list

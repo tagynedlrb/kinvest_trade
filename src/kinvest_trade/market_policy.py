@@ -23,11 +23,13 @@ class StrategyGuardPolicy:
     lookback_hours: int
     min_trades: int
     max_avg_net_pnl_pct: float
+    max_capital_weighted_net_pnl_pct: float
     strategy_flags: frozenset[str]
     min_final_sessions: int
     release_requires_recovery: bool
     release_min_trades: int
     release_min_avg_net_pnl_pct: float
+    release_min_capital_weighted_net_pnl_pct: float
     fallback_cost_pct: float
 
 
@@ -167,6 +169,17 @@ def get_market_strategy_guard_policy(
                 -0.003,
             )
         ),
+        max_capital_weighted_net_pnl_pct=float(
+            getattr(
+                guard_source,
+                "strategy_guard_max_capital_weighted_net_pnl_pct",
+                getattr(
+                    guard_source,
+                    "strategy_guard_max_avg_net_pnl_pct",
+                    -0.003,
+                ),
+            )
+        ),
         strategy_flags=strategy_flags,
         min_final_sessions=max(
             0,
@@ -202,6 +215,18 @@ def get_market_strategy_guard_policy(
                 auto_trade,
                 "strategy_guard_release_min_avg_net_pnl_pct",
                 0.0,
+            )
+            or 0.0
+        ),
+        release_min_capital_weighted_net_pnl_pct=float(
+            getattr(
+                auto_trade,
+                "strategy_guard_release_min_capital_weighted_net_pnl_pct",
+                getattr(
+                    auto_trade,
+                    "strategy_guard_release_min_avg_net_pnl_pct",
+                    0.0,
+                ),
             )
             or 0.0
         ),

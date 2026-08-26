@@ -48,7 +48,7 @@ class FakeResponse:
 
 
 class FakeAsyncClient:
-    def __init__(self, responses: list[FakeResponse]) -> None:
+    def __init__(self, responses: list[FakeResponse | Exception]) -> None:
         self.responses = responses
         self.calls: list[dict] = []
 
@@ -62,7 +62,10 @@ class FakeAsyncClient:
                 "json": json,
             }
         )
-        return self.responses.pop(0)
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def post(self, url: str, headers: dict, json: dict | None):
         self.calls.append(
@@ -386,6 +389,192 @@ def test_request_marks_exhausted_service_delay_as_terminal_failure(
         "service_delay",
         "",
     ]
+    assert [call["logical_terminal"] for call in calls] == [
+        False,
+        False,
+        True,
+    ]
+
+
+def test_request_retries_vps_get_after_gateway_routing_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    fake_http = FakeAsyncClient(
+        [
+            FakeResponse(
+                500,
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "EGW00300",
+                    "msg1": "서비스 연결이 원활하지 않습니다.",
+                },
+            ),
+            FakeResponse(
+                200,
+                {
+                    "rt_cd": "0",
+                    "msg_cd": "0",
+                    "msg1": "정상",
+                    "output": {"value": "ok"},
+                },
+            ),
+        ]
+    )
+    client._client = fake_http
+    delays: list[float] = []
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_throttle(*_args, **_kwargs) -> tuple[bool, int, bool, int]:
+        return False, 0, False, 0
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_throttle  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", capture_sleep)
+
+    payload = asyncio.run(client._request("GET", "/balance", "BALANCE"))
+
+    assert payload["output"]["value"] == "ok"
+    assert len(fake_http.calls) == 2
+    assert delays == [2.0]
+    assert [call["retry_reason"] for call in calls] == [
+        "gateway_routing",
+        "",
+    ]
+    assert [call["logical_terminal"] for call in calls] == [False, True]
+
+
+@pytest.mark.parametrize(
+    ("env", "method"),
+    [
+        ("vps", "POST"),
+        ("prod", "GET"),
+    ],
+)
+def test_request_does_not_retry_gateway_routing_for_writes_or_prod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env: str,
+    method: str,
+) -> None:
+    credentials = KisCredentials(
+        env=env,
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    client._client = FakeAsyncClient(
+        [
+            FakeResponse(
+                500,
+                {
+                    "rt_cd": "1",
+                    "msg_cd": "EGW00300",
+                    "msg1": "서비스 연결이 원활하지 않습니다.",
+                },
+            )
+        ]
+    )
+    delays: list[float] = []
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_throttle(*_args, **_kwargs) -> tuple[bool, int, bool, int]:
+        return False, 0, False, 0
+
+    async def capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_throttle  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", capture_sleep)
+
+    with pytest.raises(KisApiError, match="EGW00300"):
+        asyncio.run(
+            client._request(
+                method,
+                "/order",
+                "ORDER",
+                body={"symbol": "TEST", "qty": 1},
+            )
+        )
+
+    assert delays == []
+    assert len(calls) == 1
+    assert calls[0]["retry_scheduled"] is False
+    assert calls[0]["logical_terminal"] is True
+
+
+def test_request_records_exception_type_for_blank_transport_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    client._client = FakeAsyncClient(
+        [httpx.ReadTimeout("") for _ in range(3)]
+    )
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_wait(*_args, **_kwargs) -> tuple[bool, int, bool, int]:
+        return False, 0, False, 0
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_wait  # type: ignore[method-assign]
+    monkeypatch.setattr("kinvest_trade.client.asyncio.sleep", no_wait)
+
+    with pytest.raises(KisApiError, match="transport_error: ReadTimeout"):
+        asyncio.run(client._request("GET", "/price", "PRICE"))
+
+    assert len(calls) == 3
+    assert {call["msg1"] for call in calls} == {
+        "transport_error: ReadTimeout"
+    }
     assert [call["logical_terminal"] for call in calls] == [
         False,
         False,

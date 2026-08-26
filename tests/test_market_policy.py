@@ -13,11 +13,13 @@ def _auto_trade(**overrides):
         "strategy_guard_lookback_hours": 48,
         "strategy_guard_min_trades": 3,
         "strategy_guard_max_avg_net_pnl_pct": -0.003,
+        "strategy_guard_max_capital_weighted_net_pnl_pct": -0.003,
         "strategy_guard_strategy_flags": ["VWAP", "RSI", "VOL"],
         "strategy_guard_min_final_sessions": 3,
         "strategy_guard_release_requires_recovery": False,
         "strategy_guard_release_min_trades": 3,
         "strategy_guard_release_min_avg_net_pnl_pct": 0.0,
+        "strategy_guard_release_min_capital_weighted_net_pnl_pct": 0.0,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -28,6 +30,7 @@ def test_strategy_guard_policy_is_resolved_from_each_market_definition() -> None
         strategy_guard_lookback_hours=24,
         strategy_guard_min_trades=4,
         strategy_guard_max_avg_net_pnl_pct=-0.004,
+        strategy_guard_max_capital_weighted_net_pnl_pct=-0.002,
         strategy_guard_strategy_flags=["VWAP"],
         strategy_guard_min_final_sessions=2,
     )
@@ -35,6 +38,7 @@ def test_strategy_guard_policy_is_resolved_from_each_market_definition() -> None
         strategy_guard_lookback_hours=72,
         strategy_guard_min_trades=5,
         strategy_guard_max_avg_net_pnl_pct=-0.006,
+        strategy_guard_max_capital_weighted_net_pnl_pct=-0.001,
         strategy_guard_strategy_flags=["VWAP+RSI"],
         strategy_guard_min_final_sessions=4,
     )
@@ -58,16 +62,19 @@ def test_strategy_guard_policy_is_resolved_from_each_market_definition() -> None
     assert domestic_guard.lookback_hours == 24
     assert domestic_guard.min_trades == 4
     assert domestic_guard.max_avg_net_pnl_pct == -0.004
+    assert domestic_guard.max_capital_weighted_net_pnl_pct == -0.002
     assert domestic_guard.strategy_flags == frozenset({"VWAP"})
     assert domestic_guard.min_final_sessions == 2
     assert domestic_guard.release_requires_recovery is False
     assert domestic_guard.release_min_trades == 3
     assert domestic_guard.release_min_avg_net_pnl_pct == 0.0
+    assert domestic_guard.release_min_capital_weighted_net_pnl_pct == 0.0
     assert domestic_guard.fallback_cost_pct == 0.0023
 
     assert overseas_guard.lookback_hours == 72
     assert overseas_guard.min_trades == 5
     assert overseas_guard.max_avg_net_pnl_pct == -0.006
+    assert overseas_guard.max_capital_weighted_net_pnl_pct == -0.001
     assert overseas_guard.strategy_flags == frozenset({"VWAP+RSI"})
     assert overseas_guard.min_final_sessions == 4
     assert overseas_guard.release_requires_recovery is False
@@ -90,6 +97,7 @@ def test_strategy_guard_policy_keeps_legacy_config_fallback() -> None:
     assert guard.lookback_hours == 36
     assert guard.min_trades == 7
     assert guard.max_avg_net_pnl_pct == -0.009
+    assert guard.max_capital_weighted_net_pnl_pct == -0.009
     assert guard.strategy_flags == frozenset({"RSI"})
     assert guard.min_final_sessions == 6
     assert guard.release_requires_recovery is False

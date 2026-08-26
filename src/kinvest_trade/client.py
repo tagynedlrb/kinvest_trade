@@ -141,6 +141,7 @@ class KisRestClient:
     _vps_overseas_history_continuation_delay_sec: float = 1.0
     _RATE_LIMIT_MSG_CODES = frozenset({"EGW00201", "EGW00215"})
     _VPS_TRANSIENT_READ_MSG_CODES = frozenset({"90020000"})
+    _VPS_GATEWAY_ROUTING_MSG_CODES = frozenset({"EGW00300"})
 
     def _request_interval_sec(self) -> float:
         if str(self.credentials.env).strip().lower() == "vps":
@@ -234,6 +235,12 @@ class KisRestClient:
             and msg_cd in self._VPS_TRANSIENT_READ_MSG_CODES
         ):
             return "service_delay"
+        if (
+            str(self.credentials.env).strip().lower() == "vps"
+            and method.upper() == "GET"
+            and msg_cd in self._VPS_GATEWAY_ROUTING_MSG_CODES
+        ):
+            return "gateway_routing"
         return ""
 
     @staticmethod
@@ -243,6 +250,8 @@ class KisRestClient:
         if retry_reason == "rate_limit":
             return 1.0
         if retry_reason == "service_delay":
+            return min(2.0**attempt_no, 4.0)
+        if retry_reason == "gateway_routing":
             return min(2.0**attempt_no, 4.0)
         return 0.0
 
@@ -577,6 +586,7 @@ class KisRestClient:
                     json=body if method == "POST" else None,
                 )
             except httpx.HTTPError as exc:
+                error_detail = str(exc).strip() or type(exc).__name__
                 network_elapsed_ms = int(
                     (time.monotonic() - network_started_at) * 1000
                 )
@@ -587,7 +597,7 @@ class KisRestClient:
                     tr_id=tr_id,
                     started_at=started_at,
                     success=False,
-                    msg1=f"transport_error: {exc}"[:200],
+                    msg1=f"transport_error: {error_detail}"[:200],
                     logical_request_id=logical_request_id,
                     attempt_no=attempt_no,
                     max_attempts=max_attempts,
@@ -605,7 +615,9 @@ class KisRestClient:
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(1.0)
                     continue
-                raise KisApiError(f"{tr_id} transport_error: {exc}") from exc
+                raise KisApiError(
+                    f"{tr_id} transport_error: {error_detail}"
+                ) from exc
             network_elapsed_ms = int(
                 (time.monotonic() - network_started_at) * 1000
             )

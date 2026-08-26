@@ -2770,9 +2770,18 @@ class LiquidityLabService:
                 continue
             trade_count = int(row.get("trade_count") or 0)
             avg_net = float(row.get("avg_net_pnl_pct") or 0.0)
+            weighted_net = float(
+                row.get("capital_weighted_net_pnl_pct")
+                if row.get("capital_weighted_net_pnl_pct") is not None
+                else avg_net
+            )
             if (
                 trade_count < guard_policy.min_trades
-                or avg_net > guard_policy.max_avg_net_pnl_pct
+                or (
+                    avg_net > guard_policy.max_avg_net_pnl_pct
+                    and weighted_net
+                    > guard_policy.max_capital_weighted_net_pnl_pct
+                )
             ):
                 continue
             rolling_blocked[(market, strategy)] = row
@@ -2844,6 +2853,15 @@ class LiquidityLabService:
                         float(row.get("avg_net_pnl_pct") or 0.0),
                         6,
                     ),
+                    "capital_weighted_net_pnl_pct": round(
+                        float(
+                            row.get("capital_weighted_net_pnl_pct")
+                            if row.get("capital_weighted_net_pnl_pct")
+                            is not None
+                            else row.get("avg_net_pnl_pct") or 0.0
+                        ),
+                        6,
+                    ),
                     "retention_source": "rolling_performance",
                     "activation_session_date": activation_session_date,
                     "final_sessions": final_sessions,
@@ -2855,6 +2873,9 @@ class LiquidityLabService:
                     "max_avg_net_pnl_pct": guard_policies[
                         market
                     ].max_avg_net_pnl_pct,
+                    "max_capital_weighted_net_pnl_pct": guard_policies[
+                        market
+                    ].max_capital_weighted_net_pnl_pct,
                 }
             )
 
@@ -2878,6 +2899,7 @@ class LiquidityLabService:
                 )
                 recovery_trade_count = 0
                 recovery_avg_net_pnl_pct = 0.0
+                recovery_capital_weighted_net_pnl_pct = 0.0
                 if (
                     (guard_markets and market not in guard_markets)
                     or guard_policy is None
@@ -2930,6 +2952,16 @@ class LiquidityLabService:
                         recovery_avg_net_pnl_pct = float(
                             (recovery_row or {}).get("avg_net_pnl_pct") or 0.0
                         )
+                        recovery_capital_weighted_net_pnl_pct = float(
+                            (recovery_row or {}).get(
+                                "capital_weighted_net_pnl_pct"
+                            )
+                            if (recovery_row or {}).get(
+                                "capital_weighted_net_pnl_pct"
+                            )
+                            is not None
+                            else recovery_avg_net_pnl_pct
+                        )
                     recovery_confirmed = (
                         not guard_policy.release_requires_recovery
                         or (
@@ -2937,6 +2969,8 @@ class LiquidityLabService:
                             >= guard_policy.release_min_trades
                             and recovery_avg_net_pnl_pct
                             > guard_policy.release_min_avg_net_pnl_pct
+                            and recovery_capital_weighted_net_pnl_pct
+                            > guard_policy.release_min_capital_weighted_net_pnl_pct
                         )
                     )
                     should_release = (
@@ -2967,6 +3001,10 @@ class LiquidityLabService:
                                 "recovery_trade_count": recovery_trade_count,
                                 "recovery_avg_net_pnl_pct": round(
                                     recovery_avg_net_pnl_pct,
+                                    6,
+                                ),
+                                "recovery_capital_weighted_net_pnl_pct": round(
+                                    recovery_capital_weighted_net_pnl_pct,
                                     6,
                                 ),
                             }
@@ -3009,8 +3047,15 @@ class LiquidityLabService:
                             recovery_avg_net_pnl_pct,
                             6,
                         ),
+                        "recovery_capital_weighted_net_pnl_pct": round(
+                            recovery_capital_weighted_net_pnl_pct,
+                            6,
+                        ),
                         "recovery_min_avg_net_pnl_pct": (
                             guard_policy.release_min_avg_net_pnl_pct
+                        ),
+                        "recovery_min_capital_weighted_net_pnl_pct": (
+                            guard_policy.release_min_capital_weighted_net_pnl_pct
                         ),
                     }
                 )
@@ -3040,6 +3085,9 @@ class LiquidityLabService:
                             "max_avg_net_pnl_pct": (
                                 policy.max_avg_net_pnl_pct
                             ),
+                            "max_capital_weighted_net_pnl_pct": (
+                                policy.max_capital_weighted_net_pnl_pct
+                            ),
                             "strategy_flags": sorted(
                                 policy.strategy_flags
                             ),
@@ -3054,6 +3102,9 @@ class LiquidityLabService:
                             ),
                             "release_min_avg_net_pnl_pct": (
                                 policy.release_min_avg_net_pnl_pct
+                            ),
+                            "release_min_capital_weighted_net_pnl_pct": (
+                                policy.release_min_capital_weighted_net_pnl_pct
                             ),
                             "fallback_cost_pct": (
                                 policy.fallback_cost_pct
@@ -3533,9 +3584,48 @@ class LiquidityLabService:
                 )
             )
             detail["breaker_session"] = breaker_session
-            if (
+            session_loss_fire_count = int(
+                breaker_session.get(
+                    "session_loss_fire_count",
+                    breaker_session["fire_count"],
+                )
+            )
+            session_stop_exempted = bool(
                 max_fires is not None
                 and int(breaker_session["fire_count"]) >= max_fires
+                and session_loss_fire_count < max_fires
+            )
+            detail["session_stop_exempted"] = session_stop_exempted
+            if session_stop_exempted:
+                exemption_key = (
+                    market_key,
+                    str(breaker_session.get("session_date") or ""),
+                    tuple(breaker_session.get("event_ids") or []),
+                )
+                logged_exemptions = getattr(
+                    self,
+                    "_post_cb_session_stop_exemptions_logged",
+                    set(),
+                )
+                if exemption_key not in logged_exemptions:
+                    logged_exemptions.add(exemption_key)
+                    self._post_cb_session_stop_exemptions_logged = (
+                        logged_exemptions
+                    )
+                    self._save_event(
+                        event_type="post_cb_cross_session_streak_exempted",
+                        market=market_key,
+                        detail={
+                            "reason": (
+                                "same_session_loss_streak_below_threshold"
+                            ),
+                            "max_fires_per_session": max_fires,
+                            "breaker_session": breaker_session,
+                        },
+                    )
+            if (
+                max_fires is not None
+                and session_loss_fire_count >= max_fires
             ):
                 detail["reason"] = "post_cb_session_loss_limit_reached"
             elif floor_pct is not None:
@@ -3574,8 +3664,7 @@ class LiquidityLabService:
         market_key = normalize_market_name(market)
         current = ensure_timezone(now or datetime.now(timezone.utc))
         session_date = self._market_session_date(market_key, current)
-        fired_at: list[str] = []
-        event_ids: list[int] = []
+        fire_events: list[tuple[datetime, int]] = []
         list_events = getattr(self.repository, "list_event_log", None)
         if callable(list_events):
             for row in list_events(event_type="cb_fired", limit=1000):
@@ -3605,18 +3694,100 @@ class LiquidityLabService:
                     != session_date
                 ):
                     continue
-                fired_at.append(timestamp.isoformat())
                 event_id = int(row.get("id") or 0)
-                if event_id > 0:
-                    event_ids.append(event_id)
-        fired_at.sort()
-        event_ids.sort()
+                fire_events.append((timestamp, event_id))
+        fire_events.sort(key=lambda item: (item[0], item[1]))
+
+        base_threshold = int(
+            getattr(self.config.risk, "max_consecutive_losses", 0) or 0
+        )
+        threshold = self._market_risk_value(
+            market_key,
+            "max_consecutive_losses",
+            base_threshold,
+        )
+        session_outcomes: list[tuple[datetime, float]] = []
+        outcomes_available = False
+        outcome_reader = getattr(
+            self.repository,
+            "get_recent_confirmed_sell_risk_outcomes",
+            None,
+        )
+        if callable(outcome_reader):
+            try:
+                outcomes = outcome_reader(limit=5000, cost_pct=0.005)
+                outcomes_available = True
+            except Exception:  # noqa: BLE001
+                _logger.exception(
+                    "post_cb_session_loss_outcome_lookup_failed market=%s",
+                    market_key,
+                )
+                outcomes = []
+            for row in outcomes:
+                if str(row.get("market") or "").strip().lower() != market_key:
+                    continue
+                if int(row.get("is_session_trade") or 0) != 1:
+                    continue
+                occurred_at = parse_datetime(str(row.get("logged_at") or ""))
+                if occurred_at is None:
+                    continue
+                timestamp = ensure_timezone(occurred_at)
+                if timestamp > current:
+                    continue
+                if self._market_session_date(market_key, timestamp) != session_date:
+                    continue
+                session_outcomes.append(
+                    (timestamp, float(row.get("net_pnl_pct") or 0.0))
+                )
+        session_outcomes.sort(key=lambda item: item[0])
+
+        fire_details: list[dict[str, object]] = []
+        session_loss_fire_count = 0
+        for fired_at, event_id in fire_events:
+            streak = 0
+            observed_count = 0
+            for occurred_at, net_pnl_pct in session_outcomes:
+                if occurred_at > fired_at:
+                    break
+                observed_count += 1
+                streak = streak + 1 if net_pnl_pct < 0 else 0
+            evidence_available = outcomes_available and observed_count > 0
+            qualifies = (
+                streak >= threshold
+                if evidence_available and threshold > 0
+                else True
+            )
+            if qualifies:
+                session_loss_fire_count += 1
+            fire_details.append(
+                {
+                    "event_id": event_id,
+                    "fired_at": fired_at.isoformat(),
+                    "same_session_outcome_count": observed_count,
+                    "same_session_loss_streak": streak,
+                    "threshold": threshold,
+                    "qualifies_for_session_stop": qualifies,
+                    "qualification_basis": (
+                        "confirmed_session_outcomes"
+                        if evidence_available
+                        else "fail_closed_missing_session_outcomes"
+                    ),
+                }
+            )
+
+        fired_at_values = [item[0].isoformat() for item in fire_events]
+        event_ids = [item[1] for item in fire_events if item[1] > 0]
         return {
             "market": market_key,
             "session_date": session_date,
-            "fire_count": len(fired_at),
-            "fired_at": fired_at,
+            "fire_count": len(fire_events),
+            "session_loss_fire_count": session_loss_fire_count,
+            "cross_session_fire_count": (
+                len(fire_events) - session_loss_fire_count
+            ),
+            "fired_at": fired_at_values,
             "event_ids": event_ids,
+            "fire_details": fire_details,
         }
 
     def _entry_liquidity_block_reason(
@@ -5303,6 +5474,28 @@ class LiquidityLabService:
                     or 3
                 ),
             ),
+            "aggressive_after_sessions": max(
+                1,
+                int(
+                    getattr(
+                        auto_trade,
+                        "virtual_settlement_aggressive_after_sessions",
+                        2,
+                    )
+                    or 2
+                ),
+            ),
+            "aggressive_limit_bps": max(
+                0,
+                int(
+                    getattr(
+                        auto_trade,
+                        "virtual_settlement_aggressive_limit_bps",
+                        50,
+                    )
+                    or 0
+                ),
+            ),
         }
 
     def _virtual_settlement_retry_gate(
@@ -6597,6 +6790,7 @@ class LiquidityLabService:
         if us_cycle_open and us_orderable_in_profile:
             await self._reconcile_pending_virtual_sells(
                 overseas_positions=overseas_positions,
+                overseas_ranked=overseas_ranked,
             )
 
         self._clear_stale_lab_position_states(
@@ -9597,6 +9791,7 @@ class LiquidityLabService:
         self,
         *,
         overseas_positions: list[OverseasHeldPosition],
+        overseas_ranked: list[OverseasScanResult] | None = None,
         now: datetime | None = None,
     ) -> None:
         current = ensure_timezone(now or datetime.now(timezone.utc))
@@ -9608,6 +9803,10 @@ class LiquidityLabService:
             position.symbol.upper(): position
             for position in overseas_positions
             if not position.is_virtual
+        }
+        quote_by_symbol = {
+            quote.symbol.upper(): quote
+            for quote in (overseas_ranked or [])
         }
         virtual_manager = getattr(self, "virtual_trades", None)
 
@@ -9691,6 +9890,53 @@ class LiquidityLabService:
                         detail=retry_detail,
                     )
                     continue
+                pending_started_at = parse_datetime(
+                    str(row.get("updated_at") or "")
+                )
+                history_after = ensure_timezone(
+                    pending_started_at or current
+                ).astimezone(timezone.utc).isoformat()
+                history = (
+                    self.repository.get_virtual_settlement_submission_history(
+                        market="overseas",
+                        symbol=symbol,
+                        after_created_at=history_after,
+                    )
+                    if hasattr(
+                        self.repository,
+                        "get_virtual_settlement_submission_history",
+                    )
+                    else {
+                        "submission_count": 0,
+                        "submission_session_count": 0,
+                    }
+                )
+                retry_policy = self._virtual_settlement_retry_policy()
+                failed_session_count = int(
+                    history.get("submission_session_count") or 0
+                )
+                aggressive = (
+                    failed_session_count
+                    >= retry_policy["aggressive_after_sessions"]
+                )
+                quote = quote_by_symbol.get(symbol)
+                quote_last = float(
+                    (quote.last_price if quote is not None else 0.0) or 0.0
+                )
+                quote_bid = float(
+                    (quote.bid if quote is not None else 0.0) or 0.0
+                )
+                reference_price = quote_bid or quote_last or real.current_price
+                settlement_price = reference_price
+                if aggressive:
+                    discount_base = quote_last or real.current_price
+                    aggressive_floor = discount_base * (
+                        1.0
+                        - retry_policy["aggressive_limit_bps"] / 10_000.0
+                    )
+                    settlement_price = min(reference_price, aggressive_floor)
+                settlement_price = round(max(0.0001, settlement_price), 4)
+                order_kind = "aggressive_limit" if aggressive else "limit"
                 try:
                     response = (
                         await self.client.place_overseas_order_for_current_session(
@@ -9698,7 +9944,7 @@ class LiquidityLabService:
                             symbol=symbol,
                             exchange_code=(exchange_code or real.exchange_code),
                             qty=settle_qty,
-                            price=f"{real.current_price:.4f}",
+                            price=f"{settlement_price:.4f}",
                             order_division="00",
                         )
                     )
@@ -9729,15 +9975,26 @@ class LiquidityLabService:
                     symbol=symbol,
                     exchange_code=(exchange_code or real.exchange_code),
                     side="SELL",
-                    order_kind="limit",
+                    order_kind=order_kind,
                     requested_qty=settle_qty,
-                    requested_price=real.current_price,
+                    requested_price=settlement_price,
                     status="SUBMITTED",
                     reason=_VIRTUAL_SELL_SETTLEMENT_ROLE,
                     payload={
                         "response": response,
                         "pending_qty": pending_qty,
                         "virtual_sell_avg_price": pending_avg_price,
+                        "settlement_pricing": {
+                            "reference_price": reference_price,
+                            "quote_last": quote_last,
+                            "quote_bid": quote_bid,
+                            "requested_price": settlement_price,
+                            "aggressive": aggressive,
+                            "failed_session_count": failed_session_count,
+                            "aggressive_limit_bps": retry_policy[
+                                "aggressive_limit_bps"
+                            ],
+                        },
                     },
                     execution_context={
                         "execution_role": _VIRTUAL_SELL_SETTLEMENT_ROLE,
@@ -9761,6 +10018,12 @@ class LiquidityLabService:
                         "session_id": getattr(self, "_session_id", ""),
                         "cycle_no": getattr(self, "_cycle_count", 0),
                         "is_session_trade": 0,
+                        "settlement_pricing": {
+                            "reference_price": reference_price,
+                            "requested_price": settlement_price,
+                            "aggressive": aggressive,
+                            "failed_session_count": failed_session_count,
+                        },
                     },
                 )
                 broker_order_no = self._extract_broker_order_no(response)
@@ -9808,7 +10071,16 @@ class LiquidityLabService:
                         ),
                         "broker_order_no": broker_order_no,
                         "requested_qty": settle_qty,
-                        "requested_price": real.current_price,
+                        "requested_price": settlement_price,
+                        "order_kind": order_kind,
+                        "quote_bid": quote_bid,
+                        "quote_last": quote_last,
+                        "failed_session_count": failed_session_count,
+                        "aggressive_limit_bps": (
+                            retry_policy["aggressive_limit_bps"]
+                            if aggressive
+                            else 0
+                        ),
                         "pending_qty": pending_qty,
                         "pending_preserved_until_fill": True,
                         "submission_number": int(
@@ -9828,7 +10100,8 @@ class LiquidityLabService:
                             "구분=정산매도 접수",
                             f"접수수량={settle_qty}주",
                             f"주문번호={broker_order_no}",
-                            f"주문가={format_usd(real.current_price)}",
+                            f"주문가={format_usd(settlement_price)}",
+                            f"주문방식={order_kind}",
                             f"가상매도가={format_usd(pending_avg_price)}",
                             f"매입가={format_usd(real.avg_price)}",
                             f"정산대기={pending_qty}주",

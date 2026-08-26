@@ -2638,6 +2638,46 @@ class SqliteRepository:
             "last_submitted_at": str(row["last_submitted_at"] or ""),
         }
 
+    def get_virtual_settlement_submission_history(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        after_created_at: str,
+    ) -> dict[str, object]:
+        """Return accepted attempts and UTC trading dates for one pending sell."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS submission_count,
+                    COUNT(DISTINCT substr(created_at, 1, 10))
+                        AS submission_session_count,
+                    MAX(created_at) AS last_submitted_at
+                FROM broker_order_events
+                WHERE market = ?
+                  AND symbol = ?
+                  AND UPPER(side) = 'SELL'
+                  AND LOWER(order_kind) != 'cancel'
+                  AND UPPER(status) = 'SUBMITTED'
+                  AND reason = 'virtual_sell_settlement'
+                  AND COALESCE(is_virtual, 0) = 0
+                  AND created_at >= ?
+                """,
+                (
+                    str(market).strip().lower(),
+                    str(symbol).strip().upper(),
+                    str(after_created_at),
+                ),
+            ).fetchone()
+        return {
+            "submission_count": int(row["submission_count"] or 0),
+            "submission_session_count": int(
+                row["submission_session_count"] or 0
+            ),
+            "last_submitted_at": str(row["last_submitted_at"] or ""),
+        }
+
     def has_inverse_policy_observation(
         self,
         *,
@@ -3644,6 +3684,13 @@ class SqliteRepository:
                     SUM(
                         CASE
                             WHEN logical_request_id != ''
+                             AND retry_reason = 'gateway_routing'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS gateway_routing_retry_count,
+                    SUM(
+                        CASE
+                            WHEN logical_request_id != ''
                              AND adaptive_pacing_active = 1
                             THEN 1 ELSE 0
                         END
@@ -3701,6 +3748,7 @@ class SqliteRepository:
                 "retry_scheduled_count",
                 "rate_limit_retry_count",
                 "service_delay_retry_count",
+                "gateway_routing_retry_count",
                 "adaptive_pacing_attempt_count",
                 "adaptive_pacing_wait_count",
                 "adaptive_pacing_wait_ms",
@@ -5056,7 +5104,7 @@ class SqliteRepository:
         market: str = "",
     ) -> list[dict]:
         """Summarize session-owned confirmed performance for entry guards."""
-        params: list[object] = [float(cost_pct)]
+        params: list[object] = [float(cost_pct), float(cost_pct)]
         where = [
             "action_bias = 'SELL_REAL'",
             "COALESCE(qty_executed, 0) > 0",
@@ -5089,6 +5137,20 @@ class SqliteRepository:
                             THEN net_pnl_krw / (entry_price * qty_executed)
                             ELSE COALESCE(pnl_pct, 0) - ?
                         END AS net_pnl_pct,
+                        CASE
+                            WHEN lower(market) = 'overseas'
+                              AND net_pnl_usd IS NOT NULL
+                            THEN net_pnl_usd
+                            WHEN lower(market) = 'domestic'
+                              AND net_pnl_krw IS NOT NULL
+                            THEN net_pnl_krw
+                            ELSE (
+                                COALESCE(pnl_pct, 0) - ?
+                            ) * COALESCE(entry_price, 0)
+                              * COALESCE(qty_executed, 0)
+                        END AS net_pnl_value,
+                        COALESCE(entry_price, 0) * COALESCE(qty_executed, 0)
+                            AS entry_notional,
                         COALESCE(net_pnl_usd, realized_pnl_usd, 0) AS net_pnl_usd_value,
                         COALESCE(net_pnl_krw, realized_pnl_krw, 0) AS net_pnl_krw_value,
                         logged_at
@@ -5102,6 +5164,11 @@ class SqliteRepository:
                     SUM(CASE WHEN net_pnl_pct > 0 THEN 1 ELSE 0 END) AS win_count,
                     AVG(gross_pnl_pct) AS avg_gross_pnl_pct,
                     AVG(net_pnl_pct) AS avg_net_pnl_pct,
+                    CASE
+                        WHEN SUM(entry_notional) > 0
+                        THEN SUM(net_pnl_value) / SUM(entry_notional)
+                        ELSE AVG(net_pnl_pct)
+                    END AS capital_weighted_net_pnl_pct,
                     SUM(net_pnl_usd_value) AS total_net_pnl_usd,
                     SUM(net_pnl_krw_value) AS total_net_pnl_krw,
                     MIN(logged_at) AS first_trade_at,
@@ -5130,6 +5197,7 @@ class SqliteRepository:
                     market,
                     symbol,
                     action_reason,
+                    COALESCE(is_session_trade, 1) AS is_session_trade,
                     CASE
                         WHEN lower(market) = 'overseas'
                           AND net_pnl_usd IS NOT NULL

@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -22,17 +23,65 @@ from .telegram_control import TelegramLiquidityLabController
 from .time_utils import format_display_times
 from .watcher import ConsoleWatchService
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+class _SensitiveLogFilter(logging.Filter):
+    _telegram_bot_url = re.compile(
+        r"(https?://api\.telegram\.org/bot)[^/\s\"']+",
+        re.IGNORECASE,
+    )
+    _bearer_value = re.compile(
+        r"(bearer\s+)[^\s\"',;}]+",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _redact_text(cls, value: str) -> str:
+        redacted = cls._telegram_bot_url.sub(r"\1<redacted>", value)
+        return cls._bearer_value.sub(r"\1<redacted>", redacted)
+
+    @classmethod
+    def _redact_arg(cls, value: object) -> object:
+        text = str(value)
+        redacted = cls._redact_text(text)
+        return redacted if redacted != text else value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact_arg(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._redact_arg(value) for value in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {
+                key: self._redact_arg(value)
+                for key, value in record.args.items()
+            }
+        return True
+
+
+class _SensitiveFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return _SensitiveLogFilter._redact_text(super().format(record))
+
 
 def _configure_logging() -> None:
     level_name = str(os.getenv("KINVEST_LOG_LEVEL", "WARNING")).strip().upper()
     level = getattr(logging, level_name, logging.WARNING)
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format=_LOG_FORMAT,
     )
     network_level = max(level, logging.WARNING)
     for logger_name in ("httpx", "httpcore", "urllib3"):
         logging.getLogger(logger_name).setLevel(network_level)
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        handler.setFormatter(_SensitiveFormatter(_LOG_FORMAT))
+        if not any(
+            isinstance(existing, _SensitiveLogFilter)
+            for existing in handler.filters
+        ):
+            handler.addFilter(_SensitiveLogFilter())
 
 
 def build_parser() -> argparse.ArgumentParser:

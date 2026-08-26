@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import logging
+import sys
 from types import SimpleNamespace
 
-from kinvest_trade.cli import _configure_logging, get_order_submission_status
+from kinvest_trade.cli import (
+    _SensitiveFormatter,
+    _SensitiveLogFilter,
+    _configure_logging,
+    get_order_submission_status,
+)
 
 
 def _config(*, env: str, dry_run: bool, live_trading_enabled: bool) -> SimpleNamespace:
@@ -76,3 +82,49 @@ def test_info_logging_keeps_network_clients_above_sensitive_request_level(
     finally:
         for name, level in original_levels.items():
             logging.getLogger(name).setLevel(level)
+
+
+def test_sensitive_log_filter_redacts_url_and_bearer_arguments() -> None:
+    record = logging.LogRecord(
+        name="httpx",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg="request=%s header=%s",
+        args=(
+            "https://api.telegram.org/botSECRET_VALUE/sendMessage",
+            "Authorization: Bearer ACCESS_VALUE",
+        ),
+        exc_info=None,
+    )
+
+    assert _SensitiveLogFilter().filter(record) is True
+
+    rendered = record.getMessage()
+    assert "SECRET_VALUE" not in rendered
+    assert "ACCESS_VALUE" not in rendered
+    assert "bot<redacted>/sendMessage" in rendered
+    assert "Bearer <redacted>" in rendered
+
+
+def test_sensitive_formatter_redacts_exception_text() -> None:
+    try:
+        raise RuntimeError(
+            "request failed at "
+            "https://api.telegram.org/botEXCEPTION_SECRET/sendMessage"
+        )
+    except RuntimeError:
+        record = logging.LogRecord(
+            name="probe",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="network failure",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+
+    rendered = _SensitiveFormatter("%(message)s").format(record)
+
+    assert "EXCEPTION_SECRET" not in rendered
+    assert "bot<redacted>/sendMessage" in rendered

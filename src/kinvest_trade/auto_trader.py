@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ from .technical_signals import (
 from .time_utils import format_kst, format_kst_korean
 
 StrategySnapshot = MovingAverageSnapshot
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -547,8 +549,12 @@ class FixedSymbolAutoTrader:
                 if series.closes:
                     self._daily_closes = series.closes
                     self._daily_refreshed_at = captured_at
-            except KisApiError:
-                pass
+            except KisApiError as exc:
+                _logger.warning(
+                    "auto_daily_context_refresh_failed symbol=%s error=%s",
+                    auto.symbol,
+                    exc,
+                )
 
         if intraday_due:
             try:
@@ -593,8 +599,12 @@ class FixedSymbolAutoTrader:
                     self._vwap_lows = vwap_series.lows
                     self._vwap_volumes = vwap_series.volumes
                     self._intraday_refreshed_at = captured_at
-            except KisApiError:
-                pass
+            except KisApiError as exc:
+                _logger.warning(
+                    "auto_intraday_context_refresh_failed symbol=%s error=%s",
+                    auto.symbol,
+                    exc,
+                )
 
     def _decide_action(self, snapshot: StrategySnapshot) -> TradeDecision:
         _override = compute_adaptive_override(self.auto_trade, snapshot)

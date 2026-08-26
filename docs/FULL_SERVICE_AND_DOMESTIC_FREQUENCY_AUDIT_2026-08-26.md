@@ -137,9 +137,11 @@ SQLite `DELETE` 저널과 기본 5초 잠금에서 감사 읽기와 쓰기 잠�
 - API/Telegram DB 로그 저장 실패를 journald ERROR로 남기는 2차 경로 추가
 - `KINVEST_LOG_LEVEL=INFO`로 기동, 시장수집, 체결조정 상태를 journald에서도 확인
 - 요청 URL에 자격정보가 포함될 수 있는 `httpx`, `httpcore`, `urllib3`는 WARNING 이상으로
-  제한해 애플리케이션 INFO 가시성과 전송 계층 비밀정보 보호를 분리
+  제한해 애플리케이션 INFO 가시성과 전송 계층 비밀정보 보호를 분리. 별도 logging
+  필터·formatter도 일반 메시지와 예외 traceback의 Telegram URL·Bearer 값을 치환
 - 기존 `keys/data/logs/state`의 group/other 접근 권한을 제거하고 설치 때마다 재검증;
   새 런타임 파일은 `UMask=0077` 적용
+- 고정종목 엔진의 일봉·분봉 KIS 갱신 실패도 journald WARNING으로 대체 기록
 - 서비스 유닛은 disabled 상태였으나 이번 감사에서 enable해 재부팅 자동기동을 복구
 
 Bandit은 고위험 0건이었다. 동적 SQL 경고는 상수 테이블 목록과 내부 생성 컬럼만 쓰는
@@ -149,7 +151,7 @@ Bandit은 고위험 0건이었다. 동적 SQL 경고는 상수 테이블 목록�
 
 ## 검증
 
-- 새 `.venv` 전체 테스트: 862 passed
+- 새 `.venv` 전체 테스트: 864 passed
 - 영향 모듈 확대 테스트: 559 passed
 - focused RSI/VWAP/가드/SQLite/인버스 테스트: 통과
 - `compileall`: 통과

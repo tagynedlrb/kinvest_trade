@@ -4919,6 +4919,39 @@ def test_overseas_balance_cache_reused_within_cycle() -> None:
     assert service.client.calls == 1
 
 
+def test_get_held_symbols_records_balance_lookup_failure_and_uses_cache(
+    caplog,
+) -> None:
+    service = _build_run_service()
+    service._cycle_count = 7
+    service._overseas_balance_cache = {}
+    service._last_held_symbols = {"CCRN"}
+    service._manual_overseas_pool = None
+    service._dynamic_overseas_pool = [{"symbol": "CCRN", "exchange_code": "NASD"}]
+
+    class RaisingClient:
+        async def get_overseas_balance(self, *, exchange_code, currency_code):
+            del exchange_code, currency_code
+            raise RuntimeError("balance unavailable")
+
+    service.client = RaisingClient()
+
+    with caplog.at_level("WARNING"):
+        held_symbols = asyncio.run(service._get_held_symbols())
+
+    assert held_symbols == {"CCRN"}
+    assert "해외 보유종목 사전조회 실패" in caplog.text
+    events = service.repository.list_event_log(
+        event_type="maintenance_skip",
+        limit=1,
+    )
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["reason"] == "overseas_held_symbol_lookup_failed"
+    assert detail["error_type"] == "RuntimeError"
+    assert detail["fallback_symbol_count"] == 1
+
+
 def test_load_overseas_positions_warns_on_anomalously_large_position() -> None:
     # Regression test for the 2026-07-16 CRAN incident aftermath: a
     # ~5,251-share position (~3.5x a legitimate max-slot buy) sat

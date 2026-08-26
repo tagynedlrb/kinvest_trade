@@ -8079,8 +8079,24 @@ class LiquidityLabService:
             }
             self._last_held_symbols = held
             return held
-        except Exception:
-            return self._last_held_symbols or self._get_virtual_held_symbols()
+        except Exception as exc:  # noqa: BLE001
+            fallback = self._last_held_symbols or self._get_virtual_held_symbols()
+            _logger.warning(
+                "[POSITIONS] 해외 보유종목 사전조회 실패 - %s (error=%s)",
+                "이전 캐시로 대체" if fallback else "캐시 없음",
+                exc,
+            )
+            self._save_event(
+                event_type="maintenance_skip",
+                market="overseas",
+                detail={
+                    "reason": "overseas_held_symbol_lookup_failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:200],
+                    "fallback_symbol_count": len(fallback),
+                },
+            )
+            return fallback
 
     async def _get_held_symbol_map(self) -> dict[str, str]:
         """

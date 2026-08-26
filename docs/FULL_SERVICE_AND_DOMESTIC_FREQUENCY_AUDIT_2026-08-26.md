@@ -231,6 +231,11 @@ systemd active/PID, `state/runtime_state.json`의 수정시각과
 SHA-256 `991ba105b993e754d4709694af5ef3c576bf772688da016a50d809976506d1d9`이며
 `quick_check=ok`, 외래키 위반 0이다.
 
+감사·보관도구 커밋 `8917aba19feed06839f34e807f6eede05a09a10d`는 원격
+`master`와 일치한다. 종합 Telegram 보고는 `telegram_message_log.id=2899`,
+`success=1`로 보존됐다. 이 후속 커밋은 문서와 수동 도구만 포함하므로 실행 서비스는
+재시작하지 않았다.
+
 ## 검증
 
 - 새 `.venv` 전체 테스트: 869 passed (118.45초)

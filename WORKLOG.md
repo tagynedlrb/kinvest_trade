@@ -111,6 +111,10 @@
   quick-check, 저우선순위 단일 스레드 zstd, 압축검사, SHA-256을 모두 통과한 뒤에만
   원본을 제거한다. 임시 DB 압축·복원 검증은 통과했지만 미장 운영 중 실제 보관 작업은
   실행하지 않았다.
+- 감사·보관도구 커밋 `8917aba19feed06839f34e807f6eede05a09a10d`는
+  `/home/ubuntu/git_token.txt` 일회성 credential helper로 원격 `master`에 푸시해
+  원격 해시 일치를 확인했다. 종합 Telegram 보고는 `telegram_message_log.id=2899`,
+  `success=1`이다. 이 단계는 문서·수동 보관도구만 추가해 서비스 재시작 대상이 아니다.
 
 ## [2026-08-13] 미장 미체결 한도 반환과 제한적 빈도 회복
 

@@ -556,6 +556,21 @@ class WatchStateHelper:
     ) -> None:
         service = self.service
         signal_snapshot = watch_target.signal_snapshot
+        invalid_live_price_hold = (
+            watch_target.market == "overseas"
+            and watch_target.decision_reason == "invalid_live_price_hold"
+        )
+        if invalid_live_price_hold:
+            state = self.get_persisted_symbol_state(
+                watch_target.market,
+                watch_target.code,
+            ) or {}
+            try:
+                persisted_pnl_pct = float(state.get("pnl_pct"))
+            except (TypeError, ValueError):
+                persisted_pnl_pct = None
+            if persisted_pnl_pct is not None:
+                pnl_pct = persisted_pnl_pct
         exit_by = ""
         if signal_snapshot is not None:
             _, _, exit_by = service._get_strategy_labels(
@@ -640,11 +655,12 @@ class WatchStateHelper:
             hold_duration_min=hold_duration_min,
             entry_time=entry_time,
         )
-        self.persist_watch_target_state(
-            watch_target,
-            pnl_pct=pnl_pct,
-            exit_by=exit_by,
-        )
+        if not invalid_live_price_hold:
+            self.persist_watch_target_state(
+                watch_target,
+                pnl_pct=pnl_pct,
+                exit_by=exit_by,
+            )
 
     def build_watch_target_status(
         self,
@@ -659,6 +675,50 @@ class WatchStateHelper:
         holding_qty: int = 0,
     ) -> "WatchTargetStatus":
         service = self.service
+        if market == "overseas" and held_position is not None and price <= 0:
+            persisted = self.get_persisted_symbol_state(market, code) or {}
+            try:
+                reference_price = float(persisted.get("last_price") or 0.0)
+            except (TypeError, ValueError):
+                reference_price = 0.0
+            price_source = "persisted_state"
+            if reference_price <= 0:
+                reference_price = float(getattr(held_position, "current_price", 0.0) or 0.0)
+                price_source = "balance_position"
+            if reference_price <= 0:
+                reference_price = float(getattr(held_position, "avg_price", 0.0) or 0.0)
+                price_source = "entry_price"
+            fallback_snapshot = self.state_snapshot_with_live_price(
+                persisted,
+                price=reference_price,
+            )
+            if fallback_snapshot is None and signal_snapshot is not None:
+                fallback_snapshot = self.with_live_price(
+                    signal_snapshot,
+                    price=reference_price,
+                )
+            return service._make_watch_target_status(
+                market=market,
+                code=code,
+                exchange_code=exchange_code,
+                price=reference_price,
+                activity_score=activity_score,
+                signal_score=0.0,
+                action_bias="HOLD",
+                signal_state="PRICE_WAIT",
+                ma_summary=(
+                    service._ma_relation_summary(fallback_snapshot, market)
+                    if fallback_snapshot is not None
+                    else "-"
+                ),
+                note=f"invalid_live_price_hold|price_source={price_source}",
+                holding_qty=holding_qty,
+                signal_snapshot=fallback_snapshot,
+                strategy_flag=str(persisted.get("strategy_flag", "") or ""),
+                entry_by=str(persisted.get("entry_by", "") or ""),
+                decision_reason="invalid_live_price_hold",
+                is_virtual=bool(getattr(held_position, "is_virtual", False)),
+            )
         service._update_inverse_shadow_trade(
             market=market,
             symbol=code,

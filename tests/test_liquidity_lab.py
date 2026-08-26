@@ -11284,6 +11284,71 @@ def test_held_position_shows_hold_not_wait() -> None:
     assert watch_target.signal_state == "HOLD"
 
 
+def test_held_position_with_invalid_live_price_logs_last_validated_state() -> None:
+    service = _build_run_service()
+    persisted_at = "2026-08-26T12:59:00+00:00"
+    persisted_pnl = (13.25 - 13.235) / 13.235
+    persisted_snapshot = _snapshot(price=13.25, volume_ratio=1.2)
+    service.repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="CCRN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="HOLD",
+        note="validated_quote",
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+        holding_qty=281,
+        last_price=13.25,
+        pnl_pct=persisted_pnl,
+        entry_price=13.235,
+        entry_time="2026-08-25T14:00:00+00:00",
+        peak_price=13.4,
+        has_position=1,
+        snapshot_json=asdict(persisted_snapshot),
+        updated_at=persisted_at,
+    )
+    held = OverseasHeldPosition(
+        symbol="CCRN",
+        exchange_code="NASD",
+        quantity=281,
+        orderable_qty=281,
+        avg_price=13.235,
+        current_price=13.235,
+        pnl_pct=0.0,
+    )
+
+    watch_target = service._build_watch_target_status(
+        market="overseas",
+        code="CCRN",
+        exchange_code="NASD",
+        price=0.0,
+        activity_score=0.0,
+        signal_snapshot=_snapshot(price=0.0, volume_ratio=1.2),
+        held_position=held,
+        holding_qty=281,
+    )
+    service._save_cycle_log_from_watch_target(
+        watch_target,
+        pnl_pct=held.pnl_pct,
+    )
+
+    assert watch_target.action_bias == "HOLD"
+    assert watch_target.signal_state == "PRICE_WAIT"
+    assert watch_target.price == pytest.approx(13.25)
+    assert watch_target.signal_snapshot is not None
+    assert watch_target.signal_snapshot.price == pytest.approx(13.25)
+    assert watch_target.decision_reason == "invalid_live_price_hold"
+    assert watch_target.note == "invalid_live_price_hold|price_source=persisted_state"
+    cycle = service.repository.query_cycle_log(limit=1)[0]
+    assert cycle["action_reason"] == "invalid_live_price_hold"
+    assert cycle["price"] == pytest.approx(13.25)
+    assert cycle["pnl_pct"] == pytest.approx(persisted_pnl)
+    persisted = service.repository.get_lab_symbol_state("overseas", "CCRN")
+    assert persisted["updated_at"] == persisted_at
+    assert persisted["last_price"] == pytest.approx(13.25)
+
+
 def test_held_watch_log_records_decision_and_position_age_context() -> None:
     service = _build_run_service()
     entry_time = datetime.now(timezone.utc) - timedelta(hours=2)

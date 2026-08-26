@@ -16,6 +16,7 @@ from kinvest_trade.technical_signals import (
     build_moving_average_snapshot,
     chart_bar_elapsed_seconds,
     compute_vwap,
+    filter_latest_session_rows,
 )
 
 
@@ -1133,6 +1134,67 @@ def test_vwap_uses_typical_price_when_high_low_available() -> None:
     assert typical is not None
     assert close_only is not None
     assert typical != close_only
+
+
+def test_filter_latest_session_rows_uses_exchange_date_without_kst_collision() -> None:
+    rows = [
+        {"xymd": "20260825", "kymd": "20260826", "last": "102"},
+        {"xymd": "20260825", "kymd": "20260826", "last": "101"},
+        {"xymd": "20260824", "kymd": "20260825", "last": "90"},
+    ]
+
+    current_session = filter_latest_session_rows(
+        rows,
+        date_fields=("xymd", "kymd"),
+    )
+
+    assert [row["last"] for row in current_session] == ["102", "101"]
+
+
+def test_filter_latest_session_rows_prioritizes_fields_and_does_not_assume_order() -> None:
+    rows = [
+        {"kymd": "20260827", "last": "missing-exchange-date"},
+        {"xymd": "20260824", "kymd": "20260825", "last": "old"},
+        {"xymd": "20260825", "kymd": "20260826", "last": "new"},
+    ]
+
+    current_session = filter_latest_session_rows(
+        rows,
+        date_fields=("xymd", "kymd"),
+    )
+
+    assert [row["last"] for row in current_session] == ["new"]
+
+
+def test_snapshot_vwap_can_exclude_previous_session_warmup_bars() -> None:
+    snapshot = build_moving_average_snapshot(
+        price=110.0,
+        bid=109.9,
+        ask=110.1,
+        daily_closes=[130.0 - index for index in range(21)],
+        minute_closes=[110.0, 109.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0],
+        minute_highs=[110.0, 109.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0],
+        minute_lows=[110.0, 109.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0],
+        minute_volumes=[100.0] * 8,
+        daily_fast_window=5,
+        daily_slow_window=10,
+        intraday_fast_window=3,
+        intraday_slow_window=5,
+        volatility_window=3,
+        momentum_window=3,
+        volume_window=5,
+        rsi_period=3,
+        breakout_lookback_bars=3,
+        bollinger_window=3,
+        bollinger_stddev=2.0,
+        atr_window=3,
+        vwap_closes=[110.0, 109.0],
+        vwap_highs=[110.0, 109.0],
+        vwap_lows=[110.0, 109.0],
+        vwap_volumes=[100.0, 100.0],
+    )
+
+    assert snapshot.vwap == 109.5
 
 
 def test_detect_market_regime() -> None:

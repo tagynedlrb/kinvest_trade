@@ -19,7 +19,7 @@ def compute_pct_returns(values: list[float]) -> list[float]:
         return []
 
     returns: list[float] = []
-    for previous, current in zip(values[:-1], values[1:]):
+    for previous, current in zip(values[:-1], values[1:], strict=True):
         if previous == 0:
             continue
         returns.append((current - previous) / previous)
@@ -36,23 +36,23 @@ def compute_rsi(closes: list[float], period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
 
+    chronological = list(reversed(closes))
     gains: list[float] = []
     losses: list[float] = []
-    for prev, curr in zip(closes[1 : period + 1], closes[:period]):
+    for prev, curr in zip(chronological[:-1], chronological[1:], strict=True):
         delta = curr - prev
         gains.append(max(delta, 0.0))
         losses.append(max(-delta, 0.0))
 
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
 
-    for prev, curr in zip(closes[period + 1 :], closes[period:-1]):
-        delta = curr - prev
-        gain = max(delta, 0.0)
-        loss = max(-delta, 0.0)
+    for gain, loss in zip(gains[period:], losses[period:], strict=True):
         avg_gain = ((avg_gain * (period - 1)) + gain) / period
         avg_loss = ((avg_loss * (period - 1)) + loss) / period
 
+    if avg_gain + avg_loss == 0:
+        return 0.0
     if avg_loss == 0:
         return 100.0
 
@@ -171,7 +171,10 @@ def compute_macd(
 
     ema_fast = compute_ema(values, fast)
     ema_slow = compute_ema(values, slow)
-    macd_line_series = [fast_value - slow_value for fast_value, slow_value in zip(ema_fast, ema_slow)]
+    macd_line_series = [
+        fast_value - slow_value
+        for fast_value, slow_value in zip(ema_fast, ema_slow, strict=True)
+    ]
     signal_series = compute_ema(macd_line_series, signal)
 
     if len(macd_line_series) < 2 or len(signal_series) < 2:

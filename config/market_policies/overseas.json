@@ -1,5 +1,5 @@
 {
-  "policy_id": "overseas_momentum_v2",
+  "policy_id": "overseas_momentum_v3",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {
@@ -186,6 +186,8 @@
     "inverse_stop_loss_pct": 0.0075,
     "inverse_hard_stop_loss_pct": 0.012,
     "inverse_max_hold_cycles": 36,
+    "inverse_trailing_activation_net_pct": 0.006,
+    "inverse_trailing_drawdown_pct": 0.003,
     "inverse_slot_multiplier": 0.15
   },
   "risk": {

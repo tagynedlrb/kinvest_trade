@@ -2537,6 +2537,7 @@ def test_lab_guard_command_reports_persistent_final_session_hold(
         activation_session_date="2026-07-29",
         trigger_trade_count=3,
         trigger_avg_net_pnl_pct=-0.0165,
+        trigger_capital_weighted_net_pnl_pct=-0.021,
     )
     for session_date in ("2026-07-29", "2026-07-30"):
         repository.upsert_market_regime(
@@ -2595,7 +2596,8 @@ def test_lab_guard_command_reports_persistent_final_session_hold(
     message = notifier.messages[-1]
     assert (
         "국내 VWAP 상태=차단(관찰유지) "
-        "최종세션=2/3 시작=2026-07-29"
+        "최종세션=2/3 발동평균순=-1.65% "
+        "발동자본가중=-2.10% 시작=2026-07-29"
     ) in message
 
 

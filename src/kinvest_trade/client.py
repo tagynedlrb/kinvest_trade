@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import logging
 import os
 import time
 import uuid
@@ -13,6 +14,8 @@ import httpx
 
 from .config import KisCredentials
 from .market_sessions import get_us_trading_session, is_us_daytime_session
+
+_logger = logging.getLogger(__name__)
 
 
 class KisApiError(RuntimeError):
@@ -425,7 +428,7 @@ class KisRestClient:
                 }
             )
         except Exception:  # noqa: BLE001
-            pass
+            _logger.exception("api_call_telemetry_callback_failed")
 
     async def __aenter__(self) -> "KisRestClient":
         return self

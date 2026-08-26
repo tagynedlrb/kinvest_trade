@@ -145,6 +145,10 @@ def build_moving_average_snapshot(
     bollinger_window: int,
     bollinger_stddev: float,
     atr_window: int,
+    vwap_closes: list[float] | None = None,
+    vwap_highs: list[float] | None = None,
+    vwap_lows: list[float] | None = None,
+    vwap_volumes: list[float] | None = None,
     bar_duration_sec: int = 300,
     chart_elapsed_sec: int = 0,
 ) -> MovingAverageSnapshot:
@@ -171,7 +175,6 @@ def build_moving_average_snapshot(
     minute_chrono = list(reversed(minute_closes))
     highs_chrono = list(reversed(minute_highs))
     lows_chrono = list(reversed(minute_lows))
-    volumes_chrono = list(reversed(minute_volumes))
     intraday_volatility = compute_volatility(
         minute_chrono,
         min(volatility_window, max(len(minute_chrono) - 1, 1)),
@@ -219,11 +222,17 @@ def build_moving_average_snapshot(
         window=max(2, min(atr_window, max(len(minute_chrono) - 1, 1))),
     ) or 0.0
     atr_pct = (atr / price) if atr > 0 and price > 0 else 0.0
+    selected_vwap_closes = vwap_closes if vwap_closes is not None else minute_closes
+    selected_vwap_highs = vwap_highs if vwap_highs is not None else minute_highs
+    selected_vwap_lows = vwap_lows if vwap_lows is not None else minute_lows
+    selected_vwap_volumes = (
+        vwap_volumes if vwap_volumes is not None else minute_volumes
+    )
     vwap = compute_vwap(
-        minute_chrono,
-        volumes_chrono,
-        highs=highs_chrono,
-        lows=lows_chrono,
+        list(reversed(selected_vwap_closes)),
+        list(reversed(selected_vwap_volumes)),
+        highs=list(reversed(selected_vwap_highs)),
+        lows=list(reversed(selected_vwap_lows)),
     )
     minute_chrono_for_macd = list(reversed(minute_closes))
     macd_line_val, macd_signal_val, macd_golden_val, macd_dead_val = compute_macd(
@@ -331,20 +340,50 @@ def compute_vwap(
     total_volume = sum(volumes)
     if total_volume <= 0:
         return None
-    use_typical = (
+    if (
         highs is not None
         and lows is not None
         and len(highs) == len(closes)
         and len(lows) == len(closes)
-    )
-    if use_typical:
+    ):
         total_price_volume = sum(
             ((high + low + close) / 3.0) * volume
-            for high, low, close, volume in zip(highs, lows, closes, volumes)
+            for high, low, close, volume in zip(
+                highs,
+                lows,
+                closes,
+                volumes,
+                strict=True,
+            )
         )
     else:
-        total_price_volume = sum(price * volume for price, volume in zip(closes, volumes))
+        total_price_volume = sum(
+            price * volume for price, volume in zip(closes, volumes, strict=True)
+        )
     return total_price_volume / total_volume
+
+
+def filter_latest_session_rows(
+    rows: list[dict],
+    *,
+    date_fields: tuple[str, ...],
+) -> list[dict]:
+    """Keep the newest chart session while preserving newest-first row order."""
+    for date_field in date_fields:
+        session_dates = [
+            normalized
+            for row in rows
+            if (normalized := _normalize_chart_date(row.get(date_field)))
+        ]
+        if session_dates:
+            latest_date = max(session_dates)
+            return [
+                candidate
+                for candidate in rows
+                if _normalize_chart_date(candidate.get(date_field)) == latest_date
+            ]
+    return list(rows)
+
 
 def extract_price_series(
     rows: list[dict],
@@ -375,6 +414,11 @@ def extract_price_series(
         lows=lows,
         volumes=volumes,
     )
+
+
+def _normalize_chart_date(value: object) -> str:
+    digits = "".join(char for char in str(value or "") if char.isdigit())
+    return digits if len(digits) == 8 else ""
 
 
 def _gap_pct(price: float, moving_average: float | None) -> float:

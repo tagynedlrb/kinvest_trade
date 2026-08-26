@@ -159,6 +159,7 @@ REASON_KOREAN_MAP = {
     "inverse_stop_loss": "인버스 손절",
     "inverse_hard_stop": "인버스 강제손절",
     "inverse_take_profit": "인버스 익절",
+    "inverse_trailing_profit_lock": "인버스 이익보호",
     "inverse_session_rollover": "인버스 세션종료",
     "inverse_time_exit": "인버스 시간청산",
     "inverse_benchmark_recovered": "기준지수 반등청산",

@@ -1,3 +1,5 @@
+import pytest
+
 from kinvest_trade.indicators import (
     compute_drawdown,
     compute_momentum,
@@ -17,6 +19,40 @@ def test_compute_rsi_returns_value() -> None:
     value = compute_rsi(closes, 14)
     assert value is not None
     assert 0 <= value <= 100
+
+
+def test_compute_rsi_matches_wilder_smoothing_for_newest_first_prices() -> None:
+    chronological = [
+        44.34,
+        44.09,
+        44.15,
+        43.61,
+        44.33,
+        44.83,
+        45.10,
+        45.42,
+        45.84,
+        46.08,
+        45.89,
+        46.03,
+        45.61,
+        46.28,
+        46.28,
+        46.00,
+        46.03,
+        46.41,
+        46.22,
+        45.64,
+        46.21,
+    ]
+
+    value = compute_rsi(list(reversed(chronological)), 14)
+
+    assert value == pytest.approx(62.88071830996241)
+
+
+def test_compute_rsi_flat_prices_match_wilder_zero_value() -> None:
+    assert compute_rsi([100.0] * 15, 14) == 0.0
 
 
 def test_summarize_indicators() -> None:

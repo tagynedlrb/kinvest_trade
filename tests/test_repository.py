@@ -10,6 +10,17 @@ from kinvest_trade.inverse_policy import INVERSE_BENCHMARK_ALIGNMENT_VERSION
 from kinvest_trade.repository import SqliteRepository
 
 
+def test_repository_uses_wal_and_extended_busy_timeout(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "sqlite_runtime.db")
+
+    with repository._connect() as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert journal_mode == "wal"
+    assert busy_timeout == 30_000
+
+
 def test_prune_operational_logs_preserves_trade_history(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_api_call(
@@ -2090,6 +2101,7 @@ def test_strategy_guard_state_persists_activation_until_released(
         activation_session_date="2026-07-29",
         trigger_trade_count=3,
         trigger_avg_net_pnl_pct=-0.0165,
+        trigger_capital_weighted_net_pnl_pct=-0.021,
     )
     repeated = repository.activate_strategy_guard_state(
         market="domestic",
@@ -2098,12 +2110,15 @@ def test_strategy_guard_state_persists_activation_until_released(
         activation_session_date="2026-07-30",
         trigger_trade_count=4,
         trigger_avg_net_pnl_pct=-0.02,
+        trigger_capital_weighted_net_pnl_pct=-0.03,
     )
 
     assert initial["status"] == "ACTIVE"
     assert repeated["activated_at"] == "2026-07-29T00:30:00+00:00"
     assert repeated["activation_session_date"] == "2026-07-29"
     assert repeated["trigger_trade_count"] == 3
+    assert repeated["trigger_avg_net_pnl_pct"] == -0.0165
+    assert repeated["trigger_capital_weighted_net_pnl_pct"] == -0.021
     for session_date in ("2026-07-29", "2026-07-30", "2026-07-31"):
         repository.upsert_market_regime(
             {
@@ -2144,9 +2159,11 @@ def test_strategy_guard_state_persists_activation_until_released(
         activation_session_date="2026-08-03",
         trigger_trade_count=3,
         trigger_avg_net_pnl_pct=-0.01,
+        trigger_capital_weighted_net_pnl_pct=-0.015,
     )
     assert reactivated["activated_at"] == "2026-08-03T00:30:00+00:00"
     assert reactivated["activation_session_date"] == "2026-08-03"
+    assert reactivated["trigger_capital_weighted_net_pnl_pct"] == -0.015
     assert reactivated["status"] == "ACTIVE"
 
 

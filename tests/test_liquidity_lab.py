@@ -5773,6 +5773,9 @@ def test_strategy_guard_blocks_when_capital_weighted_loss_breaches_threshold(
     assert detail["avg_net_pnl_pct"] > 0
     assert detail["capital_weighted_net_pnl_pct"] < -0.001
     assert detail["max_capital_weighted_net_pnl_pct"] == -0.001
+    persisted = service.repository.list_active_strategy_guard_states()[0]
+    assert persisted["trigger_avg_net_pnl_pct"] > 0
+    assert persisted["trigger_capital_weighted_net_pnl_pct"] < -0.001
 
 
 def test_strategy_guard_stays_blocked_until_three_final_market_sessions() -> None:
@@ -8500,7 +8503,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v4"
+    assert trade["policy_id"] == "domestic_momentum_v5"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
@@ -8960,6 +8963,102 @@ def test_inverse_shadow_trade_records_conservative_fill_and_exit() -> None:
         ]
         == 89.0
     )
+
+
+def test_inverse_shadow_trailing_lock_is_market_specific_and_cost_aware() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    domestic_now = datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
+    assert service.repository.open_inverse_shadow_trade(
+        opened_at=domestic_now.isoformat(),
+        market="domestic",
+        symbol="114800",
+        exchange_code="KRX",
+        entry_session_date="2026-07-28",
+        policy_id="domestic_momentum_v5",
+        entry_price=100.0,
+        entry_spread_pct=0.0,
+        commission_rate=0.00015,
+        benchmark_name="F-KOSPI200",
+        benchmark_return_pct=-3.5,
+        benchmark_regime_key="strong_down|normal|normal",
+        entry_reason="test",
+        strategy_flag="VOL",
+        entry_by="VOL",
+    )
+
+    assert service._update_inverse_shadow_trade(
+        market="domestic",
+        symbol="114800",
+        price=100.8,
+        signal_snapshot=None,
+        now=domestic_now + timedelta(minutes=1),
+    ) == ""
+    exit_reason = service._update_inverse_shadow_trade(
+        market="domestic",
+        symbol="114800",
+        price=100.45,
+        signal_snapshot=None,
+        now=domestic_now + timedelta(minutes=2),
+    )
+
+    assert exit_reason == "inverse_trailing_profit_lock"
+    closed = service.repository.list_inverse_shadow_trades(limit=1)[0]
+    trailing_state = closed["context_json"]["inverse_trailing_state"]
+    assert trailing_state["armed"] is True
+    assert trailing_state["peak_net_pnl_pct"] > 0.005
+    assert trailing_state["drawdown_from_peak"] < -0.003
+    assert closed["net_pnl_pct"] > 0
+
+
+def test_overseas_inverse_shadow_does_not_arm_trailing_below_net_cost_floor() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
+    assert service.repository.open_inverse_shadow_trade(
+        opened_at=now.isoformat(),
+        market="overseas",
+        symbol="SQQQ",
+        exchange_code="NASD",
+        entry_session_date="2026-07-28",
+        policy_id="overseas_momentum_v3",
+        entry_price=100.0,
+        entry_spread_pct=0.0,
+        commission_rate=0.0025,
+        benchmark_name="NASDAQ-100",
+        benchmark_return_pct=-1.5,
+        benchmark_regime_key="down|normal|normal",
+        entry_reason="test",
+        strategy_flag="VOL",
+        entry_by="VOL",
+    )
+
+    assert service._update_inverse_shadow_trade(
+        market="overseas",
+        symbol="SQQQ",
+        price=100.7,
+        signal_snapshot=None,
+        now=now + timedelta(minutes=5),
+    ) == ""
+    assert service._update_inverse_shadow_trade(
+        market="overseas",
+        symbol="SQQQ",
+        price=100.35,
+        signal_snapshot=None,
+        now=now + timedelta(minutes=10),
+    ) == ""
+    open_trade = service.repository.get_open_inverse_shadow_trade(
+        "overseas",
+        "SQQQ",
+    )
+    assert open_trade is not None
+    assert open_trade["peak_price"] == 100.7
 
 
 def test_market_regime_collector_rebinds_to_each_cycle_client() -> None:
@@ -10261,7 +10360,7 @@ def test_domestic_signal_uses_one_minute_kis_bar_elapsed_time(monkeypatch) -> No
             ]
 
         async def get_time_daily_chart(self, **_kwargs):
-            return [
+            current_rows = [
                 {
                     "stck_bsop_date": "20260729",
                     "stck_cntg_hour": f"12{minute:02d}00",
@@ -10272,6 +10371,18 @@ def test_domestic_signal_uses_one_minute_kis_bar_elapsed_time(monkeypatch) -> No
                 }
                 for minute in range(59, 19, -1)
             ]
+            previous_rows = [
+                {
+                    "stck_bsop_date": "20260728",
+                    "stck_cntg_hour": f"15{minute:02d}00",
+                    "stck_prpr": str(900 + minute),
+                    "stck_hgpr": str(901 + minute),
+                    "stck_lwpr": str(899 + minute),
+                    "cntg_vol": "2000",
+                }
+                for minute in range(29, 24, -1)
+            ]
+            return current_rows + previous_rows
 
     elapsed_calls: list[dict] = []
     build_calls: list[dict] = []
@@ -10317,6 +10428,9 @@ def test_domestic_signal_uses_one_minute_kis_bar_elapsed_time(monkeypatch) -> No
     )
     assert build_calls[0]["bar_duration_sec"] == 60
     assert build_calls[0]["chart_elapsed_sec"] == 17
+    assert len(build_calls[0]["minute_closes"]) == 45
+    assert len(build_calls[0]["vwap_closes"]) == 40
+    assert min(build_calls[0]["vwap_closes"]) >= 1120.0
 
 
 def test_domestic_scan_reuses_quote_and_minute_chart_within_cycle() -> None:
@@ -10611,7 +10725,7 @@ def test_overseas_signal_uses_policy_bar_duration_and_kis_korean_time(monkeypatc
             return [{"clos": str(100 + index)} for index in range(80)]
 
         async def get_overseas_minute_chart(self, *_args, **_kwargs):
-            return [
+            current_rows = [
                 {
                     "kymd": "20260729",
                     "khms": f"23{minute:02d}00",
@@ -10624,6 +10738,20 @@ def test_overseas_signal_uses_policy_bar_duration_and_kis_korean_time(monkeypatc
                 }
                 for minute in range(59, 19, -1)
             ]
+            previous_rows = [
+                {
+                    "kymd": "20260729",
+                    "khms": f"04{minute:02d}00",
+                    "xymd": "20260728",
+                    "xhms": f"15{minute:02d}00",
+                    "last": str(90 + minute),
+                    "high": str(91 + minute),
+                    "low": str(89 + minute),
+                    "evol": "2000",
+                }
+                for minute in range(29, 24, -1)
+            ]
+            return current_rows + previous_rows
 
     elapsed_calls: list[dict] = []
     build_calls: list[dict] = []
@@ -10668,6 +10796,9 @@ def test_overseas_signal_uses_policy_bar_duration_and_kis_korean_time(monkeypatc
     assert elapsed_calls[0]["timestamp_fields"][0][:2] == ("kymd", "khms")
     assert build_calls[0]["bar_duration_sec"] == 300
     assert build_calls[0]["chart_elapsed_sec"] == 83
+    assert len(build_calls[0]["minute_closes"]) == 45
+    assert len(build_calls[0]["vwap_closes"]) == 40
+    assert min(build_calls[0]["vwap_closes"]) >= 140.0
 
 
 def test_maybe_send_overseas_relist_alert_skips_on_nyse_holiday() -> None:

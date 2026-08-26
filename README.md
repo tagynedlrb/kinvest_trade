@@ -117,11 +117,25 @@
     대용지표 행은 기록은 보존하되 새 정책의 승률·기대값 평가에서 제외한다.
     늦은 반등 구간의 한 손실만으로 RSI·진입시각·지수문턱을 조정하지 않고,
     5청산·3개 확정 세션·순기대값 양수 조건을 그대로 적용한다.
+17. **KIS 최신순 봉의 지표 시간축과 거래세션 경계를 섞지 않는다.**
+    이동평균처럼 최신 구간을 쓰는 계산은 최신순 배열을 명시적으로 사용하고, Wilder RSI,
+    ATR, MACD처럼 재귀·시간진행이 필요한 계산은 오래된 봉에서 최신 봉 방향으로 바꾼 뒤
+    계산한다. 분봉 조회에 전일 봉을 포함하는 것은 MA/RSI 워밍업용이며, 당일 VWAP은 가장
+    최신 현지 거래일의 봉만 사용한다. 해외는 `xymd`를 `kymd`보다 우선해 한국 자정 경계가
+    미국 거래일을 오염시키지 않게 한다. 공식을 바꿀 때 실제 KIS 봉과 독립 구현 또는 공인
+    참조값을 함께 비교한다.
+18. **운영 서비스는 시스템 Python이 아니라 감사된 전용 환경과 WAL 원장을 사용한다.**
+    `requirements-runtime.lock`과 `.venv`를 통해 OS 패키지와 거래 의존성을 분리하고,
+    systemd는 `data/`, `logs/`, `state/`만 쓸 수 있다. SQLite는 WAL과 30초 잠금 대기를 사용해
+    거래 기록, Telegram 조회, 백업이 서로 막힐 가능성을 낮춘다. DB 로그 저장 실패는
+    거래를 중단시키지 않되 journald에 반드시 대체 기록한다.
 
 ## 현재 구조
 - `config/fixed_config.json`: 고정 설정
 - `config/market_policies/domestic.json`: 국장 전략 파라미터와 연속손실 정책
 - `config/market_policies/overseas.json`: 미장 전략 파라미터와 연속손실 정책
+- `requirements-runtime.lock`: 서비스 전용 Python 런타임 의존성 고정본
+- `scripts/bootstrap_runtime_env.sh`: `.venv` 생성, 잠금 의존성 설치, import 검증
 - `state/runtime_state.json`: 최신 실행 상태
 - `src/kinvest_trade/client.py`: KIS OAuth, 시세, 잔고, 매수가능조회, 주문
 - `src/kinvest_trade/auto_trader.py`: `auto_trade.symbol`에 지정한 고정 1종목 자동매매
@@ -214,7 +228,8 @@ LIVE_TRADING_ENABLED=false
 ```bash
 cd /home/ubuntu/kinvest_trade
 sudo apt-get update
-sudo apt-get install -y python3-httpx python3-dotenv python3-pytest
+sudo apt-get install -y python3-venv
+./scripts/bootstrap_runtime_env.sh
 ```
 
 2. 환경파일 준비
@@ -226,12 +241,12 @@ cp .env.example .env
 
 4. 설정 확인
 ```bash
-python3 main.py doctor
+.venv/bin/python main.py doctor
 ```
 
 5. 텔레그램 연결 테스트
 ```bash
-python3 run_telegram_test.py
+.venv/bin/python run_telegram_test.py
 ```
 
 ## 환경 점검 순서

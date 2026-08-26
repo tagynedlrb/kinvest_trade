@@ -6,10 +6,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/ubuntu/kinvest_trade
-ExecStart=/usr/bin/python3 /home/ubuntu/kinvest_trade/main.py --settings /home/ubuntu/kinvest_trade/config/fixed_config.json telegram-control
+ExecStart=/home/ubuntu/kinvest_trade/.venv/bin/python /home/ubuntu/kinvest_trade/main.py --settings /home/ubuntu/kinvest_trade/config/fixed_config.json telegram-control
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=KINVEST_LOG_LEVEL=INFO
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/kinvest_trade/data /home/ubuntu/kinvest_trade/logs /home/ubuntu/kinvest_trade/state
 
 [Install]
 WantedBy=default.target

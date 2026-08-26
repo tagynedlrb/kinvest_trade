@@ -61,6 +61,8 @@ AND (
 )
 """.strip()
 
+_SQLITE_BUSY_TIMEOUT_MS = 30_000
+
 _INVERSE_BENCHMARK_REGIME_COLUMNS = (
     "market",
     "benchmark_code",
@@ -99,8 +101,12 @@ class SqliteRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
     def backup_db(self, suffix: str = "") -> Path:
@@ -109,7 +115,10 @@ class SqliteRepository:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         tag = f"_{suffix}" if suffix else ""
         backup_path = self.db_path.parent / f"{self.db_path.stem}_backup_{ts}{tag}.db"
-        with sqlite3.connect(self.db_path) as source, sqlite3.connect(backup_path) as target:
+        with self._connect() as source, sqlite3.connect(
+            backup_path,
+            timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000,
+        ) as target:
             source.backup(target)
         return backup_path
 
@@ -197,6 +206,7 @@ class SqliteRepository:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS risk_events (
@@ -799,6 +809,7 @@ class SqliteRepository:
                     activation_session_date TEXT NOT NULL,
                     trigger_trade_count INTEGER NOT NULL DEFAULT 0,
                     trigger_avg_net_pnl_pct REAL NOT NULL DEFAULT 0,
+                    trigger_capital_weighted_net_pnl_pct REAL,
                     status TEXT NOT NULL DEFAULT 'ACTIVE',
                     released_at TEXT,
                     release_reason TEXT NOT NULL DEFAULT '',
@@ -842,6 +853,19 @@ class SqliteRepository:
                 "market_regimes",
                 "calculation_version",
                 "TEXT NOT NULL DEFAULT 'intraday_range_v1'",
+            )
+            self._ensure_column(
+                conn,
+                "strategy_guard_state",
+                "trigger_capital_weighted_net_pnl_pct",
+                "REAL",
+            )
+            conn.execute(
+                """
+                UPDATE strategy_guard_state
+                SET trigger_capital_weighted_net_pnl_pct = trigger_avg_net_pnl_pct
+                WHERE trigger_capital_weighted_net_pnl_pct IS NULL
+                """
             )
             self._ensure_column(
                 conn,
@@ -4982,6 +5006,7 @@ class SqliteRepository:
         activation_session_date: str,
         trigger_trade_count: int,
         trigger_avg_net_pnl_pct: float,
+        trigger_capital_weighted_net_pnl_pct: float | None = None,
     ) -> dict:
         parsed_at = parse_datetime(activated_at)
         normalized_at = (
@@ -4991,6 +5016,11 @@ class SqliteRepository:
         )
         normalized_market = str(market).strip().lower()
         normalized_strategy = str(strategy_flag).strip().upper()
+        normalized_capital_weighted = float(
+            trigger_avg_net_pnl_pct
+            if trigger_capital_weighted_net_pnl_pct is None
+            else trigger_capital_weighted_net_pnl_pct
+        )
         with self._connect() as conn:
             conn.execute(
                 """
@@ -5001,11 +5031,12 @@ class SqliteRepository:
                     activation_session_date,
                     trigger_trade_count,
                     trigger_avg_net_pnl_pct,
+                    trigger_capital_weighted_net_pnl_pct,
                     status,
                     released_at,
                     release_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', NULL, '')
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NULL, '')
                 ON CONFLICT(market, strategy_flag) DO UPDATE SET
                     activated_at = CASE
                         WHEN strategy_guard_state.status = 'ACTIVE'
@@ -5027,6 +5058,11 @@ class SqliteRepository:
                         THEN strategy_guard_state.trigger_avg_net_pnl_pct
                         ELSE excluded.trigger_avg_net_pnl_pct
                     END,
+                    trigger_capital_weighted_net_pnl_pct = CASE
+                        WHEN strategy_guard_state.status = 'ACTIVE'
+                        THEN strategy_guard_state.trigger_capital_weighted_net_pnl_pct
+                        ELSE excluded.trigger_capital_weighted_net_pnl_pct
+                    END,
                     status = 'ACTIVE',
                     released_at = NULL,
                     release_reason = ''
@@ -5038,6 +5074,7 @@ class SqliteRepository:
                     str(activation_session_date),
                     max(0, int(trigger_trade_count)),
                     float(trigger_avg_net_pnl_pct),
+                    normalized_capital_weighted,
                 ),
             )
             row = conn.execute(

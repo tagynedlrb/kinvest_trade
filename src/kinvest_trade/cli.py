@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -19,6 +21,15 @@ from .repository import SqliteRepository
 from .telegram_control import TelegramLiquidityLabController
 from .time_utils import format_display_times
 from .watcher import ConsoleWatchService
+
+
+def _configure_logging() -> None:
+    level_name = str(os.getenv("KINVEST_LOG_LEVEL", "WARNING")).strip().upper()
+    level = getattr(logging, level_name, logging.WARNING)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -783,6 +794,7 @@ def run_paper_report(config: AppConfig, run_id: int | None) -> None:
 
 
 def main() -> None:
+    _configure_logging()
     parser = build_parser()
     args = parser.parse_args()
     config = load_app_config(args.settings)

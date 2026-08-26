@@ -200,6 +200,8 @@ class AutoTradeConfig:
     inverse_stop_loss_pct: float = 0.0075
     inverse_hard_stop_loss_pct: float = 0.012
     inverse_max_hold_cycles: int = 24
+    inverse_trailing_activation_net_pct: float = 0.0
+    inverse_trailing_drawdown_pct: float = 0.0
     inverse_slot_multiplier: float = 0.25
     strategy_guard_lookback_hours: int = 48
     strategy_guard_min_trades: int = 3

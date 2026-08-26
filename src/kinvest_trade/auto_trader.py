@@ -29,6 +29,7 @@ from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
     extract_price_series,
+    filter_latest_session_rows,
 )
 from .time_utils import format_kst, format_kst_korean
 
@@ -115,6 +116,10 @@ class FixedSymbolAutoTrader:
         self._minute_highs: list[float] = []
         self._minute_lows: list[float] = []
         self._minute_volumes: list[float] = []
+        self._vwap_closes: list[float] = []
+        self._vwap_highs: list[float] = []
+        self._vwap_lows: list[float] = []
+        self._vwap_volumes: list[float] = []
         self._daily_refreshed_at: datetime | None = None
         self._intraday_refreshed_at: datetime | None = None
         self._last_adaptive_override = AdaptiveOverride()
@@ -509,6 +514,10 @@ class FixedSymbolAutoTrader:
             bollinger_window=self.auto_trade.bollinger_window,
             bollinger_stddev=self.auto_trade.bollinger_stddev,
             atr_window=self.auto_trade.atr_window,
+            vwap_closes=self._vwap_closes,
+            vwap_highs=self._vwap_highs,
+            vwap_lows=self._vwap_lows,
+            vwap_volumes=self._vwap_volumes,
         )
 
     async def _refresh_chart_context(self, captured_at: datetime) -> None:
@@ -564,11 +573,25 @@ class FixedSymbolAutoTrader:
                     low_fields=("low",),
                     volume_fields=("evol", "volume"),
                 )
+                vwap_series = extract_price_series(
+                    filter_latest_session_rows(
+                        rows,
+                        date_fields=("xymd", "kymd"),
+                    ),
+                    close_fields=("last", "clos", "close"),
+                    high_fields=("high",),
+                    low_fields=("low",),
+                    volume_fields=("evol", "volume"),
+                )
                 if series.closes:
                     self._minute_closes = series.closes
                     self._minute_highs = series.highs
                     self._minute_lows = series.lows
                     self._minute_volumes = series.volumes
+                    self._vwap_closes = vwap_series.closes
+                    self._vwap_highs = vwap_series.highs
+                    self._vwap_lows = vwap_series.lows
+                    self._vwap_volumes = vwap_series.volumes
                     self._intraday_refreshed_at = captured_at
             except KisApiError:
                 pass

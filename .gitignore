@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+*.egg-info/
 .python-version
 .env
 keys/

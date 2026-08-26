@@ -129,8 +129,12 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic = config.market_policies.domestic
     overseas = config.market_policies.overseas
 
-    assert domestic.policy_id == "domestic_momentum_v4"
-    assert overseas.policy_id == "overseas_momentum_v2"
+    assert domestic.policy_id == "domestic_momentum_v5"
+    assert overseas.policy_id == "overseas_momentum_v3"
+    assert domestic.auto_trade.inverse_trailing_activation_net_pct == 0.005
+    assert domestic.auto_trade.inverse_trailing_drawdown_pct == 0.003
+    assert overseas.auto_trade.inverse_trailing_activation_net_pct == 0.006
+    assert overseas.auto_trade.inverse_trailing_drawdown_pct == 0.003
     assert domestic.auto_trade.strategy_guard_min_final_sessions == 3
     assert overseas.auto_trade.strategy_guard_min_final_sessions == 3
     assert domestic.auto_trade.stale_order_cancel_minutes == 30

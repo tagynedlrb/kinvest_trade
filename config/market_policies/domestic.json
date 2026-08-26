@@ -1,5 +1,5 @@
 {
-  "policy_id": "domestic_momentum_v4",
+  "policy_id": "domestic_momentum_v5",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {
@@ -164,6 +164,8 @@
     "inverse_stop_loss_pct": 0.008,
     "inverse_hard_stop_loss_pct": 0.012,
     "inverse_max_hold_cycles": 48,
+    "inverse_trailing_activation_net_pct": 0.005,
+    "inverse_trailing_drawdown_pct": 0.003,
     "inverse_slot_multiplier": 0.2
   },
   "risk": {

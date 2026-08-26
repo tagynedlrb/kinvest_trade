@@ -2075,6 +2075,17 @@ class ReportHelper:
             if key in seen_keys:
                 continue
             market, strategy = key
+            trigger_avg_net = float(
+                persistent_state.get("trigger_avg_net_pnl_pct") or 0.0
+            )
+            trigger_weighted_net = float(
+                persistent_state.get("trigger_capital_weighted_net_pnl_pct")
+                if persistent_state.get(
+                    "trigger_capital_weighted_net_pnl_pct"
+                )
+                is not None
+                else trigger_avg_net
+            )
             min_final_sessions = guard_policies[
                 market
             ].min_final_sessions
@@ -2088,6 +2099,8 @@ class ReportHelper:
                 f"{format_market_korean(market)} {strategy or '-'} "
                 f"상태=차단(관찰유지) 최종세션="
                 f"{final_sessions}/{min_final_sessions} "
+                f"발동평균순={format_pct(trigger_avg_net)} "
+                f"발동자본가중={format_pct(trigger_weighted_net)} "
                 f"시작={persistent_state.get('activation_session_date') or '-'}"
             )
         return "\n".join(lines)

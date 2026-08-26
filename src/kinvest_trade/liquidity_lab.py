@@ -80,6 +80,7 @@ from .technical_signals import (
     build_moving_average_snapshot,
     chart_bar_elapsed_seconds,
     extract_price_series,
+    filter_latest_session_rows,
 )
 from .time_utils import ensure_timezone, format_kst, format_kst_korean, parse_datetime
 from .tv_scanner import check_connectivity, scan_top_volume_surge
@@ -1822,6 +1823,40 @@ class LiquidityLabService:
                     else {}
                 ),
                 "entry_market_regime": entry_market_regime,
+                "inverse_exit_policy": {
+                    "take_profit_pct": float(
+                        getattr(
+                            policy.auto_trade,
+                            "inverse_take_profit_pct",
+                            0.025,
+                        )
+                        or 0.025
+                    ),
+                    "stop_loss_pct": float(
+                        getattr(
+                            policy.auto_trade,
+                            "inverse_stop_loss_pct",
+                            0.008,
+                        )
+                        or 0.008
+                    ),
+                    "trailing_activation_net_pct": float(
+                        getattr(
+                            policy.auto_trade,
+                            "inverse_trailing_activation_net_pct",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                    "trailing_drawdown_pct": float(
+                        getattr(
+                            policy.auto_trade,
+                            "inverse_trailing_drawdown_pct",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                },
                 "etf_metadata": (
                     self._cached_domestic_inverse_etf_metadata(symbol)
                     if market_key == "domestic"
@@ -1929,6 +1964,42 @@ class LiquidityLabService:
             1,
             int(getattr(policy, "inverse_max_hold_cycles", 48) or 48),
         )
+        trailing_activation_net = max(
+            0.0,
+            float(
+                getattr(
+                    policy,
+                    "inverse_trailing_activation_net_pct",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        trailing_drawdown = max(
+            0.0,
+            float(
+                getattr(
+                    policy,
+                    "inverse_trailing_drawdown_pct",
+                    0.0,
+                )
+                or 0.0
+            ),
+        )
+        peak_exit_proceeds = peak_price * (1.0 - commission_rate)
+        peak_net_pnl_pct = (
+            (peak_exit_proceeds - entry_cost) / entry_cost
+            if entry_cost > 0
+            else (peak_price - entry_price) / entry_price
+        )
+        drawdown_from_peak = (
+            (exit_price - peak_price) / peak_price if peak_price > 0 else 0.0
+        )
+        trailing_profit_armed = bool(
+            trailing_activation_net > 0
+            and trailing_drawdown > 0
+            and peak_net_pnl_pct >= trailing_activation_net
+        )
         exit_reason = ""
         exit_benchmark_decision: InverseRegimeDecision | None = None
         if net_pnl_pct <= -hard_stop:
@@ -1937,6 +2008,11 @@ class LiquidityLabService:
             exit_reason = "inverse_stop_loss"
         elif net_pnl_pct >= take_profit:
             exit_reason = "inverse_take_profit"
+        elif (
+            trailing_profit_armed
+            and drawdown_from_peak <= -trailing_drawdown
+        ):
+            exit_reason = "inverse_trailing_profit_lock"
         elif (
             self._market_session_date(market_key, current)
             != str(trade.get("entry_session_date") or "")
@@ -2000,6 +2076,13 @@ class LiquidityLabService:
                 updated_context["exit_signal_snapshot"] = asdict(
                     signal_snapshot
                 )
+            updated_context["inverse_trailing_state"] = {
+                "activation_net_pct": trailing_activation_net,
+                "drawdown_limit_pct": trailing_drawdown,
+                "peak_net_pnl_pct": peak_net_pnl_pct,
+                "drawdown_from_peak": drawdown_from_peak,
+                "armed": trailing_profit_armed,
+            }
         updated = self.repository.update_inverse_shadow_trade(
             int(trade["id"]),
             updated_at=now_iso,
@@ -2025,6 +2108,9 @@ class LiquidityLabService:
                     "exit_price": round(exit_price, 8),
                     "gross_pnl_pct": round(gross_pnl_pct, 8),
                     "net_pnl_pct": round(net_pnl_pct, 8),
+                    "peak_net_pnl_pct": round(peak_net_pnl_pct, 8),
+                    "drawdown_from_peak": round(drawdown_from_peak, 8),
+                    "trailing_profit_armed": trailing_profit_armed,
                     "hold_cycles": hold_cycles,
                 },
             )
@@ -2826,6 +2912,11 @@ class LiquidityLabService:
                     trigger_avg_net_pnl_pct=float(
                         row.get("avg_net_pnl_pct") or 0.0
                     ),
+                    trigger_capital_weighted_net_pnl_pct=float(
+                        row.get("capital_weighted_net_pnl_pct")
+                        if row.get("capital_weighted_net_pnl_pct") is not None
+                        else row.get("avg_net_pnl_pct") or 0.0
+                    ),
                 )
                 active_by_key[key] = state
                 newly_activated.add(key)
@@ -3022,6 +3113,19 @@ class LiquidityLabService:
                         "avg_net_pnl_pct": round(
                             float(
                                 state.get("trigger_avg_net_pnl_pct") or 0.0
+                            ),
+                            6,
+                        ),
+                        "capital_weighted_net_pnl_pct": round(
+                            float(
+                                state.get(
+                                    "trigger_capital_weighted_net_pnl_pct"
+                                )
+                                if state.get(
+                                    "trigger_capital_weighted_net_pnl_pct"
+                                )
+                                is not None
+                                else state.get("trigger_avg_net_pnl_pct") or 0.0
                             ),
                             6,
                         ),
@@ -9583,6 +9687,16 @@ class LiquidityLabService:
             low_fields=("low",),
             volume_fields=("evol", "volume"),
         )
+        vwap_series = extract_price_series(
+            filter_latest_session_rows(
+                minute_rows,
+                date_fields=("xymd", "kymd"),
+            ),
+            close_fields=("last", "clos", "close"),
+            high_fields=("high",),
+            low_fields=("low",),
+            volume_fields=("evol", "volume"),
+        )
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
         history_detail = {
@@ -9635,6 +9749,10 @@ class LiquidityLabService:
             bollinger_window=auto.bollinger_window,
             bollinger_stddev=auto.bollinger_stddev,
             atr_window=auto.atr_window,
+            vwap_closes=vwap_series.closes,
+            vwap_highs=vwap_series.highs,
+            vwap_lows=vwap_series.lows,
+            vwap_volumes=vwap_series.volumes,
             bar_duration_sec=bar_duration_sec,
             chart_elapsed_sec=chart_elapsed_sec,
         )
@@ -9697,6 +9815,16 @@ class LiquidityLabService:
             low_fields=("stck_lwpr",),
             volume_fields=("cntg_vol",),
         )
+        vwap_series = extract_price_series(
+            filter_latest_session_rows(
+                minute_rows,
+                date_fields=("stck_bsop_date",),
+            ),
+            close_fields=("stck_prpr",),
+            high_fields=("stck_hgpr",),
+            low_fields=("stck_lwpr",),
+            volume_fields=("cntg_vol",),
+        )
         daily_closes = daily_series.closes
         minute_closes = minute_series.closes
         if (
@@ -9732,6 +9860,10 @@ class LiquidityLabService:
             bollinger_window=auto.bollinger_window,
             bollinger_stddev=auto.bollinger_stddev,
             atr_window=auto.atr_window,
+            vwap_closes=vwap_series.closes,
+            vwap_highs=vwap_series.highs,
+            vwap_lows=vwap_series.lows,
+            vwap_volumes=vwap_series.volumes,
             bar_duration_sec=60,
             chart_elapsed_sec=chart_elapsed_sec,
         )

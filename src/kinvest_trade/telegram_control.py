@@ -353,7 +353,7 @@ class TelegramLiquidityLabController:
         try:
             await self.notifier.set_commands(BOT_COMMANDS)
         except Exception:  # noqa: BLE001
-            pass
+            _logger.exception("telegram_command_registration_failed")
         await self._send_startup_message_if_due()
         scheduler = asyncio.create_task(self._scheduler_loop())
         command_loop = asyncio.create_task(self._command_loop())
@@ -483,7 +483,7 @@ class TelegramLiquidityLabController:
                 client_source=str(info.get("client_source", "")),
             )
         except Exception:  # noqa: BLE001
-            pass
+            _logger.exception("api_call_log_failed")
 
     def _new_kis_client(self, *, client_source: str) -> KisRestClient:
         source = str(client_source).strip()[:80]
@@ -508,7 +508,7 @@ class TelegramLiquidityLabController:
                 text=text,
             )
         except Exception:  # noqa: BLE001
-            pass
+            _logger.exception("telegram_inbound_log_failed")
 
     @staticmethod
     def _build_menu_root_text() -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -10,6 +11,8 @@ from .config import NotificationConfig
 
 if TYPE_CHECKING:
     from .repository import SqliteRepository
+
+_logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
@@ -42,7 +45,7 @@ class TelegramNotifier:
                 error=self._sanitize_error(error),
             )
         except Exception:  # noqa: BLE001
-            pass
+            _logger.exception("telegram_outbound_log_failed")
 
     def _sanitize_error(self, error: object) -> str:
         redacted = str(error or "")

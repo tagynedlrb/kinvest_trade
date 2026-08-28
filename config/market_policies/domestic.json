@@ -1,5 +1,5 @@
 {
-  "policy_id": "domestic_momentum_v5",
+  "policy_id": "domestic_momentum_v6",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {
@@ -123,14 +123,14 @@
     "strategy_guard_max_capital_weighted_net_pnl_pct": -0.003,
     "strategy_guard_strategy_flags": ["VWAP", "RSI", "VOL", "VWAP+VOL", "VOL+RSI", "VWAP+RSI", "VWAP+VOL+RSI"],
     "strategy_guard_min_final_sessions": 3,
-    "strategy_guard_release_requires_recovery": false,
+    "strategy_guard_release_requires_recovery": true,
     "strategy_guard_release_min_trades": 3,
     "strategy_guard_release_min_avg_net_pnl_pct": 0.0,
     "strategy_guard_release_min_capital_weighted_net_pnl_pct": 0.0,
-    "strategy_guard_probe_enabled": false,
-    "strategy_guard_probe_strategy_flags": [],
-    "strategy_guard_probe_max_entries_per_session": 0,
-    "strategy_guard_probe_max_submissions_per_session": 0,
+    "strategy_guard_probe_enabled": true,
+    "strategy_guard_probe_strategy_flags": ["VOL", "VWAP", "RSI", "VOL+RSI", "VWAP+RSI", "VWAP+VOL", "VWAP+VOL+RSI"],
+    "strategy_guard_probe_max_entries_per_session": 2,
+    "strategy_guard_probe_max_submissions_per_session": 4,
     "strategy_guard_probe_slot_multiplier": 0.10,
     "strategy_guard_probe_benchmark_floor_pct": 0.0,
     "strategy_guard_probe_regime_max_age_sec": 600,
@@ -139,7 +139,7 @@
     "virtual_settlement_max_submissions_per_session": 3,
     "virtual_settlement_aggressive_after_sessions": 2,
     "virtual_settlement_aggressive_limit_bps": 50,
-    "entry_confirmation_strategy_flags": ["VWAP"],
+    "entry_confirmation_strategy_flags": ["VWAP", "VOL"],
     "stale_order_cancel_minutes": 30,
     "close_guard_cancel_window_minutes": 15,
     "close_guard_min_order_age_minutes": 5,
@@ -174,8 +174,11 @@
     "entry_require_same_session_regime": true,
     "entry_regime_max_age_sec": 600,
     "entry_benchmark_floor_pct": 0.0,
-    "post_cb_reentry_benchmark_floor_pct": -3.0,
+    "entry_benchmark_range_position_stop": 0.25,
+    "entry_benchmark_range_position_resume": 0.50,
+    "entry_benchmark_recovery_observations": 2,
+    "post_cb_reentry_benchmark_floor_pct": 0.0,
     "post_cb_reentry_regime_max_age_sec": 600,
-    "post_cb_max_fires_per_session": 1
+    "post_cb_max_fires_per_session": 2
   }
 }

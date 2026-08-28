@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -34,6 +34,129 @@ def test_repository_connection_context_closes_after_transaction(tmp_path) -> Non
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         conn.execute("SELECT 1")
+
+
+def test_entry_horizon_shadow_group_matures_and_expires_by_session(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "horizon_shadow.db")
+    opened_at = datetime(2026, 8, 28, 0, 0, tzinfo=timezone.utc)
+    group_id = repository.open_entry_horizon_shadow_group(
+        opened_at=opened_at,
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        entry_session_date="2026-08-28",
+        policy_id="domestic_momentum_v6",
+        cohort="live_signal",
+        strategy_flag="VOL",
+        entry_by="VOL",
+        block_reason="",
+        entry_price=100.0,
+        round_trip_cost_pct=0.0023,
+        horizons_minutes=(5, 10),
+        benchmark_return_pct=0.5,
+        benchmark_regime_key="up|active|normal",
+        benchmark_range_position=0.7,
+        context={"source": "test"},
+        group_id="group-a",
+    )
+
+    assert group_id == "group-a"
+    assert (
+        repository.open_entry_horizon_shadow_group(
+            opened_at=opened_at + timedelta(minutes=1),
+            market="domestic",
+            symbol="005930",
+            exchange_code="KRX",
+            entry_session_date="2026-08-28",
+            policy_id="domestic_momentum_v6",
+            cohort="live_signal",
+            strategy_flag="VOL",
+            entry_by="VOL",
+            block_reason="",
+            entry_price=100.0,
+            round_trip_cost_pct=0.0023,
+            horizons_minutes=(5,),
+        )
+        is None
+    )
+
+    first = repository.observe_entry_horizon_shadows(
+        market="domestic",
+        observed_at=opened_at + timedelta(minutes=5, seconds=30),
+        session_date="2026-08-28",
+        prices={"005930": 101.0},
+        max_lag_minutes=10,
+    )
+    rows = repository.list_entry_horizon_shadows(
+        market="domestic",
+        cohort="live_signal",
+    )
+    matured = next(row for row in rows if row["horizon_minutes"] == 5)
+    pending = next(row for row in rows if row["horizon_minutes"] == 10)
+
+    assert first == {"matured": 1, "expired": 0, "open": 1}
+    assert matured["status"] == "MATURED"
+    assert matured["gross_pnl_pct"] == pytest.approx(0.01)
+    assert matured["estimated_net_pnl_pct"] == pytest.approx(0.0077)
+    assert matured["observation_lag_sec"] == 30
+    assert matured["context_json"] == {"source": "test"}
+    assert pending["status"] == "OPEN"
+    assert repository.list_open_entry_horizon_shadow_symbols(
+        market="domestic"
+    ) == ["005930"]
+
+    second = repository.observe_entry_horizon_shadows(
+        market="domestic",
+        observed_at=opened_at + timedelta(days=1),
+        session_date="2026-08-29",
+        prices={"005930": 102.0},
+    )
+
+    assert second == {"matured": 0, "expired": 1, "open": 0}
+    expired = next(
+        row
+        for row in repository.list_entry_horizon_shadows(status="EXPIRED")
+        if row["horizon_minutes"] == 10
+    )
+    assert expired["exit_price"] is None
+    assert expired["estimated_net_pnl_pct"] is None
+    assert repository.list_open_entry_horizon_shadow_symbols(
+        market="domestic"
+    ) == []
+
+
+def test_entry_horizon_shadow_can_be_finalized_for_historical_backfill(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "horizon_backfill.db")
+    opened_at = datetime(2026, 8, 28, 0, 0, tzinfo=timezone.utc)
+    assert repository.open_entry_horizon_shadow_group(
+        opened_at=opened_at,
+        market="domestic",
+        symbol="000660",
+        exchange_code="KRX",
+        entry_session_date="2026-08-28",
+        policy_id="domestic_momentum_v6",
+        cohort="historical_confirmed_entry",
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        block_reason="",
+        entry_price=200.0,
+        round_trip_cost_pct=0.0023,
+        horizons_minutes=(30,),
+        group_id="historical-a",
+        allow_overlap=True,
+    ) == "historical-a"
+
+    assert repository.finalize_entry_horizon_shadow(
+        group_id="historical-a",
+        horizon_minutes=30,
+        status="MATURED",
+        observed_at=opened_at + timedelta(minutes=30),
+        exit_price=202.0,
+        observation_lag_sec=0,
+    )
+    row = repository.list_entry_horizon_shadows(status="MATURED")[0]
+    assert row["gross_pnl_pct"] == pytest.approx(0.01)
+    assert row["estimated_net_pnl_pct"] == pytest.approx(0.0077)
 
 
 def test_prune_operational_logs_preserves_trade_history(tmp_path) -> None:

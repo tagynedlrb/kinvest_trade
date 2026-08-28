@@ -16,6 +16,7 @@ from .auto_trade_math import (
     DOMESTIC_COST_CALCULATION_VERSION,
     OVERSEAS_COST_CALCULATION_VERSION,
     estimate_domestic_trade_costs,
+    is_domestic_sell_tax_exempt,
 )
 from .client import KisApiError, KisRestClient, parse_kis_number
 from .config import AppConfig, CorporateActionDefinition, OverseasCandidateConfig
@@ -90,6 +91,8 @@ _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _MIN_VPS_US_FULL_SCAN_WINDOW_SEC = 120
 _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN = 30
 _VIRTUAL_SELL_SETTLEMENT_ROLE = "virtual_sell_settlement"
+_ENTRY_HORIZON_SHADOW_VERSION = "fixed_horizon_v1"
+_ENTRY_HORIZON_MINUTES = (5, 10, 15, 30, 45, 60, 90, 120)
 _DEDICATED_INVERSE_ENTRY_FORMULAS = frozenset(
     {
         "regime_trend_breakout_v1",
@@ -2116,6 +2119,161 @@ class LiquidityLabService:
             )
         return exit_reason
 
+    @staticmethod
+    def _entry_horizon_shadow_cohort(
+        watch_target: WatchTargetStatus,
+    ) -> tuple[str, str]:
+        reason_text = str(
+            watch_target.decision_reason or watch_target.note or ""
+        )
+        block_cohorts = (
+            (
+                "entry_benchmark_intraday_reversal",
+                "market_reversal_blocked",
+            ),
+            (
+                "entry_benchmark_recovery_unconfirmed",
+                "market_reversal_blocked",
+            ),
+            ("entry_benchmark_below_floor", "market_floor_blocked"),
+            ("post_cb_", "post_cb_blocked"),
+            ("strategy_confirmation_", "strategy_confirmation_blocked"),
+            ("recent_strategy_underperformance", "strategy_guard_blocked"),
+        )
+        for marker, cohort in block_cohorts:
+            if marker in reason_text:
+                block_reason = reason_text.split("|")[0].strip()
+                if "] " in block_reason:
+                    block_reason = block_reason.split("] ", 1)[1]
+                return cohort, block_reason
+        if str(watch_target.action_bias).strip().upper() == "BUY":
+            return "live_signal", ""
+        return "", ""
+
+    def _observe_domestic_entry_horizon_shadows(
+        self,
+        watch_targets: list[WatchTargetStatus],
+        *,
+        now: datetime | None = None,
+        allow_new: bool = True,
+    ) -> dict[str, int]:
+        repository = getattr(self, "repository", None)
+        observer = getattr(repository, "observe_entry_horizon_shadows", None)
+        opener = getattr(repository, "open_entry_horizon_shadow_group", None)
+        if not callable(observer) or not callable(opener):
+            return {"matured": 0, "expired": 0, "open": 0, "opened": 0}
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        session_date = self._market_session_date("domestic", current)
+        prices = {
+            target.code.strip().upper(): float(target.price)
+            for target in watch_targets
+            if target.market == "domestic" and float(target.price or 0.0) > 0
+        }
+        counts = observer(
+            market="domestic",
+            observed_at=current,
+            session_date=session_date,
+            prices=prices,
+            max_lag_minutes=10,
+        )
+        counts["opened"] = 0
+        if not allow_new:
+            return counts
+
+        policy = self._get_market_policy("domestic")
+        auto_trade = policy.auto_trade
+        commission_rate = max(
+            0.0,
+            float(getattr(auto_trade, "domestic_commission_rate", 0.00015) or 0.0),
+        )
+        sell_tax_rate = max(
+            0.0,
+            float(getattr(auto_trade, "domestic_sell_tax_rate", 0.002) or 0.0),
+        )
+        market_regime = self._market_regime_context("domestic", now=current)
+        for target in watch_targets:
+            if (
+                target.market != "domestic"
+                or target.holding_qty > 0
+                or target.signal_snapshot is None
+                or float(target.price or 0.0) <= 0
+                or self._is_inverse_symbol("domestic", target.code)
+            ):
+                continue
+            cohort, block_reason = self._entry_horizon_shadow_cohort(target)
+            if not cohort:
+                continue
+            quote = getattr(self, "_domestic_quote_cache", {}).get(target.code)
+            product_type = str(
+                getattr(quote, "product_type", "") or ""
+            ).strip()
+            applied_sell_tax_rate = (
+                0.0
+                if is_domestic_sell_tax_exempt(product_type)
+                else sell_tax_rate
+            )
+            round_trip_cost_pct = commission_rate * 2.0 + applied_sell_tax_rate
+            group_id = opener(
+                opened_at=current,
+                market="domestic",
+                symbol=target.code,
+                exchange_code=target.exchange_code,
+                entry_session_date=session_date,
+                policy_id=policy.policy_id,
+                cohort=cohort,
+                strategy_flag=target.strategy_flag,
+                entry_by=target.entry_by,
+                block_reason=block_reason,
+                entry_price=float(target.price),
+                round_trip_cost_pct=round_trip_cost_pct,
+                horizons_minutes=_ENTRY_HORIZON_MINUTES,
+                benchmark_return_pct=self._parse_optional_float(
+                    market_regime.get("return_pct")
+                ),
+                benchmark_regime_key=str(
+                    market_regime.get("regime_key") or ""
+                ),
+                benchmark_range_position=self._benchmark_range_position(
+                    market_regime
+                ),
+                context={
+                    "calculation_version": _ENTRY_HORIZON_SHADOW_VERSION,
+                    "cost_calculation_version": DOMESTIC_COST_CALCULATION_VERSION,
+                    "product_type": product_type,
+                    "commission_rate": commission_rate,
+                    "sell_tax_rate": applied_sell_tax_rate,
+                    "signal_snapshot": asdict(target.signal_snapshot),
+                    "entry_market_regime": market_regime,
+                    "watch_action_bias": target.action_bias,
+                    "watch_signal_state": target.signal_state,
+                    "watch_note": target.note,
+                },
+            )
+            if not group_id:
+                continue
+            counts["opened"] += 1
+            self._save_event(
+                event_type="entry_horizon_shadow_opened",
+                market="domestic",
+                symbol=target.code,
+                detail={
+                    "group_id": group_id,
+                    "policy_id": policy.policy_id,
+                    "cohort": cohort,
+                    "block_reason": block_reason,
+                    "strategy_flag": target.strategy_flag,
+                    "entry_price": float(target.price),
+                    "round_trip_cost_pct": round_trip_cost_pct,
+                    "product_type": product_type,
+                    "horizons_minutes": list(_ENTRY_HORIZON_MINUTES),
+                    "benchmark_return_pct": market_regime.get("return_pct"),
+                    "benchmark_range_position": self._benchmark_range_position(
+                        market_regime
+                    ),
+                },
+            )
+        return counts
+
     def _open_inverse_shadow_symbols(
         self,
         market: str,
@@ -3517,13 +3675,18 @@ class LiquidityLabService:
                 "entry_benchmark_floor_pct",
                 None,
             )
+            range_stop_value = getattr(
+                definition,
+                "entry_benchmark_range_position_stop",
+                None,
+            )
             require_market_regime = bool(
                 getattr(
                     definition,
                     "entry_require_same_session_regime",
                     False,
                 )
-            ) or benchmark_floor_value is not None
+            ) or benchmark_floor_value is not None or range_stop_value is not None
             if require_market_regime:
                 regime = self._market_regime_context(market_key)
                 if not bool(regime.get("available")):
@@ -3549,6 +3712,12 @@ class LiquidityLabService:
                         return "entry_market_regime_unavailable"
                     if benchmark_return_pct < float(benchmark_floor_value):
                         return "entry_benchmark_below_floor"
+                reversal_reason, _ = self._entry_benchmark_reversal_gate(
+                    market_key,
+                    regime=regime,
+                )
+                if reversal_reason:
+                    return reversal_reason
 
             post_cb_reason, _ = self._post_cb_reentry_regime_gate(
                 market_key,
@@ -3595,6 +3764,173 @@ class LiquidityLabService:
         ):
             return "leveraged_trend_unconfirmed"
         return ""
+
+    @staticmethod
+    def _benchmark_range_position(regime: dict) -> float | None:
+        recorded = LiquidityLabService._parse_optional_float(
+            regime.get("session_range_position")
+        )
+        if recorded is not None:
+            return min(1.0, max(0.0, recorded))
+        high = LiquidityLabService._parse_optional_float(regime.get("high_price"))
+        low = LiquidityLabService._parse_optional_float(regime.get("low_price"))
+        close = LiquidityLabService._parse_optional_float(regime.get("close_price"))
+        if high is None or low is None or close is None or high <= low:
+            return None
+        return min(1.0, max(0.0, (close - low) / (high - low)))
+
+    def _entry_benchmark_reversal_gate(
+        self,
+        market: str,
+        *,
+        regime: dict | None = None,
+        now: datetime | None = None,
+    ) -> tuple[str, dict]:
+        market_key = normalize_market_name(market)
+        definition = self._get_market_policy(market_key).definition
+        stop_value = getattr(
+            definition,
+            "entry_benchmark_range_position_stop",
+            None,
+        )
+        resume_value = getattr(
+            definition,
+            "entry_benchmark_range_position_resume",
+            None,
+        )
+        if stop_value is None or resume_value is None:
+            return "", {"enabled": False, "market": market_key}
+
+        current = ensure_timezone(now or datetime.now(timezone.utc))
+        use_cache = now is None
+        cycle_no = int(getattr(self, "_cycle_count", 0) or 0)
+        cache = getattr(self, "_entry_benchmark_reversal_cache", {})
+        if (
+            use_cache
+            and cache.get("cycle_no") == cycle_no
+            and market_key in cache.get("markets", {})
+        ):
+            cached = dict(cache["markets"][market_key])
+            return str(cached.get("reason") or ""), cached
+
+        stop_floor = float(stop_value)
+        resume_floor = float(resume_value)
+        required_confirmations = max(
+            1,
+            int(
+                getattr(
+                    definition,
+                    "entry_benchmark_recovery_observations",
+                    1,
+                )
+                or 1
+            ),
+        )
+        context = regime or self._market_regime_context(market_key, now=current)
+        session_date = str(
+            context.get("session_date")
+            or self._market_session_date(market_key, current)
+        )
+        observations: list[dict] = []
+        reader = getattr(
+            getattr(self, "repository", None),
+            "list_market_regime_observations",
+            None,
+        )
+        if callable(reader):
+            observations = list(
+                reader(
+                    market=market_key,
+                    session_date=session_date,
+                    captured_before=current,
+                    limit=500,
+                )
+            )
+            observations.reverse()
+        context_captured_at = str(context.get("captured_at") or "")
+        if (
+            not observations
+            or str(observations[-1].get("captured_at") or "")
+            != context_captured_at
+        ):
+            observations.append(context)
+
+        halted = False
+        recovery_count = 0
+        last_halt_at = ""
+        last_resume_at = ""
+        latest_position = self._benchmark_range_position(context)
+        usable_observations = 0
+        for observation in observations:
+            position = self._benchmark_range_position(observation)
+            if position is None:
+                continue
+            usable_observations += 1
+            observed_at = str(observation.get("captured_at") or "")
+            if position < stop_floor:
+                halted = True
+                recovery_count = 0
+                last_halt_at = observed_at
+                continue
+            if not halted:
+                continue
+            if position >= resume_floor:
+                recovery_count += 1
+                if recovery_count >= required_confirmations:
+                    halted = False
+                    recovery_count = 0
+                    last_resume_at = observed_at
+            else:
+                recovery_count = 0
+
+        reason = ""
+        if halted:
+            reason = (
+                "entry_benchmark_intraday_reversal"
+                if latest_position is not None and latest_position < stop_floor
+                else "entry_benchmark_recovery_unconfirmed"
+            )
+        detail = {
+            "enabled": True,
+            "market": market_key,
+            "session_date": session_date,
+            "reason": reason,
+            "halted": halted,
+            "range_position": latest_position,
+            "stop_floor": stop_floor,
+            "resume_floor": resume_floor,
+            "required_recovery_observations": required_confirmations,
+            "current_recovery_observations": recovery_count,
+            "usable_observations": usable_observations,
+            "last_halt_at": last_halt_at,
+            "last_resume_at": last_resume_at,
+            "regime_captured_at": context.get("captured_at"),
+        }
+
+        state_key = (market_key, session_date)
+        state_cache = getattr(self, "_entry_benchmark_reversal_last_state", {})
+        previous_halted = state_cache.get(state_key)
+        if halted and previous_halted is not True:
+            self._save_event(
+                event_type="entry_benchmark_reversal_halted",
+                market=market_key,
+                detail=detail,
+            )
+        elif not halted and previous_halted is True:
+            self._save_event(
+                event_type="entry_benchmark_reversal_resumed",
+                market=market_key,
+                detail=detail,
+            )
+        state_cache[state_key] = halted
+        self._entry_benchmark_reversal_last_state = state_cache
+
+        if use_cache:
+            if cache.get("cycle_no") != cycle_no:
+                cache = {"cycle_no": cycle_no, "markets": {}}
+            cache.setdefault("markets", {})[market_key] = dict(detail)
+            self._entry_benchmark_reversal_cache = cache
+        return reason, detail
 
     def _post_cb_reentry_regime_gate(
         self,
@@ -6986,6 +7322,11 @@ class LiquidityLabService:
         ]
         domestic_watch_map = {watch_target.code: watch_target for watch_target in domestic_watch_targets}
         overseas_watch_map = {watch_target.code: watch_target for watch_target in overseas_watch_targets}
+        self._observe_domestic_entry_horizon_shadows(
+            domestic_watch_targets,
+            now=datetime.now(timezone.utc),
+            allow_new=krx_cycle_open,
+        )
         overseas_exit_targets = (
             await self._select_overseas_exit_targets(
                 overseas_ranked,
@@ -9223,6 +9564,16 @@ class LiquidityLabService:
             "_cycle_active_inverse_symbols",
             {},
         )
+        horizon_shadow_reader = getattr(
+            getattr(self, "repository", None),
+            "list_open_entry_horizon_shadow_symbols",
+            None,
+        )
+        horizon_shadow_symbols = (
+            set(horizon_shadow_reader(market="domestic"))
+            if krx_open and callable(horizon_shadow_reader)
+            else set()
+        )
         for item in unified:
             market_inverse_symbols = active_inverse_symbols.get(
                 item.market,
@@ -9236,6 +9587,21 @@ class LiquidityLabService:
             selected.append(item)
             selected_keys.add(pair)
             remaining_slots = max(0, remaining_slots - 1)
+
+        for item in unified:
+            if remaining_slots <= 0:
+                break
+            if (
+                item.market != "domestic"
+                or item.code.upper() not in horizon_shadow_symbols
+            ):
+                continue
+            pair = (item.market, item.code.upper())
+            if pair in selected_keys:
+                continue
+            selected.append(item)
+            selected_keys.add(pair)
+            remaining_slots -= 1
 
         for item in unified:
             if remaining_slots <= 0:

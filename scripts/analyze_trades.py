@@ -17,6 +17,7 @@ from kinvest_trade.repository import (
 from kinvest_trade.trade_analysis import (
     _net_pnl_pct_expr,
     compare_before_after,
+    summarize_entry_horizon_shadow_performance,
     summarize_exit_forward_performance,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
@@ -100,6 +101,18 @@ def main() -> None:
         default=8,
         help="청산 후행성과 출력 버킷 수",
     )
+    parser.add_argument(
+        "--horizon-shadow-days",
+        type=int,
+        default=-1,
+        help="진입 보유시간 모의군 최근 N일 요약 (-1=미실행, 0=전체)",
+    )
+    parser.add_argument(
+        "--horizon-shadow-market",
+        choices=("domestic", "overseas"),
+        default="domestic",
+        help="진입 보유시간 모의군 시장 필터",
+    )
     parser.add_argument("--wait-limit", type=int, default=12, help="WAIT 병목 출력 행 수")
     parser.add_argument("--regime-limit", type=int, default=12, help="시장 레짐 성과 출력 행 수")
     args = parser.parse_args()
@@ -144,6 +157,15 @@ def main() -> None:
                 market=args.exit_forward_market,
                 reason=args.exit_forward_reason,
                 orderable_env=args.exit_forward_env,
+            )
+        )
+        return
+    if args.horizon_shadow_days >= 0:
+        print(
+            summarize_entry_horizon_shadow_performance(
+                db_path,
+                days=args.horizon_shadow_days,
+                market=args.horizon_shadow_market,
             )
         )
         return

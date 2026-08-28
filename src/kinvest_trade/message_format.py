@@ -117,6 +117,8 @@ REASON_KOREAN_MAP = {
     "entry_market_regime_unavailable": "당일 시장환경 수집 전 진입 보류",
     "entry_market_regime_stale": "시장환경 관측치 갱신 대기",
     "entry_benchmark_below_floor": "시장지수 진입 하한 미달",
+    "entry_benchmark_intraday_reversal": "시장지수 장중 반전으로 신규진입 중지",
+    "entry_benchmark_recovery_unconfirmed": "시장지수 반전 후 재개 확인 대기",
     "post_cb_session_loss_limit_reached": "동일 시장 세션 반복손실 한도 도달",
     "recent_strategy_underperformance": "최근 전략 성과 저조",
     "submission_limit_reached": "세션 검증주문 제출 한도 도달",

@@ -316,6 +316,9 @@ class MarketPolicyDefinition:
     entry_require_same_session_regime: bool = False
     entry_regime_max_age_sec: int = 600
     entry_benchmark_floor_pct: float | None = None
+    entry_benchmark_range_position_stop: float | None = None
+    entry_benchmark_range_position_resume: float | None = None
+    entry_benchmark_recovery_observations: int = 1
     post_cb_reentry_benchmark_floor_pct: float | None = None
     post_cb_reentry_regime_max_age_sec: int = 600
     post_cb_max_fires_per_session: int | None = None
@@ -773,6 +776,9 @@ def _load_market_policy_definition(
         "entry_require_same_session_regime",
         "entry_regime_max_age_sec",
         "entry_benchmark_floor_pct",
+        "entry_benchmark_range_position_stop",
+        "entry_benchmark_range_position_resume",
+        "entry_benchmark_recovery_observations",
         "post_cb_reentry_benchmark_floor_pct",
         "post_cb_reentry_regime_max_age_sec",
         "post_cb_max_fires_per_session",
@@ -797,6 +803,28 @@ def _load_market_policy_definition(
     if not isinstance(entry_require_same_session_regime, bool):
         raise ValueError(
             f"{market} entry_require_same_session_regime must be a boolean"
+        )
+    range_stop_value = raw_risk.get("entry_benchmark_range_position_stop")
+    range_resume_value = raw_risk.get("entry_benchmark_range_position_resume")
+    range_stop = None if range_stop_value is None else float(range_stop_value)
+    range_resume = None if range_resume_value is None else float(range_resume_value)
+    for field_name, value in (
+        ("entry_benchmark_range_position_stop", range_stop),
+        ("entry_benchmark_range_position_resume", range_resume),
+    ):
+        if value is not None and not 0.0 <= value <= 1.0:
+            raise ValueError(f"{market} {field_name} must be between 0 and 1")
+    if (range_stop is None) != (range_resume is None):
+        raise ValueError(
+            f"{market} benchmark range stop and resume must be configured together"
+        )
+    if (
+        range_stop is not None
+        and range_resume is not None
+        and range_resume <= range_stop
+    ):
+        raise ValueError(
+            f"{market} benchmark range resume must be greater than stop"
         )
     corporate_actions = _load_corporate_actions(
         market=market,
@@ -831,6 +859,12 @@ def _load_market_policy_definition(
             None
             if raw_risk.get("entry_benchmark_floor_pct") is None
             else float(raw_risk["entry_benchmark_floor_pct"])
+        ),
+        entry_benchmark_range_position_stop=range_stop,
+        entry_benchmark_range_position_resume=range_resume,
+        entry_benchmark_recovery_observations=max(
+            1,
+            int(raw_risk.get("entry_benchmark_recovery_observations", 1)),
         ),
         post_cb_reentry_benchmark_floor_pct=(
             None

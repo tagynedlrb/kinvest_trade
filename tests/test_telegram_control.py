@@ -2425,6 +2425,63 @@ def test_lab_report_exit_forward_command_reports_confirmed_exit_paths(
     assert "동일 거래비용은 재차감하지 않음" in message
 
 
+def test_lab_report_horizon_command_reports_domestic_shadow_cohort(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_horizon_report.db")
+    opened_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    assert repository.open_entry_horizon_shadow_group(
+        opened_at=opened_at,
+        market="domestic",
+        symbol="005930",
+        exchange_code="KRX",
+        entry_session_date=opened_at.date().isoformat(),
+        policy_id="domestic_momentum_v6",
+        cohort="live_signal",
+        strategy_flag="VOL",
+        entry_by="VOL",
+        block_reason="",
+        entry_price=100.0,
+        round_trip_cost_pct=0.0023,
+        horizons_minutes=(5,),
+        group_id="telegram-horizon",
+    ) == "telegram-horizon"
+    assert repository.finalize_entry_horizon_shadow(
+        group_id="telegram-horizon",
+        horizon_minutes=5,
+        status="MATURED",
+        exit_price=101.0,
+    )
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(profile_name="paper", env="vps"),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(
+                runtime_state_path=tmp_path / "runtime_state.json"
+            ),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+
+    asyncio.run(
+        controller._handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123456},
+                    "text": "/lab_report horizon 30",
+                }
+            }
+        )
+    )
+
+    message = notifier.messages[-1]
+    assert "[KIS][국장 보유시간 모의군]" in message
+    assert "[진입 보유시간 모의군]" in message
+    assert "현행진입신호" in message
+    assert "Net평균=+0.770%" in message
+
+
 def test_lab_guard_command_reports_current_strategy_guard_state(
     tmp_path,
     save_confirmed_sell,

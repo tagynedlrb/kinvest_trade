@@ -129,7 +129,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic = config.market_policies.domestic
     overseas = config.market_policies.overseas
 
-    assert domestic.policy_id == "domestic_momentum_v5"
+    assert domestic.policy_id == "domestic_momentum_v6"
     assert overseas.policy_id == "overseas_momentum_v3"
     assert domestic.auto_trade.inverse_trailing_activation_net_pct == 0.005
     assert domestic.auto_trade.inverse_trailing_drawdown_pct == 0.003
@@ -143,7 +143,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert domestic.auto_trade.close_guard_poll_interval_minutes == 1
     assert overseas.auto_trade.stale_order_cancel_minutes == 30
     assert overseas.auto_trade.close_guard_cancel_window_minutes == 0
-    assert domestic.post_cb_reentry_benchmark_floor_pct == -3.0
+    assert domestic.post_cb_reentry_benchmark_floor_pct == 0.0
     assert overseas.post_cb_reentry_benchmark_floor_pct == -1.0
     assert domestic.entry_require_same_session_regime is True
     assert overseas.entry_require_same_session_regime is True
@@ -151,9 +151,15 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.entry_regime_max_age_sec == 600
     assert domestic.entry_benchmark_floor_pct == 0.0
     assert overseas.entry_benchmark_floor_pct is None
+    assert domestic.entry_benchmark_range_position_stop == 0.25
+    assert domestic.entry_benchmark_range_position_resume == 0.50
+    assert domestic.entry_benchmark_recovery_observations == 2
+    assert overseas.entry_benchmark_range_position_stop is None
+    assert overseas.entry_benchmark_range_position_resume is None
+    assert overseas.entry_benchmark_recovery_observations == 1
     assert domestic.post_cb_reentry_regime_max_age_sec == 600
     assert overseas.post_cb_reentry_regime_max_age_sec == 600
-    assert domestic.post_cb_max_fires_per_session == 1
+    assert domestic.post_cb_max_fires_per_session == 2
     assert overseas.post_cb_max_fires_per_session == 1
     assert domestic.inverse_require_symbol_benchmark is True
     assert domestic.inverse_benchmarks["114800"].market == "domestic"
@@ -231,10 +237,18 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "VWAP+RSI",
         "VWAP+VOL+RSI",
     ]
-    assert domestic.auto_trade.strategy_guard_probe_enabled is False
-    assert domestic.auto_trade.strategy_guard_probe_strategy_flags == []
-    assert domestic.auto_trade.strategy_guard_probe_max_entries_per_session == 0
-    assert domestic.auto_trade.strategy_guard_probe_max_submissions_per_session == 0
+    assert domestic.auto_trade.strategy_guard_probe_enabled is True
+    assert domestic.auto_trade.strategy_guard_probe_strategy_flags == [
+        "VOL",
+        "VWAP",
+        "RSI",
+        "VOL+RSI",
+        "VWAP+RSI",
+        "VWAP+VOL",
+        "VWAP+VOL+RSI",
+    ]
+    assert domestic.auto_trade.strategy_guard_probe_max_entries_per_session == 2
+    assert domestic.auto_trade.strategy_guard_probe_max_submissions_per_session == 4
     assert overseas.auto_trade.strategy_guard_probe_enabled is True
     assert overseas.auto_trade.strategy_guard_probe_strategy_flags == [
         "VWAP+RSI",
@@ -251,7 +265,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.strategy_guard_probe_slot_multiplier == 0.10
     assert overseas.auto_trade.strategy_guard_probe_benchmark_floor_pct == 0.0
     assert overseas.auto_trade.strategy_guard_probe_regime_max_age_sec == 600
-    assert domestic.auto_trade.strategy_guard_release_requires_recovery is False
+    assert domestic.auto_trade.strategy_guard_release_requires_recovery is True
     assert overseas.auto_trade.strategy_guard_release_requires_recovery is True
     assert domestic.auto_trade.strategy_guard_release_min_trades == 3
     assert overseas.auto_trade.strategy_guard_release_min_trades == 3
@@ -265,7 +279,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.virtual_settlement_max_submissions_per_session == 3
     assert domestic.auto_trade.post_fill_stale_balance_minutes == 10
     assert overseas.auto_trade.post_fill_stale_balance_minutes == 30
-    assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP"]
+    assert domestic.auto_trade.entry_confirmation_strategy_flags == ["VWAP", "VOL"]
     assert overseas.auto_trade.entry_confirmation_strategy_flags == []
     assert domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == [
         "122630"

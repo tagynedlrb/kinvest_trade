@@ -148,6 +148,7 @@ class SqliteRepository:
         "broker_order_events",
         "broker_order_executions",
         "inverse_shadow_trades",
+        "entry_horizon_shadows",
         "virtual_positions",
         "virtual_orders",
         "virtual_sell_pending",
@@ -584,6 +585,42 @@ class SqliteRepository:
                     );
                 CREATE INDEX IF NOT EXISTS idx_inverse_shadow_open
                     ON inverse_shadow_trades(status, market, symbol);
+                CREATE TABLE IF NOT EXISTS entry_horizon_shadows (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    exchange_code TEXT,
+                    entry_session_date TEXT NOT NULL,
+                    policy_id TEXT NOT NULL,
+                    cohort TEXT NOT NULL,
+                    strategy_flag TEXT NOT NULL DEFAULT '',
+                    entry_by TEXT NOT NULL DEFAULT '',
+                    block_reason TEXT NOT NULL DEFAULT '',
+                    entry_price REAL NOT NULL,
+                    round_trip_cost_pct REAL NOT NULL DEFAULT 0,
+                    horizon_minutes INTEGER NOT NULL,
+                    target_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'OPEN',
+                    observed_at TEXT,
+                    exit_price REAL,
+                    gross_pnl_pct REAL,
+                    estimated_net_pnl_pct REAL,
+                    observation_lag_sec INTEGER,
+                    benchmark_return_pct REAL,
+                    benchmark_regime_key TEXT NOT NULL DEFAULT '',
+                    benchmark_range_position REAL,
+                    context_json TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE (group_id, horizon_minutes)
+                );
+                CREATE INDEX IF NOT EXISTS idx_entry_horizon_shadow_open
+                    ON entry_horizon_shadows(status, market, symbol, target_at);
+                CREATE INDEX IF NOT EXISTS idx_entry_horizon_shadow_performance
+                    ON entry_horizon_shadows(
+                        market, cohort, horizon_minutes, status, opened_at
+                    );
                 CREATE TABLE IF NOT EXISTS telegram_message_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -3932,6 +3969,355 @@ class SqliteRepository:
                     str(execution_group_id),
                 ),
             )
+
+    def open_entry_horizon_shadow_group(
+        self,
+        *,
+        opened_at: str | datetime,
+        market: str,
+        symbol: str,
+        exchange_code: str | None,
+        entry_session_date: str,
+        policy_id: str,
+        cohort: str,
+        strategy_flag: str,
+        entry_by: str,
+        block_reason: str,
+        entry_price: float,
+        round_trip_cost_pct: float,
+        horizons_minutes: list[int] | tuple[int, ...],
+        benchmark_return_pct: float | None = None,
+        benchmark_regime_key: str = "",
+        benchmark_range_position: float | None = None,
+        context: dict | None = None,
+        group_id: str = "",
+        allow_overlap: bool = False,
+    ) -> str | None:
+        parsed_at = parse_datetime(opened_at)
+        if parsed_at is None or entry_price <= 0:
+            return None
+        opened = ensure_timezone(parsed_at).astimezone(timezone.utc)
+        normalized_market = str(market).strip().lower()
+        normalized_symbol = str(symbol).strip().upper()
+        normalized_cohort = str(cohort).strip().lower()
+        horizons = sorted(
+            {
+                max(1, int(horizon))
+                for horizon in horizons_minutes
+                if int(horizon) > 0
+            }
+        )
+        if not normalized_market or not normalized_symbol or not normalized_cohort or not horizons:
+            return None
+        resolved_group_id = str(group_id).strip() or uuid.uuid4().hex
+        context_json = json.dumps(context or {}, ensure_ascii=False, default=str)
+        with self._connect() as conn:
+            if not allow_overlap:
+                existing = conn.execute(
+                    """
+                    SELECT 1
+                    FROM entry_horizon_shadows
+                    WHERE market = ?
+                      AND symbol = ?
+                      AND cohort = ?
+                      AND status = 'OPEN'
+                    LIMIT 1
+                    """,
+                    (
+                        normalized_market,
+                        normalized_symbol,
+                        normalized_cohort,
+                    ),
+                ).fetchone()
+                if existing is not None:
+                    return None
+            inserted = 0
+            for horizon in horizons:
+                target_at = (opened + timedelta(minutes=horizon)).isoformat()
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO entry_horizon_shadows (
+                        group_id, opened_at, updated_at, market, symbol,
+                        exchange_code, entry_session_date, policy_id, cohort,
+                        strategy_flag, entry_by, block_reason, entry_price,
+                        round_trip_cost_pct, horizon_minutes, target_at,
+                        benchmark_return_pct, benchmark_regime_key,
+                        benchmark_range_position, context_json
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?
+                    )
+                    """,
+                    (
+                        resolved_group_id,
+                        opened.isoformat(),
+                        opened.isoformat(),
+                        normalized_market,
+                        normalized_symbol,
+                        exchange_code,
+                        str(entry_session_date),
+                        str(policy_id),
+                        normalized_cohort,
+                        str(strategy_flag).strip().upper(),
+                        str(entry_by).strip().upper(),
+                        str(block_reason),
+                        float(entry_price),
+                        max(0.0, float(round_trip_cost_pct)),
+                        horizon,
+                        target_at,
+                        benchmark_return_pct,
+                        str(benchmark_regime_key),
+                        benchmark_range_position,
+                        context_json,
+                    ),
+                )
+                inserted += max(0, int(cursor.rowcount or 0))
+        return resolved_group_id if inserted else None
+
+    def observe_entry_horizon_shadows(
+        self,
+        *,
+        market: str,
+        observed_at: str | datetime,
+        session_date: str,
+        prices: dict[str, float],
+        max_lag_minutes: int = 10,
+    ) -> dict[str, int]:
+        parsed_at = parse_datetime(observed_at)
+        if parsed_at is None:
+            return {"matured": 0, "expired": 0, "open": 0}
+        current = ensure_timezone(parsed_at).astimezone(timezone.utc)
+        normalized_market = str(market).strip().lower()
+        normalized_prices = {
+            str(symbol).strip().upper(): float(price)
+            for symbol, price in prices.items()
+            if float(price) > 0
+        }
+        max_lag_sec = max(0, int(max_lag_minutes)) * 60
+        counts = {"matured": 0, "expired": 0, "open": 0}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM entry_horizon_shadows
+                WHERE market = ?
+                  AND status = 'OPEN'
+                ORDER BY target_at ASC, id ASC
+                """,
+                (normalized_market,),
+            ).fetchall()
+            for row in rows:
+                target_at = parse_datetime(row["target_at"])
+                if target_at is None:
+                    status = "EXPIRED"
+                    lag_sec = None
+                else:
+                    target = ensure_timezone(target_at).astimezone(timezone.utc)
+                    if current < target:
+                        counts["open"] += 1
+                        continue
+                    lag_sec = max(0, int((current - target).total_seconds()))
+                    price = normalized_prices.get(str(row["symbol"]).upper())
+                    same_session = str(row["entry_session_date"]) == str(
+                        session_date
+                    )
+                    status = (
+                        "MATURED"
+                        if same_session
+                        and price is not None
+                        and lag_sec <= max_lag_sec
+                        else "EXPIRED"
+                        if not same_session or lag_sec > max_lag_sec
+                        else "OPEN"
+                    )
+                    if status == "OPEN":
+                        counts["open"] += 1
+                        continue
+                exit_price = (
+                    normalized_prices.get(str(row["symbol"]).upper())
+                    if status == "MATURED"
+                    else None
+                )
+                gross_pnl_pct = (
+                    float(exit_price) / float(row["entry_price"]) - 1.0
+                    if exit_price is not None
+                    else None
+                )
+                estimated_net_pnl_pct = (
+                    gross_pnl_pct - float(row["round_trip_cost_pct"] or 0.0)
+                    if gross_pnl_pct is not None
+                    else None
+                )
+                conn.execute(
+                    """
+                    UPDATE entry_horizon_shadows
+                    SET updated_at = ?,
+                        status = ?,
+                        observed_at = ?,
+                        exit_price = ?,
+                        gross_pnl_pct = ?,
+                        estimated_net_pnl_pct = ?,
+                        observation_lag_sec = ?
+                    WHERE id = ?
+                      AND status = 'OPEN'
+                    """,
+                    (
+                        current.isoformat(),
+                        status,
+                        current.isoformat(),
+                        exit_price,
+                        gross_pnl_pct,
+                        estimated_net_pnl_pct,
+                        lag_sec,
+                        int(row["id"]),
+                    ),
+                )
+                counts[status.lower()] += 1
+        return counts
+
+    def finalize_entry_horizon_shadow(
+        self,
+        *,
+        group_id: str,
+        horizon_minutes: int,
+        status: str,
+        observed_at: str | datetime | None = None,
+        exit_price: float | None = None,
+        observation_lag_sec: int | None = None,
+    ) -> bool:
+        normalized_status = str(status).strip().upper()
+        if normalized_status not in {"MATURED", "EXPIRED"}:
+            raise ValueError("entry horizon shadow status must be MATURED or EXPIRED")
+        parsed_at = parse_datetime(observed_at) if observed_at is not None else None
+        observed = (
+            ensure_timezone(parsed_at).astimezone(timezone.utc).isoformat()
+            if parsed_at is not None
+            else None
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, entry_price, round_trip_cost_pct
+                FROM entry_horizon_shadows
+                WHERE group_id = ?
+                  AND horizon_minutes = ?
+                LIMIT 1
+                """,
+                (str(group_id), max(1, int(horizon_minutes))),
+            ).fetchone()
+            if row is None:
+                return False
+            valid_exit = (
+                float(exit_price)
+                if normalized_status == "MATURED"
+                and exit_price is not None
+                and float(exit_price) > 0
+                else None
+            )
+            if normalized_status == "MATURED" and valid_exit is None:
+                raise ValueError("matured entry horizon shadow requires exit_price")
+            gross = (
+                valid_exit / float(row["entry_price"]) - 1.0
+                if valid_exit is not None
+                else None
+            )
+            estimated_net = (
+                gross - float(row["round_trip_cost_pct"] or 0.0)
+                if gross is not None
+                else None
+            )
+            updated_at = observed or datetime.now(timezone.utc).isoformat()
+            cursor = conn.execute(
+                """
+                UPDATE entry_horizon_shadows
+                SET updated_at = ?,
+                    status = ?,
+                    observed_at = ?,
+                    exit_price = ?,
+                    gross_pnl_pct = ?,
+                    estimated_net_pnl_pct = ?,
+                    observation_lag_sec = ?
+                WHERE id = ?
+                """,
+                (
+                    updated_at,
+                    normalized_status,
+                    observed,
+                    valid_exit,
+                    gross,
+                    estimated_net,
+                    observation_lag_sec,
+                    int(row["id"]),
+                ),
+            )
+        return int(cursor.rowcount or 0) > 0
+
+    def list_entry_horizon_shadows(
+        self,
+        *,
+        market: str = "",
+        cohort: str = "",
+        status: str = "",
+        after_opened_at: str = "",
+        limit: int = 1000,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list[object] = []
+        for column, value, transform in (
+            ("market", market, str.lower),
+            ("cohort", cohort, str.lower),
+            ("status", status, str.upper),
+        ):
+            normalized = transform(str(value).strip())
+            if normalized:
+                where.append(f"{column} = ?")
+                params.append(normalized)
+        if after_opened_at:
+            where.append("opened_at >= ?")
+            params.append(str(after_opened_at))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM entry_horizon_shadows
+                {where_sql}
+                ORDER BY opened_at DESC, group_id DESC, horizon_minutes ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["context_json"] = json.loads(
+                    str(item.get("context_json") or "{}")
+                )
+            except json.JSONDecodeError:
+                item["context_json"] = {}
+            result.append(item)
+        return result
+
+    def list_open_entry_horizon_shadow_symbols(
+        self,
+        *,
+        market: str,
+    ) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT symbol, MIN(opened_at) AS first_opened_at
+                FROM entry_horizon_shadows
+                WHERE market = ?
+                  AND status = 'OPEN'
+                GROUP BY symbol
+                ORDER BY first_opened_at ASC, symbol ASC
+                """,
+                (str(market).strip().lower(),),
+            ).fetchall()
+        return [str(row["symbol"]).strip().upper() for row in rows]
 
     def open_inverse_shadow_trade(
         self,

@@ -92,6 +92,7 @@ MENU_CATEGORIES: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("/lab_report wait [시간]", "최근 WAIT 병목 요약"),
             ("/lab_report wait-forward [시간]", "WAIT 뒤 가격 기회비용"),
             ("/lab_report exit-forward [시간]", "청산 뒤 가격 경로"),
+            ("/lab_report horizon [일]", "국장 진입 보유시간 모의군"),
             ("/lab_orders", "최근 주문 접수/취소 기록"),
             ("/lab_gitlog [날짜]", "거래 로그를 GitHub에 업로드"),
         ],

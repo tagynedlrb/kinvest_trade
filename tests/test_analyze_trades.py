@@ -13,12 +13,76 @@ if str(ROOT) not in sys.path:
 from scripts.analyze_trades import (
     compare_before_after,
     main,
+    summarize_entry_horizon_shadow_performance,
     summarize_exit_forward_performance,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
     summarize_wait_forward_performance,
 )
 from kinvest_trade.repository import SqliteRepository
+
+
+def test_entry_horizon_shadow_report_uses_robust_cost_aware_thresholds(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "horizon_report.db")
+    opened_at = datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc)
+    for index in range(20):
+        session_date = f"2026-08-{24 + index % 3:02d}"
+        group_id = f"historical-{index}"
+        assert repository.open_entry_horizon_shadow_group(
+            opened_at=opened_at + timedelta(days=index % 3, minutes=index),
+            market="domestic",
+            symbol=f"{index:06d}",
+            exchange_code="KRX",
+            entry_session_date=session_date,
+            policy_id="domestic_momentum_v6",
+            cohort="historical_confirmed_entry",
+            strategy_flag="VOL",
+            entry_by="VOL",
+            block_reason="",
+            entry_price=100.0,
+            round_trip_cost_pct=0.0023,
+            horizons_minutes=(5, 10),
+            group_id=group_id,
+            allow_overlap=True,
+        ) == group_id
+        assert repository.finalize_entry_horizon_shadow(
+            group_id=group_id,
+            horizon_minutes=5,
+            status="MATURED",
+            exit_price=101.0,
+        )
+        if index < 10:
+            assert repository.finalize_entry_horizon_shadow(
+                group_id=group_id,
+                horizon_minutes=10,
+                status="MATURED",
+                exit_price=99.5,
+            )
+        else:
+            assert repository.finalize_entry_horizon_shadow(
+                group_id=group_id,
+                horizon_minutes=10,
+                status="EXPIRED",
+            )
+
+    output = summarize_entry_horizon_shadow_performance(
+        repository.db_path,
+        days=0,
+        market="domestic",
+    )
+
+    assert "[진입 보유시간 모의군]" in output
+    assert "후보조건 n>=20·3세션" in output
+    five_minute = next(line for line in output.splitlines() if "  5m" in line)
+    ten_minute = next(line for line in output.splitlines() if " 10m" in line)
+    assert "n=20" in five_minute
+    assert "Net평균=+0.770%" in five_minute
+    assert "판정=실거래검토" in five_minute
+    assert "n=10" in ten_minute
+    assert "만료=10" in ten_minute
+    assert "판정=불리" in ten_minute
 
 
 def test_compare_before_after_splits_sell_real_by_kst_cutoff(

@@ -7807,7 +7807,7 @@ def test_post_cb_reentry_gate_waits_for_fresh_benchmark_recovery() -> None:
     assert next_session_reason == ""
     assert domestic_reason == ""
     assert domestic_detail["enabled"] is True
-    assert domestic_detail["benchmark_floor_pct"] == -3.0
+    assert domestic_detail["benchmark_floor_pct"] == 0.0
 
 
 def test_domestic_post_cb_reentry_requires_recovery_above_market_floor() -> None:
@@ -7823,8 +7823,8 @@ def test_domestic_post_cb_reentry_requires_recovery_above_market_floor() -> None
         service,
         market="domestic",
         session_date=session_date,
-        return_pct=-3.2,
-        trend_regime="strong_down",
+        return_pct=-0.2,
+        trend_regime="down",
     )
     regime = service.repository.get_market_regime("domestic", session_date)
     assert regime is not None
@@ -7840,7 +7840,7 @@ def test_domestic_post_cb_reentry_requires_recovery_above_market_floor() -> None
         "domestic",
         now=now,
     )
-    regime["return_pct"] = -2.9
+    regime["return_pct"] = 0.1
     regime["captured_at"] = (now + timedelta(minutes=4)).isoformat()
     service.repository.upsert_market_regime(regime)
     recovered_reason, _ = service._post_cb_reentry_regime_gate(
@@ -7849,7 +7849,7 @@ def test_domestic_post_cb_reentry_requires_recovery_above_market_floor() -> None
     )
 
     assert blocked_reason == "post_cb_benchmark_not_recovered"
-    assert blocked_detail["benchmark_floor_pct"] == -3.0
+    assert blocked_detail["benchmark_floor_pct"] == 0.0
     assert recovered_reason == ""
 
 
@@ -7954,7 +7954,7 @@ def test_post_cb_session_stop_ignores_cross_session_loss_streak_fire(
     assert len(exemption_events) == 1
 
 
-def test_domestic_post_cb_reentry_gate_stops_after_one_session_fire() -> None:
+def test_domestic_post_cb_reentry_gate_allows_one_recovery_then_stops_after_two_fires() -> None:
     service = _build_run_service()
     now = datetime.now(timezone.utc) + timedelta(seconds=2)
     loaded = load_app_config(
@@ -7967,8 +7967,8 @@ def test_domestic_post_cb_reentry_gate_stops_after_one_session_fire() -> None:
         service,
         market="domestic",
         session_date=session_date,
-        return_pct=-2.9,
-        trend_regime="strong_down",
+        return_pct=0.5,
+        trend_regime="up",
     )
     regime = service.repository.get_market_regime("domestic", session_date)
     assert regime is not None
@@ -7988,15 +7988,31 @@ def test_domestic_post_cb_reentry_gate_stops_after_one_session_fire() -> None:
         },
     )
 
-    reason, detail = service._post_cb_reentry_regime_gate(
+    first_reason, first_detail = service._post_cb_reentry_regime_gate(
+        "domestic",
+        now=now,
+    )
+    service.repository.save_event(
+        event_type="cb_fired",
+        detail={
+            "type": "consecutive",
+            "market": "domestic",
+            "consecutive_losses": 3,
+        },
+    )
+    second_reason, second_detail = service._post_cb_reentry_regime_gate(
         "domestic",
         now=now,
     )
 
-    assert reason == "post_cb_session_loss_limit_reached"
-    assert detail["max_fires_per_session"] == 1
-    assert detail["breaker_session"]["fire_count"] == 1
-    assert "market_regime" not in detail
+    assert first_reason == ""
+    assert first_detail["max_fires_per_session"] == 2
+    assert first_detail["breaker_session"]["fire_count"] == 1
+    assert first_detail["market_regime"]["return_pct"] == 0.5
+    assert second_reason == "post_cb_session_loss_limit_reached"
+    assert second_detail["max_fires_per_session"] == 2
+    assert second_detail["breaker_session"]["fire_count"] == 2
+    assert "market_regime" not in second_detail
 
 
 def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:
@@ -8155,6 +8171,170 @@ def test_domestic_ordinary_entry_requires_nonnegative_fresh_benchmark() -> None:
         )
         == "entry_market_regime_unavailable"
     )
+
+
+def test_domestic_intraday_reversal_gate_requires_confirmed_recovery() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    session_date = "2026-08-28"
+    base = datetime(2026, 8, 28, 0, 10, tzinfo=timezone.utc)
+
+    def observe(offset_minutes: int, range_position: float) -> tuple[str, dict]:
+        captured_at = base + timedelta(minutes=offset_minutes)
+        regime = {
+            "available": True,
+            "market": "domestic",
+            "session_date": session_date,
+            "benchmark_code": "0001",
+            "benchmark_name": "KOSPI",
+            "source": "test",
+            "captured_at": captured_at.isoformat(),
+            "is_final": 0,
+            "open_price": 100.0,
+            "high_price": 110.0,
+            "low_price": 90.0,
+            "close_price": 90.0 + 20.0 * range_position,
+            "previous_close": 100.0,
+            "return_pct": 0.5,
+            "trend_regime": "up",
+            "activity_regime": "active",
+            "volatility_regime": "high",
+            "regime_key": "up|active|high",
+            "sample_days": 20,
+            "calculation_version": "intraday_range_v1",
+            "raw_json": {},
+        }
+        assert service.repository.save_market_regime_observation(regime)
+        return service._entry_benchmark_reversal_gate(
+            "domestic",
+            regime=regime,
+            now=captured_at,
+        )
+
+    open_reason, _ = observe(0, 0.60)
+    halt_reason, halt_detail = observe(1, 0.20)
+    first_recovery_reason, first_recovery_detail = observe(2, 0.55)
+    reset_reason, reset_detail = observe(3, 0.49)
+    retry_reason, retry_detail = observe(4, 0.55)
+    resumed_reason, resumed_detail = observe(5, 0.60)
+
+    assert open_reason == ""
+    assert halt_reason == "entry_benchmark_intraday_reversal"
+    assert halt_detail["last_halt_at"] == (base + timedelta(minutes=1)).isoformat()
+    assert first_recovery_reason == "entry_benchmark_recovery_unconfirmed"
+    assert first_recovery_detail["current_recovery_observations"] == 1
+    assert reset_reason == "entry_benchmark_recovery_unconfirmed"
+    assert reset_detail["current_recovery_observations"] == 0
+    assert retry_reason == "entry_benchmark_recovery_unconfirmed"
+    assert retry_detail["current_recovery_observations"] == 1
+    assert resumed_reason == ""
+    assert resumed_detail["halted"] is False
+    assert resumed_detail["last_resume_at"] == (
+        base + timedelta(minutes=5)
+    ).isoformat()
+    assert len(
+        service.repository.list_event_log(
+            event_type="entry_benchmark_reversal_halted",
+            limit=10,
+        )
+    ) == 1
+    assert len(
+        service.repository.list_event_log(
+            event_type="entry_benchmark_reversal_resumed",
+            limit=10,
+        )
+    ) == 1
+
+
+def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config = loaded
+    service.market_policy_registry = None
+    now = datetime(2026, 8, 28, 1, 0, tzinfo=timezone.utc)
+    session_date = service._market_session_date("domestic", now)
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "market": "domestic",
+        "session_date": session_date,
+        "captured_at": (now - timedelta(seconds=30)).isoformat(),
+        "return_pct": 0.8,
+        "regime_key": "up|active|normal",
+        "session_range_position": 0.7,
+    }
+    service._domestic_quote_cache = {
+        "229200": SimpleNamespace(product_type="ETF"),
+        "005930": SimpleNamespace(product_type="KOSPI200"),
+    }
+    targets = [
+        WatchTargetStatus(
+            market="domestic",
+            code="229200",
+            exchange_code="KRX",
+            price=100.0,
+            activity_score=10.0,
+            signal_score=2.0,
+            action_bias="BUY",
+            signal_state="BUY_READY",
+            ma_summary="up",
+            note="strategy_buy_signal",
+            signal_snapshot=_snapshot(price=100.0),
+            strategy_flag="VWAP+VOL",
+            entry_by="VWAP",
+        ),
+        WatchTargetStatus(
+            market="domestic",
+            code="005930",
+            exchange_code="KRX",
+            price=200.0,
+            activity_score=9.0,
+            signal_score=1.0,
+            action_bias="WAIT",
+            signal_state="WAIT",
+            ma_summary="down",
+            note="entry_benchmark_intraday_reversal",
+            signal_snapshot=_snapshot(price=200.0),
+            strategy_flag="VOL",
+            entry_by="VOL",
+            decision_reason="entry_benchmark_intraday_reversal",
+        ),
+    ]
+
+    first = service._observe_domestic_entry_horizon_shadows(targets, now=now)
+    second = service._observe_domestic_entry_horizon_shadows(
+        targets,
+        now=now + timedelta(minutes=1),
+    )
+    live_rows = service.repository.list_entry_horizon_shadows(
+        cohort="live_signal"
+    )
+    blocked_rows = service.repository.list_entry_horizon_shadows(
+        cohort="market_reversal_blocked"
+    )
+
+    assert first["opened"] == 2
+    assert second["opened"] == 0
+    assert len(live_rows) == 8
+    assert len(blocked_rows) == 8
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v6"
+    assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
+    assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
+    assert live_rows[0]["context_json"]["product_type"] == "ETF"
+    assert blocked_rows[0]["block_reason"] == (
+        "entry_benchmark_intraday_reversal"
+    )
+    assert len(
+        service.repository.list_event_log(
+            event_type="entry_horizon_shadow_opened",
+            limit=10,
+        )
+    ) == 2
 
 
 def test_policy_trade_skip_records_market_regime_context() -> None:
@@ -8655,7 +8835,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v5"
+    assert trade["policy_id"] == "domestic_momentum_v6"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
@@ -11074,6 +11254,50 @@ def test_build_unified_watch_targets_keeps_active_inverse_inside_limit() -> None
     )
 
     assert [item.code for item in watch_targets] == ["252670", "D1"]
+
+
+def test_build_unified_watch_targets_keeps_open_horizon_shadow_inside_limit() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 2
+    now = datetime(2026, 8, 28, 1, 0, tzinfo=timezone.utc)
+    assert service.repository.open_entry_horizon_shadow_group(
+        opened_at=now,
+        market="domestic",
+        symbol="D3",
+        exchange_code="KRX",
+        entry_session_date="2026-08-28",
+        policy_id="domestic_momentum_v6",
+        cohort="live_signal",
+        strategy_flag="VOL",
+        entry_by="VOL",
+        block_reason="",
+        entry_price=9800.0,
+        round_trip_cost_pct=0.0023,
+        horizons_minutes=(120,),
+    )
+    domestic_ranked = [
+        DomesticScanResult("D1", 10100, 10110, 10090, 0.001, 0.01, 9_000_000_000, 100_000, 50.0),
+        DomesticScanResult("D2", 9900, 9910, 9890, 0.001, 0.008, 8_000_000_000, 90_000, 40.0),
+        DomesticScanResult("D3", 9800, 9810, 9790, 0.001, 0.007, 7_000_000_000, 80_000, 1.0),
+    ]
+
+    async def fake_load_domestic_signal(candidate):
+        return _snapshot(price=float(candidate.current_price))
+
+    service._load_domestic_signal = fake_load_domestic_signal  # type: ignore[method-assign]
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=domestic_ranked,
+            overseas_ranked=[],
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=True,
+            us_open=False,
+        )
+    )
+
+    assert [item.code for item in watch_targets] == ["D3", "D1"]
 
 
 def test_cycle_log_saved_per_watch_target() -> None:

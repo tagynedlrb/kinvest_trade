@@ -138,6 +138,150 @@ def _net_pnl_pct_expr(conn: sqlite3.Connection) -> str:
     return _fallback_net_pnl_pct_expr(conn)
 
 
+def _trimmed_average(values: list[float], fraction: float = 0.10) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    trim_count = int(len(ordered) * max(0.0, min(0.49, fraction)))
+    trimmed = (
+        ordered[trim_count:-trim_count]
+        if trim_count > 0 and trim_count * 2 < len(ordered)
+        else ordered
+    )
+    return statistics.fmean(trimmed)
+
+
+def summarize_entry_horizon_shadow_performance(
+    db_path: Path | str,
+    *,
+    days: int = 30,
+    market: str = "domestic",
+    cohort: str = "",
+    limit: int = 40,
+) -> str:
+    """Summarize cost-aware fixed-horizon entry cohorts without changing live exits."""
+    market_key = str(market).strip().lower()
+    cohort_key = str(cohort).strip().lower()
+    conn = sqlite3.connect(Path(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        result = [
+            "[진입 보유시간 모의군]",
+            f"시장={market_key or '전체'} 범위={'전체' if days <= 0 else f'최근 {days}일'}",
+            "판정=거래비용 차감 Net, 후보조건 n>=20·3세션·평균/절사평균/중앙값 모두 양수",
+        ]
+        if not _has_table(conn, "entry_horizon_shadows"):
+            result.append("  모의군원장=미생성")
+            return "\n".join(result)
+
+        where: list[str] = []
+        params: list[object] = []
+        if market_key:
+            where.append("market = ?")
+            params.append(market_key)
+        if cohort_key:
+            where.append("cohort = ?")
+            params.append(cohort_key)
+        if days > 0:
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+            where.append("opened_at >= ?")
+            params.append(since.isoformat())
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT *
+                FROM entry_horizon_shadows
+                {where_sql}
+                ORDER BY cohort, horizon_minutes, opened_at
+                """,
+                params,
+            ).fetchall()
+        ]
+        if not rows:
+            result.append("  표본=없음")
+            return "\n".join(result)
+
+        cohort_labels = {
+            "historical_confirmed_entry": "과거체결진입",
+            "live_signal": "현행진입신호",
+            "market_reversal_blocked": "장중반전차단",
+            "market_floor_blocked": "지수하한차단",
+            "post_cb_blocked": "CB차단",
+            "strategy_confirmation_blocked": "진입확인차단",
+            "strategy_guard_blocked": "전략성과차단",
+        }
+        grouped: dict[tuple[str, int], list[dict[str, object]]] = defaultdict(list)
+        for row in rows:
+            grouped[
+                (
+                    str(row.get("cohort") or "unknown"),
+                    int(row.get("horizon_minutes") or 0),
+                )
+            ].append(row)
+
+        for (group_cohort, horizon), group_rows in list(grouped.items())[: max(1, limit)]:
+            matured_rows = [
+                row
+                for row in group_rows
+                if str(row.get("status") or "").upper() == "MATURED"
+                and row.get("estimated_net_pnl_pct") is not None
+            ]
+            values = [
+                float(row["estimated_net_pnl_pct"])
+                for row in matured_rows
+            ]
+            sessions = {
+                str(row.get("entry_session_date") or "")
+                for row in matured_rows
+                if str(row.get("entry_session_date") or "")
+            }
+            expired = sum(
+                str(row.get("status") or "").upper() == "EXPIRED"
+                for row in group_rows
+            )
+            pending = sum(
+                str(row.get("status") or "").upper() == "OPEN"
+                for row in group_rows
+            )
+            label = cohort_labels.get(group_cohort, group_cohort)
+            if not values:
+                result.append(
+                    f"  {label:<12} {horizon:>3}m n=0 "
+                    f"만료={expired} 대기={pending} 판정=관찰계속"
+                )
+                continue
+            average = statistics.fmean(values)
+            trimmed = _trimmed_average(values)
+            median = statistics.median(values)
+            positive = sum(value > 0 for value in values)
+            if (
+                len(values) >= 20
+                and len(sessions) >= 3
+                and min(average, trimmed, median) > 0
+            ):
+                decision = "실거래검토"
+            elif (
+                len(values) >= 10
+                and len(sessions) >= 3
+                and max(trimmed, median) <= 0
+            ):
+                decision = "불리"
+            else:
+                decision = "관찰계속"
+            result.append(
+                f"  {label:<12} {horizon:>3}m n={len(values)} "
+                f"세션={len(sessions)} 양수={positive}/{len(values)} "
+                f"Net평균={average * 100:+.3f}% "
+                f"절사={trimmed * 100:+.3f}% 중앙={median * 100:+.3f}% "
+                f"만료={expired} 대기={pending} 판정={decision}"
+            )
+        return "\n".join(result)
+    finally:
+        conn.close()
+
+
 def _fallback_net_pnl_pct_expr(conn: sqlite3.Connection) -> str:
     domestic_cost_expr = str(DEFAULT_DOMESTIC_STOCK_COST_PCT)
     if _has_column(conn, "cycle_log", "product_type"):

@@ -32,6 +32,7 @@ from .message_format import (
 from .time_utils import KST, ensure_timezone, format_kst_korean, parse_datetime
 from .trade_analysis import (
     compare_before_after,
+    summarize_entry_horizon_shadow_performance,
     summarize_exit_forward_performance,
     summarize_market_regime_performance,
     summarize_wait_bottlenecks,
@@ -1581,6 +1582,7 @@ class ReportHelper:
             "사용법=/lab_report wait 72\n"
             "사용법=/lab_report wait-forward 72\n"
             "사용법=/lab_report exit-forward 168\n"
+            "사용법=/lab_report horizon 30\n"
             "사용법=/lab_report regime 30"
         )
         if not args:
@@ -1702,6 +1704,33 @@ class ReportHelper:
                     f"시각={format_kst_korean(now)}",
                     "기준=체결확정 전략청산·마감 시장레짐",
                     forward_report,
+                ]
+            )
+        if report_kind in {"horizon", "entry-horizon", "entry_horizon"} and len(
+            args
+        ) in {1, 2}:
+            try:
+                days = int(args[1]) if len(args) == 2 else 30
+                horizon_report = summarize_entry_horizon_shadow_performance(
+                    controller.repository.db_path,
+                    days=max(0, days),
+                    market="domestic",
+                )
+            except Exception as exc:  # noqa: BLE001
+                return "\n".join(
+                    [
+                        "[KIS][전략리포트]",
+                        f"시각={format_kst_korean(now)}",
+                        "실행실패=진입 보유시간 모의군 생성 실패",
+                        f"오류={str(exc)[:120]}",
+                        usage,
+                    ]
+                )
+            return "\n".join(
+                [
+                    "[KIS][국장 보유시간 모의군]",
+                    f"시각={format_kst_korean(now)}",
+                    horizon_report,
                 ]
             )
         if report_kind == "regime" and len(args) in {1, 2}:

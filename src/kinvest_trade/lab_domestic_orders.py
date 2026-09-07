@@ -37,6 +37,7 @@ class DomesticOrderHelper:
         entry_by = "" if watch_target is None else watch_target.entry_by
         signal_snapshot = None if watch_target is None else watch_target.signal_snapshot
         buy_price = float(candidate.best_ask or candidate.current_price)
+        buy_reason = "domestic_buy"
         inverse_block_reason = service._inverse_entry_block_reason(
             "domestic",
             candidate.stock_code,
@@ -61,6 +62,32 @@ class DomesticOrderHelper:
                 "side": "buy",
                 "candidate": asdict(candidate),
                 "reason": inverse_block_reason,
+            }
+        product_block_reason = (
+            service._domestic_foreign_underlying_entry_block_reason(
+                candidate.stock_name
+            )
+        )
+        if product_block_reason:
+            service._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason=product_block_reason,
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+            )
+            return {
+                "skipped": True,
+                "market": "domestic",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": product_block_reason,
             }
         block_reason = service._entry_strategy_block_reason(
             market="domestic",
@@ -94,6 +121,12 @@ class DomesticOrderHelper:
                 "candidate": asdict(candidate),
                 "reason": block_reason,
             }
+        probe_context = service._strategy_guard_probe_context(
+            market="domestic",
+            strategy_flag=strategy_flag,
+        )
+        if bool(probe_context.get("admitted")):
+            buy_reason = f"strategy_guard_probe:{strategy_flag}|{buy_reason}"
         config = service.config.liquidity_lab
         qty = config.domestic_test_order_qty
         if config.use_slot_sizing:
@@ -136,6 +169,7 @@ class DomesticOrderHelper:
         )
         if 0 < size_multiplier < 1 and qty > 0:
             qty = max(1, int(qty * size_multiplier))
+        qty = service._strategy_guard_probe_qty(qty, probe_context)
         if qty <= 0:
             return {"skipped": True, "reason": "domestic_test_order_qty_zero"}
         if service.config.credentials.dry_run:
@@ -316,6 +350,7 @@ class DomesticOrderHelper:
                 candidate.stock_code,
                 sector_name=candidate.sector_name,
             ),
+            "strategy_guard_probe": probe_context,
         }
         service._record_broker_order_event(
             market="domestic",
@@ -328,7 +363,7 @@ class DomesticOrderHelper:
             strategy_flag=strategy_flag,
             entry_by=entry_by,
             status="SUBMITTED",
-            reason="domestic_buy",
+            reason=buy_reason,
             payload={
                 "response": response,
                 "order_division": order_division,
@@ -337,6 +372,14 @@ class DomesticOrderHelper:
             execution_context=execution_context,
             replacement_for_order_no=replacement_for_order_no,
         )
+        if bool(probe_context.get("admitted")):
+            service._record_strategy_guard_probe_submission(
+                market="domestic",
+                symbol=candidate.stock_code,
+                qty=qty,
+                context=probe_context,
+                is_virtual=False,
+            )
         service._queue_trade_notification(
             " ".join(
                 [
@@ -368,7 +411,7 @@ class DomesticOrderHelper:
                 symbol=candidate.stock_code,
                 exchange_code=None,
                 action_bias="BUY_SUBMITTED",
-                action_reason="domestic_buy",
+                action_reason=buy_reason,
                 price=buy_price,
                 pnl_pct=None,
                 realized_pnl_usd=None,
@@ -441,6 +484,8 @@ class DomesticOrderHelper:
             "order_division": order_division,
             "submit_price": submit_price,
             "reference_price": buy_price,
+            "reason": buy_reason,
+            "strategy_guard_probe": probe_context,
             "response": response,
         }
 

@@ -33,7 +33,7 @@ class TelegramNotifier:
             and bool(self.config.telegram_chat_id)
         )
 
-    def _log_outbound(self, text: str, *, success: bool, error: str = "") -> None:
+    def _log_outbound(self, text: str, *, success: bool, error: object = "") -> None:
         if self.repository is None:
             return
         try:
@@ -48,7 +48,14 @@ class TelegramNotifier:
             _logger.exception("telegram_outbound_log_failed")
 
     def _sanitize_error(self, error: object) -> str:
-        redacted = str(error or "")
+        redacted = str(error or "").strip()
+        if isinstance(error, BaseException):
+            error_type = type(error).__name__
+            redacted = (
+                f"{error_type}: {redacted}"
+                if redacted
+                else error_type
+            )
         token = str(self.config.telegram_bot_token or "")
         if token:
             redacted = redacted.replace(token, "<redacted>")
@@ -84,7 +91,7 @@ class TelegramNotifier:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            self._log_outbound(message, success=False, error=str(exc))
+            self._log_outbound(message, success=False, error=exc)
             raise self._redacted_error(exc) from None
         self._log_outbound(message, success=True)
         return True

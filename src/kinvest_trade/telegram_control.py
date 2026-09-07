@@ -12,6 +12,7 @@ import traceback
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import TypeAlias
 
 from .client import KisRestClient, parse_kis_number
@@ -312,6 +313,7 @@ class TelegramLiquidityLabController:
         self._telegram_poll_last_error_type = ""
         self._telegram_poll_first_status_code: int | None = None
         self._telegram_poll_last_status_code: int | None = None
+        self._deployment_fingerprint: dict[str, object] | None = None
         self.order_admin = OrderAdminHelper(self)
         self.reports = ReportHelper(self)
 
@@ -343,6 +345,15 @@ class TelegramLiquidityLabController:
         if not self.notifier.enabled:
             raise RuntimeError("Telegram bot token/chat id are required for telegram-control.")
         self._restore_runtime_state()
+        deployment = self._get_deployment_fingerprint()
+        log_method = _logger.warning if deployment["git_dirty"] else _logger.info
+        log_method(
+            "[DEPLOYMENT] commit=%s dirty=%s domestic_policy=%s overseas_policy=%s",
+            deployment["git_commit"],
+            deployment["git_dirty"],
+            deployment["domestic_policy_id"],
+            deployment["overseas_policy_id"],
+        )
         self._sync_confirmed_session_performance()
         self._prune_expired_operational_logs()
         try:
@@ -437,16 +448,29 @@ class TelegramLiquidityLabController:
 
     async def _scheduler_loop(self) -> None:
         while True:
-            await self._drain_finished_cycle()
-            await self._maybe_auto_cancel_stale_domestic_orders()
-            await self._maybe_auto_cancel_stale_overseas_orders()
-            if self.mode == "running" and self.current_task is None:
-                now = datetime.now(timezone.utc)
-                if self.next_run_at is None or now >= self.next_run_at:
-                    self.current_cycle_no += 1
-                    self.current_task_started_at = now
-                    self.current_task = asyncio.create_task(self._run_cycle(self.current_cycle_no))
-                    self._write_runtime_state()
+            try:
+                await self._drain_finished_cycle()
+                await self._maybe_auto_cancel_stale_domestic_orders()
+                await self._maybe_auto_cancel_stale_overseas_orders()
+                if self.mode == "running" and self.current_task is None:
+                    now = datetime.now(timezone.utc)
+                    if self.next_run_at is None or now >= self.next_run_at:
+                        self.current_cycle_no += 1
+                        self.current_task_started_at = now
+                        self.current_task = asyncio.create_task(
+                            self._run_cycle(self.current_cycle_no)
+                        )
+                        self._write_runtime_state()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.last_error = self.last_error or (
+                    f"scheduler_iteration:{type(exc).__name__}"
+                )
+                self._consecutive_errors += 1
+                _logger.exception(
+                    "[SCHEDULER] iteration failed; continuing after delay"
+                )
             await asyncio.sleep(1.0)
 
     def _log_api_call(self, info: dict) -> None:
@@ -1711,6 +1735,91 @@ class TelegramLiquidityLabController:
         for summary in summaries:
             await self.notifier.send(summary)
 
+    async def _send_background_notification(self, message: str) -> bool:
+        try:
+            result = await self.notifier.send(message)
+            return True if result is None else bool(result)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "[TELEGRAM] background send failed type=%s; scheduler continues",
+                type(exc).__name__,
+            )
+            return False
+
+    def _get_deployment_fingerprint(self) -> dict[str, object]:
+        cached = getattr(self, "_deployment_fingerprint", None)
+        if isinstance(cached, dict):
+            return dict(cached)
+
+        project_root = Path(__file__).resolve().parents[2]
+
+        def git_output(*args: str) -> str:
+            try:
+                result = subprocess.run(
+                    ["git", *args],
+                    cwd=project_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=2,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return ""
+            return result.stdout.strip() if result.returncode == 0 else ""
+
+        definitions = getattr(self.config, "market_policies", None)
+        fingerprint: dict[str, object] = {
+            "git_commit": git_output("rev-parse", "--short=12", "HEAD")
+            or "unknown",
+            "git_dirty": bool(
+                git_output(
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=normal",
+                )
+            ),
+            "domestic_policy_id": str(
+                getattr(
+                    getattr(definitions, "domestic", None),
+                    "policy_id",
+                    "legacy",
+                )
+            ),
+            "overseas_policy_id": str(
+                getattr(
+                    getattr(definitions, "overseas", None),
+                    "policy_id",
+                    "legacy",
+                )
+            ),
+        }
+        self._deployment_fingerprint = dict(fingerprint)
+        return fingerprint
+
+    def _market_state_for_notification(self, now: datetime) -> str:
+        krx_open = is_krx_regular_session(now)
+        if krx_open and bool(
+            getattr(self.config, "skip_holiday_domestic", True)
+        ):
+            krx_open = not is_krx_holiday(now.astimezone(KST).date())
+
+        us_open = is_us_orderable_session_for_env(
+            now,
+            self.config.credentials.env,
+        )
+        if us_open and bool(
+            getattr(self.config, "skip_holiday_overseas", True)
+        ):
+            us_open = not is_nyse_holiday(
+                us_holiday_date_for_kis_session(now)
+            )
+
+        if krx_open:
+            return "krx_open"
+        if us_open:
+            return f"us_{get_us_trading_session(now)}"
+        return "both_closed"
+
     async def _run_cycle(self, cycle_no: int) -> None:
         """
         Execute a single liquidity-lab cycle without auto-stopping on market close.
@@ -1744,17 +1853,12 @@ class TelegramLiquidityLabController:
             self._consecutive_errors = 0
 
             now_for_state = datetime.now(timezone.utc)
-            krx_open = is_krx_regular_session(now_for_state)
-            us_open = is_us_orderable_session_for_env(now_for_state, self.config.credentials.env)
-            if krx_open:
-                current_market_state = "krx_open"
-            elif us_open:
-                current_market_state = f"us_{get_us_trading_session(now_for_state)}"
-            else:
-                current_market_state = "both_closed"
+            current_market_state = self._market_state_for_notification(
+                now_for_state
+            )
 
             if self._last_market_state and self._last_market_state != current_market_state:
-                await self.notifier.send(
+                await self._send_background_notification(
                     f"[KIS][MARKET_STATE_CHANGE]\n"
                     f"from={self._last_market_state}\n"
                     f"to={current_market_state}\n"
@@ -1765,13 +1869,15 @@ class TelegramLiquidityLabController:
             self.last_error = None
             raise
         except Exception as exc:  # noqa: BLE001
-            self.last_error = str(exc)
+            error_detail = str(exc).strip() or type(exc).__name__
+            self.last_error = error_detail
             self._consecutive_errors += 1
-            await self.notifier.send(
-                f"[KIS][TELEGRAM_CONTROL_ERROR]\ncycle={cycle_no}\nerror={exc}"
+            await self._send_background_notification(
+                "[KIS][TELEGRAM_CONTROL_ERROR]\n"
+                f"cycle={cycle_no}\nerror={error_detail}"
             )
             if self._consecutive_errors == 5:
-                await self.notifier.send(
+                await self._send_background_notification(
                     "[KIS][TELEGRAM_CONTROL_WARNING]\n"
                     f"consecutive_errors={self._consecutive_errors}\n"
                     "루프는 계속 실행 중. 수동 확인 권장."
@@ -1798,6 +1904,15 @@ class TelegramLiquidityLabController:
             await self.current_task
         except asyncio.CancelledError:
             self.last_error = None
+        except Exception as exc:  # noqa: BLE001
+            if self._consecutive_errors <= 0:
+                self._consecutive_errors = 1
+            self.last_error = self.last_error or (
+                f"cycle_task:{type(exc).__name__}"
+            )
+            _logger.exception(
+                "[CYCLE] finished task raised unexpectedly; scheduler continues"
+            )
         self.current_task = None
         self.current_task_started_at = None
         self._write_runtime_state()
@@ -2296,6 +2411,7 @@ class TelegramLiquidityLabController:
             ),
             "watch_targets": (self.last_report_summary or {}).get("watch_targets", []),
             "last_error": self.last_error,
+            "deployment": self._get_deployment_fingerprint(),
             "lab_runtime_state": self._lab_runtime_state_payload(),
             "notes": [
                 "telegram-control daemon manages liquidity-lab loop state.",
@@ -2398,19 +2514,25 @@ class TelegramLiquidityLabController:
                 )
                 return
 
-        await self.notifier.send(
+        deployment = self._get_deployment_fingerprint()
+        sent = await self._send_background_notification(
             "\n".join(
                 [
                     "[KIS][TELEGRAM_CONTROL_START]",
                     f"profile={self.config.credentials.profile_name}",
                     f"loop_interval_sec={self.config.liquidity_lab.loop_interval_sec}",
+                    f"git_commit={deployment['git_commit']}",
+                    f"git_dirty={str(deployment['git_dirty']).lower()}",
+                    f"domestic_policy={deployment['domestic_policy_id']}",
+                    f"overseas_policy={deployment['overseas_policy_id']}",
                     "controller_mode=persistent_service",
                     "use /lab_help for commands",
                 ]
             )
         )
-        self._last_startup_notification_at = now
-        self._write_runtime_state()
+        if sent:
+            self._last_startup_notification_at = now
+            self._write_runtime_state()
 
     def _snapshot(self) -> ControllerSnapshot:
         return ControllerSnapshot(

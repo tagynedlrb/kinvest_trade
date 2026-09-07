@@ -219,6 +219,38 @@ def test_market_cb_release_notice_explains_single_fire_session_stop() -> None:
     assert events[0][1]["session_entry_stop_active"] is True
 
 
+def test_multi_fire_cb_release_does_not_claim_session_stop_is_inactive() -> None:
+    events: list[tuple[str, dict]] = []
+    config = _build_config()
+    config.market_policies = SimpleNamespace(
+        domestic=SimpleNamespace(
+            max_consecutive_losses=3,
+            circuit_breaker_cooldown_minutes=30,
+            post_cb_max_fires_per_session=2,
+        )
+    )
+    manager = CircuitBreakerManager(
+        config,
+        event_hook=lambda event_type, detail: events.append(
+            (event_type, detail)
+        ),
+    )
+    manager.load_state(
+        consecutive_losses_by_market={"domestic": 0},
+        halted_at_by_market={
+            "domestic": datetime.now(timezone.utc) - timedelta(minutes=31)
+        },
+    )
+
+    assert manager.is_halted("domestic") is False
+    assert events[0][0] == "cb_released"
+    assert "session_entry_stop_active" not in events[0][1]
+    assert (
+        events[0][1]["session_entry_stop_evaluation"]
+        == "deferred_to_policy_gate"
+    )
+
+
 def test_circuit_breaker_daily_limit_keeps_block_after_consecutive_release() -> None:
     manager = CircuitBreakerManager(_build_config())
     manager.load_state(

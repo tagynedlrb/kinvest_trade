@@ -1,5 +1,40 @@
 # Policy Evaluation Protocol
 
+## Loss, market-scope, and reliability checkpoint (2026-09-07 UTC)
+
+- Close overdue evaluations 108-120 from forward evidence. Keep only successor
+  evaluations 121-126 pending; the analyzer must report zero overdue unreviewed
+  decisions after this checkpoint.
+- Deploy `domestic_momentum_v7` with new-entry formulas limited to exact `RSI`,
+  `VWAP+VOL`, and shadow `INV`. KRX-listed products with foreign benchmark name
+  markers are excluded from new entries until they have a dedicated underlying
+  benchmark policy. Existing holdings remain exit-monitored.
+- Treat the v7 scope as loss reduction, not proven alpha. Its 45 historical
+  domestic-underlying exits total +33,735 KRW, but trimmed mean and median are
+  negative. Require 20 forward closes across three final KRX sessions with
+  positive mean, trimmed mean, median, session median, and at least two-thirds
+  positive sessions before expansion.
+- Deploy `overseas_momentum_v4` with exact `VWAP+RSI` and shadow `INV` only.
+  Keep at most one effective/two submitted paper probes per New York session
+  at 10% size. Disable or revise after five additional closes across three
+  final Nasdaq sessions if mean, median, or capital-weighted net return is not
+  positive.
+- Preserve two-fire domestic CB hysteresis and current live exit timing. A
+  blocked-entry horizon candidate represents a joint entry-plus-exit test and
+  cannot by itself justify changing every live holding duration.
+- Keep inverse execution shadow-only. Require product-exact benchmarks and at
+  least five new-version closes across three final sessions per market with all
+  robust after-cost metrics positive before any live review.
+- Notification availability must never terminate trade or exit monitoring.
+  Validate zero restart delta across ten natural cycles, typed error logging,
+  holiday-aware market-state messages, and runtime deployment fingerprint
+  fields. This is successor evaluation 123.
+- Higher-cost reasoning added value by joining execution lineage, strategy,
+  underlying identity, market regime, and robust distribution metrics; it
+  changed both market policies. It remains an observational comparison without
+  a controlled model/token-cost A/B, so do not treat model cost as proof of
+  correctness.
+
 ## Active improvement goal
 
 - The current long-running improvement goal ends when the user's current

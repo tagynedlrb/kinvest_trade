@@ -222,6 +222,10 @@ class AutoTradeConfig:
     strategy_guard_probe_slot_multiplier: float = 0.10
     strategy_guard_probe_benchmark_floor_pct: float = 0.0
     strategy_guard_probe_regime_max_age_sec: int = 600
+    entry_strategy_allowlist: list[str] = field(default_factory=list)
+    dynamic_pool_foreign_underlying_name_markers: list[str] = field(
+        default_factory=list
+    )
     virtual_settlement_stale_order_minutes: int = 5
     virtual_settlement_retry_cooldown_minutes: int = 15
     virtual_settlement_max_submissions_per_session: int = 3
@@ -653,6 +657,12 @@ def _load_market_policy_definition(
         ),
         entry_confirmation_strategy_flags=list(
             base_auto_trade.entry_confirmation_strategy_flags
+        ),
+        entry_strategy_allowlist=list(
+            base_auto_trade.entry_strategy_allowlist
+        ),
+        dynamic_pool_foreign_underlying_name_markers=list(
+            base_auto_trade.dynamic_pool_foreign_underlying_name_markers
         ),
         dynamic_pool_approved_leveraged_symbols=list(
             base_auto_trade.dynamic_pool_approved_leveraged_symbols
@@ -1360,6 +1370,8 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
                     ["TQQQ", "SOXL"],
                 )
             ],
+            entry_strategy_allowlist=[],
+            dynamic_pool_foreign_underlying_name_markers=[],
         ),
         strategy=StrategyConfig(
             rsi_min=float(strategy_raw["rsi_min"]),

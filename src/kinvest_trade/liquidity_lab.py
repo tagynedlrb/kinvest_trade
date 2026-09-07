@@ -2139,6 +2139,10 @@ class LiquidityLabService:
             ("post_cb_", "post_cb_blocked"),
             ("strategy_confirmation_", "strategy_confirmation_blocked"),
             ("recent_strategy_underperformance", "strategy_guard_blocked"),
+            (
+                "strategy_not_allowed_for_market_policy",
+                "market_policy_strategy_blocked",
+            ),
         )
         for marker, cohort in block_cohorts:
             if marker in reason_text:
@@ -3397,6 +3401,14 @@ class LiquidityLabService:
         market_key = str(market or "").strip().lower()
         if not strategy:
             return ""
+        policy = self._get_market_policy(market_key).auto_trade
+        allowed_strategies = {
+            str(flag).strip().upper()
+            for flag in getattr(policy, "entry_strategy_allowlist", [])
+            if str(flag).strip()
+        }
+        if allowed_strategies and strategy not in allowed_strategies:
+            return "strategy_not_allowed_for_market_policy"
         if self._should_block_overseas_standalone_vwap(
             market=market_key,
             strategy_flag=strategy,
@@ -5400,8 +5412,12 @@ class LiquidityLabService:
             now_utc.astimezone(KST).strftime("%Y-%m-%d"),
         )
         if (nyse_holiday or krx_holiday) and notice_key != getattr(self, "_last_holiday_notice_key", None):
-            self._last_holiday_notice_key = notice_key
             notifier = getattr(self, "notifier", None)
+            notice_recorded = notifier is None or not getattr(
+                notifier,
+                "enabled",
+                True,
+            )
             if notifier is not None and getattr(notifier, "enabled", True):
                 lines = [
                     "📅 휴장일 감지 — 스캔 중단",
@@ -5412,8 +5428,11 @@ class LiquidityLabService:
                 ]
                 try:
                     await notifier.send("\n".join(lines))
+                    notice_recorded = True
                 except Exception:  # noqa: BLE001
                     _logger.debug("holiday_notice_send_failed", exc_info=True)
+            if notice_recorded:
+                self._last_holiday_notice_key = notice_key
             _logger.info(
                 "holiday_skip_detected krx_holiday=%s nyse_holiday=%s",
                 krx_holiday,
@@ -5492,6 +5511,8 @@ class LiquidityLabService:
             )
             if str(value).strip()
         }
+        if self._domestic_foreign_underlying_entry_block_reason(name):
+            return "foreign_underlying_requires_separate_benchmark"
         if "인버스" in name or "INVERSE" in name:
             return (
                 "inverse_requires_regime_activation"
@@ -5505,6 +5526,29 @@ class LiquidityLabService:
         ) and code not in approved_leveraged_symbols:
             return "unapproved_leveraged_product"
         return ""
+
+    def _domestic_foreign_underlying_entry_block_reason(
+        self,
+        stock_name: str,
+    ) -> str:
+        name = str(stock_name or "").strip().upper()
+        if not name:
+            return ""
+        auto_trade = self._get_market_policy("domestic").auto_trade
+        foreign_underlying_markers = {
+            str(value).strip().upper()
+            for value in getattr(
+                auto_trade,
+                "dynamic_pool_foreign_underlying_name_markers",
+                [],
+            )
+            if str(value).strip()
+        }
+        return (
+            "foreign_underlying_requires_separate_benchmark"
+            if any(marker in name for marker in foreign_underlying_markers)
+            else ""
+        )
 
     async def _refresh_domestic_dynamic_pool(self) -> None:
         ll_cfg = self.config.liquidity_lab
@@ -10522,6 +10566,40 @@ class LiquidityLabService:
                     >= retry_policy["aggressive_after_sessions"]
                 )
                 quote = quote_by_symbol.get(symbol)
+                if aggressive and quote is None:
+                    unavailable_detail = {
+                        "session_date": self._market_session_date(
+                            "overseas",
+                            current,
+                        ),
+                        "submission_count": int(
+                            history.get("submission_count") or 0
+                        ),
+                        "failed_session_count": failed_session_count,
+                        "aggressive_after_sessions": retry_policy[
+                            "aggressive_after_sessions"
+                        ],
+                        "reason": "quote_unavailable_after_repeated_no_fill",
+                    }
+                    if self._record_virtual_settlement_deferred(
+                        symbol=symbol,
+                        detail=unavailable_detail,
+                    ):
+                        await self.notifier.send(
+                            "\n".join(
+                                [
+                                    "[KIS][VIRTUAL_SETTLEMENT_DEFERRED]",
+                                    f"시각={format_kst_korean(current)}",
+                                    f"시장={format_market_korean('overseas')}",
+                                    f"종목={symbol}",
+                                    "상태=반복 미체결 후 현재 시세·거래량 확인 불가",
+                                    f"미체결세션={failed_session_count}일",
+                                    f"정산대기={pending_qty}주",
+                                    "조치=무근거 재주문 중단·정상 시세 포착 시 자동 재시도",
+                                ]
+                            )
+                        )
+                    continue
                 quote_volume = int(
                     (quote.volume if quote is not None else 0) or 0
                 )

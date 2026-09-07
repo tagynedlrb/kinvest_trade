@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import httpx
 import kinvest_trade.notifier as notifier_module
+import pytest
 from kinvest_trade.notifier import TelegramNotifier
 from kinvest_trade.repository import SqliteRepository
 
@@ -240,6 +241,41 @@ def test_send_logs_outbound_failure_and_reraises(tmp_path) -> None:
     assert messages[0]["direction"] == "sent"
     assert messages[0]["success"] == 0
     assert "network down" in messages[0]["error"]
+
+
+def test_send_logs_exception_type_when_transport_message_is_blank(tmp_path) -> None:
+    class FailingAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url: str, json: dict):
+            del url, json
+            raise TimeoutError
+
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FailingAsyncClient()  # type: ignore[assignment]
+    repository = SqliteRepository(tmp_path / "notifier_blank_error.db")
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        ),
+        repository=repository,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="TimeoutError"):
+            asyncio.run(notifier.send("[KIS][TEST] blank error"))
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    saved = repository.list_telegram_messages()[0]
+    assert saved["success"] == 0
+    assert saved["error"] == "TimeoutError"
 
 
 def test_send_redacts_bot_token_from_logged_and_raised_error(tmp_path) -> None:

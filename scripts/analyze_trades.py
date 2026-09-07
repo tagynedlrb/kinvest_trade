@@ -13,6 +13,7 @@ from kinvest_trade.repository import (
     CONFIRMED_BUY_CYCLE_PREDICATE,
     CONFIRMED_SELL_CYCLE_PREDICATE,
     CONFIRMED_STRATEGY_SELL_CYCLE_PREDICATE,
+    SqliteRepository,
 )
 from kinvest_trade.trade_analysis import (
     _net_pnl_pct_expr,
@@ -512,6 +513,36 @@ def main() -> None:
                 f"평균Gross={row['avg_gross_pnl_pct']:7.3f}% 평균Net={row['avg_net_pnl_pct']:7.3f}% "
                 f"누적={int(row['total_krw'] or 0):,}원"
             )
+
+        probe_rows = SqliteRepository(db_path).get_strategy_guard_probe_performance(
+            after_logged_at=since,
+        )
+        if probe_rows:
+            print("\n[성과가드 검증진입 체결확정 성적]")
+            for row in probe_rows:
+                closed = int(row.get("closed_entries") or 0)
+                wins = int(row.get("win_count") or 0)
+                win_rate = wins / closed * 100 if closed else 0.0
+                mean_pct = row.get("mean_net_pnl_pct")
+                median_pct = row.get("median_net_pnl_pct")
+                weighted_pct = row.get("capital_weighted_net_pnl_pct")
+                market = str(row.get("market") or "")
+                total_net = (
+                    float(row.get("total_net_usd") or 0.0)
+                    if market == "overseas"
+                    else float(row.get("total_net_krw") or 0.0)
+                )
+                total_unit = "USD" if market == "overseas" else "KRW"
+                print(
+                    f"  {market:10s} {str(row.get('strategy_flag') or '-'):12s} "
+                    f"진입={int(row.get('filled_entries') or 0):2d} "
+                    f"청산={closed:2d} 승률={win_rate:3.0f}% "
+                    f"평균Net={'-' if mean_pct is None else f'{float(mean_pct) * 100:+.3f}%'} "
+                    f"중앙Net={'-' if median_pct is None else f'{float(median_pct) * 100:+.3f}%'} "
+                    f"자본가중={'-' if weighted_pct is None else f'{float(weighted_pct) * 100:+.3f}%'} "
+                    f"누적={total_net:+.2f}{total_unit} "
+                    f"세션={int(row.get('session_count') or 0)}"
+                )
 
     print(
         "\n"

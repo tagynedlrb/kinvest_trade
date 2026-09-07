@@ -168,7 +168,7 @@ def summarize_entry_horizon_shadow_performance(
         result = [
             "[진입 보유시간 모의군]",
             f"시장={market_key or '전체'} 범위={'전체' if days <= 0 else f'최근 {days}일'}",
-            "판정=거래비용 차감 Net, 후보조건 n>=20·3세션·평균/절사평균/중앙값 모두 양수",
+            "판정=거래비용 차감 Net, 후보조건 n>=20·3세션·평균/절사/중앙·세션중앙 양수·양수세션 2/3 이상",
         ]
         if not _has_table(conn, "entry_horizon_shadows"):
             result.append("  모의군원장=미생성")
@@ -211,6 +211,8 @@ def summarize_entry_horizon_shadow_performance(
             "post_cb_blocked": "CB차단",
             "strategy_confirmation_blocked": "진입확인차단",
             "strategy_guard_blocked": "전략성과차단",
+            "market_policy_strategy_blocked": "시장정책차단",
+            "foreign_underlying_policy_blocked": "해외기초차단",
         }
         grouped: dict[tuple[str, int], list[dict[str, object]]] = defaultdict(list)
         for row in rows:
@@ -256,10 +258,32 @@ def summarize_entry_horizon_shadow_performance(
             trimmed = _trimmed_average(values)
             median = statistics.median(values)
             positive = sum(value > 0 for value in values)
+            values_by_session: dict[str, list[float]] = defaultdict(list)
+            for row in matured_rows:
+                session = str(row.get("entry_session_date") or "")
+                if session:
+                    values_by_session[session].append(
+                        float(row["estimated_net_pnl_pct"])
+                    )
+            session_averages = [
+                statistics.fmean(session_values)
+                for session_values in values_by_session.values()
+            ]
+            positive_sessions = sum(
+                session_average > 0
+                for session_average in session_averages
+            )
+            session_median = (
+                statistics.median(session_averages)
+                if session_averages
+                else 0.0
+            )
             if (
                 len(values) >= 20
                 and len(sessions) >= 3
                 and min(average, trimmed, median) > 0
+                and session_median > 0
+                and positive_sessions * 3 >= len(sessions) * 2
             ):
                 decision = "실거래검토"
             elif (
@@ -275,6 +299,8 @@ def summarize_entry_horizon_shadow_performance(
                 f"세션={len(sessions)} 양수={positive}/{len(values)} "
                 f"Net평균={average * 100:+.3f}% "
                 f"절사={trimmed * 100:+.3f}% 중앙={median * 100:+.3f}% "
+                f"세션양수={positive_sessions}/{len(sessions)} "
+                f"세션중앙={session_median * 100:+.3f}% "
                 f"만료={expired} 대기={pending} 판정={decision}"
             )
         return "\n".join(result)

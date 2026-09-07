@@ -440,8 +440,15 @@ class CircuitBreakerManager:
                 "trigger": "auto_cooldown",
                 "type": "consecutive",
                 "post_cb_max_fires_per_session": max_fires or None,
-                "session_entry_stop_active": session_entry_stop_active,
             }
+            if max_fires <= 1:
+                detail["session_entry_stop_active"] = (
+                    session_entry_stop_active
+                )
+            else:
+                detail["session_entry_stop_evaluation"] = (
+                    "deferred_to_policy_gate"
+                )
             if market is not None:
                 detail["market"] = market
             self._emit_event("cb_released", detail)

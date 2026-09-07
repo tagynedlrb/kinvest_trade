@@ -129,8 +129,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic = config.market_policies.domestic
     overseas = config.market_policies.overseas
 
-    assert domestic.policy_id == "domestic_momentum_v6"
-    assert overseas.policy_id == "overseas_momentum_v3"
+    assert domestic.policy_id == "domestic_momentum_v7"
+    assert overseas.policy_id == "overseas_momentum_v4"
     assert domestic.auto_trade.inverse_trailing_activation_net_pct == 0.005
     assert domestic.auto_trade.inverse_trailing_drawdown_pct == 0.003
     assert overseas.auto_trade.inverse_trailing_activation_net_pct == 0.006
@@ -239,25 +239,17 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     ]
     assert domestic.auto_trade.strategy_guard_probe_enabled is True
     assert domestic.auto_trade.strategy_guard_probe_strategy_flags == [
-        "VOL",
-        "VWAP",
         "RSI",
-        "VOL+RSI",
-        "VWAP+RSI",
         "VWAP+VOL",
-        "VWAP+VOL+RSI",
     ]
     assert domestic.auto_trade.strategy_guard_probe_max_entries_per_session == 2
     assert domestic.auto_trade.strategy_guard_probe_max_submissions_per_session == 4
     assert overseas.auto_trade.strategy_guard_probe_enabled is True
     assert overseas.auto_trade.strategy_guard_probe_strategy_flags == [
         "VWAP+RSI",
-        "VOL+RSI",
-        "VWAP+VOL",
-        "VWAP+VOL+RSI",
     ]
-    assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 3
-    assert overseas.auto_trade.strategy_guard_probe_max_submissions_per_session == 6
+    assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 1
+    assert overseas.auto_trade.strategy_guard_probe_max_submissions_per_session == 2
     assert domestic.auto_trade.virtual_settlement_aggressive_after_sessions == 2
     assert overseas.auto_trade.virtual_settlement_aggressive_after_sessions == 2
     assert domestic.auto_trade.virtual_settlement_aggressive_limit_bps == 50
@@ -265,6 +257,22 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.strategy_guard_probe_slot_multiplier == 0.10
     assert overseas.auto_trade.strategy_guard_probe_benchmark_floor_pct == 0.0
     assert overseas.auto_trade.strategy_guard_probe_regime_max_age_sec == 600
+    assert domestic.auto_trade.entry_strategy_allowlist == [
+        "RSI",
+        "VWAP+VOL",
+        "INV",
+    ]
+    assert overseas.auto_trade.entry_strategy_allowlist == [
+        "VWAP+RSI",
+        "INV",
+    ]
+    assert domestic.auto_trade.dynamic_pool_foreign_underlying_name_markers == [
+        "미국",
+        "NASDAQ",
+        "S&P",
+        "다우존스",
+    ]
+    assert overseas.auto_trade.dynamic_pool_foreign_underlying_name_markers == []
     assert domestic.auto_trade.strategy_guard_release_requires_recovery is True
     assert overseas.auto_trade.strategy_guard_release_requires_recovery is True
     assert domestic.auto_trade.strategy_guard_release_min_trades == 3
@@ -327,6 +335,14 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         domestic.auto_trade.dynamic_pool_approved_leveraged_symbols
         is not overseas.auto_trade.dynamic_pool_approved_leveraged_symbols
     )
+    assert (
+        domestic.auto_trade.entry_strategy_allowlist
+        is not overseas.auto_trade.entry_strategy_allowlist
+    )
+    assert (
+        domestic.auto_trade.dynamic_pool_foreign_underlying_name_markers
+        is not overseas.auto_trade.dynamic_pool_foreign_underlying_name_markers
+    )
 
     domestic.auto_trade.take_profit_pct = 0.123
     domestic.auto_trade.inverse_etf_symbols.append("KRX_TEST")
@@ -334,6 +350,10 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic.auto_trade.strategy_guard_probe_strategy_flags.append("KRX_PROBE")
     domestic.auto_trade.entry_confirmation_strategy_flags.append("KRX_TEST")
     domestic.auto_trade.dynamic_pool_approved_leveraged_symbols.append("KRX_TEST")
+    domestic.auto_trade.entry_strategy_allowlist.append("KRX_TEST")
+    domestic.auto_trade.dynamic_pool_foreign_underlying_name_markers.append(
+        "KRX_TEST"
+    )
 
     assert overseas.auto_trade.take_profit_pct == config.auto_trade.take_profit_pct
     assert "KRX_TEST" not in overseas.auto_trade.inverse_etf_symbols
@@ -343,6 +363,11 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert (
         "KRX_TEST"
         not in overseas.auto_trade.dynamic_pool_approved_leveraged_symbols
+    )
+    assert "KRX_TEST" not in overseas.auto_trade.entry_strategy_allowlist
+    assert (
+        "KRX_TEST"
+        not in overseas.auto_trade.dynamic_pool_foreign_underlying_name_markers
     )
     assert domestic.source_path is not None
     assert domestic.source_path.name == "domestic.json"

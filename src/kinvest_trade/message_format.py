@@ -121,6 +121,7 @@ REASON_KOREAN_MAP = {
     "entry_benchmark_recovery_unconfirmed": "시장지수 반전 후 재개 확인 대기",
     "post_cb_session_loss_limit_reached": "동일 시장 세션 반복손실 한도 도달",
     "recent_strategy_underperformance": "최근 전략 성과 저조",
+    "strategy_not_allowed_for_market_policy": "시장별 정책 비허용 전략",
     "submission_limit_reached": "세션 검증주문 제출 한도 도달",
     "standalone_vwap_blocked": "단독 VWAP 전략 중단",
     "standalone_rsi_blocked": "단독 RSI 전략 중단",
@@ -173,6 +174,7 @@ REASON_KOREAN_MAP = {
     "setup_not_ready": "진입 조합 미충족",
     "recent_full_sell_balance_pending": "완전 체결 후 잔고 반영 대기",
     "virtual_sell_pending": "가상청산 후 실정산 대기",
+    "foreign_underlying_requires_separate_benchmark": "해외지수 추종상품 별도 기준 필요",
 }
 
 

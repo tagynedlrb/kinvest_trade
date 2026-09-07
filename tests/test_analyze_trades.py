@@ -79,10 +79,62 @@ def test_entry_horizon_shadow_report_uses_robust_cost_aware_thresholds(
     ten_minute = next(line for line in output.splitlines() if " 10m" in line)
     assert "n=20" in five_minute
     assert "Net평균=+0.770%" in five_minute
+    assert "세션양수=3/3" in five_minute
     assert "판정=실거래검토" in five_minute
     assert "n=10" in ten_minute
     assert "만료=10" in ten_minute
     assert "판정=불리" in ten_minute
+
+
+def test_entry_horizon_report_rejects_one_positive_session_concentration(
+    tmp_path,
+) -> None:
+    repository = SqliteRepository(tmp_path / "horizon_session_robustness.db")
+    opened_at = datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc)
+    session_sizes = (18, 3, 3)
+    index = 0
+    for session_index, session_size in enumerate(session_sizes):
+        for _ in range(session_size):
+            group_id = f"session-concentration-{index}"
+            assert repository.open_entry_horizon_shadow_group(
+                opened_at=opened_at
+                + timedelta(days=session_index, minutes=index),
+                market="domestic",
+                symbol=f"{index:06d}",
+                exchange_code="KRX",
+                entry_session_date=f"2026-08-{24 + session_index:02d}",
+                policy_id="domestic_momentum_v7",
+                cohort="strategy_confirmation_blocked",
+                strategy_flag="VWAP",
+                entry_by="VWAP",
+                block_reason="strategy_confirmation_volume_low",
+                entry_price=100.0,
+                round_trip_cost_pct=0.0023,
+                horizons_minutes=(45,),
+                group_id=group_id,
+                allow_overlap=True,
+            ) == group_id
+            exit_price = 102.0 if session_index == 0 else 100.1
+            assert repository.finalize_entry_horizon_shadow(
+                group_id=group_id,
+                horizon_minutes=45,
+                status="MATURED",
+                exit_price=exit_price,
+            )
+            index += 1
+
+    output = summarize_entry_horizon_shadow_performance(
+        repository.db_path,
+        days=0,
+        market="domestic",
+    )
+
+    line = next(line for line in output.splitlines() if " 45m" in line)
+    assert "Net평균=+1.295%" in line
+    assert "중앙=+1.770%" in line
+    assert "세션양수=1/3" in line
+    assert "세션중앙=-0.130%" in line
+    assert "판정=관찰계속" in line
 
 
 def test_compare_before_after_splits_sell_real_by_kst_cutoff(

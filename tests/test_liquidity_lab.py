@@ -5795,6 +5795,178 @@ def test_place_domestic_test_order_blocks_recent_underperforming_strategy_before
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
+def test_domestic_order_rechecks_foreign_underlying_before_submission() -> None:
+    class FailingDomesticClient:
+        async def get_domestic_order_history(self, **_kwargs):
+            raise AssertionError("open-order API should not be called")
+
+        async def place_cash_order(self, **_kwargs):
+            raise AssertionError("cash-order API should not be called")
+
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service.client = FailingDomesticClient()
+    candidate = DomesticScanResult(
+        stock_code="379800",
+        current_price=25_600,
+        best_ask=25_605,
+        best_bid=25_595,
+        spread_pct=0.0004,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+        stock_name="KODEX 미국S&P500",
+        product_type="ETF",
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["skipped"] is True
+    assert result["reason"] == (
+        "foreign_underlying_requires_separate_benchmark"
+    )
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=1)
+    assert rows[0]["symbol"] == "379800"
+    assert rows[0]["action_reason"] == (
+        "buy:foreign_underlying_requires_separate_benchmark"
+    )
+
+
+def test_market_policy_entry_allowlists_are_independent() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+
+    assert service._entry_strategy_raw_block_reason(
+        market="domestic",
+        strategy_flag="VWAP+RSI",
+    ) == "strategy_not_allowed_for_market_policy"
+    assert service._entry_strategy_raw_block_reason(
+        market="domestic",
+        strategy_flag="RSI",
+    ) == ""
+    assert service._entry_strategy_raw_block_reason(
+        market="domestic",
+        strategy_flag="VWAP+VOL",
+    ) == ""
+    assert service._entry_strategy_raw_block_reason(
+        market="overseas",
+        strategy_flag="VWAP+VOL",
+    ) == "strategy_not_allowed_for_market_policy"
+    assert service._entry_strategy_raw_block_reason(
+        market="overseas",
+        strategy_flag="VWAP+RSI",
+    ) == ""
+
+
+def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
+    class ProbeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def get_domestic_order_history(self, **_kwargs):
+            return {"orders": []}
+
+        async def place_cash_order(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"output": {"ODNO": "0000009911"}, **kwargs}
+
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service.config.liquidity_lab.strategy_guard_enabled = True
+    service.config.liquidity_lab.strategy_guard_markets = ["domestic"]
+    service.config.liquidity_lab.domestic_test_order_qty = 100
+    service.config.liquidity_lab.use_slot_sizing = False
+    service.client = ProbeClient()
+
+    now = datetime.now(timezone.utc)
+    session_date = service._market_session_date("domestic", now)
+    _save_test_regime(
+        service,
+        market="domestic",
+        session_date=session_date,
+        return_pct=0.6,
+        trend_regime="up",
+    )
+    service.repository.activate_strategy_guard_state(
+        market="domestic",
+        strategy_flag="RSI",
+        activated_at=now,
+        activation_session_date=session_date,
+        trigger_trade_count=3,
+        trigger_avg_net_pnl_pct=-0.01,
+    )
+    snapshot = _snapshot(
+        price=10_000.0,
+        vwap=9_950.0,
+        rsi14=29.0,
+        volume_ratio=1.5,
+    )
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=10_000,
+        best_ask=10_010,
+        best_bid=9_990,
+        spread_pct=0.002,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+        stock_name="삼성전자",
+    )
+    watch_target = WatchTargetStatus(
+        market="domestic",
+        code="005930",
+        exchange_code=None,
+        price=10_000.0,
+        activity_score=11.0,
+        signal_score=40.0,
+        action_bias="BUY",
+        signal_state="BUY",
+        ma_summary="20d>60d 5>20",
+        note="[RSI] strategy_buy_signal",
+        signal_snapshot=snapshot,
+        strategy_flag="RSI",
+        entry_by="RSI",
+    )
+
+    result = asyncio.run(
+        service._place_domestic_test_order(
+            candidate,
+            watch_target=watch_target,
+        )
+    )
+
+    assert result["submitted"] is True
+    assert result["qty"] == 10
+    assert result["reason"].startswith("strategy_guard_probe:RSI|")
+    assert service.client.calls[0]["qty"] == 10
+    assert result["strategy_guard_probe"]["entry_market_regime"]["return_pct"] == 0.6
+    assert service.repository.count_strategy_guard_probe_submissions(
+        market="domestic",
+        session_date=session_date,
+    ) == 1
+    assert service.repository.get_strategy_guard_probe_usage(
+        market="domestic",
+        session_date=session_date,
+    )["effective_entries"] == 1
+    execution = service.repository.list_broker_order_executions(limit=1)[0]
+    assert execution["requested_qty"] == 10
+    assert execution["context_json"]["strategy_guard_probe"]["admitted"] is True
+
+
 def test_strategy_guard_blocks_when_capital_weighted_loss_breaches_threshold(
     save_confirmed_sell,
 ) -> None:
@@ -6048,6 +6220,9 @@ def test_place_domestic_test_order_rechecks_vwap_confirmation_before_submission(
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    service.config.market_policies.domestic.auto_trade.entry_strategy_allowlist.append(
+        "VWAP"
+    )
     _set_fresh_positive_entry_regime(service)
     service.client = FailingDomesticClient()
     snapshot = _snapshot(
@@ -8271,6 +8446,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     service._domestic_quote_cache = {
         "229200": SimpleNamespace(product_type="ETF"),
         "005930": SimpleNamespace(product_type="KOSPI200"),
+        "006340": SimpleNamespace(product_type="KOSPI"),
     }
     targets = [
         WatchTargetStatus(
@@ -8304,6 +8480,24 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
             entry_by="VOL",
             decision_reason="entry_benchmark_intraday_reversal",
         ),
+        WatchTargetStatus(
+            market="domestic",
+            code="006340",
+            exchange_code="KRX",
+            price=300.0,
+            activity_score=8.0,
+            signal_score=1.0,
+            action_bias="WAIT",
+            signal_state="WAIT",
+            ma_summary="up",
+            note="[VWAP+RSI] strategy_not_allowed_for_market_policy",
+            signal_snapshot=_snapshot(price=300.0),
+            strategy_flag="VWAP+RSI",
+            entry_by="VWAP",
+            decision_reason=(
+                "strategy_not_allowed_for_market_policy"
+            ),
+        ),
     ]
 
     first = service._observe_domestic_entry_horizon_shadows(targets, now=now)
@@ -8317,24 +8511,31 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     blocked_rows = service.repository.list_entry_horizon_shadows(
         cohort="market_reversal_blocked"
     )
+    policy_blocked_rows = service.repository.list_entry_horizon_shadows(
+        cohort="market_policy_strategy_blocked"
+    )
 
-    assert first["opened"] == 2
+    assert first["opened"] == 3
     assert second["opened"] == 0
     assert len(live_rows) == 8
     assert len(blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v6"
+    assert len(policy_blocked_rows) == 8
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v7"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
     assert blocked_rows[0]["block_reason"] == (
         "entry_benchmark_intraday_reversal"
     )
+    assert policy_blocked_rows[0]["block_reason"] == (
+        "strategy_not_allowed_for_market_policy"
+    )
     assert len(
         service.repository.list_event_log(
             event_type="entry_horizon_shadow_opened",
             limit=10,
         )
-    ) == 2
+    ) == 3
 
 
 def test_policy_trade_skip_records_market_regime_context() -> None:
@@ -8835,7 +9036,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v6"
+    assert trade["policy_id"] == "domestic_momentum_v7"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
@@ -8986,6 +9187,10 @@ def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products()
                 "name": "KODEX 코스닥150레버리지",
             },
             {
+                "stock_code": "379800",
+                "name": "KODEX 미국S&P500",
+            },
+            {
                 "stock_code": "122630",
                 "name": "KODEX 레버리지",
             },
@@ -9012,7 +9217,7 @@ def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products()
     assert event["market"] == "domestic"
     detail = json.loads(event["detail"])
     assert detail["top_names"] == ["KODEX 레버리지", "삼성전자"]
-    assert detail["structured_excluded_count"] == 3
+    assert detail["structured_excluded_count"] == 4
     assert detail["structured_excluded"] == [
         {
             "code": "0197X0",
@@ -9028,6 +9233,11 @@ def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products()
             "code": "233740",
             "name": "KODEX 코스닥150레버리지",
             "reason": "unapproved_leveraged_product",
+        },
+        {
+            "code": "379800",
+            "name": "KODEX 미국S&P500",
+            "reason": "foreign_underlying_requires_separate_benchmark",
         },
     ]
 
@@ -10005,6 +10215,9 @@ def test_build_watch_target_status_confirms_domestic_standalone_vwap() -> None:
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    service.config.market_policies.domestic.auto_trade.entry_strategy_allowlist.append(
+        "VWAP"
+    )
     _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot(
         price=20_000.0,
@@ -10049,6 +10262,9 @@ def test_build_watch_target_status_allows_confirmed_domestic_vwap() -> None:
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    service.config.market_policies.domestic.auto_trade.entry_strategy_allowlist.append(
+        "VWAP"
+    )
     _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot()
 
@@ -10135,6 +10351,10 @@ def test_build_watch_target_status_allows_confirmed_leveraged_trend() -> None:
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service.config.market_policies.domestic.auto_trade.entry_strategy_allowlist.append(
+        "VOL+RSI"
+    )
     _set_fresh_positive_entry_regime(service)
     snapshot = _snapshot(
         price=20_000.0,
@@ -14344,6 +14564,47 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
     assert seen_nyse_dates
     assert all(target_date is not None for target_date in seen_krx_dates)
     assert all(target_date is not None for target_date in seen_nyse_dates)
+
+
+def test_holiday_notice_retries_after_notification_failure() -> None:
+    service = _build_run_service()
+    service.config.skip_holiday_overseas = True
+    service.config.skip_holiday_domestic = True
+
+    class FlakyNotifier:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.attempts = 0
+            self.messages: list[str] = []
+
+        async def send(self, message: str) -> bool:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("telegram unavailable")
+            self.messages.append(message)
+            return True
+
+    notifier = FlakyNotifier()
+    service.notifier = notifier
+    now = datetime(2026, 9, 7, 13, 30, tzinfo=timezone.utc)
+    original_is_krx_holiday = liquidity_lab_module.is_krx_holiday
+    original_is_nyse_holiday = liquidity_lab_module.is_nyse_holiday
+    liquidity_lab_module.is_krx_holiday = lambda _day: False
+    liquidity_lab_module.is_nyse_holiday = lambda _day: True
+    try:
+        asyncio.run(service._apply_holiday_overrides(now))
+        assert service._last_holiday_notice_key is None
+
+        asyncio.run(service._apply_holiday_overrides(now + timedelta(minutes=2)))
+        asyncio.run(service._apply_holiday_overrides(now + timedelta(minutes=4)))
+    finally:
+        liquidity_lab_module.is_krx_holiday = original_is_krx_holiday
+        liquidity_lab_module.is_nyse_holiday = original_is_nyse_holiday
+
+    assert notifier.attempts == 2
+    assert len(notifier.messages) == 1
+    assert "NYSE/NASDAQ 오늘 휴장" in notifier.messages[0]
 
 
 def test_run_returns_network_error_report_on_connect_timeout() -> None:

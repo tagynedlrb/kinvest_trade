@@ -599,6 +599,78 @@ def test_reconcile_defers_repeated_no_fill_settlement_when_volume_is_zero() -> N
     assert "거래량 회복 시 자동 재시도" in service.notifier.messages[0]
 
 
+def test_reconcile_defers_repeated_no_fill_when_ranked_quote_is_unavailable() -> None:
+    service = _build_service()
+    service.repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="NPAC",
+        exchange_code="NASD",
+        qty=395,
+        avg_sell_price=10.49,
+        currency="USD",
+        updated_at="2026-08-17T13:00:00+00:00",
+    )
+    for created_at in (
+        "2026-08-18T13:31:00+00:00",
+        "2026-08-19T13:31:00+00:00",
+    ):
+        service.repository.save_broker_order_event(
+            created_at=created_at,
+            market="overseas",
+            symbol="NPAC",
+            exchange_code="NASD",
+            side="SELL",
+            order_kind="limit",
+            requested_qty=395,
+            requested_price=10.45,
+            status="SUBMITTED",
+            reason="virtual_sell_settlement",
+            broker_order_no=created_at[8:10],
+            is_virtual=0,
+        )
+    positions = [
+        OverseasHeldPosition(
+            symbol="NPAC",
+            exchange_code="NASD",
+            quantity=395,
+            orderable_qty=395,
+            avg_price=10.38,
+            current_price=10.4401,
+            pnl_pct=0.0058,
+        )
+    ]
+    now = datetime(2026, 8, 20, 14, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            overseas_ranked=[],
+            now=now,
+        )
+    )
+    asyncio.run(
+        service._reconcile_pending_virtual_sells(
+            overseas_positions=positions,
+            overseas_ranked=[],
+            now=now + timedelta(minutes=1),
+        )
+    )
+
+    assert service.client.order_calls == []
+    assert service.repository.get_virtual_sell_pending("overseas", "NPAC") is not None
+    events = service.repository.list_event_log(
+        event_type="virtual_pending_settlement_deferred",
+        limit=5,
+    )
+    assert len(events) == 1
+    assert json.loads(events[0]["detail"])["reason"] == (
+        "quote_unavailable_after_repeated_no_fill"
+    )
+    assert len(service.notifier.messages) == 1
+    assert "현재 시세·거래량 확인 불가" in service.notifier.messages[0]
+    assert "무근거 재주문 중단" in service.notifier.messages[0]
+
+
 def test_reconcile_clears_orphan_virtual_sell_pending() -> None:
     service = _build_service()
     service.repository.upsert_virtual_sell_pending(

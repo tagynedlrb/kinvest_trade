@@ -4935,6 +4935,117 @@ def test_run_cycle_increments_consecutive_errors_on_exception() -> None:
     assert any("TELEGRAM_CONTROL_ERROR" in message for message in controller.notifier.messages)
 
 
+def test_run_cycle_survives_error_notification_failure() -> None:
+    controller = _build_async_controller()
+
+    class FailingNotifier(DummyNotifier):
+        async def send(self, message: str, *, reply_markup=None) -> None:
+            del message, reply_markup
+            raise RuntimeError("telegram unavailable")
+
+    class FailingLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            del config, client, repository, notifier
+
+        def _reconcile_confirmed_risk_day_pnl(self):
+            pass
+
+        async def run(self):
+            raise RuntimeError("cycle boom")
+
+    controller.notifier = FailingNotifier()
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = FailingLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(22))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert controller._consecutive_errors == 1
+    assert controller.last_error == "cycle boom"
+
+
+def test_run_cycle_preserves_blank_exception_type_in_runtime_error() -> None:
+    controller = _build_async_controller()
+
+    class BlankErrorLiquidityLabService:
+        def __init__(self, config, client, repository, notifier) -> None:
+            del config, client, repository, notifier
+
+        def _reconcile_confirmed_risk_day_pnl(self):
+            pass
+
+        async def run(self):
+            raise TimeoutError
+
+    original_client = telegram_control_module.KisRestClient
+    original_service = telegram_control_module.LiquidityLabService
+    telegram_control_module.KisRestClient = DummyAsyncClient
+    telegram_control_module.LiquidityLabService = BlankErrorLiquidityLabService
+    try:
+        asyncio.run(controller._run_cycle(23))
+    finally:
+        telegram_control_module.KisRestClient = original_client
+        telegram_control_module.LiquidityLabService = original_service
+
+    assert controller.last_error == "TimeoutError"
+    assert any(
+        "error=TimeoutError" in message
+        for message in controller.notifier.messages
+    )
+
+
+def test_market_state_notification_respects_nyse_holiday(monkeypatch) -> None:
+    controller = _build_async_controller()
+    controller.config.skip_holiday_overseas = True
+    controller.config.skip_holiday_domestic = True
+    now = datetime(2026, 9, 7, 13, 30, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(
+        telegram_control_module,
+        "is_krx_regular_session",
+        lambda _now: False,
+    )
+    monkeypatch.setattr(
+        telegram_control_module,
+        "is_us_orderable_session_for_env",
+        lambda _now, _env: True,
+    )
+    monkeypatch.setattr(
+        telegram_control_module,
+        "is_nyse_holiday",
+        lambda _day: True,
+    )
+
+    assert controller._market_state_for_notification(now) == "both_closed"
+
+    controller.config.skip_holiday_overseas = False
+    assert controller._market_state_for_notification(now) == "us_regular"
+
+
+def test_drain_finished_cycle_contains_unexpected_task_error() -> None:
+    controller = _build_async_controller()
+    controller._write_runtime_state = lambda: None
+
+    async def run_scenario() -> None:
+        async def fail() -> None:
+            raise RuntimeError("escaped task error")
+
+        controller.current_task = asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        await controller._drain_finished_cycle()
+
+    asyncio.run(run_scenario())
+
+    assert controller.current_task is None
+    assert controller.current_task_started_at is None
+    assert controller._consecutive_errors == 1
+    assert controller.last_error == "cycle_task:RuntimeError"
+
+
 def test_run_cycle_cancellation_is_not_persisted_as_error() -> None:
     controller = _build_async_controller()
     controller.last_error = "previous"
@@ -6216,6 +6327,10 @@ def test_run_calls_set_commands_before_start_message() -> None:
 
     assert controller.notifier.command_calls == [BOT_COMMANDS]
     assert controller.notifier.messages[0].startswith("[KIS][TELEGRAM_CONTROL_START]")
+    assert "git_commit=" in controller.notifier.messages[0]
+    assert "git_dirty=" in controller.notifier.messages[0]
+    assert "domestic_policy=" in controller.notifier.messages[0]
+    assert "overseas_policy=" in controller.notifier.messages[0]
 
 
 def test_run_continues_when_set_commands_raises() -> None:

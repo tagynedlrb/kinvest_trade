@@ -54,6 +54,23 @@
 - 상세 근거와 반증조건은
   `docs/LOSS_AND_RELIABILITY_REVIEW_2026-09-07.md`에 보존한다.
 
+### 검증·배포
+- 구현 커밋 `e85b4acb5d68d3059982dc7661f3399a51af578a`를
+  `/home/ubuntu/git_token.txt` 일회성 credential helper로 원격 `master`에
+  푸시했고 원격 해시 일치를 확인했다. 정책평가 121~126은 이 전체 해시에
+  연결했으며 전향검증을 위해 `reviewed_at`은 비워 뒀다.
+- 2026-09-07 16:09:25 UTC에 `kinvest-telegram-control.service`를 재시작했다.
+  PID 2030899, `active/running`, `NRestarts=0`이며 runtime은
+  `e85b4acb5d68`, `dirty=false`, 국장 v7, 미장 v4, `last_error=null`을
+  기록했다.
+- 자연 사이클 79543·79544는 미국 노동절을 `nyse_holiday=true`로 판정하고
+  신규 주문·체결·KIS API 호출·종단실패 없이 완료됐다. warning 이상 journal도
+  0건이다. 시작 보고 `telegram_message_log.id=3289`, 휴장 보고 `id=3291`,
+  종합 배포 보고 `id=3292`는 모두 `success=1`이다.
+- 기동 시 보존기간 30일을 넘긴 원시 `api_call_log` 179,212건이 설정대로
+  정리됐다. 거래·체결·시장레짐·시장총평·정책평가 원장은 이 보존정리 대상이
+  아니며 유지된다.
+
 ## [2026-08-28] 국장 손실 원인·중지/재개·보유시간 전향 모의군
 
 ### 판단

@@ -1,5 +1,45 @@
 # Policy Evaluation Protocol
 
+## Late-entry, forced-probe, and write-safety checkpoint (2026-09-12 UTC)
+
+- Close evaluation 121 as falsified and superseded. Domestic v7 produced 18
+  confirmed domestic-underlying `VWAP+VOL` exits and -41,972 KRW after deployment.
+  The four entries inside the last 60 regular-session minutes lost 47,308 KRW;
+  the fourteen entries with at least 120 minutes left made 5,335 KRW.
+- Deploy `domestic_momentum_v8`. Keep `RSI` and `VWAP+VOL` at 10% of normal slot
+  size, but allow four effective/eight submitted probes per KRX session to preserve
+  experiment frequency. Block only new entries with less than 60 minutes to the
+  15:30 KST regular close. Existing exits remain active.
+- Persist every late blocked opportunity as `market_close_blocked` in the fixed
+  5/10/15/30/45/60/90/120-minute shadow horizons. Reconsider the cutoff only after
+  at least 12 observations across three final KRX sessions are robustly positive
+  after costs and outperform the allowed cohort. This is evaluation 128.
+- Close evaluation 122 as falsified and superseded. Overseas v4 restored normal
+  sizing after only four recovery exits, before its declared sample target. The
+  immediate SUNB normal-size trade lost $57.00. Five `VWAP+RSI` probes now have a
+  positive mean and capital-weighted result but a -0.517% median.
+- Deploy `overseas_momentum_v5`. Force `VWAP+RSI` to remain one 10% effective probe
+  per New York session, with at most two submissions, even when dynamic guard state
+  is released. Require eight additional closes across five final Nasdaq sessions
+  and positive mean, median, capital-weighted, and session-median Net before explicit
+  normal-size review. This is evaluation 129.
+- Never automatically replay a non-idempotent KIS write after a transport error.
+  The 2026-09-08 SUNB sell POST was sent twice after its first response disconnected;
+  no duplicate happened, but the first result was unknowable. GET keeps three bounded
+  attempts; non-GET uses one. Validate zero non-GET rows with `max_attempts>1` and zero
+  duplicate orders/fills across five open sessions. This is evaluation 127.
+- Close reliability evaluation 123 as confirmed: the prior deployment ran more than
+  8,000 natural cycles with `NRestarts=0`, `last_error=null`, complete deployment
+  fingerprint fields, and no warning-or-higher service journal entries.
+- Current analyzer state has zero overdue unreviewed evaluations. Evaluations 124-126
+  remain pending for exact-benchmark inverse paths, domestic horizon robustness, and
+  CCRN broker settlement respectively.
+- This high-context review added value by joining entry timestamps, KRX close distance,
+  broker write-attempt lineage, guard release history, position size, and final market
+  regimes. It changed the causal diagnosis compared with aggregate daily PnL alone.
+  No controlled smaller-model/token-cost A/B was run, so comparative model value remains
+  prospective rather than proven.
+
 ## Loss, market-scope, and reliability checkpoint (2026-09-07 UTC)
 
 - Close overdue evaluations 108-120 from forward evidence. Keep only successor

@@ -124,6 +124,22 @@
 - 평가 129: 미장 추가 검증청산 8건·확정 Nasdaq 5세션에서 같은 네 지표가 모두 양수이고
   특정 레짐에 손실이 집중되지 않아야 정상 비중을 검토한다.
 
+## 배포 확인
+
+- 구현·초기 문서 커밋을 원격 `master`에 푸시하고 로컬·원격 해시
+  `27c857933900f65b4de3fd856c5eec9214a600f6` 일치를 확인했다. 인증은
+  `/home/ubuntu/git_token.txt`를 일회성 credential helper에만 전달했다.
+- 2026-09-12 13:05:47 UTC에 `kinvest-telegram-control.service`를 재시작했다.
+  PID 2077088, `active/running`, `NRestarts=0`, runtime `last_error=null`이며
+  배포 지문은 `27c857933900`, 국장 v8, 미장 v5, dirty false다.
+- 시작 보고 `telegram_message_log.id=3466`과 상세 손실·정책 배포 보고 `id=3467`은
+  모두 `success=1`이다.
+- 첫 자연 사이클 87686은 양 시장 휴장을 `market_holiday`로 판정해 주문과 KIS 호출
+  없이 끝났다. warning 이상 journal, 종단 API 실패, non-GET 다중시도는 모두 0이다.
+- 실계좌 재조회는 국내 보유 0·미체결 0, 해외 미체결 0, CCRN 정산대기 281주다.
+  `/lab_guard`는 국장 유효 0/4·제출 0/8, 미장 유효 0/1·제출 0/2와 각
+  `강제검증` 전략을 표시한다.
+
 KRX 정규장 종료 15:30 근거는 KRX의 시장 운영시간 안내를 사용했다.
 KIS 주문 경로와 요청 방식은 한국투자증권 공식 Open API 샘플을 대조했다.
 

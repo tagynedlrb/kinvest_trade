@@ -40,6 +40,17 @@
 - 상세 근거와 반증조건은
   `docs/LOSS_POLICY_AND_ORDER_SAFETY_REVIEW_2026-09-12.md`에 보존한다.
 
+### 배포
+- `/home/ubuntu/git_token.txt` 일회성 인증으로 원격 `master`에 푸시했고 당시
+  로컬·원격 해시 `27c857933900f65b4de3fd856c5eec9214a600f6` 일치를 확인했다.
+- 13:05:47 UTC 재시작 뒤 PID 2077088, `active/running`, `NRestarts=0`, runtime
+  `last_error=null`, dirty false이며 국장 v8·미장 v5가 로드됐다.
+- 첫 자연 사이클 87686은 양 시장 휴장으로 신규 주문·KIS 호출 없이 완료됐다.
+  warning 이상 journal과 종단 API 실패는 0이다.
+- 시작 보고 `telegram_message_log.id=3466`, 상세 배포 보고 `id=3467`은 모두
+  `success=1`이다. 재시작 전 실조회는 국내 보유/미체결 0, 해외 미체결 0,
+  CCRN 정산대기 281주였다.
+
 ## [2026-09-07] 손실 원인·시장별 공식·검증수량·서비스 복원력 재감사
 
 ### 성적과 원인

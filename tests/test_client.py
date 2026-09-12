@@ -606,6 +606,61 @@ def test_request_records_exception_type_for_blank_transport_error(
     ]
 
 
+def test_request_never_replays_post_after_transport_error(
+    tmp_path: Path,
+) -> None:
+    credentials = KisCredentials(
+        env="vps",
+        appkey="appkey",
+        appsecret="appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=tmp_path / "token.json",
+    )
+    calls: list[dict] = []
+    client = KisRestClient(credentials, on_api_call=calls.append)
+    fake_http = FakeAsyncClient(
+        [
+            httpx.ReadTimeout("response lost after dispatch"),
+            FakeResponse(200, {"rt_cd": "0", "output": {"ODNO": "duplicate"}}),
+        ]
+    )
+    client._client = fake_http
+
+    async def token() -> str:
+        return "tok"
+
+    async def no_wait(*_args, **_kwargs) -> tuple[bool, int, bool, int]:
+        return False, 0, False, 0
+
+    client.ensure_token = token  # type: ignore[method-assign]
+    client._throttle = no_wait  # type: ignore[method-assign]
+
+    with pytest.raises(KisApiError, match="transport_error"):
+        asyncio.run(
+            client._request(
+                "post",
+                "/uapi/overseas-stock/v1/trading/order",
+                "VTTT1001U",
+                body={"symbol": "TEST", "qty": 1},
+            )
+        )
+
+    assert len(fake_http.calls) == 1
+    assert len(fake_http.responses) == 1
+    assert fake_http.calls[0]["method"] == "POST"
+    assert len(calls) == 1
+    assert calls[0]["max_attempts"] == 1
+    assert calls[0]["retry_scheduled"] is False
+    assert calls[0]["retry_reason"] == ""
+    assert calls[0]["logical_terminal"] is True
+
+
 @pytest.mark.parametrize(
     ("env", "method"),
     [

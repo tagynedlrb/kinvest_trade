@@ -1004,27 +1004,6 @@ class WatchStateHelper:
             strategy_result.exit_by = ""
             strategy_result.triggered_by = frozenset()
         if strategy_result.signal == "BUY":
-            block_reason = service._entry_strategy_block_reason(
-                market=market,
-                strategy_flag=strategy_result.flag,
-            )
-            if block_reason:
-                return service._make_watch_target_status(
-                    market=market,
-                    code=code,
-                    exchange_code=exchange_code,
-                    price=price,
-                    activity_score=activity_score,
-                    signal_score=entry_setup.score,
-                    action_bias="WAIT",
-                    signal_state="WAIT",
-                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
-                    note=f"[{strategy_result.flag or '-'}] {block_reason}",
-                    holding_qty=holding_qty,
-                    signal_snapshot=signal_snapshot,
-                    strategy_flag=strategy_result.flag,
-                    entry_by=strategy_result.entry_by,
-                )
             formula_block_reason = service._entry_formula_block_reason(
                 market=market,
                 symbol=code,
@@ -1043,6 +1022,27 @@ class WatchStateHelper:
                     signal_state="WAIT",
                     ma_summary=service._ma_relation_summary(signal_snapshot, market),
                     note=f"[{strategy_result.flag or '-'}] {formula_block_reason}",
+                    holding_qty=holding_qty,
+                    signal_snapshot=signal_snapshot,
+                    strategy_flag=strategy_result.flag,
+                    entry_by=strategy_result.entry_by,
+                )
+            block_reason = service._entry_strategy_block_reason(
+                market=market,
+                strategy_flag=strategy_result.flag,
+            )
+            if block_reason:
+                return service._make_watch_target_status(
+                    market=market,
+                    code=code,
+                    exchange_code=exchange_code,
+                    price=price,
+                    activity_score=activity_score,
+                    signal_score=entry_setup.score,
+                    action_bias="WAIT",
+                    signal_state="WAIT",
+                    ma_summary=service._ma_relation_summary(signal_snapshot, market),
+                    note=f"[{strategy_result.flag or '-'}] {block_reason}",
                     holding_qty=holding_qty,
                     signal_snapshot=signal_snapshot,
                     strategy_flag=strategy_result.flag,
@@ -1238,14 +1238,14 @@ class WatchStateHelper:
             for watch_target in watch_targets
             if watch_target.market == "domestic"
             and watch_target.action_bias == "BUY"
-            and not service._entry_strategy_block_reason(
-                market=watch_target.market,
-                strategy_flag=watch_target.strategy_flag,
-            )
             and not service._entry_formula_block_reason(
                 market=watch_target.market,
                 symbol=watch_target.code,
                 signal_snapshot=watch_target.signal_snapshot,
+                strategy_flag=watch_target.strategy_flag,
+            )
+            and not service._entry_strategy_block_reason(
+                market=watch_target.market,
                 strategy_flag=watch_target.strategy_flag,
             )
         ]
@@ -1344,14 +1344,14 @@ class WatchStateHelper:
             if watch_target.market == "overseas"
             and watch_target.action_bias == "BUY"
             and watch_target.code.upper() not in held_symbols
-            and not service._entry_strategy_block_reason(
-                market=watch_target.market,
-                strategy_flag=watch_target.strategy_flag,
-            )
             and not service._entry_formula_block_reason(
                 market=watch_target.market,
                 symbol=watch_target.code,
                 signal_snapshot=watch_target.signal_snapshot,
+                strategy_flag=watch_target.strategy_flag,
+            )
+            and not service._entry_strategy_block_reason(
+                market=watch_target.market,
                 strategy_flag=watch_target.strategy_flag,
             )
         ]

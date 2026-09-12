@@ -89,15 +89,15 @@ class DomesticOrderHelper:
                 "candidate": asdict(candidate),
                 "reason": product_block_reason,
             }
-        block_reason = service._entry_strategy_block_reason(
+        block_reason = service._entry_formula_block_reason(
             market="domestic",
+            symbol=candidate.stock_code,
+            signal_snapshot=signal_snapshot,
             strategy_flag=strategy_flag,
         )
         if not block_reason:
-            block_reason = service._entry_formula_block_reason(
+            block_reason = service._entry_strategy_block_reason(
                 market="domestic",
-                symbol=candidate.stock_code,
-                signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_flag,
             )
         if block_reason:
@@ -172,6 +172,29 @@ class DomesticOrderHelper:
         qty = service._strategy_guard_probe_qty(qty, probe_context)
         if qty <= 0:
             return {"skipped": True, "reason": "domestic_test_order_qty_zero"}
+        time_block_reason = service._entry_time_block_reason(market="domestic")
+        if time_block_reason:
+            service._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason=time_block_reason,
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+                orderable_qty=qty,
+            )
+            return {
+                "skipped": True,
+                "market": "domestic",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": time_block_reason,
+            }
         if service.config.credentials.dry_run:
             return {
                 "skipped": True,

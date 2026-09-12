@@ -157,15 +157,15 @@ class OverseasOrderHelper:
                 "signal_snapshot": asdict(signal_snapshot),
                 "reason": inverse_block_reason,
             }
-        block_reason = service._entry_strategy_block_reason(
+        block_reason = service._entry_formula_block_reason(
             market="overseas",
+            symbol=candidate.symbol,
+            signal_snapshot=signal_snapshot,
             strategy_flag=strategy_flag,
         )
         if not block_reason:
-            block_reason = service._entry_formula_block_reason(
+            block_reason = service._entry_strategy_block_reason(
                 market="overseas",
-                symbol=candidate.symbol,
-                signal_snapshot=signal_snapshot,
                 strategy_flag=strategy_flag,
             )
         if block_reason:
@@ -1630,15 +1630,15 @@ class OverseasOrderHelper:
                 snapshot,
                 "overseas",
             )
-        block_reason = service._entry_strategy_block_reason(
+        block_reason = service._entry_formula_block_reason(
             market="overseas",
+            symbol=candidate.symbol,
+            signal_snapshot=snapshot,
             strategy_flag=strategy_flag,
         )
         if not block_reason:
-            block_reason = service._entry_formula_block_reason(
+            block_reason = service._entry_strategy_block_reason(
                 market="overseas",
-                symbol=candidate.symbol,
-                signal_snapshot=snapshot,
                 strategy_flag=strategy_flag,
             )
         if block_reason:

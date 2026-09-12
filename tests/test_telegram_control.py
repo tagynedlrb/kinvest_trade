@@ -2721,6 +2721,7 @@ def test_lab_guard_command_reports_divergent_market_policies(
         sec_fee_rate=0.0000206,
         strategy_guard_probe_enabled=True,
         strategy_guard_probe_strategy_flags=["VWAP+RSI"],
+        strategy_guard_force_probe_strategy_flags=["VWAP+RSI"],
         strategy_guard_probe_max_entries_per_session=1,
         strategy_guard_probe_max_submissions_per_session=2,
         strategy_guard_probe_slot_multiplier=0.10,
@@ -2769,6 +2770,7 @@ def test_lab_guard_command_reports_divergent_market_policies(
         "진입=1/1 제출=0/2 체결=1 열림=0 미체결종료=0 "
         "슬롯=10% 지수하한=+0.00% 지표≤600초"
     ) in message
+    assert "강제검증=VWAP+RSI" in message
     assert (
         "검증성과=해외 청산=1/체결=1 승=1 평균순=+1.00% "
         "중앙=+1.00% 자본가중=+1.00% 누적=+$1.00 "

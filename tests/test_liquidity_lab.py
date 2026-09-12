@@ -5844,6 +5844,10 @@ def test_market_policy_entry_allowlists_are_independent() -> None:
     )
     service.config.market_policies = loaded.market_policies
     service.market_policy_registry = None
+    domestic_policy = service.config.market_policies.domestic.auto_trade
+    overseas_policy = service.config.market_policies.overseas.auto_trade
+    domestic_policy.strategy_guard_force_probe_strategy_flags = []
+    overseas_policy.strategy_guard_force_probe_strategy_flags = []
 
     assert service._entry_strategy_raw_block_reason(
         market="domestic",
@@ -5865,6 +5869,95 @@ def test_market_policy_entry_allowlists_are_independent() -> None:
         market="overseas",
         strategy_flag="VWAP+RSI",
     ) == ""
+
+
+def test_market_policy_can_force_allowed_strategy_into_small_probe() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "observation_age_sec": 0,
+        "return_pct": 0.6,
+    }
+
+    assert service.repository.list_active_strategy_guard_states() == []
+    assert service._entry_strategy_raw_block_reason(
+        market="domestic",
+        strategy_flag="VWAP+VOL",
+    ) == "recent_strategy_underperformance"
+    assert service._entry_strategy_block_reason(
+        market="domestic",
+        strategy_flag="VWAP+VOL",
+    ) == ""
+
+    service.config.credentials.env = "prod"
+    assert service._entry_strategy_block_reason(
+        market="domestic",
+        strategy_flag="VWAP+VOL",
+    ) == "paper_environment_required"
+
+
+def test_market_policy_entry_close_gate_is_market_specific() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+
+    assert service._entry_time_block_reason(
+        market="domestic",
+        now=datetime(2026, 9, 14, 5, 29, tzinfo=timezone.utc),
+    ) == ""
+    assert service._entry_time_block_reason(
+        market="domestic",
+        now=datetime(2026, 9, 14, 5, 31, tzinfo=timezone.utc),
+    ) == "entry_too_close_to_regular_close"
+    assert service._entry_time_block_reason(
+        market="overseas",
+        now=datetime(2026, 9, 14, 19, 59, tzinfo=timezone.utc),
+    ) == ""
+
+
+def test_domestic_order_rechecks_close_gate_before_broker_submission() -> None:
+    class NoOrderClient:
+        async def place_cash_order(self, **_kwargs):
+            raise AssertionError("cash-order API should not be called")
+
+    service = _build_run_service()
+    service.config.liquidity_lab.use_slot_sizing = False
+    service.config.liquidity_lab.domestic_test_order_qty = 1
+    service.client = NoOrderClient()
+    service._entry_strategy_block_reason = lambda **_kwargs: ""
+    service._entry_formula_block_reason = lambda **_kwargs: ""
+    service._entry_time_block_reason = (
+        lambda **_kwargs: "entry_too_close_to_regular_close"
+    )
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=70_000,
+        best_ask=70_100,
+        best_bid=70_000,
+        spread_pct=0.001,
+        minute_change_pct=0.002,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+        stock_name="삼성전자",
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["skipped"] is True
+    assert result["reason"] == "entry_too_close_to_regular_close"
+    rows = service.repository.query_cycle_log(action_bias="SKIP", limit=1)
+    assert rows[0]["action_reason"] == (
+        "buy:entry_too_close_to_regular_close"
+    )
 
 
 def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
@@ -8447,6 +8540,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
         "229200": SimpleNamespace(product_type="ETF"),
         "005930": SimpleNamespace(product_type="KOSPI200"),
         "006340": SimpleNamespace(product_type="KOSPI"),
+        "000660": SimpleNamespace(product_type="KOSPI200"),
     }
     targets = [
         WatchTargetStatus(
@@ -8498,6 +8592,22 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
                 "strategy_not_allowed_for_market_policy"
             ),
         ),
+        WatchTargetStatus(
+            market="domestic",
+            code="000660",
+            exchange_code="KRX",
+            price=400.0,
+            activity_score=7.0,
+            signal_score=1.0,
+            action_bias="WAIT",
+            signal_state="WAIT",
+            ma_summary="up",
+            note="entry_too_close_to_regular_close",
+            signal_snapshot=_snapshot(price=400.0),
+            strategy_flag="VWAP+VOL",
+            entry_by="VWAP",
+            decision_reason="entry_too_close_to_regular_close",
+        ),
     ]
 
     first = service._observe_domestic_entry_horizon_shadows(targets, now=now)
@@ -8514,13 +8624,17 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     policy_blocked_rows = service.repository.list_entry_horizon_shadows(
         cohort="market_policy_strategy_blocked"
     )
+    close_blocked_rows = service.repository.list_entry_horizon_shadows(
+        cohort="market_close_blocked"
+    )
 
-    assert first["opened"] == 3
+    assert first["opened"] == 4
     assert second["opened"] == 0
     assert len(live_rows) == 8
     assert len(blocked_rows) == 8
     assert len(policy_blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v7"
+    assert len(close_blocked_rows) == 8
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v8"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
@@ -8530,12 +8644,15 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     assert policy_blocked_rows[0]["block_reason"] == (
         "strategy_not_allowed_for_market_policy"
     )
+    assert close_blocked_rows[0]["block_reason"] == (
+        "entry_too_close_to_regular_close"
+    )
     assert len(
         service.repository.list_event_log(
             event_type="entry_horizon_shadow_opened",
             limit=10,
         )
-    ) == 3
+    ) == 4
 
 
 def test_policy_trade_skip_records_market_regime_context() -> None:
@@ -9036,7 +9153,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v7"
+    assert trade["policy_id"] == "domestic_momentum_v8"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
@@ -15454,7 +15571,7 @@ def test_overseas_strategy_guard_probe_is_small_paper_only_and_exposure_limited(
     assert service._entry_strategy_block_reason(
         market="overseas",
         strategy_flag="VWAP+RSI",
-    ) == "recent_strategy_underperformance"
+    ) == "session_limit_reached"
 
     execution = service.repository.list_broker_order_executions(limit=1)[0]
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -15488,7 +15605,7 @@ def test_overseas_strategy_guard_probe_is_small_paper_only_and_exposure_limited(
     assert service._entry_strategy_block_reason(
         market="overseas",
         strategy_flag="VWAP+RSI",
-    ) == "recent_strategy_underperformance"
+    ) == "paper_environment_required"
 
 
 def test_virtual_overseas_buy_rechecks_formula_guard_before_recording() -> None:

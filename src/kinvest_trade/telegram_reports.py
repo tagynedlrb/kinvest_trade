@@ -1977,6 +1977,15 @@ class ReportHelper:
                 )
                 or 600
             )
+            forced_flags = [
+                str(flag).strip().upper()
+                for flag in getattr(
+                    auto_trade,
+                    "strategy_guard_force_probe_strategy_flags",
+                    [],
+                )
+                if str(flag).strip()
+            ]
             lines.append(
                 f"검증진입={format_market_korean(market)} "
                 f"{environment}전용({environment_state}) "
@@ -1988,7 +1997,8 @@ class ReportHelper:
                 f"미체결종료={int(usage.get('no_fill_finalized') or 0)} "
                 f"슬롯={slot_multiplier:.0%} "
                 f"지수하한={benchmark_floor:+.2f}% "
-                f"지표≤{max_age_sec}초"
+                f"지표≤{max_age_sec}초 "
+                f"강제검증={','.join(forced_flags) or '-'}"
             )
             performance_reader = getattr(
                 controller.repository,

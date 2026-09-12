@@ -217,12 +217,16 @@ class AutoTradeConfig:
     strategy_guard_release_min_capital_weighted_net_pnl_pct: float = 0.0
     strategy_guard_probe_enabled: bool = False
     strategy_guard_probe_strategy_flags: list[str] = field(default_factory=list)
+    strategy_guard_force_probe_strategy_flags: list[str] = field(
+        default_factory=list
+    )
     strategy_guard_probe_max_entries_per_session: int = 0
     strategy_guard_probe_max_submissions_per_session: int = 0
     strategy_guard_probe_slot_multiplier: float = 0.10
     strategy_guard_probe_benchmark_floor_pct: float = 0.0
     strategy_guard_probe_regime_max_age_sec: int = 600
     entry_strategy_allowlist: list[str] = field(default_factory=list)
+    entry_min_minutes_to_regular_close: int = 0
     dynamic_pool_foreign_underlying_name_markers: list[str] = field(
         default_factory=list
     )
@@ -654,6 +658,9 @@ def _load_market_policy_definition(
         ),
         strategy_guard_probe_strategy_flags=list(
             base_auto_trade.strategy_guard_probe_strategy_flags
+        ),
+        strategy_guard_force_probe_strategy_flags=list(
+            base_auto_trade.strategy_guard_force_probe_strategy_flags
         ),
         entry_confirmation_strategy_flags=list(
             base_auto_trade.entry_confirmation_strategy_flags

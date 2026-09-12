@@ -548,9 +548,11 @@ class KisRestClient:
         extra_headers: dict[str, str] | None = None,
         include_response_headers: bool = False,
     ) -> dict[str, Any]:
-        # KIS는 초당 호출 제한 응답(EGW00201)을 줄 수 있다.
-        # 토큰 만료(EGW00123)도 간헐적으로 발생할 수 있어 자동 갱신 후 재시도한다.
-        max_attempts = 3
+        # Read requests can be retried after transient failures. A write may
+        # already have reached KIS when its response is lost, so replaying a
+        # POST could duplicate an order or cancellation.
+        method = str(method or "").strip().upper()
+        max_attempts = 3 if method == "GET" else 1
         logical_request_id = uuid.uuid4().hex
         for attempt in range(max_attempts):
             attempt_no = attempt + 1

@@ -2136,6 +2136,10 @@ class LiquidityLabService:
                 "market_reversal_blocked",
             ),
             ("entry_benchmark_below_floor", "market_floor_blocked"),
+            (
+                "entry_too_close_to_regular_close",
+                "market_close_blocked",
+            ),
             ("post_cb_", "post_cb_blocked"),
             ("strategy_confirmation_", "strategy_confirmation_blocked"),
             ("recent_strategy_underperformance", "strategy_guard_blocked"),
@@ -3424,6 +3428,17 @@ class LiquidityLabService:
             strategy_flag=strategy,
         ):
             return "standalone_vol_blocked"
+        forced_probe_strategies = {
+            str(flag).strip().upper()
+            for flag in getattr(
+                policy,
+                "strategy_guard_force_probe_strategy_flags",
+                [],
+            )
+            if str(flag).strip()
+        }
+        if strategy in forced_probe_strategies:
+            return "recent_strategy_underperformance"
         if (market_key, strategy) in self._strategy_guard_blocked_keys():
             return "recent_strategy_underperformance"
         return ""
@@ -3659,7 +3674,54 @@ class LiquidityLabService:
             strategy_flag=strategy_flag,
             block_reason=block_reason,
         )
-        return "" if bool(probe.get("admitted")) else block_reason
+        if bool(probe.get("admitted")):
+            return ""
+        policy = self._get_market_policy(market).auto_trade
+        strategy = str(strategy_flag or "").strip().upper()
+        forced_probe_strategies = {
+            str(flag).strip().upper()
+            for flag in getattr(
+                policy,
+                "strategy_guard_force_probe_strategy_flags",
+                [],
+            )
+            if str(flag).strip()
+        }
+        probe_reason = str(probe.get("reason") or "").strip()
+        if strategy in forced_probe_strategies and probe_reason:
+            return probe_reason
+        return block_reason
+
+    def _entry_time_block_reason(
+        self,
+        *,
+        market: str,
+        now: datetime | None = None,
+    ) -> str:
+        if not hasattr(self, "config"):
+            return ""
+        market_key = normalize_market_name(market)
+        auto_trade = self._get_market_policy(market_key).auto_trade
+        min_minutes = max(
+            0,
+            int(
+                getattr(
+                    auto_trade,
+                    "entry_min_minutes_to_regular_close",
+                    0,
+                )
+                or 0
+            ),
+        )
+        if min_minutes <= 0:
+            return ""
+        remaining = minutes_until_regular_session_close(
+            market_key,
+            ensure_timezone(now or datetime.now(timezone.utc)),
+        )
+        if remaining is not None and remaining < min_minutes:
+            return "entry_too_close_to_regular_close"
+        return ""
 
     def _entry_formula_block_reason(
         self,
@@ -3679,6 +3741,9 @@ class LiquidityLabService:
         auto_trade = policy.auto_trade
         if auto_trade is None:
             return ""
+        time_block_reason = self._entry_time_block_reason(market=market_key)
+        if time_block_reason:
+            return time_block_reason
 
         is_inverse = self._is_inverse_symbol(market_key, symbol)
         if not is_inverse:

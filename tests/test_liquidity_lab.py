@@ -5187,6 +5187,50 @@ def test_place_domestic_sell_order_sends_telegram_on_success() -> None:
     assert service.client.order_calls[0]["order_division"] == "01"
 
 
+def test_domestic_sell_fails_closed_when_open_order_lookup_fails() -> None:
+    service = _build_domestic_sell_service()
+
+    async def failing_history(**_kwargs):
+        raise KisApiError("EGW00201 rate limit")
+
+    service.client.get_domestic_order_history = failing_history
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=79_000,
+        best_ask=79_100,
+        best_bid=78_900,
+        spread_pct=0.0025,
+        minute_change_pct=-0.01,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+    held = DomesticHeldPosition(
+        stock_code="005930",
+        quantity=2,
+        orderable_qty=2,
+        avg_price=80_000.0,
+        current_price=79_000.0,
+        pnl_pct=-0.0125,
+    )
+
+    result = asyncio.run(
+        service._place_domestic_sell_order(candidate, held, "stop_loss")
+    )
+
+    assert result["submitted"] is False
+    assert result["reason"] == "open_order_lookup_failed"
+    assert service.client.order_calls == []
+    assert service.client.cancel_calls == []
+    lookup_events = service.repository.list_event_log(
+        event_type="maintenance_skip",
+        limit=5,
+    )
+    assert json.loads(lookup_events[0]["detail"])["reason"] == (
+        "open_domestic_order_lookup_failed"
+    )
+
+
 def test_domestic_sell_suppresses_positive_stale_balance_after_recent_submit() -> None:
     service = _build_domestic_sell_service()
     created_at = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -5764,6 +5808,7 @@ def test_place_domestic_test_order_blocks_recent_underperforming_strategy_before
         volume_sum=500_000,
         activity_score=11.0,
         stock_name="삼성전자",
+        product_type="ETF",
     )
     watch_target = WatchTargetStatus(
         market="domestic",
@@ -5901,6 +5946,36 @@ def test_market_policy_can_force_allowed_strategy_into_small_probe() -> None:
     ) == "paper_environment_required"
 
 
+def test_domestic_forced_probe_excludes_transaction_tax_products() -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "observation_age_sec": 0,
+        "return_pct": 0.6,
+    }
+
+    assert service._entry_strategy_block_reason(
+        market="domestic",
+        strategy_flag="RSI",
+        product_type="ETF",
+    ) == ""
+    assert service._entry_strategy_block_reason(
+        market="domestic",
+        strategy_flag="RSI",
+        product_type="KOSPI",
+    ) == "taxable_product_not_eligible_for_probe"
+    assert service._entry_strategy_block_reason(
+        market="domestic",
+        strategy_flag="RSI",
+        product_type="",
+    ) == "taxable_product_not_eligible_for_probe"
+
+
 def test_market_policy_entry_close_gate_is_market_specific() -> None:
     service = _build_run_service()
     loaded = load_app_config(
@@ -5919,8 +5994,12 @@ def test_market_policy_entry_close_gate_is_market_specific() -> None:
     ) == "entry_too_close_to_regular_close"
     assert service._entry_time_block_reason(
         market="overseas",
-        now=datetime(2026, 9, 14, 19, 59, tzinfo=timezone.utc),
+        now=datetime(2026, 9, 14, 18, 59, tzinfo=timezone.utc),
     ) == ""
+    assert service._entry_time_block_reason(
+        market="overseas",
+        now=datetime(2026, 9, 14, 19, 1, tzinfo=timezone.utc),
+    ) == "entry_too_close_to_regular_close"
 
 
 def test_domestic_order_rechecks_close_gate_before_broker_submission() -> None:
@@ -5948,6 +6027,7 @@ def test_domestic_order_rechecks_close_gate_before_broker_submission() -> None:
         volume_sum=500_000,
         activity_score=11.0,
         stock_name="삼성전자",
+        product_type="ETF",
     )
 
     result = asyncio.run(service._place_domestic_test_order(candidate))
@@ -6018,6 +6098,7 @@ def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
         volume_sum=500_000,
         activity_score=11.0,
         stock_name="삼성전자",
+        product_type="ETF",
     )
     watch_target = WatchTargetStatus(
         market="domestic",
@@ -6493,6 +6574,43 @@ def test_domestic_buy_skips_when_recent_pending_buy_exists() -> None:
     assert result["skipped"] is True
     assert result["reason"] == "pending_buy_order"
     assert service.client.order_calls == []
+
+
+def test_domestic_buy_fails_closed_when_open_order_lookup_fails() -> None:
+    service = LiquidityLabService.__new__(LiquidityLabService)
+    service.config = SimpleNamespace(
+        credentials=SimpleNamespace(dry_run=False),
+        liquidity_lab=SimpleNamespace(
+            domestic_test_order_qty=1,
+            use_slot_sizing=False,
+        ),
+    )
+    service.client = DummyDomesticSellClient()
+
+    async def failing_history(**_kwargs):
+        raise KisApiError("EGW00300 gateway routing error")
+
+    service.client.get_domestic_order_history = failing_history
+    service.notifier = DummyNotifier()
+    service.repository = _build_repository()
+    candidate = DomesticScanResult(
+        stock_code="005930",
+        current_price=82_000,
+        best_ask=82_050,
+        best_bid=81_950,
+        spread_pct=0.0012,
+        minute_change_pct=0.003,
+        intraday_turnover_krw=100_000_000_000,
+        volume_sum=500_000,
+        activity_score=11.0,
+    )
+
+    result = asyncio.run(service._place_domestic_test_order(candidate))
+
+    assert result["submitted"] is False
+    assert result["reason"] == "open_order_lookup_failed"
+    assert service.client.order_calls == []
+    assert service.client.cancel_calls == []
 
 
 def test_domestic_buy_replaces_stale_pending_buy() -> None:
@@ -8634,7 +8752,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     assert len(blocked_rows) == 8
     assert len(policy_blocked_rows) == 8
     assert len(close_blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v8"
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v9"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
@@ -9153,7 +9271,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v8"
+    assert trade["policy_id"] == "domestic_momentum_v9"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
@@ -14401,6 +14519,24 @@ def test_register_exit_cooldown_escalates_on_repeated_losses() -> None:
     third_delta = (service._exit_cooldown["overseas:BSBR"] - before).total_seconds() / 60.0
     assert third_delta >= 179.5
 
+    for _ in range(2):
+        service._register_exit_cooldown(
+            "overseas", "BSBR", "trend_filter_lost", pnl_pct=-0.0008
+        )
+    fifth_delta = (
+        service._exit_cooldown["overseas:BSBR"] - before
+    ).total_seconds() / 60.0
+    assert fifth_delta >= 1439.5
+
+    for _ in range(3):
+        service._register_exit_cooldown(
+            "overseas", "BSBR", "trend_filter_lost", pnl_pct=-0.0008
+        )
+    eighth_delta = (
+        service._exit_cooldown["overseas:BSBR"] - before
+    ).total_seconds() / 60.0
+    assert eighth_delta >= 10079.5
+
 
 def test_register_exit_cooldown_streak_resets_after_a_win() -> None:
     service = _build_run_service()
@@ -15517,7 +15653,7 @@ def test_overseas_strategy_guard_probe_is_small_paper_only_and_exposure_limited(
         price=25.0,
         vwap=24.9,
         rsi14=45.0,
-        volume_ratio=1.5,
+        volume_ratio=2.0,
     )
     candidate = OverseasScanResult(
         symbol="PLTR",

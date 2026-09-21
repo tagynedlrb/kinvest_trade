@@ -1247,6 +1247,14 @@ class WatchStateHelper:
             and not service._entry_strategy_block_reason(
                 market=watch_target.market,
                 strategy_flag=watch_target.strategy_flag,
+                product_type=str(
+                    getattr(
+                        candidate_map.get(watch_target.code),
+                        "product_type",
+                        "",
+                    )
+                    or ""
+                ),
             )
         ]
         if not ready_targets or max_concurrent <= 0:

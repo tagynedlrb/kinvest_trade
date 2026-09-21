@@ -99,6 +99,7 @@ class DomesticOrderHelper:
             block_reason = service._entry_strategy_block_reason(
                 market="domestic",
                 strategy_flag=strategy_flag,
+                product_type=candidate.product_type,
             )
         if block_reason:
             service._record_trade_skip(
@@ -124,6 +125,7 @@ class DomesticOrderHelper:
         probe_context = service._strategy_guard_probe_context(
             market="domestic",
             strategy_flag=strategy_flag,
+            product_type=candidate.product_type,
         )
         if bool(probe_context.get("admitted")):
             buy_reason = f"strategy_guard_probe:{strategy_flag}|{buy_reason}"
@@ -207,10 +209,36 @@ class DomesticOrderHelper:
         # in-memory strategy-manager guard doesn't survive a restart, and an
         # unfilled order doesn't show up in the live balance either).
         replacement_for_order_no = ""
-        pending_buy_order = await service._find_open_domestic_order(
-            symbol=candidate.stock_code,
-            side="BUY",
-        )
+        try:
+            pending_buy_order = await service._find_open_domestic_order(
+                symbol=candidate.stock_code,
+                side="BUY",
+            )
+        except KisApiError as exc:
+            service._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason="open_order_lookup_failed",
+                side="buy",
+                price=buy_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+                orderable_qty=qty,
+                extra_detail={"error": str(exc)[:200]},
+            )
+            return {
+                "submitted": False,
+                "skipped": True,
+                "market": "domestic",
+                "side": "buy",
+                "candidate": asdict(candidate),
+                "reason": "open_order_lookup_failed",
+                "error": str(exc),
+            }
         if pending_buy_order is not None:
             pending_age_sec = service._pending_order_age_seconds(pending_buy_order)
             if pending_age_sec < 120:
@@ -555,10 +583,43 @@ class DomesticOrderHelper:
         sell_qty = min(held.quantity, max(held.orderable_qty, 0))
         replacement_note = ""
         is_exit_replacement = False
-        pending_sell_order = await service._find_open_domestic_order(
-            symbol=candidate.stock_code,
-            side="SELL",
-        )
+        try:
+            pending_sell_order = await service._find_open_domestic_order(
+                symbol=candidate.stock_code,
+                side="SELL",
+            )
+        except KisApiError as exc:
+            service._record_trade_skip(
+                market="domestic",
+                symbol=candidate.stock_code,
+                exchange_code=None,
+                reason="open_order_lookup_failed",
+                side="sell",
+                price=sell_price,
+                signal_snapshot=signal_snapshot,
+                strategy_flag=strategy_flag,
+                entry_by=entry_by,
+                exit_by=exit_by,
+                stock_name=candidate.stock_name,
+                activity_score=candidate.activity_score,
+                orderable_qty=held.orderable_qty,
+                holding_qty=held.quantity,
+                extra_detail={"error": str(exc)[:200]},
+            )
+            return {
+                "submitted": False,
+                "skipped": True,
+                "market": "domestic",
+                "side": "sell",
+                "candidate": asdict(candidate),
+                "held_position": asdict(held),
+                "signal_snapshot": (
+                    None if signal_snapshot is None else asdict(signal_snapshot)
+                ),
+                "exit_reason": exit_reason,
+                "reason": "open_order_lookup_failed",
+                "error": str(exc),
+            }
         if pending_sell_order is not None:
             pending_age_sec = service._pending_order_age_seconds(pending_sell_order)
             is_protective_exit = exit_reason in service._protective_exit_reasons()

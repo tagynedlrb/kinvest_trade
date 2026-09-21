@@ -623,6 +623,18 @@ class LabRuntimeManager:
     def clear_no_orderable_retry(self, market: str, symbol: str) -> None:
         self.no_orderable_retry.pop(f"{market}:{symbol.strip().upper()}", None)
 
+    @staticmethod
+    def loss_streak_cooldown_minutes(streak: int) -> int:
+        if streak >= 8:
+            return 7 * 24 * 60
+        if streak >= 5:
+            return 24 * 60
+        if streak >= 3:
+            return 180
+        if streak == 2:
+            return 60
+        return 0
+
     def register_exit_cooldown(
         self,
         market: str,
@@ -656,10 +668,10 @@ class LabRuntimeManager:
         # a symbol has lost 2+ times in a row without an intervening win,
         # escalate its re-entry cooldown well past the reason-specific default
         # so the scanner spends that time on a fresh candidate instead.
-        if streak >= 3:
-            cooldown_minutes = max(cooldown_minutes, 180)
-        elif streak == 2:
-            cooldown_minutes = max(cooldown_minutes, 60)
+        cooldown_minutes = max(
+            cooldown_minutes,
+            self.loss_streak_cooldown_minutes(streak),
+        )
 
         if streak >= 2:
             self.save_event(

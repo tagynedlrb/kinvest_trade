@@ -637,7 +637,7 @@ class LiquidityLabService:
             if net_pnl_pct >= 0:
                 resolved_keys.add(key)
                 continue
-            streaks[key] = min(3, streaks.get(key, 0) + 1)
+            streaks[key] = streaks.get(key, 0) + 1
             if key not in latest_loss_at:
                 occurred_at = parse_datetime(str(row.get("logged_at") or ""))
                 if occurred_at is not None:
@@ -655,7 +655,7 @@ class LiquidityLabService:
             if streak < 2 or key not in latest_loss_at:
                 continue
             market, symbol = key.split(":", 1)
-            cooldown_minutes = 180 if streak >= 3 else 60
+            cooldown_minutes = runtime.loss_streak_cooldown_minutes(streak)
             runtime.set_exit_cooldown_minutes(
                 market,
                 symbol,
@@ -3449,6 +3449,7 @@ class LiquidityLabService:
         market: str,
         strategy_flag: str,
         block_reason: str = "",
+        product_type: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]:
         market_key = normalize_market_name(market)
@@ -3485,6 +3486,21 @@ class LiquidityLabService:
         if strategy not in configured_flags:
             detail["reason"] = "strategy_not_configured"
             return detail
+        if product_type is not None:
+            detail["product_type"] = str(product_type or "").strip()
+            if (
+                market_key == "domestic"
+                and bool(
+                    getattr(
+                        policy,
+                        "strategy_guard_probe_tax_exempt_only",
+                        False,
+                    )
+                )
+                and not is_domestic_sell_tax_exempt(product_type)
+            ):
+                detail["reason"] = "taxable_product_not_eligible_for_probe"
+                return detail
         credentials = getattr(self.config, "credentials", object())
         if str(getattr(credentials, "env", "")).strip().lower() != "vps":
             detail["reason"] = "paper_environment_required"
@@ -3662,6 +3678,7 @@ class LiquidityLabService:
         *,
         market: str,
         strategy_flag: str,
+        product_type: str | None = None,
     ) -> str:
         block_reason = self._entry_strategy_raw_block_reason(
             market=market,
@@ -3673,6 +3690,7 @@ class LiquidityLabService:
             market=market,
             strategy_flag=strategy_flag,
             block_reason=block_reason,
+            product_type=product_type,
         )
         if bool(probe.get("admitted")):
             return ""
@@ -4855,11 +4873,8 @@ class LiquidityLabService:
                 exchange_code="KRX",
             )
         except Exception as exc:  # noqa: BLE001
-            # See the matching comment in _list_open_overseas_orders: a failed
-            # lookup must not silently read as "no pending order" without at
-            # least surfacing that the check itself couldn't be verified.
             _logger.warning(
-                "[ORDERS] 국내 미체결 조회 실패 - 조회결과 없음으로 처리됨 (symbol=%s, error=%s)",
+                "[ORDERS] 국내 미체결 조회 실패 - 주문 보류 (symbol=%s, error=%s)",
                 symbol,
                 exc,
             )
@@ -4872,7 +4887,9 @@ class LiquidityLabService:
                     "error": str(exc)[:200],
                 },
             )
-            return []
+            raise KisApiError(
+                f"open_domestic_order_lookup_failed: {exc}"
+            ) from exc
         return self._parse_open_domestic_order_rows(history.get("orders", []), symbol=symbol)
 
     async def _find_open_domestic_order(self, *, symbol: str, side: str) -> dict | None:

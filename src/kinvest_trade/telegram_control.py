@@ -646,6 +646,8 @@ class TelegramLiquidityLabController:
         error_type = type(exc).__name__
         response = getattr(exc, "response", None)
         raw_status_code = getattr(response, "status_code", None)
+        if raw_status_code is None:
+            raw_status_code = getattr(exc, "status_code", None)
         try:
             status_code = (
                 int(raw_status_code)
@@ -737,6 +739,34 @@ class TelegramLiquidityLabController:
                 # Avoid logging the request URL because it contains the bot
                 # token; durable events retain only safe error metadata.
                 retry_delay = self._record_telegram_poll_failure(exc)
+                if str(getattr(exc, "kind", "") or "") == "webhook_active":
+                    try:
+                        repaired = await self.notifier.delete_webhook(
+                            drop_pending_updates=False,
+                        )
+                    except Exception as repair_exc:  # noqa: BLE001
+                        _logger.warning(
+                            "[TELEGRAM] webhook 충돌 자동복구 실패 type=%s",
+                            type(repair_exc).__name__,
+                        )
+                    else:
+                        if repaired:
+                            self._save_telegram_poll_event(
+                                "telegram_webhook_conflict_repaired",
+                                {
+                                    "status_code": getattr(
+                                        exc,
+                                        "status_code",
+                                        409,
+                                    ),
+                                    "drop_pending_updates": False,
+                                },
+                            )
+                            _logger.warning(
+                                "[TELEGRAM] getUpdates webhook 충돌을 자동복구함"
+                            )
+                            await asyncio.sleep(0.2)
+                            continue
                 await asyncio.sleep(retry_delay)
                 continue
             self._record_telegram_poll_recovery()

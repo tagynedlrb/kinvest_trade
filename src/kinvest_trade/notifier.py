@@ -15,6 +15,23 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+class TelegramApiError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_code: int | None = None,
+        description: str = "",
+        kind: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.description = description
+        self.kind = kind
+
+
 class TelegramNotifier:
     def __init__(
         self,
@@ -66,8 +83,46 @@ class TelegramNotifier:
         )
         return redacted[:200]
 
-    def _redacted_error(self, exc: Exception) -> RuntimeError:
-        return RuntimeError(self._sanitize_error(exc))
+    def _redacted_error(self, exc: Exception) -> TelegramApiError:
+        response = getattr(exc, "response", None)
+        raw_status = getattr(response, "status_code", None)
+        try:
+            status_code = int(raw_status) if raw_status is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        payload: dict = {}
+        if response is not None:
+            try:
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:  # noqa: BLE001
+                pass
+        raw_error_code = payload.get("error_code")
+        try:
+            error_code = (
+                int(raw_error_code)
+                if raw_error_code is not None
+                else status_code
+            )
+        except (TypeError, ValueError):
+            error_code = status_code
+        description = self._sanitize_error(payload.get("description", ""))
+        kind = (
+            "webhook_active"
+            if (status_code == 409 or error_code == 409)
+            and "webhook" in description.lower()
+            and "getupdates" in description.lower()
+            else ""
+        )
+        message = description or self._sanitize_error(exc)
+        return TelegramApiError(
+            message,
+            status_code=status_code,
+            error_code=error_code,
+            description=description,
+            kind=kind,
+        )
 
     async def send(
         self,
@@ -193,6 +248,22 @@ class TelegramNotifier:
             return []
         result = payload.get("result", [])
         return result if isinstance(result, list) else []
+
+    async def delete_webhook(self, *, drop_pending_updates: bool = False) -> bool:
+        if not self.enabled:
+            return False
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(
+                    self._api_url("deleteWebhook"),
+                    json={"drop_pending_updates": bool(drop_pending_updates)},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise self._redacted_error(exc) from None
+        return bool(payload.get("ok") and payload.get("result"))
 
     def is_authorized_chat(self, chat_id: str | int | None) -> bool:
         if chat_id is None:

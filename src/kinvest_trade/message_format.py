@@ -128,6 +128,7 @@ REASON_KOREAN_MAP = {
     "same_session_regime_required": "당일 시장환경 수집 전 검증진입 보류",
     "fresh_regime_required": "최신 시장환경 갱신 후 검증진입",
     "benchmark_floor_not_met": "검증진입 지수 하한 미달",
+    "taxable_product_not_eligible_for_probe": "거래세 대상 상품 검증진입 제외",
     "paper_environment_required": "모의투자 환경에서만 검증진입 허용",
     "strategy_not_configured": "검증진입 대상 전략 아님",
     "standalone_vwap_blocked": "단독 VWAP 전략 중단",

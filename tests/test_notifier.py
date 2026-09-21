@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import httpx
 import kinvest_trade.notifier as notifier_module
 import pytest
-from kinvest_trade.notifier import TelegramNotifier
+from kinvest_trade.notifier import TelegramApiError, TelegramNotifier
 from kinvest_trade.repository import SqliteRepository
 
 
@@ -100,6 +100,82 @@ def test_get_updates_separates_long_poll_read_timeout() -> None:
     assert timeout.read == 40.0
     assert timeout.write == 5.0
     assert timeout.pool == 5.0
+
+
+def test_get_updates_exposes_webhook_conflict_without_token() -> None:
+    class ConflictClient:
+        def __init__(self, *, timeout: object) -> None:
+            del timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str, params: dict):
+            del params
+            return httpx.Response(
+                409,
+                request=httpx.Request("GET", url),
+                json={
+                    "ok": False,
+                    "error_code": 409,
+                    "description": (
+                        "Conflict: can't use getUpdates method while webhook is active"
+                    ),
+                },
+            )
+
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = ConflictClient  # type: ignore[assignment]
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="secret-token-123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    try:
+        with pytest.raises(TelegramApiError) as caught:
+            asyncio.run(notifier.get_updates())
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert caught.value.status_code == 409
+    assert caught.value.error_code == 409
+    assert caught.value.kind == "webhook_active"
+    assert "secret-token-123" not in str(caught.value)
+
+
+def test_delete_webhook_preserves_pending_updates() -> None:
+    calls: list[tuple[str, dict]] = []
+    original_async_client = notifier_module.httpx.AsyncClient
+    notifier_module.httpx.AsyncClient = lambda timeout: FakeAsyncClient(  # type: ignore[assignment]
+        payload={"ok": True, "result": True},
+        calls=calls,
+    )
+    notifier = TelegramNotifier(
+        SimpleNamespace(
+            telegram_enabled=True,
+            telegram_bot_token="token123",
+            telegram_chat_id="chat456",
+            telegram_command_poll_timeout_sec=30,
+        )
+    )
+    try:
+        result = asyncio.run(notifier.delete_webhook(drop_pending_updates=False))
+    finally:
+        notifier_module.httpx.AsyncClient = original_async_client
+
+    assert result is True
+    assert calls == [
+        (
+            "https://api.telegram.org/bottoken123/deleteWebhook",
+            {"drop_pending_updates": False},
+        )
+    ]
 
 
 def test_set_commands_returns_false_when_disabled() -> None:

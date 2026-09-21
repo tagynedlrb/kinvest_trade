@@ -1,5 +1,5 @@
 {
-  "policy_id": "overseas_momentum_v5",
+  "policy_id": "overseas_momentum_v6",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {
@@ -171,12 +171,13 @@
     "strategy_guard_probe_benchmark_floor_pct": 0.0,
     "strategy_guard_probe_regime_max_age_sec": 600,
     "entry_strategy_allowlist": ["VWAP+RSI", "INV"],
-    "entry_min_minutes_to_regular_close": 0,
+    "entry_min_minutes_to_regular_close": 60,
     "virtual_settlement_stale_order_minutes": 5,
     "virtual_settlement_retry_cooldown_minutes": 15,
     "virtual_settlement_max_submissions_per_session": 3,
     "virtual_settlement_aggressive_after_sessions": 2,
     "virtual_settlement_aggressive_limit_bps": 50,
+    "entry_confirmation_strategy_flags": ["VWAP+RSI"],
     "stale_order_cancel_minutes": 30,
     "close_guard_cancel_window_minutes": 0,
     "close_guard_min_order_age_minutes": 5,

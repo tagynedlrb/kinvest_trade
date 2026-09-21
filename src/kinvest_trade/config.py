@@ -225,6 +225,7 @@ class AutoTradeConfig:
     strategy_guard_probe_slot_multiplier: float = 0.10
     strategy_guard_probe_benchmark_floor_pct: float = 0.0
     strategy_guard_probe_regime_max_age_sec: int = 600
+    strategy_guard_probe_tax_exempt_only: bool = False
     entry_strategy_allowlist: list[str] = field(default_factory=list)
     entry_min_minutes_to_regular_close: int = 0
     dynamic_pool_foreign_underlying_name_markers: list[str] = field(

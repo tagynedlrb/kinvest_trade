@@ -12,6 +12,7 @@ import pytest
 from kinvest_trade.client import KisApiError
 from kinvest_trade.lab_risk import CircuitBreakerManager
 from kinvest_trade.liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
+from kinvest_trade.notifier import TelegramApiError
 from kinvest_trade.repository import SqliteRepository
 from kinvest_trade.telegram_control import (
     BOT_COMMANDS,
@@ -6302,6 +6303,59 @@ def test_command_loop_records_http_status_without_request_url() -> None:
     assert recovered["last_status_code"] == 409
     assert "secret-token" not in serialized
     assert "conflict at secret URL" not in serialized
+
+
+def test_command_loop_repairs_webhook_conflict_and_resumes_polling() -> None:
+    controller = _build_async_controller()
+    controller._write_runtime_state = lambda: None  # type: ignore[method-assign]
+    controller.update_offset = 0
+    outcomes = [
+        TelegramApiError(
+            "webhook conflict",
+            status_code=409,
+            error_code=409,
+            description="getUpdates blocked while webhook is active",
+            kind="webhook_active",
+        ),
+        [],
+        asyncio.CancelledError(),
+    ]
+    repair_calls: list[bool] = []
+
+    async def conflicting_get_updates(*, offset):
+        del offset
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    async def delete_webhook(*, drop_pending_updates):
+        repair_calls.append(drop_pending_updates)
+        return True
+
+    controller.notifier.get_updates = conflicting_get_updates  # type: ignore[method-assign]
+    controller.notifier.delete_webhook = delete_webhook  # type: ignore[method-assign]
+    sleeps: list[float] = []
+
+    async def fast_sleep(seconds):
+        sleeps.append(seconds)
+
+    real_sleep = asyncio.sleep
+    asyncio.sleep = fast_sleep  # type: ignore[assignment]
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(controller._command_loop())
+    finally:
+        asyncio.sleep = real_sleep  # type: ignore[assignment]
+
+    assert repair_calls == [False]
+    assert sleeps == [0.2, 0.2]
+    assert [event["event_type"] for event in controller.repository.events] == [
+        "telegram_poll_outage_started",
+        "telegram_webhook_conflict_repaired",
+        "telegram_poll_outage_recovered",
+    ]
+    assert controller.repository.events[0]["detail"]["status_code"] == 409
 
 
 def test_run_calls_set_commands_before_start_message() -> None:

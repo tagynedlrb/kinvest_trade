@@ -2091,7 +2091,11 @@ class TelegramLiquidityLabController:
             service._symbol_loss_streak = dict(
                 state.get("symbol_loss_streak") or {}
             )
-            service._confirmed_symbol_loss_state_restored = True
+            # The persisted count is useful immediately, but it cannot prove
+            # that cooldown deadlines match the policy in the new process.
+            # Let the first cycle reconcile the confirmed ledger and rebuild
+            # those deadlines, including cooldown schedule migrations.
+            service._confirmed_symbol_loss_state_restored = False
         if overseas_signal_suppressed_until:
             existing_suppressions = getattr(
                 service,

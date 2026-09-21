@@ -5512,7 +5512,7 @@ def test_run_cycle_applies_restored_lab_runtime_state_to_new_service() -> None:
         "domestic:005930": 0,
         "overseas:SOXL": 2,
     }
-    assert seen[0]["symbol_loss_state_restored"] is True
+    assert seen[0]["symbol_loss_state_restored"] is False
     assert set(seen[0]["overseas_signal_suppressed_until"]) == {"IPFX"}
     assert seen[0]["overseas_signal_failures"] == {"IPFX": 3}
     assert controller._restored_lab_runtime_state == {}

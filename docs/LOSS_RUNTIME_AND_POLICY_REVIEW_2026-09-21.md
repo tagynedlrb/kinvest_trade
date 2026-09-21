@@ -125,6 +125,8 @@ runtime에는 `domestic:229200` 연속손실 13회, `domestic:010170` 6회,
 ### 공통 안정장치
 
 - 종목 연속손실 2회 60분, 3~4회 180분, 5~7회 24시간, 8회 이상 7일 쿨다운.
+- 재시작 때 저장된 손실횟수만 신뢰하지 않고 첫 사이클에 확정 체결원장을 재대조해,
+  정책 버전에서 늘어난 쿨다운 만료시각도 다시 계산한다.
 - 국내·해외 미체결 조회 실패 시 주문 제출 보류.
 - Telegram webhook/polling 충돌 자동진단·복구 및 상태코드 원장 기록.
 
@@ -154,7 +156,7 @@ runtime에는 `domestic:229200` 연속손실 13회, `domestic:010170` 6회,
 
 ## 백업과 외부 근거
 
-- 전체 회귀 테스트: `904 passed in 125.90s`; `compileall`, JSON 파싱,
+- 최종 전체 회귀 테스트: `904 passed in 131.38s`; `compileall`, JSON 파싱,
   `git diff --check`도 통과했다.
 - 변경 전 온라인 백업:
   `data/trading_backup_20260921_174816_pre_v9_v6_policy_evaluation.db`

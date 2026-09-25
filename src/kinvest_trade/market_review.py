@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import Iterable
 
 
-MARKET_SESSION_REVIEW_VERSION = "market_session_review_v1"
+MARKET_SESSION_REVIEW_VERSION = "market_session_review_v2"
 
 
 def _as_float(value: object) -> float:
@@ -140,10 +140,10 @@ def build_market_session_review(
             0, context_count - session_match_count
         ),
         "entry_regime_coverage_pct": (
-            context_count / len(entries) if entries else 1.0
+            context_count / len(entries) if entries else None
         ),
         "entry_regime_session_match_pct": (
-            session_match_count / context_count if context_count else 1.0
+            session_match_count / context_count if context_count else None
         ),
         "entry_sector_context_count": sector_context_count,
         "entry_sector_context_missing_count": max(
@@ -152,7 +152,7 @@ def build_market_session_review(
         "entry_sector_evaluable_count": sector_evaluable_count,
         "entry_sector_supportive_count": sector_supportive_count,
         "entry_sector_coverage_pct": (
-            sector_context_count / len(entries) if entries else 1.0
+            sector_context_count / len(entries) if entries else None
         ),
         "trade_source": "confirmed_session_owned_cycle_log",
     }

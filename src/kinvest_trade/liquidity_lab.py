@@ -2154,31 +2154,36 @@ class LiquidityLabService:
                 if "] " in block_reason:
                     block_reason = block_reason.split("] ", 1)[1]
                 return cohort, block_reason
-        if str(watch_target.action_bias).strip().upper() == "BUY":
+        action_bias = str(watch_target.action_bias).strip().upper()
+        if action_bias == "READY" and "near_breakout" in reason_text:
+            return "near_breakout_wait", "near_breakout"
+        if action_bias == "BUY":
             return "live_signal", ""
         return "", ""
 
-    def _observe_domestic_entry_horizon_shadows(
+    def _observe_entry_horizon_shadows(
         self,
         watch_targets: list[WatchTargetStatus],
         *,
+        market: str,
         now: datetime | None = None,
         allow_new: bool = True,
     ) -> dict[str, int]:
+        market_key = normalize_market_name(market)
         repository = getattr(self, "repository", None)
         observer = getattr(repository, "observe_entry_horizon_shadows", None)
         opener = getattr(repository, "open_entry_horizon_shadow_group", None)
         if not callable(observer) or not callable(opener):
             return {"matured": 0, "expired": 0, "open": 0, "opened": 0}
         current = ensure_timezone(now or datetime.now(timezone.utc))
-        session_date = self._market_session_date("domestic", current)
+        session_date = self._market_session_date(market_key, current)
         prices = {
             target.code.strip().upper(): float(target.price)
             for target in watch_targets
-            if target.market == "domestic" and float(target.price or 0.0) > 0
+            if target.market == market_key and float(target.price or 0.0) > 0
         }
         counts = observer(
-            market="domestic",
+            market=market_key,
             observed_at=current,
             session_date=session_date,
             prices=prices,
@@ -2188,42 +2193,85 @@ class LiquidityLabService:
         if not allow_new:
             return counts
 
-        policy = self._get_market_policy("domestic")
+        policy = self._get_market_policy(market_key)
         auto_trade = policy.auto_trade
-        commission_rate = max(
-            0.0,
-            float(getattr(auto_trade, "domestic_commission_rate", 0.00015) or 0.0),
-        )
-        sell_tax_rate = max(
-            0.0,
-            float(getattr(auto_trade, "domestic_sell_tax_rate", 0.002) or 0.0),
-        )
-        market_regime = self._market_regime_context("domestic", now=current)
+        if market_key == "domestic":
+            commission_rate = max(
+                0.0,
+                float(
+                    getattr(
+                        auto_trade,
+                        "domestic_commission_rate",
+                        0.00015,
+                    )
+                    or 0.0
+                ),
+            )
+            sell_tax_rate = max(
+                0.0,
+                float(
+                    getattr(auto_trade, "domestic_sell_tax_rate", 0.002)
+                    or 0.0
+                ),
+            )
+            sec_fee_rate = 0.0
+            cost_calculation_version = DOMESTIC_COST_CALCULATION_VERSION
+            currency = "KRW"
+        else:
+            legacy_commission_rate = float(
+                getattr(auto_trade, "commission_rate", 0.0025) or 0.0025
+            )
+            commission_rate = max(
+                0.0,
+                float(
+                    getattr(
+                        auto_trade,
+                        "overseas_commission_rate",
+                        legacy_commission_rate,
+                    )
+                    or legacy_commission_rate
+                ),
+            )
+            sell_tax_rate = 0.0
+            sec_fee_rate = max(
+                0.0,
+                float(getattr(auto_trade, "sec_fee_rate", 0.0000206) or 0.0),
+            )
+            cost_calculation_version = OVERSEAS_COST_CALCULATION_VERSION
+            currency = "USD"
+        market_regime = self._market_regime_context(market_key, now=current)
         for target in watch_targets:
             if (
-                target.market != "domestic"
+                target.market != market_key
                 or target.holding_qty > 0
                 or target.signal_snapshot is None
                 or float(target.price or 0.0) <= 0
-                or self._is_inverse_symbol("domestic", target.code)
+                or self._is_inverse_symbol(market_key, target.code)
             ):
                 continue
             cohort, block_reason = self._entry_horizon_shadow_cohort(target)
             if not cohort:
                 continue
-            quote = getattr(self, "_domestic_quote_cache", {}).get(target.code)
-            product_type = str(
-                getattr(quote, "product_type", "") or ""
-            ).strip()
+            quote = (
+                getattr(self, "_domestic_quote_cache", {}).get(target.code)
+                if market_key == "domestic"
+                else None
+            )
+            product_type = str(getattr(quote, "product_type", "") or "").strip()
             applied_sell_tax_rate = (
                 0.0
-                if is_domestic_sell_tax_exempt(product_type)
+                if market_key != "domestic"
+                or is_domestic_sell_tax_exempt(product_type)
                 else sell_tax_rate
             )
-            round_trip_cost_pct = commission_rate * 2.0 + applied_sell_tax_rate
+            round_trip_cost_pct = (
+                commission_rate * 2.0
+                + applied_sell_tax_rate
+                + sec_fee_rate
+            )
             group_id = opener(
                 opened_at=current,
-                market="domestic",
+                market=market_key,
                 symbol=target.code,
                 exchange_code=target.exchange_code,
                 entry_session_date=session_date,
@@ -2246,10 +2294,12 @@ class LiquidityLabService:
                 ),
                 context={
                     "calculation_version": _ENTRY_HORIZON_SHADOW_VERSION,
-                    "cost_calculation_version": DOMESTIC_COST_CALCULATION_VERSION,
+                    "cost_calculation_version": cost_calculation_version,
+                    "currency": currency,
                     "product_type": product_type,
                     "commission_rate": commission_rate,
                     "sell_tax_rate": applied_sell_tax_rate,
+                    "sec_fee_rate": sec_fee_rate,
                     "signal_snapshot": asdict(target.signal_snapshot),
                     "entry_market_regime": market_regime,
                     "watch_action_bias": target.action_bias,
@@ -2262,7 +2312,7 @@ class LiquidityLabService:
             counts["opened"] += 1
             self._save_event(
                 event_type="entry_horizon_shadow_opened",
-                market="domestic",
+                market=market_key,
                 symbol=target.code,
                 detail={
                     "group_id": group_id,
@@ -2272,6 +2322,8 @@ class LiquidityLabService:
                     "strategy_flag": target.strategy_flag,
                     "entry_price": float(target.price),
                     "round_trip_cost_pct": round_trip_cost_pct,
+                    "cost_calculation_version": cost_calculation_version,
+                    "currency": currency,
                     "product_type": product_type,
                     "horizons_minutes": list(_ENTRY_HORIZON_MINUTES),
                     "benchmark_return_pct": market_regime.get("return_pct"),
@@ -2281,6 +2333,34 @@ class LiquidityLabService:
                 },
             )
         return counts
+
+    def _observe_domestic_entry_horizon_shadows(
+        self,
+        watch_targets: list[WatchTargetStatus],
+        *,
+        now: datetime | None = None,
+        allow_new: bool = True,
+    ) -> dict[str, int]:
+        return self._observe_entry_horizon_shadows(
+            watch_targets,
+            market="domestic",
+            now=now,
+            allow_new=allow_new,
+        )
+
+    def _observe_overseas_entry_horizon_shadows(
+        self,
+        watch_targets: list[WatchTargetStatus],
+        *,
+        now: datetime | None = None,
+        allow_new: bool = True,
+    ) -> dict[str, int]:
+        return self._observe_entry_horizon_shadows(
+            watch_targets,
+            market="overseas",
+            now=now,
+            allow_new=allow_new,
+        )
 
     def _open_inverse_shadow_symbols(
         self,
@@ -5346,13 +5426,41 @@ class LiquidityLabService:
         else:
             selected_rows = []
             selected_source = "none"
-        self._last_tv_scan_used_fallback = selected_source == "fallback"
+        coverage_fallback_attempted = False
+        coverage_rel_vol: float | None = None
+        coverage_rows: list[dict[str, object]] = []
+        if len(selected_rows) < min_fallback_n:
+            coverage_rel_vol = max(0.6, primary_rel_vol / 3.0)
+            if coverage_rel_vol < fallback_rel_vol:
+                coverage_fallback_attempted = True
+                _logger.info(
+                    "[TV] 완화 결과 부족 (%s개 < %s) -> "
+                    "탐색전용 min_rel_volume=%.2f 재시도",
+                    len(selected_rows),
+                    min_fallback_n,
+                    coverage_rel_vol,
+                )
+                coverage_rows = await self._scan_tv_dynamic_pool(
+                    min_rel_volume=coverage_rel_vol,
+                )
+                if len(coverage_rows) > len(selected_rows):
+                    selected_rows = coverage_rows
+                    selected_source = "coverage"
+        self._last_tv_scan_used_fallback = selected_source in {
+            "fallback",
+            "coverage",
+        }
         self._last_tv_scan_diagnostics = {
             "primary_threshold": primary_rel_vol,
             "primary_count": len(tv_rows),
             "fallback_attempted": True,
             "fallback_threshold": fallback_rel_vol,
             "fallback_count": len(fallback_rows),
+            "coverage_fallback_attempted": coverage_fallback_attempted,
+            "coverage_fallback_threshold": coverage_rel_vol,
+            "coverage_fallback_count": (
+                len(coverage_rows) if coverage_fallback_attempted else None
+            ),
             "minimum_target_count": min_fallback_n,
             "selected_count": len(selected_rows),
             "selected_source": selected_source,
@@ -7448,10 +7556,16 @@ class LiquidityLabService:
         ]
         domestic_watch_map = {watch_target.code: watch_target for watch_target in domestic_watch_targets}
         overseas_watch_map = {watch_target.code: watch_target for watch_target in overseas_watch_targets}
+        horizon_observed_at = datetime.now(timezone.utc)
         self._observe_domestic_entry_horizon_shadows(
             domestic_watch_targets,
-            now=datetime.now(timezone.utc),
+            now=horizon_observed_at,
             allow_new=krx_cycle_open,
+        )
+        self._observe_overseas_entry_horizon_shadows(
+            overseas_watch_targets,
+            now=horizon_observed_at,
+            allow_new=us_cycle_open,
         )
         overseas_exit_targets = (
             await self._select_overseas_exit_targets(
@@ -9695,11 +9809,19 @@ class LiquidityLabService:
             "list_open_entry_horizon_shadow_symbols",
             None,
         )
-        horizon_shadow_symbols = (
-            set(horizon_shadow_reader(market="domestic"))
-            if krx_open and callable(horizon_shadow_reader)
-            else set()
-        )
+        horizon_shadow_symbols: dict[str, set[str]] = {
+            "domestic": set(),
+            "overseas": set(),
+        }
+        if callable(horizon_shadow_reader):
+            if krx_open:
+                horizon_shadow_symbols["domestic"] = set(
+                    horizon_shadow_reader(market="domestic")
+                )
+            if us_open:
+                horizon_shadow_symbols["overseas"] = set(
+                    horizon_shadow_reader(market="overseas")
+                )
         for item in unified:
             market_inverse_symbols = active_inverse_symbols.get(
                 item.market,
@@ -9717,9 +9839,9 @@ class LiquidityLabService:
         for item in unified:
             if remaining_slots <= 0:
                 break
-            if (
-                item.market != "domestic"
-                or item.code.upper() not in horizon_shadow_symbols
+            if item.code.upper() not in horizon_shadow_symbols.get(
+                item.market,
+                set(),
             ):
                 continue
             pair = (item.market, item.code.upper())

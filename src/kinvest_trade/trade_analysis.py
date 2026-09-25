@@ -213,6 +213,7 @@ def summarize_entry_horizon_shadow_performance(
             "strategy_guard_blocked": "전략성과차단",
             "market_policy_strategy_blocked": "시장정책차단",
             "foreign_underlying_policy_blocked": "해외기초차단",
+            "near_breakout_wait": "돌파근접대기",
         }
         grouped: dict[tuple[str, int], list[dict[str, object]]] = defaultdict(list)
         for row in rows:
@@ -1508,8 +1509,15 @@ def summarize_market_regime_performance(
                 )
                 exits = int(review.get("confirmed_exit_count") or 0)
                 wins = int(review.get("win_count") or 0)
-                coverage = contexts / entries * 100 if entries else 100.0
-                match_rate = matches / contexts * 100 if contexts else 100.0
+                coverage_text = (
+                    f"{contexts / entries * 100:.0f}%" if entries else "n/a"
+                )
+                match_rate_text = (
+                    f"{matches / contexts * 100:.0f}%" if contexts else "n/a"
+                )
+                win_rate_text = (
+                    f"{wins / exits * 100:.0f}%" if exits else "n/a"
+                )
                 pnl_text = (
                     f"Net={float(review.get('net_pnl_krw') or 0):+,.0f}원"
                     if market == "domestic"
@@ -1520,11 +1528,11 @@ def summarize_market_regime_performance(
                 )
                 result.append(
                     f"  {market:<8} {review['session_date']} "
-                    f"진입환경={contexts}/{entries}({coverage:.0f}%) "
-                    f"현지일치={matches}/{contexts}({match_rate:.0f}%) "
+                    f"진입환경={contexts}/{entries}({coverage_text}) "
+                    f"현지일치={matches}/{contexts}({match_rate_text}) "
                     f"섹터환경={sector_contexts}/{entries} "
                     f"정렬={sector_supportive}/{sector_evaluable} "
-                    f"청산={exits} 승률={(wins / exits * 100 if exits else 0):.0f}% "
+                    f"청산={exits} 승률={win_rate_text} "
                     f"{pnl_text}"
                 )
         if not _has_table(conn, "policy_evaluation_log"):

@@ -8773,6 +8773,70 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     ) == 4
 
 
+def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> None:
+    service = _build_run_service()
+    service.config = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.market_policy_registry = None
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    session_date = service._market_session_date("overseas", now)
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "market": "overseas",
+        "session_date": session_date,
+        "captured_at": (now - timedelta(seconds=30)).isoformat(),
+        "return_pct": 0.4,
+        "regime_key": "up|normal|normal",
+        "session_range_position": 0.6,
+    }
+    target = WatchTargetStatus(
+        market="overseas",
+        code="AAA",
+        exchange_code="NASD",
+        price=100.0,
+        activity_score=10.0,
+        signal_score=2.0,
+        action_bias="READY",
+        signal_state="READY",
+        ma_summary="up",
+        note="[VWAP+RSI] near_breakout",
+        signal_snapshot=_snapshot(price=100.0),
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+        decision_reason="near_breakout",
+    )
+
+    first = service._observe_overseas_entry_horizon_shadows(
+        [target],
+        now=now,
+    )
+    second = service._observe_overseas_entry_horizon_shadows(
+        [replace(target, price=101.0)],
+        now=now + timedelta(minutes=5),
+        allow_new=False,
+    )
+    rows = service.repository.list_entry_horizon_shadows(
+        market="overseas",
+        cohort="near_breakout_wait",
+    )
+    matured = [row for row in rows if row["status"] == "MATURED"]
+
+    assert first["opened"] == 1
+    assert second["opened"] == 0
+    assert second["matured"] == 1
+    assert len(rows) == 8
+    assert len(matured) == 1
+    assert matured[0]["horizon_minutes"] == 5
+    assert matured[0]["policy_id"] == "overseas_momentum_v6"
+    assert matured[0]["round_trip_cost_pct"] == pytest.approx(0.0050206)
+    assert matured[0]["estimated_net_pnl_pct"] == pytest.approx(0.0049794)
+    assert matured[0]["context_json"]["cost_calculation_version"] == (
+        "overseas_fee_v1"
+    )
+    assert matured[0]["context_json"]["currency"] == "USD"
+
+
 def test_policy_trade_skip_records_market_regime_context() -> None:
     service = _build_run_service()
     context = {
@@ -10235,6 +10299,42 @@ def test_refresh_overseas_dynamic_pool_falls_back_to_static_candidates_when_tv_e
         {"symbol": "TSLA", "exchange_code": "NASD"},
     ]
     assert service._awaiting_relist is False
+
+
+def test_tv_scan_uses_coverage_fallback_without_relaxing_entry_policy() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.tv_top_n = 10
+    service.config.liquidity_lab.tv_min_rel_volume = 1.8
+    calls: list[float | None] = []
+
+    async def _scan(*, min_rel_volume=None):
+        calls.append(min_rel_volume)
+        if min_rel_volume is None:
+            symbols = ["PRIMARY"]
+        elif min_rel_volume > 1.0:
+            symbols = ["RELAXED", "PRIMARY"]
+        else:
+            symbols = ["COVER1", "COVER2", "COVER3", "COVER4"]
+        return [
+            {"symbol": symbol, "exchange_code": "NASD"}
+            for symbol in symbols
+        ]
+
+    service._scan_tv_dynamic_pool = _scan
+
+    rows = asyncio.run(service._scan_tv_dynamic_pool_with_fallback())
+
+    assert calls == [None, pytest.approx(1.08), pytest.approx(0.6)]
+    assert [row["symbol"] for row in rows] == [
+        "COVER1",
+        "COVER2",
+        "COVER3",
+        "COVER4",
+    ]
+    assert service._last_tv_scan_used_fallback is True
+    assert service._last_tv_scan_diagnostics["selected_source"] == "coverage"
+    assert service._last_tv_scan_diagnostics["minimum_target_count"] == 3
+    assert service._last_tv_scan_diagnostics["selected_count"] == 4
 
 
 def test_is_trading_halted_when_consecutive_losses_reach_limit() -> None:
@@ -11753,6 +11853,58 @@ def test_build_unified_watch_targets_keeps_open_horizon_shadow_inside_limit() ->
     )
 
     assert [item.code for item in watch_targets] == ["D3", "D1"]
+
+
+def test_build_unified_watch_targets_keeps_overseas_horizon_shadow_inside_limit() -> None:
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 2
+    now = datetime(2026, 8, 28, 15, 0, tzinfo=timezone.utc)
+    assert service.repository.open_entry_horizon_shadow_group(
+        opened_at=now,
+        market="overseas",
+        symbol="O3",
+        exchange_code="NASD",
+        entry_session_date="2026-08-28",
+        policy_id="overseas_momentum_v6",
+        cohort="near_breakout_wait",
+        strategy_flag="VWAP+RSI",
+        entry_by="VWAP",
+        block_reason="near_breakout",
+        entry_price=30.0,
+        round_trip_cost_pct=0.0050206,
+        horizons_minutes=(120,),
+    )
+    overseas_ranked = [
+        OverseasScanResult(
+            "O1", "NASD", 50.0, 49.9, 50.1, 0.001, 1.0,
+            100_000, 0, 1350.0, 60.0,
+        ),
+        OverseasScanResult(
+            "O2", "NASD", 40.0, 39.9, 40.1, 0.001, 1.0,
+            100_000, 0, 1350.0, 50.0,
+        ),
+        OverseasScanResult(
+            "O3", "NASD", 30.0, 29.9, 30.1, 0.001, 1.0,
+            100_000, 0, 1350.0, 1.0,
+        ),
+    ]
+    service._signal_cache = {
+        candidate.symbol: _snapshot(price=candidate.last_price)
+        for candidate in overseas_ranked
+    }
+
+    watch_targets = asyncio.run(
+        service._build_unified_watch_targets(
+            domestic_ranked=[],
+            overseas_ranked=overseas_ranked,
+            domestic_positions=[],
+            overseas_positions=[],
+            krx_open=False,
+            us_open=True,
+        )
+    )
+
+    assert [item.code for item in watch_targets] == ["O3", "O1"]
 
 
 def test_cycle_log_saved_per_watch_target() -> None:

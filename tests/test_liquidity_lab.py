@@ -8837,6 +8837,36 @@ def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> Non
     assert matured[0]["context_json"]["currency"] == "USD"
 
 
+def test_overseas_horizon_cohort_tracks_primary_wait_bottlenecks_only() -> None:
+    target = WatchTargetStatus(
+        market="overseas",
+        code="AAA",
+        exchange_code="NASD",
+        price=100.0,
+        activity_score=10.0,
+        signal_score=0.0,
+        action_bias="WAIT",
+        signal_state="WAIT",
+        ma_summary="up",
+        note="volume_low",
+        signal_snapshot=_snapshot(price=100.0),
+        strategy_flag="VWAP+VOL",
+        entry_by="VWAP",
+        decision_reason="volume_low",
+    )
+
+    assert LiquidityLabService._entry_horizon_shadow_cohort(target) == (
+        "entry_volume_blocked",
+        "volume_low",
+    )
+    assert LiquidityLabService._entry_horizon_shadow_cohort(
+        replace(target, decision_reason="trend_down", note="trend_down")
+    ) == ("entry_trend_blocked", "trend_down")
+    assert LiquidityLabService._entry_horizon_shadow_cohort(
+        replace(target, market="domestic")
+    ) == ("", "")
+
+
 def test_policy_trade_skip_records_market_regime_context() -> None:
     service = _build_run_service()
     context = {

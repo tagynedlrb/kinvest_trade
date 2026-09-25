@@ -147,7 +147,8 @@ item unless failure rate or stale-balance impact rises materially.
    separate policy IDs and cost models.
 2. US horizon costs use two commissions plus the SEC fee; KRX continues to use
    product-aware sell-tax exemption.
-3. Added `near_breakout_wait` as a non-trading experimental cohort.
+3. Added `near_breakout_wait` plus US-only `entry_volume_blocked` and
+   `entry_trend_blocked` as non-trading experimental cohorts.
 4. Kept open US horizon symbols inside the unified watch limit until maturity.
 5. Added the discovery-only 0.60 relative-volume coverage fallback.
 6. Changed zero-denominator review ratios from false `100%` to `n/a`; persisted
@@ -181,4 +182,3 @@ item unless failure rate or stale-balance impact rises materially.
 - KRX product tax treatment remains the basis for product-aware domestic cost
   estimation:
   https://regulation.krx.co.kr/contents/RGL/03/03060105/RGL03060105.jsp
-

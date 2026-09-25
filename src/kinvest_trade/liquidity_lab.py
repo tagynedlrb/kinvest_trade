@@ -2157,6 +2157,12 @@ class LiquidityLabService:
         action_bias = str(watch_target.action_bias).strip().upper()
         if action_bias == "READY" and "near_breakout" in reason_text:
             return "near_breakout_wait", "near_breakout"
+        if str(watch_target.market).strip().lower() == "overseas":
+            primary_reason = reason_text.split("|", 1)[0].strip()
+            if primary_reason == "volume_low":
+                return "entry_volume_blocked", primary_reason
+            if primary_reason == "trend_down":
+                return "entry_trend_blocked", primary_reason
         if action_bias == "BUY":
             return "live_signal", ""
         return "", ""

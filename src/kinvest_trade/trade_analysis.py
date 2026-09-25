@@ -214,6 +214,8 @@ def summarize_entry_horizon_shadow_performance(
             "market_policy_strategy_blocked": "시장정책차단",
             "foreign_underlying_policy_blocked": "해외기초차단",
             "near_breakout_wait": "돌파근접대기",
+            "entry_volume_blocked": "거래량차단",
+            "entry_trend_blocked": "추세차단",
         }
         grouped: dict[tuple[str, int], list[dict[str, object]]] = defaultdict(list)
         for row in rows:

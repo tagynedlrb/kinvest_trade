@@ -80,9 +80,18 @@
 ### 재개 조건과 결과
 - 새 모의계좌용 AppKey/AppSecret 반영, `auth-check`, 국내 `balance-check`, 해외
   `overseas-balance-check`, 양 시장 미체결 0건 확인 조건을 모두 충족했다.
-- 코드와 문서를 Git에 보존하고 원격과 일치시킨 뒤 빈 포트폴리오·새 세션으로
-  user systemd 서비스를 재개한다. 재개 뒤 첫 자연 사이클과 Telegram 보고까지
-  확인한다.
+- 실행 변경은 Git `ec4bbd8`로 커밋해 `origin/master`에 푸시했다.
+  새 세션 `1f52b6a4768e`를 생성하고 빈 포트폴리오로 user systemd 서비스를
+  재개했다.
+- 재개 직후 PID 2262852, `NRestarts=0`, 배포 dirty=false,
+  국장 `domestic_momentum_v9`, 미장 `overseas_momentum_v6`,
+  runtime 계좌 `5021...58-01`, `last_error=null`을 확인했다.
+- 첫 자연 사이클은 2026-09-28 04:32:37 KST에 완료됐다. 비거래 시간이라
+  신규 주문은 0건이었고 활성·가상·정산대기 포지션도 모두 0건을 유지했다.
+- Telegram에는 새 세션 시작, 서비스 배포 커밋, TradingView 연결, 휴장 판정,
+  계좌 전환 최종 보고가 모두 성공으로 기록됐다. 최종 보고에는 최근 무매매의
+  직접 원인이 정책 진입식 미통과였다는 결론과 계좌 만료 감시 코드를 함께
+  명시했다.
 
 ## [2026-09-25] 무체결 원인·미장 관측 누락·탐색 풀 축소 재감사
 

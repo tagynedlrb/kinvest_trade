@@ -142,6 +142,54 @@ class SqliteRepository:
             conn.commit()
         return counts
 
+    def reset_active_portfolio(
+        self,
+        *,
+        note: str,
+        updated_at: str,
+    ) -> dict[str, int]:
+        """Clear account-bound holdings while preserving every history ledger."""
+
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            for table in ("positions", "virtual_positions", "virtual_sell_pending"):
+                exists = conn.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = ?
+                    """,
+                    (table,),
+                ).fetchone()
+                if exists is None:
+                    counts[table] = 0
+                    continue
+                cursor = conn.execute(f"DELETE FROM {table}")
+                counts[table] = max(0, int(cursor.rowcount))
+            cursor = conn.execute(
+                """
+                UPDATE lab_symbol_state
+                SET action_bias = 'HOLD',
+                    signal_state = 'HOLD',
+                    note = ?,
+                    strategy_flag = '',
+                    entry_by = '',
+                    exit_by = '',
+                    holding_qty = 0,
+                    last_price = NULL,
+                    pnl_pct = NULL,
+                    entry_price = NULL,
+                    entry_time = NULL,
+                    peak_price = NULL,
+                    has_position = 0,
+                    snapshot_json = NULL,
+                    updated_at = ?
+                WHERE has_position <> 0 OR holding_qty <> 0
+                """,
+                (note, updated_at),
+            )
+            counts["lab_symbol_state"] = max(0, int(cursor.rowcount))
+        return counts
+
     _RESET_ALL_HISTORY_TABLES: tuple[str, ...] = (
         "cycle_log",
         "event_log",

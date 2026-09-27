@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 import time
 from pathlib import Path
@@ -106,8 +107,54 @@ def test_token_cache_is_owner_read_write_only(tmp_path: Path) -> None:
 
     client._save_cached_token()
 
+    cached = json.loads(credentials.token_cache_path.read_text(encoding="utf-8"))
     assert credentials.token_cache_path.stat().st_mode & 0o777 == 0o600
+    assert cached["credential_fingerprint"] == client._credential_fingerprint()
+    assert credentials.appkey not in json.dumps(cached)
+    assert credentials.appsecret not in json.dumps(cached)
     asyncio.run(client.close())
+
+
+def test_token_cache_is_rejected_after_credentials_change(tmp_path: Path) -> None:
+    cache_path = tmp_path / "token.json"
+    old_credentials = KisCredentials(
+        env="vps",
+        appkey="old-appkey",
+        appsecret="old-appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=cache_path,
+    )
+    old_client = KisRestClient(old_credentials)
+    old_client._token = "old-token"
+    old_client._expires_at = 9_999_999_999.0
+    old_client._save_cached_token()
+
+    new_credentials = KisCredentials(
+        env="vps",
+        appkey="new-appkey",
+        appsecret="new-appsecret",
+        account_no="12345678",
+        account_product_code="01",
+        hts_id="",
+        dry_run=False,
+        live_trading_enabled=False,
+        appkey_path=None,
+        appsecret_path=None,
+        token_cache_path=cache_path,
+    )
+    new_client = KisRestClient(new_credentials)
+
+    assert new_client._load_cached_token() is False
+    assert new_client._token is None
+
+    asyncio.run(old_client.close())
+    asyncio.run(new_client.close())
 
 
 def test_request_reissues_token_after_expired_token_response(tmp_path: Path) -> None:

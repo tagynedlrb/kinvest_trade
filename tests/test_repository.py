@@ -1733,6 +1733,86 @@ def test_reset_virtual_trades_clears_virtual_tables(tmp_path) -> None:
     assert repository.list_virtual_positions() == []
 
 
+def test_reset_active_portfolio_preserves_performance_history(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "test.db")
+    timestamp = "2026-09-27T18:55:00+00:00"
+    repository.upsert_virtual_position(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_price=20.0,
+        currency="USD",
+        opened_at=timestamp,
+        updated_at=timestamp,
+    )
+    repository.save_virtual_order(
+        created_at=timestamp,
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        side="buy",
+        qty=1,
+        fill_price=20.0,
+        currency="USD",
+        session="regular",
+        reason="test_buy",
+    )
+    repository.upsert_virtual_sell_pending(
+        market="overseas",
+        symbol="SOXL",
+        exchange_code="AMEX",
+        qty=1,
+        avg_sell_price=21.0,
+        currency="USD",
+        updated_at=timestamp,
+    )
+    repository.upsert_lab_symbol_state(
+        market="overseas",
+        symbol="CCRN",
+        exchange_code="NASD",
+        action_bias="HOLD",
+        signal_state="CORPORATE_ACTION_REVIEW",
+        note="old_account_position",
+        holding_qty=281,
+        entry_price=13.235,
+        entry_time="2026-07-28T19:07:41+00:00",
+        peak_price=13.26,
+        has_position=1,
+        updated_at=timestamp,
+    )
+    repository.save_cycle_log(
+        logged_at=timestamp,
+        market="overseas",
+        symbol="CCRN",
+        exchange_code="NASD",
+        action_bias="BUY_REAL",
+        action_reason="historical_entry",
+    )
+
+    reset = repository.reset_active_portfolio(
+        note="paper_account_rollover_archived",
+        updated_at="2026-09-27T19:00:00+00:00",
+    )
+
+    assert reset == {
+        "positions": 0,
+        "virtual_positions": 1,
+        "virtual_sell_pending": 1,
+        "lab_symbol_state": 1,
+    }
+    assert repository.list_virtual_positions() == []
+    assert repository.list_virtual_sell_pending() == []
+    assert len(repository.list_virtual_orders()) == 1
+    assert len(repository.query_cycle_log(limit=10)) == 1
+    archived = repository.get_lab_symbol_state("overseas", "CCRN")
+    assert archived is not None
+    assert archived["has_position"] == 0
+    assert archived["holding_qty"] == 0
+    assert archived["entry_price"] is None
+    assert archived["note"] == "paper_account_rollover_archived"
+
+
 def test_reset_all_history_clears_performance_and_virtual_tables(tmp_path) -> None:
     repository = SqliteRepository(tmp_path / "test.db")
     repository.save_cycle_log(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -439,6 +440,12 @@ class KisRestClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def _credential_fingerprint(self) -> str:
+        payload = "\0".join(
+            (self.credentials.env, self.credentials.appkey, self.credentials.appsecret)
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def _load_cached_token(self) -> bool:
         cache_path = self.credentials.token_cache_path
         if not cache_path.exists():
@@ -450,6 +457,9 @@ class KisRestClient:
             return False
 
         token = str(raw.get("access_token", "")).strip()
+        fingerprint = str(raw.get("credential_fingerprint", "")).strip()
+        if fingerprint != self._credential_fingerprint():
+            return False
         expires_at = float(raw.get("expires_at", 0.0) or 0.0)
         if not token or expires_at <= time.time() + 120:
             return False
@@ -464,6 +474,7 @@ class KisRestClient:
         payload = {
             "access_token": self._token,
             "expires_at": self._expires_at,
+            "credential_fingerprint": self._credential_fingerprint(),
         }
         cache_path.write_text(json.dumps(payload), encoding="utf-8")
         cache_path.chmod(0o600)

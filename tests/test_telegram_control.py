@@ -1846,6 +1846,58 @@ def test_log_api_call_saves_to_repository(tmp_path) -> None:
     assert "never-store" not in json.dumps(rows[0])
 
 
+def test_log_api_call_stops_on_expired_paper_account(tmp_path) -> None:
+    repository = SqliteRepository(tmp_path / "telegram_expired_account.db")
+    notifier = DummyNotifier()
+    controller = TelegramLiquidityLabController(
+        config=SimpleNamespace(
+            credentials=SimpleNamespace(
+                profile_name="paper",
+                env="vps",
+                account_no="12345678",
+                account_product_code="01",
+            ),
+            liquidity_lab=SimpleNamespace(loop_interval_sec=20),
+            storage=SimpleNamespace(
+                runtime_state_path=tmp_path / "runtime_state.json"
+            ),
+            auto_trade=SimpleNamespace(usd_krw_fallback_rate=1350.0),
+        ),
+        repository=repository,
+        notifier=notifier,
+    )
+    controller.mode = "running"
+    controller.next_run_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+
+    async def exercise() -> None:
+        payload = {
+            "method": "POST",
+            "path": "/uapi/domestic-stock/v1/trading/order-cash",
+            "tr_id": "VTTC0012U",
+            "success": False,
+            "http_status": 200,
+            "msg_cd": "40910000",
+            "msg1": "모의투자 주문이 불가한 계좌입니다.",
+            "logical_terminal": True,
+            "client_source": "lab_cycle",
+        }
+        controller._log_api_call(payload)
+        controller._log_api_call(payload)
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+
+    assert controller.mode == "stopped"
+    assert controller.next_run_at is None
+    assert controller.last_error == "paper_account_expired:40910000"
+    events = repository.list_event_log(event_type="paper_account_guard_tripped")
+    assert len(events) == 1
+    assert "12345678" not in events[0]["detail"]
+    assert "1234...78-01" in events[0]["detail"]
+    assert len(notifier.messages) == 1
+    assert "[KIS][PAPER_ACCOUNT_GUARD]" in notifier.messages[0]
+
+
 def test_lab_log_command_sends_pnl_summary(tmp_path, save_confirmed_sell) -> None:
     repository = SqliteRepository(tmp_path / "telegram_log_command.db")
     save_confirmed_sell(
@@ -4656,12 +4708,37 @@ class DummyReport:
         return {"watch_targets": [], "domestic_positions": [], "overseas_positions": []}
 
 
+def test_format_symbol_stats_inline_respects_telegram_limit() -> None:
+    symbol_stats = {
+        f"SYM{index:04d}": {
+            "buy_count": 1,
+            "sell_count": 1,
+            "paper_runs": 0,
+            "confirmed_realized_pnl_krw": -1000,
+            "estimated_realized_pnl_krw": -500,
+        }
+        for index in range(500)
+    }
+
+    text = TelegramLiquidityLabController._format_symbol_stats_inline(
+        symbol_stats,
+        max_chars=1200,
+    )
+
+    assert len(text) <= 1200
+    assert text.startswith("SYM0000(")
+    assert "...(+" in text
+    assert text.endswith("종목)")
+
+
 def _build_async_controller() -> TelegramLiquidityLabController:
     controller = TelegramLiquidityLabController(
         config=SimpleNamespace(
             credentials=SimpleNamespace(
                 profile_name="paper",
                 env="vps",
+                account_no="12345678",
+                account_product_code="01",
             ),
             liquidity_lab=SimpleNamespace(
                 loop_interval_sec=20,
@@ -5252,6 +5329,28 @@ def test_write_runtime_state_persists_update_offset() -> None:
     assert payload["telegram_update_offset"] == 9876
     assert payload["telegram_control"]["active_session_id"] == "persisted-session"
     assert "telegram_control_start_notified_at" in payload
+    assert payload["linked_account_masked"] == "1234...78-01"
+    assert len(payload["linked_account_fingerprint"]) == 16
+    assert "12345678" not in json.dumps(payload)
+
+
+def test_restore_runtime_state_stops_on_account_identity_change(tmp_path) -> None:
+    runtime_path = tmp_path / "runtime_state.json"
+    previous = _build_async_controller()
+    previous.config.storage.runtime_state_path = runtime_path
+    previous.next_run_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+    previous._write_runtime_state()
+
+    current = _build_async_controller()
+    current.config.storage.runtime_state_path = runtime_path
+    current.config.credentials.account_no = "87654321"
+
+    current._restore_runtime_state()
+
+    assert current.mode == "stopped"
+    assert current.next_run_at is None
+    assert current.last_error == "account_identity_changed_requires_validation"
+    assert current._account_identity_changed is True
 
 
 def test_write_runtime_state_persists_lab_runtime_state() -> None:

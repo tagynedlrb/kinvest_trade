@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -313,6 +314,8 @@ class TelegramLiquidityLabController:
         self._telegram_poll_last_error_type = ""
         self._telegram_poll_first_status_code: int | None = None
         self._telegram_poll_last_status_code: int | None = None
+        self._account_identity_changed = False
+        self._paper_account_guard_reason: str = ""
         self._deployment_fingerprint: dict[str, object] | None = None
         self.order_admin = OrderAdminHelper(self)
         self.reports = ReportHelper(self)
@@ -362,6 +365,21 @@ class TelegramLiquidityLabController:
         except Exception:  # noqa: BLE001
             _logger.exception("market_session_review_backfill_failed")
         self._write_runtime_state()
+        if self._account_identity_changed:
+            try:
+                await self.notifier.send(
+                    "\n".join(
+                        [
+                            "[KIS][ACCOUNT_GUARD]",
+                            f"현재계좌={self._masked_account_identity() or '-'}",
+                            "상태=자동매매 정지",
+                            "사유=저장된 계좌와 현재 설정 계좌가 다름",
+                            "조치=토큰·국내/해외 잔고 검증 후 새 세션 시작 필요",
+                        ]
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                _logger.exception("account_identity_change_notification_failed")
         try:
             await self.notifier.set_commands(BOT_COMMANDS)
         except Exception:  # noqa: BLE001
@@ -509,6 +527,82 @@ class TelegramLiquidityLabController:
             )
         except Exception:  # noqa: BLE001
             _logger.exception("api_call_log_failed")
+
+        guard_reason = self._paper_account_failure_reason(info)
+        if guard_reason:
+            self._trip_paper_account_guard(reason=guard_reason, info=info)
+
+    def _paper_account_failure_reason(self, info: dict) -> str:
+        if str(getattr(self.config.credentials, "env", "")).lower() != "vps":
+            return ""
+        if bool(info.get("success", False)) or not bool(
+            info.get("logical_terminal", True)
+        ):
+            return ""
+
+        msg_cd = str(info.get("msg_cd", "")).strip()
+        msg1 = str(info.get("msg1", "")).strip().upper()
+        if msg_cd == "40910000":
+            return "paper_account_expired"
+        if msg_cd == "90070000":
+            return "paper_account_identity_mismatch"
+        if "INPUT INVALID_CHECK_ACNO" in msg1:
+            return "paper_account_invalid"
+        return ""
+
+    def _trip_paper_account_guard(self, *, reason: str, info: dict) -> None:
+        if self._paper_account_guard_reason:
+            return
+
+        msg_cd = str(info.get("msg_cd", "")).strip()
+        msg1 = str(info.get("msg1", "")).strip()[:160]
+        self._paper_account_guard_reason = reason
+        self.mode = "stopped"
+        self.next_run_at = None
+        self.last_error = f"{reason}:{msg_cd or 'unknown'}"
+        detail = {
+            "reason": reason,
+            "msg_cd": msg_cd,
+            "msg1": msg1,
+            "tr_id": str(info.get("tr_id", "")),
+            "path": str(info.get("path", "")),
+            "client_source": str(info.get("client_source", "")),
+            "account_masked": self._masked_account_identity(),
+            "action": "automatic_trading_stopped",
+        }
+        try:
+            self.repository.save_event(
+                event_type="paper_account_guard_tripped",
+                detail=detail,
+                cycle_no=self.current_cycle_no,
+                session_id=self.active_session_id,
+            )
+        except Exception:  # noqa: BLE001
+            _logger.exception("paper_account_guard_event_failed")
+        try:
+            self._write_runtime_state()
+        except Exception:  # noqa: BLE001
+            _logger.exception("paper_account_guard_runtime_write_failed")
+
+        message = "\n".join(
+            [
+                "[KIS][PAPER_ACCOUNT_GUARD]",
+                f"현재계좌={self._masked_account_identity() or '-'}",
+                "상태=자동매매 즉시 정지",
+                f"사유={reason}",
+                f"KIS응답={msg_cd or '-'} {msg1 or '-'}",
+                "조치=모의계좌 재발급·API 재신청·자격증명 검증 후 재개",
+            ]
+        )
+        try:
+            asyncio.get_running_loop().create_task(
+                self._send_background_notification(message)
+            )
+        except RuntimeError:
+            _logger.warning(
+                "paper_account_guard_notification_skipped_no_event_loop reason=%s",
+                reason,
+            )
 
     def _new_kis_client(self, *, client_source: str) -> KisRestClient:
         source = str(client_source).strip()[:80]
@@ -1879,8 +1973,9 @@ class TelegramLiquidityLabController:
             self.last_report_summary = self._summarize_report(report, cycle_no)
             self._accumulate_session_performance(report)
             self.last_completed_at = datetime.now(timezone.utc)
-            self.last_error = None
-            self._consecutive_errors = 0
+            if not getattr(self, "_paper_account_guard_reason", ""):
+                self.last_error = None
+                self._consecutive_errors = 0
 
             now_for_state = datetime.now(timezone.utc)
             current_market_state = self._market_state_for_notification(
@@ -2432,6 +2527,35 @@ class TelegramLiquidityLabController:
             result[f"{market}:{symbol}"] = min(count, 1_000_000)
         return result
 
+    def _masked_account_identity(self) -> str:
+        credentials = self.config.credentials
+        account_no = str(getattr(credentials, "account_no", "") or "").strip()
+        product_code = str(
+            getattr(credentials, "account_product_code", "") or ""
+        ).strip()
+        if not account_no:
+            return ""
+        masked = (
+            "*" * len(account_no)
+            if len(account_no) <= 6
+            else f"{account_no[:4]}...{account_no[-2:]}"
+        )
+        return f"{masked}-{product_code}" if product_code else masked
+
+    def _account_fingerprint(self) -> str:
+        credentials = self.config.credentials
+        account_no = str(getattr(credentials, "account_no", "") or "").strip()
+        if not account_no:
+            return ""
+        payload = "\0".join(
+            (
+                str(getattr(credentials, "profile_name", "") or ""),
+                account_no,
+                str(getattr(credentials, "account_product_code", "") or "").strip(),
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
     def _write_runtime_state(self) -> None:
         path = self.config.storage.runtime_state_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2439,6 +2563,8 @@ class TelegramLiquidityLabController:
             "status": self.mode,
             "updated_at": format_kst(datetime.now(timezone.utc)),
             "linked_account": self.config.credentials.profile_name,
+            "linked_account_masked": self._masked_account_identity(),
+            "linked_account_fingerprint": self._account_fingerprint(),
             "telegram_update_offset": self.update_offset,
             "telegram_control_start_notified_at": format_kst(
                 self._last_startup_notification_at
@@ -2533,6 +2659,23 @@ class TelegramLiquidityLabController:
                 skip_reasons=dict(session.get("skip_reasons") or {}),
                 primary_targets=dict(session.get("primary_targets") or {}),
                 symbol_stats=dict(session.get("symbol_stats") or {}),
+            )
+
+        stored_account_fingerprint = str(
+            payload.get("linked_account_fingerprint") or ""
+        ).strip()
+        current_account_fingerprint = self._account_fingerprint()
+        if (
+            stored_account_fingerprint
+            and current_account_fingerprint
+            and stored_account_fingerprint != current_account_fingerprint
+        ):
+            self.mode = "stopped"
+            self.next_run_at = None
+            self.last_error = "account_identity_changed_requires_validation"
+            self._account_identity_changed = True
+            _logger.error(
+                "account identity changed; automatic trading remains stopped"
             )
 
     async def _send_startup_message_if_due(self) -> None:
@@ -3274,20 +3417,35 @@ class TelegramLiquidityLabController:
         return stats
 
     @staticmethod
-    def _format_symbol_stats_inline(symbol_stats: dict[str, dict]) -> str:
+    def _format_symbol_stats_inline(
+        symbol_stats: dict[str, dict], *, max_chars: int = 1200
+    ) -> str:
         if not symbol_stats:
             return "-"
+        items = sorted(symbol_stats.items())
         chunks: list[str] = []
-        for symbol, stats in sorted(symbol_stats.items()):
-            chunks.append(
-                (
-                    f"{symbol}(buy={int(stats.get('buy_count', 0))},sell={int(stats.get('sell_count', 0))},"
-                    f"paper={int(stats.get('paper_runs', 0))},"
-                    f"pnl={int(stats.get('confirmed_realized_pnl_krw', 0))}/"
-                    f"{int(stats.get('estimated_realized_pnl_krw', 0))})"
-                )
+        max_chars = max(32, int(max_chars))
+        for symbol, stats in items:
+            chunk = (
+                f"{symbol}(buy={int(stats.get('buy_count', 0))},sell={int(stats.get('sell_count', 0))},"
+                f"paper={int(stats.get('paper_runs', 0))},"
+                f"pnl={int(stats.get('confirmed_realized_pnl_krw', 0))}/"
+                f"{int(stats.get('estimated_realized_pnl_krw', 0))})"
             )
-        return "; ".join(chunks)
+            included_count = len(chunks) + 1
+            omitted_count = len(items) - included_count
+            suffix = f"; ...(+{omitted_count}종목)" if omitted_count else ""
+            candidate = "; ".join([*chunks, chunk]) + suffix
+            if len(candidate) > max_chars:
+                break
+            chunks.append(chunk)
+        omitted_count = len(items) - len(chunks)
+        if not chunks:
+            return f"...(+{omitted_count}종목)"
+        result = "; ".join(chunks)
+        if omitted_count:
+            result += f"; ...(+{omitted_count}종목)"
+        return result
 
     def _finalize_session_summary(self, *, command: str) -> list[str]:
         self._sync_confirmed_session_performance()

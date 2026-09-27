@@ -276,6 +276,45 @@ python3 main.py auth-check
 python3 main.py balance-check
 ```
 
+### 모의투자 종료 후 새 계좌로 전환
+모의투자를 재신청해 계좌번호가 바뀌면 토큰 발급 성공만으로 연결 완료로 판단하지 않는다.
+토큰은 앱 자격증명 검증이고, 실제 계좌 접근 권한은 국내·해외 잔고 조회로 따로 확인해야 한다.
+
+1. 자동매매 서비스를 먼저 정지한다.
+2. `.env`의 `KIS_VPS_ACCOUNT_NO`, `KIS_VPS_ACCOUNT_PRODUCT_CODE`를 새 계좌로 바꾼다.
+3. 새 모의계좌에 연결된 AppKey/AppSecret을 `keys/vps_appkey.txt`,
+   `keys/vps_appsecret.txt`에 갱신한다.
+4. 아래 세 조회가 모두 성공하는지 확인한다.
+
+```bash
+python3 main.py auth-check
+python3 main.py balance-check
+python3 main.py overseas-balance-check --exchange NASD --currency USD
+```
+
+`INPUT INVALID_CHECK_ACNO`가 나오면 계좌번호 형식뿐 아니라 현재 모의 AppKey/AppSecret이
+새 계좌에 연결됐는지 확인한다. 이 상태에서는 서비스를 재개하지 않는다.
+
+KIS 공식 안내상 `40910000 모의투자 주문이 불가한 계좌입니다`는 기간이 만료된
+모의계좌로 주문할 때 발생한다. 이는 토큰의 `EGW00123` 만료나 홈페이지·앱에 표시되는
+API 유효기간과 다른 계좌 수명 문제다. 잔고 조회 성공만으로 주문 가능 기간까지
+입증되지는 않으므로 주문 원장의 `msg_cd`도 함께 확인한다.
+
+실행 중 `40910000`, `90070000`, `INPUT INVALID_CHECK_ACNO`가 종단 응답으로
+확인되면 `PAPER_ACCOUNT_GUARD`가 첫 응답에서 자동매매를 `stopped`로 바꾸고,
+원장·runtime·Telegram에 한 번만 기록한다.
+
+runtime 상태에는 계좌번호 원문 대신 `linked_account_masked`와 비가역
+`linked_account_fingerprint`를 기록한다. 저장된 계좌와 현재 설정이 달라지면 서비스는
+자동으로 `stopped`가 되고 Telegram `ACCOUNT_GUARD` 경고를 보낸다.
+
+현재 포트폴리오만 새로 시작해야 할 때는 DB 온라인 백업 뒤
+`SqliteRepository.reset_active_portfolio()`를 사용한다. 이 연산은 현재 포지션,
+가상보유, 정산대기, 활성 보유 플래그만 초기화하며 `cycle_log`, 체결원장,
+`virtual_orders`, 시장레짐, 일별 시장총평, 정책평가는 보존한다. 구 계좌 세션은
+`account_rollover`로 마감하고 전환 이벤트를 남겨 과거 성과와 새 계좌 성과를 시각 경계로
+분리한다. `/lab_reset_all`은 과거 성과까지 삭제하므로 계좌 전환 용도로 사용하지 않는다.
+
 ### 4. 시세/지표 조회
 ```bash
 python3 main.py indicator-check 005930 --timeframe minute

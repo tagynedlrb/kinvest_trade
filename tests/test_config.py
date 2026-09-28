@@ -130,7 +130,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     overseas = config.market_policies.overseas
 
     assert domestic.policy_id == "domestic_momentum_v10"
-    assert overseas.policy_id == "overseas_momentum_v6"
+    assert overseas.policy_id == "overseas_momentum_v7"
     assert domestic.auto_trade.inverse_trailing_activation_net_pct == 0.005
     assert domestic.auto_trade.inverse_trailing_drawdown_pct == 0.003
     assert overseas.auto_trade.inverse_trailing_activation_net_pct == 0.006
@@ -252,9 +252,11 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.strategy_guard_probe_enabled is True
     assert overseas.auto_trade.strategy_guard_probe_strategy_flags == [
         "VWAP+RSI",
+        "VWAP+VOL+RSI",
     ]
     assert overseas.auto_trade.strategy_guard_force_probe_strategy_flags == [
         "VWAP+RSI",
+        "VWAP+VOL+RSI",
     ]
     assert overseas.auto_trade.strategy_guard_probe_max_entries_per_session == 1
     assert overseas.auto_trade.strategy_guard_probe_max_submissions_per_session == 2
@@ -273,6 +275,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     ]
     assert overseas.auto_trade.entry_strategy_allowlist == [
         "VWAP+RSI",
+        "VWAP+VOL+RSI",
         "INV",
     ]
     assert domestic.auto_trade.entry_min_minutes_to_regular_close == 60
@@ -303,7 +306,9 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
         "VOL",
         "VWAP+VOL",
     ]
-    assert overseas.auto_trade.entry_confirmation_strategy_flags == ["VWAP+RSI"]
+    assert overseas.auto_trade.entry_confirmation_strategy_flags == [
+        "VWAP+RSI", "VWAP+VOL+RSI",
+    ]
     assert domestic.auto_trade.dynamic_pool_approved_leveraged_symbols == [
         "122630"
     ]

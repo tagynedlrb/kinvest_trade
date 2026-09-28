@@ -513,14 +513,18 @@ python3 main.py liquidity-lab
 - 보유 중인 해외 종목은 순위와 무관하게 signal 조회 대상에 항상 포함한다.
 - 비보유 해외 종목이 chart signal 생성에 반복 실패하면 `overseas_signal_failure_threshold`(기본 `3`)회 이후 `overseas_signal_failure_cooldown_minutes`(기본 `180`분) 동안 제외한다. 억제 이벤트에는 차트 API 단계 오류, 일봉 이력 부족, 분봉 이력 부족을 구분하고 실제/요구 행 수를 함께 남긴다. 유효 신호가 없으므로 이를 실행 가능한 차단 진입이나 거래 빈도 표본으로 세지 않는다.
 - `watch_targets`와 보유 종목 청산 판단은 같은 사이클에 만든 `_signal_cache`를 재사용해 chart API를 다시 호출하지 않는다.
+- 해외 차트 갱신에 실패하면 메모리 신호의 신선도를 연장하지 않는다. 해당 종목은
+  이전 영구 스냅샷과 최신 시세로 청산을 계속 감시하고, 신규 매수는 차단한다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
-- 최근 성과 기준으로 해외 `VWAP` 단독, `RSI` 단독, `VOL` 단독 진입은 기본 차단한다(`overseas_block_standalone_vwap=true`, `overseas_block_standalone_rsi=true`, `overseas_block_standalone_vol=true`). 해외에서는 `VWAP+RSI`, `VOL+RSI`처럼 보조 확인이 둘 이상 붙은 신호를 우선한다.
-- 국내 `VWAP` 단독 신호는 `entry_confirmation_strategy_flags=["VWAP"]`에 따라
-  공통 모멘텀 진입식도 동시에 `ready`여야 한다. 감시 상태, 최종 후보 선정,
+- 미장 v7은 `VWAP+RSI`, `VWAP+VOL+RSI`만 축소 모의 검증진입으로 허용한다.
+  거래량 2배 돌파 확인으로 `VOL`이 추가되면 허용목록에서 탈락하던 충돌을 해소했다.
+  단독 신호와 `VWAP+VOL`, `VOL+RSI`는 계속 차단하며 인버스는 별도 섀도 정책을 쓴다.
+- 국내 `VWAP`, `VOL`, `VWAP+VOL`과 해외 `VWAP+RSI`, `VWAP+VOL+RSI`는 각 시장의
+  `entry_confirmation_strategy_flags`에 따라 모멘텀 진입식도 `ready`여야 한다.
+  감시 상태, 최종 후보 선정,
   주문 제출 직전 모두 같은 검사를 반복하며 거래량·추세·모멘텀·추격매수
   조건 중 하나라도 충족하지 못하면 `strategy_confirmation_*`로 대기한다.
-  미장 목록은 비어 있어 이 국장 결정을 복제하지 않고 기존 미장 복합신호
-  정책을 유지한다.
+  각 시장의 거래량·봉 간격·허용전략·지수 조건은 시장별 정책 파일로 관리한다.
 - 체결확정 기반 동적 전략 가드는 국장·미장을 `(시장, 전략)` 키로 따로 계산한다.
   관찰시간·최소 거래수·평균 및 투입자본가중 순손익 임계값·감시 전략·최소 최종세션은 각
   `config/market_policies/{domestic,overseas}.json`에 처음 복제한 뒤 각 시장에서
@@ -530,11 +534,12 @@ python3 main.py liquidity-lab
   큰 포지션 손실로 투입자본가중 성과가 임계값 이하면 차단되며, 해제 시에도
   두 지표가 모두 회복돼야 한다. 현재 미장 자본가중 임계값은 `-0.10%`,
   국장은 `-0.30%`로 시장별 파일이 각각 소유한다.
-- 현재 국장 `domestic_momentum_v8`은 `RSI`, `VWAP+VOL`을 정상 슬롯의 10%인
-  검증진입으로 고정하고 세션당 유효 4회·제출 8회까지 허용한다. 단, KRX 정규장
+- 현재 국장 `domestic_momentum_v10`은 `RSI`, `VWAP+VOL`을 정상 슬롯의 10%인
+  검증진입으로 고정하고 거래세 면제상품에 세션당 유효 2회·제출 4회까지 허용한다. 단, KRX 정규장
   마감 60분 전인 14:30 KST부터 신규 진입만 중지한다. 차단 기회는
-  `market_close_blocked` 보유시간 모의군에 남긴다. 미장 `overseas_momentum_v5`는
-  `VWAP+RSI`를 10%·유효 1회·제출 2회로 고정하며 국장 시간 제한을 공유하지 않는다.
+  `market_close_blocked` 보유시간 모의군에 남긴다. 미장 `overseas_momentum_v7`은
+  두 허용 복합전략을 합쳐 10%·유효 1회·제출 2회로 고정한다. 미장도 현지 정규장
+  마감 60분 전에는 신규 진입을 중지하고, 검증진입은 같은 세션 Nasdaq 수익률 0% 이상을 요구한다.
   `/lab_guard`의 `강제검증=`에서 현재 고정 대상을 확인한다.
 - 해외 신규 진입은 전략 신호가 있어도 `volume_ratio`가 `overseas_min_strategy_volume_ratio`(기본 `0.8`)보다 낮으면 `overseas_volume_floor`로 대기한다.
 - `liquidity_lab`의 매수 수량은 기본적으로 슬롯 기반이다. `use_slot_sizing=true`이면 주문가능 금액에 `slot_entry_pct`를 곱한 예산 안에서 수량을 계산하고, 조회 실패 시에만 `*_test_order_qty` 고정 수량으로 폴백한다.

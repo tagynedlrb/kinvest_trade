@@ -181,35 +181,14 @@ class WatchStateHelper:
         snapshot = await service._load_overseas_signal(candidate)
         if snapshot is not None:
             service._signal_cache[symbol] = snapshot
-            updated_map[symbol] = now_utc
+            updated_map[symbol] = datetime.now(timezone.utc)
             return snapshot
 
-        if cached is not None:
-            fallback = self.with_live_price(
-                cached,
-                price=candidate.last_price,
-                bid=candidate.bid,
-                ask=candidate.ask,
-            )
-            service._signal_cache[symbol] = fallback
-            updated_map[symbol] = now_utc
-            return fallback
-
-        state = self.get_persisted_symbol_state("overseas", symbol)
-        fallback = self.state_snapshot_with_live_price(
-            state,
-            price=candidate.last_price,
-            bid=candidate.bid,
-            ask=candidate.ask,
-        )
-        if fallback is not None:
-            service._signal_cache[symbol] = fallback
-            updated_map[symbol] = now_utc
-            _logger.info(
-                "overseas_signal_fallback_used symbol=%s source=persisted_state",
-                symbol,
-            )
-        return fallback
+        # Watch-target construction retains persisted snapshots for exits, but
+        # failed refreshes must never turn stale indicators into fresh entries.
+        service._signal_cache.pop(symbol, None)
+        updated_map.pop(symbol, None)
+        return None
 
     def persist_watch_target_state(
         self,

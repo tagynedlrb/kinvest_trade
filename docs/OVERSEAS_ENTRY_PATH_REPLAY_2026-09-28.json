@@ -1,0 +1,212 @@
+{
+  "since": "2026-09-21T00:00:00+00:00",
+  "replay_policy_id": "overseas_momentum_v7",
+  "episode_count": 329,
+  "orderable_episode_count": 255,
+  "invalid_snapshots": 0,
+  "signal_formula_counts": {
+    "outside_paper_orderable_session": 74,
+    "HOLD:VWAP+VOL|formula:volume_low": 36,
+    "HOLD:VWAP+VOL+RSI|formula:volume_low": 36,
+    "HOLD:VWAP+VOL|formula:trend_down": 28,
+    "BUY:VWAP+VOL|formula:trend_down": 25,
+    "HOLD:VWAP+VOL+RSI|formula:trend_down": 22,
+    "BUY:VWAP|formula:volume_low": 21,
+    "BUY:VWAP+RSI|formula:volume_low": 16,
+    "HOLD:VOL+RSI|formula:volume_low": 9,
+    "HOLD:VOL+RSI|formula:trend_down": 9,
+    "HOLD:VOL|formula:trend_down": 9,
+    "BUY:VOL|formula:trend_down": 9,
+    "HOLD:VOL|formula:volume_low": 5,
+    "HOLD:|formula:volume_low": 5,
+    "HOLD:VWAP|formula:volume_low": 3,
+    "BUY:VWAP+VOL|formula:pullback_entry": 3,
+    "BUY:VWAP+RSI|formula:trend_down": 3,
+    "BUY:VWAP+VOL|formula:momentum_weak": 2,
+    "HOLD:|formula:trend_down": 2,
+    "BUY:RSI|formula:volume_low": 2,
+    "BUY:VWAP+VOL+RSI|formula:trend_down": 2,
+    "HOLD:VWAP+RSI|formula:volume_low": 2,
+    "BUY:VOL|formula:near_breakout": 1,
+    "BUY:VWAP|formula:pullback_entry": 1,
+    "BUY:VWAP|formula:trend_down": 1,
+    "BUY:VOL|formula:volume_momentum_fast_entry": 1,
+    "BUY:RSI|formula:trend_down": 1,
+    "HOLD:VWAP+RSI|formula:trend_down": 1
+  },
+  "triple_consensus_count": 2,
+  "triple_formula_ready_count": 0,
+  "triple_consensus_examples": [
+    {
+      "symbol": "QMCO",
+      "opened_at": "2026-09-25T19:54:20.550307+00:00",
+      "recorded_policy_id": "overseas_momentum_v6",
+      "original_block_reason": "entry_too_close_to_regular_close",
+      "formula_ready": false,
+      "formula_reason": "trend_down",
+      "v6_allowlist_pass": false,
+      "current_allowlist_pass": true,
+      "benchmark_return_pct": 0.5914021003460723,
+      "volume_ratio": 2.422652307896878
+    },
+    {
+      "symbol": "ITGR",
+      "opened_at": "2026-09-28T15:27:24.532267+00:00",
+      "recorded_policy_id": "overseas_momentum_v6",
+      "original_block_reason": "strategy_not_allowed_for_market_policy",
+      "formula_ready": false,
+      "formula_reason": "trend_down",
+      "v6_allowlist_pass": false,
+      "current_allowlist_pass": true,
+      "benchmark_return_pct": -0.99982562899169,
+      "volume_ratio": 4.095205333595427
+    }
+  ],
+  "observed_cohort_horizons": [
+    {
+      "cohort": "entry_trend_blocked",
+      "horizon_minutes": 15,
+      "samples": 62,
+      "sessions": 2,
+      "mean_net_return": -0.0011822997598074112,
+      "median_net_return": -0.005172827940898031,
+      "trimmed_mean_net_return": -0.005504921534514687,
+      "positive_fraction": 0.14516129032258066
+    },
+    {
+      "cohort": "entry_trend_blocked",
+      "horizon_minutes": 30,
+      "samples": 50,
+      "sessions": 2,
+      "mean_net_return": -0.006331771512128766,
+      "median_net_return": -0.005327442589751499,
+      "trimmed_mean_net_return": -0.006090358843468186,
+      "positive_fraction": 0.16
+    },
+    {
+      "cohort": "entry_trend_blocked",
+      "horizon_minutes": 60,
+      "samples": 36,
+      "sessions": 2,
+      "mean_net_return": -0.0035566152374826962,
+      "median_net_return": -0.004103320307694516,
+      "trimmed_mean_net_return": -0.003004314819447243,
+      "positive_fraction": 0.3611111111111111
+    },
+    {
+      "cohort": "entry_volume_blocked",
+      "horizon_minutes": 15,
+      "samples": 86,
+      "sessions": 2,
+      "mean_net_return": -0.007111060141610361,
+      "median_net_return": -0.006130954181999507,
+      "trimmed_mean_net_return": -0.007198227582362289,
+      "positive_fraction": 0.11627906976744186
+    },
+    {
+      "cohort": "entry_volume_blocked",
+      "horizon_minutes": 30,
+      "samples": 75,
+      "sessions": 2,
+      "mean_net_return": -0.006843622097747756,
+      "median_net_return": -0.006153188341890672,
+      "trimmed_mean_net_return": -0.006690086889318062,
+      "positive_fraction": 0.14666666666666667
+    },
+    {
+      "cohort": "entry_volume_blocked",
+      "horizon_minutes": 60,
+      "samples": 56,
+      "sessions": 2,
+      "mean_net_return": -0.0070171306600835615,
+      "median_net_return": -0.006403504128813145,
+      "trimmed_mean_net_return": -0.006995093144071274,
+      "positive_fraction": 0.16071428571428573
+    },
+    {
+      "cohort": "market_close_blocked",
+      "horizon_minutes": 15,
+      "samples": 6,
+      "sessions": 1,
+      "mean_net_return": -0.003787531303284533,
+      "median_net_return": -0.004395600000000013,
+      "trimmed_mean_net_return": -0.003787531303284533,
+      "positive_fraction": 0.0
+    },
+    {
+      "cohort": "market_close_blocked",
+      "horizon_minutes": 30,
+      "samples": 4,
+      "sessions": 1,
+      "mean_net_return": -0.010519405026436737,
+      "median_net_return": -0.008513346239643907,
+      "trimmed_mean_net_return": -0.010519405026436737,
+      "positive_fraction": 0.0
+    },
+    {
+      "cohort": "market_policy_strategy_blocked",
+      "horizon_minutes": 15,
+      "samples": 52,
+      "sessions": 2,
+      "mean_net_return": -0.002682773877121681,
+      "median_net_return": -0.0050206,
+      "trimmed_mean_net_return": -0.0053002055161425286,
+      "positive_fraction": 0.15384615384615385
+    },
+    {
+      "cohort": "market_policy_strategy_blocked",
+      "horizon_minutes": 30,
+      "samples": 48,
+      "sessions": 2,
+      "mean_net_return": -0.0057616663376032036,
+      "median_net_return": -0.005407300896897074,
+      "trimmed_mean_net_return": -0.00585823356872891,
+      "positive_fraction": 0.125
+    },
+    {
+      "cohort": "market_policy_strategy_blocked",
+      "horizon_minutes": 60,
+      "samples": 37,
+      "sessions": 2,
+      "mean_net_return": -0.006093408872024775,
+      "median_net_return": -0.0050206,
+      "trimmed_mean_net_return": -0.005979281078585737,
+      "positive_fraction": 0.21621621621621623
+    },
+    {
+      "cohort": "strategy_confirmation_blocked",
+      "horizon_minutes": 15,
+      "samples": 17,
+      "sessions": 2,
+      "mean_net_return": -0.006417048214995157,
+      "median_net_return": -0.006262064928615765,
+      "trimmed_mean_net_return": -0.006623900418294825,
+      "positive_fraction": 0.058823529411764705
+    },
+    {
+      "cohort": "strategy_confirmation_blocked",
+      "horizon_minutes": 30,
+      "samples": 15,
+      "sessions": 2,
+      "mean_net_return": -0.0075468914261858705,
+      "median_net_return": -0.006262064928615765,
+      "trimmed_mean_net_return": -0.007013610231740571,
+      "positive_fraction": 0.06666666666666667
+    },
+    {
+      "cohort": "strategy_confirmation_blocked",
+      "horizon_minutes": 60,
+      "samples": 10,
+      "sessions": 2,
+      "mean_net_return": -0.010870578031196879,
+      "median_net_return": -0.006529247190723245,
+      "trimmed_mean_net_return": -0.00911247889069551,
+      "positive_fraction": 0.0
+    }
+  ],
+  "limitations": [
+    "Entry horizon episodes are sampled observations, not independent trades.",
+    "Replay checks signals and formula only; broker fills, market gates, session budgets and slippage are not replayed.",
+    "Observed horizon returns belong to the original cohorts, not the proposed policy."
+  ]
+}

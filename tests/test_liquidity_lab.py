@@ -6020,6 +6020,68 @@ def test_market_policy_can_force_allowed_strategy_into_small_probe() -> None:
     ) == "paper_environment_required"
 
 
+@pytest.mark.parametrize(
+    "env,volume_ratio,benchmark_return,effective_entries,expected_reason",
+    [
+        ("vps", 3.0, 0.6, 0, ""),
+        ("prod", 3.0, 0.6, 0, "paper_environment_required"),
+        ("vps", 1.0, 0.6, 0, "strategy_confirmation_volume_low"),
+        ("vps", 3.0, -0.5, 0, "benchmark_floor_not_met"),
+        ("vps", 3.0, 0.6, 1, "session_limit_reached"),
+    ],
+)
+def test_overseas_consensus_reaches_probe_without_bypassing_gates(
+    env, volume_ratio, benchmark_return, effective_entries, expected_reason,
+) -> None:
+    service = _build_run_service()
+    loaded = load_app_config(
+        Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
+    )
+    service.config.market_policies = loaded.market_policies
+    service.market_policy_registry = None
+    service.config.credentials.env = env
+    service._entry_time_block_reason = lambda **_kwargs: ""
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True,
+        "observation_age_sec": 0,
+        "return_pct": benchmark_return,
+    }
+    # The existing market-wide budget must also cover the added consensus flag.
+    service.repository.get_strategy_guard_probe_usage = lambda **_kwargs: {
+        "submission_attempts": effective_entries,
+        "effective_entries": effective_entries,
+    }
+    snapshot = _snapshot(
+        price=20.0, vwap=20.0, rsi14=45.0,
+        volume_ratio=volume_ratio, macd_line=0.1, macd_signal=0.05,
+    )
+    consensus = service._get_strategy_manager("COIN", "overseas").evaluate(
+        "COIN", snapshot, commit=False,
+    )
+    assert consensus.signal == "BUY"
+    assert consensus.flag == (
+        "VWAP+VOL+RSI" if volume_ratio >= 2.0 else "VWAP+RSI"
+    )
+    target = service._build_watch_target_status(
+        market="overseas", code="COIN", exchange_code="NASD",
+        price=20.0, activity_score=12.0, signal_snapshot=snapshot,
+        held_position=None, holding_qty=0,
+    )
+    assert target.strategy_flag == consensus.flag
+    if expected_reason:
+        assert target.action_bias == "WAIT"
+        assert expected_reason in target.note
+    else:
+        assert service._evaluate_entry_setup(snapshot, "COIN", "overseas").ready
+        assert target.action_bias == "BUY"
+        context = service._strategy_guard_probe_context(
+            market="overseas", strategy_flag=consensus.flag,
+        )
+        assert context["admitted"] is True
+        assert context["slot_multiplier"] == 0.10
+        assert service._strategy_guard_probe_qty(100, context) == 10
+
+
 def test_domestic_forced_probe_excludes_transaction_tax_products() -> None:
     service = _build_run_service()
     loaded = load_app_config(
@@ -8902,7 +8964,7 @@ def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> Non
     assert len(rows) == 8
     assert len(matured) == 1
     assert matured[0]["horizon_minutes"] == 5
-    assert matured[0]["policy_id"] == "overseas_momentum_v6"
+    assert matured[0]["policy_id"] == "overseas_momentum_v7"
     assert matured[0]["round_trip_cost_pct"] == pytest.approx(0.0050206)
     assert matured[0]["estimated_net_pnl_pct"] == pytest.approx(0.0049794)
     assert matured[0]["context_json"]["cost_calculation_version"] == (
@@ -11371,6 +11433,54 @@ def test_get_overseas_signal_for_candidate_reuses_recent_cache_without_reload() 
 
     assert snapshot is not None
     assert snapshot.price == 170.29
+
+
+@pytest.mark.parametrize("source", ["memory", "persisted"])
+def test_failed_overseas_chart_refresh_does_not_renew_stale_signal(source) -> None:
+    service = _build_run_service()
+    old_snapshot = _snapshot(price=20.0, vwap=20.0, rsi14=45.0)
+    old_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+    service._signal_cache_updated_at = {}
+    if source == "memory":
+        service._signal_cache["COIN"] = old_snapshot
+        service._signal_cache_updated_at["COIN"] = old_time
+    service.repository.upsert_lab_symbol_state(
+        market="overseas", symbol="COIN", exchange_code="NASD",
+        action_bias="HOLD", signal_state="HOLD", note="previous_snapshot",
+        strategy_flag="VWAP+RSI", entry_by="VWAP", holding_qty=2,
+        last_price=20.0, has_position=1, snapshot_json=asdict(old_snapshot),
+        updated_at=old_time.isoformat(),
+    )
+    reload_count = 0
+
+    async def failed_reload(_candidate):
+        nonlocal reload_count
+        reload_count += 1
+        return None
+
+    service._load_overseas_signal = failed_reload
+    candidate = OverseasScanResult(
+        symbol="COIN", exchange_code="NASD", last_price=18.0,
+        bid=17.99, ask=18.01, spread_pct=0.001,
+        change_rate_pct=-10.0, volume=1000000, orderable_qty=0,
+        fx_rate_krw=1350.0, activity_score=0.0,
+    )
+    for _ in range(2):
+        assert asyncio.run(service._get_overseas_signal_for_candidate(candidate)) is None
+        assert "COIN" not in service._signal_cache_updated_at
+        assert service._signal_cache.get("COIN") is None
+    assert reload_count == 2
+    # A failed entry refresh must still leave the persisted exit path usable.
+    held = OverseasHeldPosition(
+        symbol="COIN", exchange_code="NASD", quantity=2, orderable_qty=2,
+        avg_price=20.0, current_price=18.0, pnl_pct=-0.10,
+    )
+    target = service._build_watch_target_status(
+        market="overseas", code="COIN", exchange_code="NASD",
+        price=18.0, activity_score=0.0, signal_snapshot=None,
+        held_position=held, holding_qty=2,
+    )
+    assert target.action_bias == "SELL"
 
 
 def test_domestic_signal_uses_one_minute_kis_bar_elapsed_time(monkeypatch) -> None:

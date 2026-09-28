@@ -1,5 +1,5 @@
 {
-  "policy_id": "domestic_momentum_v9",
+  "policy_id": "domestic_momentum_v10",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {
@@ -154,12 +154,12 @@
     "dynamic_pool_approved_leveraged_symbols": ["122630"],
     "inverse_regime_enabled": true,
     "inverse_execution_mode": "shadow",
-    "inverse_entry_formula": "regime_trend_breakout_v1",
+    "inverse_entry_formula": "regime_trend_breakout_v2",
     "inverse_benchmark_return_threshold_pct": -1.0,
     "inverse_require_same_session": true,
     "inverse_require_product_intraday_up": true,
     "inverse_min_product_volume_ratio": 1.2,
-    "inverse_trend_breakout_benchmark_threshold_pct": -3.0,
+    "inverse_trend_breakout_benchmark_threshold_pct": -1.0,
     "inverse_trend_breakout_min_volume_ratio": 0.8,
     "inverse_trend_breakout_min_breakout_distance_pct": -0.005,
     "inverse_trend_breakout_max_rsi14": 85.0,

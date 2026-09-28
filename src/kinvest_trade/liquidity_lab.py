@@ -96,6 +96,7 @@ _ENTRY_HORIZON_MINUTES = (5, 10, 15, 30, 45, 60, 90, 120)
 _DEDICATED_INVERSE_ENTRY_FORMULAS = frozenset(
     {
         "regime_trend_breakout_v1",
+        "regime_trend_breakout_v2",
         "us_regime_trend_breakout_v1",
     }
 )
@@ -8689,11 +8690,27 @@ class LiquidityLabService:
         On API failure, fall back to the previous cycle cache so exit scans still include
         existing positions.
         """
+        cycle = getattr(self, "_cycle_count", 0)
+        cache = getattr(self, "_overseas_balance_cache", {})
+        exchange_codes = self._known_overseas_exchange_codes()
+        cached = cache.get("data", {})
+        cached_exchange_codes = {
+            str(value).strip().upper()
+            for value in (
+                cache.get("exchange_codes")
+                or (cached.keys() if isinstance(cached, dict) else [])
+            )
+            if str(value).strip()
+        }
+        cache_complete = bool(
+            (
+                cache.get("complete") is True
+                or ("complete" not in cache and bool(cached))
+            )
+            and set(exchange_codes).issubset(cached_exchange_codes)
+        )
         try:
-            cycle = getattr(self, "_cycle_count", 0)
-            cache = getattr(self, "_overseas_balance_cache", {})
-            if cache.get("cycle") == cycle:
-                cached = cache.get("data", {})
+            if cache.get("cycle") == cycle and cache_complete:
                 held: set[str] = set(self._get_virtual_held_symbols())
                 for balance in cached.values():
                     for row in balance.get("positions", []):
@@ -8706,7 +8723,6 @@ class LiquidityLabService:
                 self._last_held_symbols = held
                 return held
 
-            exchange_codes = self._known_overseas_exchange_codes()
             held: set[str] = set(self._get_virtual_held_symbols())
             raw_balances: dict[str, dict] = {}
             for exchange_code in sorted(exchange_codes):
@@ -8725,14 +8741,41 @@ class LiquidityLabService:
             self._overseas_balance_cache = {
                 "cycle": cycle,
                 "data": raw_balances,
+                "exchange_codes": sorted(exchange_codes),
+                "complete": True,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             self._last_held_symbols = held
             return held
         except Exception as exc:  # noqa: BLE001
-            fallback = self._last_held_symbols or self._get_virtual_held_symbols()
+            virtual_symbols = set(self._get_virtual_held_symbols())
+            cached_live_symbols: set[str] = set()
+            if cache_complete:
+                for balance in cached.values():
+                    for row in balance.get("positions", []):
+                        if parse_kis_number(row.get("ovrs_cblc_qty")) <= 0:
+                            continue
+                        symbol = str(row.get("ovrs_pdno", "")).strip().upper()
+                        if symbol:
+                            cached_live_symbols.add(symbol)
+            fallback = (
+                cached_live_symbols | virtual_symbols
+                if cache_complete
+                else set(getattr(self, "_last_held_symbols", set()) or set())
+                | virtual_symbols
+            )
+            fallback_description = "캐시 없음"
+            if cache_complete:
+                fallback_description = (
+                    "이전 캐시로 대체"
+                    if cached_live_symbols
+                    else "확인된 빈 잔고 캐시로 대체(보유 0종목)"
+                )
+            elif fallback:
+                fallback_description = "이전 종목 캐시로 대체"
             _logger.warning(
                 "[POSITIONS] 해외 보유종목 사전조회 실패 - %s (error=%s)",
-                "이전 캐시로 대체" if fallback else "캐시 없음",
+                fallback_description,
                 exc,
             )
             self._save_event(
@@ -8743,6 +8786,11 @@ class LiquidityLabService:
                     "error_type": type(exc).__name__,
                     "error": str(exc)[:200],
                     "fallback_symbol_count": len(fallback),
+                    "fallback_cache_valid": cache_complete,
+                    "fallback_cache_empty": bool(
+                        cache_complete and not cached_live_symbols
+                    ),
+                    "fallback_cache_cycle": cache.get("cycle"),
                 },
             )
             return fallback
@@ -9047,11 +9095,27 @@ class LiquidityLabService:
         positions_by_key: dict[tuple[str, str], OverseasHeldPosition] = {}
         cycle = getattr(self, "_cycle_count", 0)
         cache = getattr(self, "_overseas_balance_cache", {})
-        if cache.get("cycle") == cycle and cache.get("data"):
+        cached_exchange_codes = {
+            str(value).strip().upper()
+            for value in (
+                cache.get("exchange_codes")
+                or (cache.get("data") or {}).keys()
+            )
+            if str(value).strip()
+        }
+        cache_complete = bool(
+            (
+                cache.get("complete") is True
+                or ("complete" not in cache and bool(cache.get("data")))
+            )
+            and set(exchange_codes).issubset(cached_exchange_codes)
+        )
+        if cache.get("cycle") == cycle and cache_complete:
             balance_map = cache["data"]
         else:
             previous_balance_map = cache.get("data") or {}
             balance_map: dict[str, dict] = {}
+            direct_success_codes: set[str] = set()
             for exchange_code in sorted(exchange_codes):
                 try:
                     balance = await self.client.get_overseas_balance(
@@ -9059,15 +9123,21 @@ class LiquidityLabService:
                         currency_code="USD",
                     )
                     balance_map[exchange_code] = balance
+                    direct_success_codes.add(exchange_code)
                 except Exception as exc:  # noqa: BLE001
                     # Dropping this exchange's holdings silently would hide a
                     # real held position from stop-loss/exit monitoring for
                     # this cycle. Fall back to its last known-good snapshot
                     # instead, matching the sibling domestic-balance handling.
+                    fallback_available = exchange_code in previous_balance_map
                     fallback = previous_balance_map.get(exchange_code)
                     _logger.warning(
                         "[POSITIONS] 해외 잔고 조회 실패 - %s (exchange=%s, error=%s)",
-                        "이전 캐시로 대체" if fallback else "해당 거래소 보유종목 누락(캐시 없음)",
+                        (
+                            "이전 캐시로 대체"
+                            if fallback_available
+                            else "해당 거래소 보유종목 누락(캐시 없음)"
+                        ),
                         exchange_code,
                         exc,
                     )
@@ -9079,14 +9149,23 @@ class LiquidityLabService:
                             "reason": "overseas_balance_lookup_failed",
                             "exchange_code": exchange_code,
                             "error": str(exc)[:200],
+                            "fallback_cache_used": fallback_available,
                         },
                     )
-                    if fallback is not None:
+                    if fallback_available:
                         balance_map[exchange_code] = fallback
                     continue
+            complete = set(exchange_codes).issubset(balance_map)
             self._overseas_balance_cache = {
                 "cycle": cycle,
                 "data": balance_map,
+                "exchange_codes": sorted(balance_map),
+                "complete": complete,
+                "fetched_at": (
+                    datetime.now(timezone.utc).isoformat()
+                    if direct_success_codes == set(exchange_codes)
+                    else cache.get("fetched_at")
+                ),
             }
 
         for exchange_code, balance in balance_map.items():

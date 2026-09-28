@@ -129,7 +129,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic = config.market_policies.domestic
     overseas = config.market_policies.overseas
 
-    assert domestic.policy_id == "domestic_momentum_v9"
+    assert domestic.policy_id == "domestic_momentum_v10"
     assert overseas.policy_id == "overseas_momentum_v6"
     assert domestic.auto_trade.inverse_trailing_activation_net_pct == 0.005
     assert domestic.auto_trade.inverse_trailing_drawdown_pct == 0.003
@@ -321,11 +321,15 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     assert overseas.auto_trade.inverse_execution_mode == "shadow"
     assert (
         domestic.auto_trade.inverse_entry_formula
-        == "regime_trend_breakout_v1"
+        == "regime_trend_breakout_v2"
     )
     assert (
         overseas.auto_trade.inverse_entry_formula
         == "us_regime_trend_breakout_v1"
+    )
+    assert (
+        domestic.auto_trade.inverse_trend_breakout_benchmark_threshold_pct
+        == -1.0
     )
     assert (
         overseas.auto_trade.inverse_trend_breakout_benchmark_threshold_pct

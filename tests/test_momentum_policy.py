@@ -917,11 +917,11 @@ def test_inverse_etf_can_enter_when_benchmark_and_product_confirm() -> None:
     assert result.ready is True
 
 
-def test_domestic_inverse_regime_trend_breakout_accepts_moderate_participation() -> None:
+def test_domestic_inverse_v2_accepts_early_decline_with_moderate_participation() -> None:
     config = replace(
         _build_config(),
         inverse_require_nav_validation=True,
-        inverse_trend_breakout_benchmark_threshold_pct=-3.0,
+        inverse_trend_breakout_benchmark_threshold_pct=-1.0,
         inverse_trend_breakout_min_volume_ratio=0.8,
         inverse_trend_breakout_min_breakout_distance_pct=-0.005,
         inverse_trend_breakout_max_rsi14=85.0,
@@ -941,7 +941,7 @@ def test_domestic_inverse_regime_trend_breakout_accepts_moderate_participation()
             spread_pct=0.0008,
         ),
         regime_eligible=True,
-        benchmark_return_pct=-4.65,
+        benchmark_return_pct=-1.07,
         etf_metadata={
             "available": True,
             "tracking_multiplier": -1.0,

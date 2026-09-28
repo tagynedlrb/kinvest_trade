@@ -4984,6 +4984,80 @@ def test_get_held_symbols_records_balance_lookup_failure_and_uses_cache(
     assert detail["fallback_symbol_count"] == 1
 
 
+def test_get_held_symbols_treats_verified_empty_balance_as_valid_cache(
+    caplog,
+) -> None:
+    service = _build_run_service()
+    service._cycle_count = 8
+    service._overseas_balance_cache = {
+        "cycle": 7,
+        "data": {"NASD": {"positions": []}},
+        "exchange_codes": ["NASD"],
+        "complete": True,
+        "fetched_at": "2026-09-28T10:00:00+00:00",
+    }
+    service._last_held_symbols = set()
+    service._known_overseas_exchange_codes = lambda: {"NASD"}
+
+    class RaisingClient:
+        async def get_overseas_balance(self, *, exchange_code, currency_code):
+            del exchange_code, currency_code
+            raise RuntimeError("balance unavailable")
+
+    service.client = RaisingClient()
+
+    with caplog.at_level("WARNING"):
+        held_symbols = asyncio.run(service._get_held_symbols())
+
+    assert held_symbols == set()
+    assert "확인된 빈 잔고 캐시로 대체(보유 0종목)" in caplog.text
+    events = service.repository.list_event_log(
+        event_type="maintenance_skip",
+        limit=1,
+    )
+    detail = json.loads(events[0]["detail"])
+    assert detail["fallback_cache_valid"] is True
+    assert detail["fallback_cache_empty"] is True
+    assert detail["fallback_symbol_count"] == 0
+
+
+def test_get_held_symbols_does_not_trust_incomplete_same_cycle_cache() -> None:
+    service = _build_run_service()
+    service._cycle_count = 8
+    service._overseas_balance_cache = {
+        "cycle": 8,
+        "data": {"NASD": {"positions": []}},
+        "exchange_codes": ["NASD"],
+        "complete": False,
+    }
+    service._last_held_symbols = set()
+    service._known_overseas_exchange_codes = lambda: {"NASD"}
+
+    class FreshBalanceClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_overseas_balance(self, *, exchange_code, currency_code):
+            del exchange_code, currency_code
+            self.calls += 1
+            return {
+                "positions": [
+                    {
+                        "ovrs_pdno": "SOFI",
+                        "ovrs_cblc_qty": "2",
+                    }
+                ]
+            }
+
+    service.client = FreshBalanceClient()
+
+    held_symbols = asyncio.run(service._get_held_symbols())
+
+    assert held_symbols == {"SOFI"}
+    assert service.client.calls == 1
+    assert service._overseas_balance_cache["complete"] is True
+
+
 def test_load_overseas_positions_warns_on_anomalously_large_position() -> None:
     # Regression test for the 2026-07-16 CRAN incident aftermath: a
     # ~5,251-share position (~3.5x a legitimate max-slot buy) sat
@@ -8752,7 +8826,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     assert len(blocked_rows) == 8
     assert len(policy_blocked_rows) == 8
     assert len(close_blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v9"
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v10"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
@@ -9365,7 +9439,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v9"
+    assert trade["policy_id"] == "domestic_momentum_v10"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:

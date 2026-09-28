@@ -55,7 +55,7 @@
     사용한다. SOXS는 NYSE Semiconductor Index의 정확한 런타임 소스가 없어 대용지수를
     쓰지 않고 닫힌 방향으로 차단한다. `inverse_execution_mode`가 `live`로 명시
     전환되기 전에는 어떤 방어 경로에서도 KIS 매수주문을 내지 않는다. 국장은
-    `regime_trend_breakout_v1`, 미장은 `us_regime_trend_breakout_v1`을 별도 소유하며,
+    `regime_trend_breakout_v2`, 미장은 `us_regime_trend_breakout_v1`을 별도 소유하며,
     전용 공식은 설정을 `live`로 바꾸기만 해도 주문되지 않도록 추가 차단한다.
     거래가 0건이어도 현지 거래일별 레짐 차단, 호가/후보 제외, 상품 상승·거래량 게이트를
     영구 기록해 “기회가 없었음”과 “실행경로 오류”를 구분한다.
@@ -801,6 +801,9 @@ Net은 현재 미장 정책의 매수·매도 수수료와 매도 SEC fee를 적
   일반 저가주용 절대가격 하한만 면제한다. 거래대금·거래량·스프레드와 상품 자체 상승·
   거래량비 기준은 그대로 적용하며, 면제와 남은 차단 사유는
   `inverse_price_floor_exempted`에 기록한다.
+- 국장 `regime_trend_breakout_v2`는 F-KOSPI200 `-1%`부터 상품 자체 상승·양의
+  현재봉·거래량·NAV 조건을 만족하는 조기 구간을 **섀도로만** 관측한다. 과거 `-3%`
+  기준은 진입이 늦고 섀도 평균 Net이 음수였기 때문에 비교 기준으로 보존한다.
 - `/lab_guard`는 각 시장 정책의 `strategy_guard_lookback_hours` 기간에
   체결확정된 `SELL_REAL`을 시장·전략별로 나눠 평균 순손익을 보여준다.
   차단 기준은 해당 시장의 `strategy_guard_min_trades`와

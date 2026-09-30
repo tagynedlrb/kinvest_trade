@@ -10369,7 +10369,8 @@ def test_record_cycle_trade_frequency_ignores_closed_or_unsupported_markets() ->
     assert service._recent_cycle_count_by_market == {}
 
 
-def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:
+@pytest.mark.parametrize("strategy_flag", ["RSI", "VWAP+RSI", "VWAP+VOL+RSI"])
+def test_track_rsi_threshold_blocks_does_not_claim_causal_block(strategy_flag) -> None:
     service = _build_run_service()
     service._rsi_blocked_count = 19
     watch_target = WatchTargetStatus(
@@ -10382,18 +10383,22 @@ def test_track_rsi_threshold_blocks_counts_rsi_watch_targets() -> None:
         action_bias="HOLD",
         signal_state="HOLD",
         ma_summary="watch",
-        note="RSI watching",
+        note="volume_low",
         signal_snapshot=_snapshot(rsi14=42.0),
-        strategy_flag="RSI",
+        strategy_flag=strategy_flag,
     )
 
     service._track_rsi_threshold_blocks([watch_target])
 
     assert service._rsi_blocked_count == 20
-    events = service.repository.list_event_log(event_type="rsi_threshold_blocked", limit=1)
+    events = service.repository.list_event_log(event_type="rsi_threshold_observed_wait", limit=1)
     assert len(events) == 1
     detail = json.loads(events[0]["detail"])
-    assert detail["blocked_count"] == 20
+    assert detail["observation_count"] == 20
+    assert detail["causal_block_confirmed"] is False
+    assert detail["actual_wait_reason"] == "volume_low"
+    assert detail["strategy_flag"] == strategy_flag
+    assert service.repository.list_event_log(event_type="rsi_threshold_blocked", limit=1) == []
     assert detail["symbol"] == "PLTR"
     assert detail["rsi14"] == 42.0
     assert detail["threshold"] == 30.0

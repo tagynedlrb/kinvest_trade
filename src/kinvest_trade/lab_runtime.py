@@ -371,15 +371,17 @@ class LabRuntimeManager:
             self.rsi_blocked_count += 1
             if self.rsi_blocked_count % 20 == 0:
                 _logger.info(
-                    "[RSI] 차단 누적 %d건 (최근 rsi=%.1f, threshold=%.1f)",
+                    "[RSI] 기준 초과 대기 관측 %d건 (차단 원인 아님, rsi=%.1f, threshold=%.1f)",
                     self.rsi_blocked_count,
                     rsi14,
                     rsi_threshold,
                 )
                 self.save_event(
-                    event_type="rsi_threshold_blocked",
+                    event_type="rsi_threshold_observed_wait",
                     detail={
-                        "blocked_count": self.rsi_blocked_count,
+                        "observation_count": self.rsi_blocked_count,
+                        "causal_block_confirmed": False,
+                        "actual_wait_reason": watch_target.note,
                         "symbol": watch_target.code,
                         "rsi14": round(float(rsi14), 2),
                         "threshold": round(float(rsi_threshold), 2),

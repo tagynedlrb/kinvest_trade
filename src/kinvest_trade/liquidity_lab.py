@@ -3927,6 +3927,14 @@ class LiquidityLabService:
                 )
                 if not entry_setup.ready:
                     return f"strategy_confirmation_{entry_setup.reason}"
+            if strategy in getattr(auto_trade, "entry_cost_guard_strategy_flags", []):
+                if signal_snapshot is None:
+                    return "entry_edge_signal_unavailable"
+                edge_reason = self._entry_edge_block_reason(
+                    market=market_key, signal_snapshot=signal_snapshot,
+                )
+                if edge_reason:
+                    return edge_reason
         if signal_snapshot is None:
             return ""
 
@@ -3945,6 +3953,29 @@ class LiquidityLabService:
             )
         ):
             return "leveraged_trend_unconfirmed"
+        return ""
+
+    def _entry_edge_block_reason(
+        self, *, market: str, signal_snapshot: MovingAverageSnapshot,
+    ) -> str:
+        policy = self._get_market_policy(market)
+        auto = policy.auto_trade
+        snapshot = signal_snapshot
+        if not all(math.isfinite(value) for value in (snapshot.atr_pct, snapshot.spread_pct)):
+            return "entry_edge_invalid_signal"
+        # A bounded volatility-based opportunity estimate, not a return forecast.
+        target = min(auto.take_profit_pct, max(0.0, snapshot.atr_pct) * 3.0)
+        costs = (
+            get_market_strategy_guard_policy(self.config, market).fallback_cost_pct
+            + max(0.0, snapshot.spread_pct)
+            + max(0.0, auto.entry_slippage_buffer_pct)
+        )
+        net_reward = target - costs
+        risk = max(auto.stop_loss_pct, snapshot.atr_pct * auto.atr_soft_stop_multiplier)
+        if net_reward <= 0 or (costs > 0 and net_reward / costs < auto.min_expected_reward_cost_ratio):
+            return "entry_edge_cost_insufficient"
+        if risk <= 0 or net_reward / risk < auto.min_expected_reward_risk_ratio:
+            return "entry_edge_risk_insufficient"
         return ""
 
     @staticmethod
@@ -5256,6 +5287,7 @@ class LiquidityLabService:
         held_positions: list | None = None,
         held_symbols: set[str] | None = None,
         held_symbol_map: dict[str, str] | None = None,
+        include_core: bool = True,
     ) -> list[OverseasCandidateConfig]:
         raw_pool: list = (
             getattr(self, "_manual_overseas_pool", None)
@@ -5268,6 +5300,14 @@ class LiquidityLabService:
             if candidate.symbol.strip()
         ]
         existing_symbols = {candidate.symbol.upper() for candidate in candidates}
+        if include_core and hasattr(self, "config") and not getattr(self, "_manual_overseas_pool", None):
+            for symbol in getattr(self._get_market_policy("overseas").auto_trade, "core_watch_symbols", []):
+                symbol = str(symbol).strip().upper()
+                if symbol and symbol not in existing_symbols:
+                    candidates.append(self._coerce_overseas_candidate({
+                        "symbol": symbol, "exchange_code": "NASD",
+                    }))
+                    existing_symbols.add(symbol)
         if held_positions:
             for position in held_positions:
                 symbol = ""
@@ -5310,7 +5350,7 @@ class LiquidityLabService:
     ) -> set[str]:
         exchange_codes = {
             candidate.exchange_code.upper()
-            for candidate in self._active_overseas_pool(held_positions=held_positions or [])
+            for candidate in self._active_overseas_pool(held_positions=held_positions or [], include_core=False)
             if candidate.exchange_code.strip()
         }
         if held_positions:
@@ -8648,7 +8688,10 @@ class LiquidityLabService:
             - len(signal_symbols)
             - skipped_pending_signal_count,
         )
-        for result in quote_results:
+        core_symbols = set(getattr(self._get_market_policy("overseas").auto_trade, "core_watch_symbols", []))
+        for result in sorted(
+            quote_results, key=lambda row: row.symbol.upper() in core_symbols, reverse=True,
+        ):
             if remaining_slots <= 0:
                 break
             symbol = result.symbol.upper()

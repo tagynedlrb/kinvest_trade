@@ -237,6 +237,10 @@ class AutoTradeConfig:
     virtual_settlement_aggressive_after_sessions: int = 2
     virtual_settlement_aggressive_limit_bps: int = 50
     entry_confirmation_strategy_flags: list[str] = field(default_factory=list)
+    entry_momentum_fallback_enabled: bool = False
+    entry_cost_guard_strategy_flags: list[str] = field(default_factory=list)
+    entry_slippage_buffer_pct: float = 0.001
+    core_watch_symbols: list[str] = field(default_factory=list)
     dynamic_pool_approved_leveraged_symbols: list[str] = field(
         default_factory=list
     )
@@ -666,6 +670,8 @@ def _load_market_policy_definition(
         entry_confirmation_strategy_flags=list(
             base_auto_trade.entry_confirmation_strategy_flags
         ),
+        entry_cost_guard_strategy_flags=list(base_auto_trade.entry_cost_guard_strategy_flags),
+        core_watch_symbols=list(base_auto_trade.core_watch_symbols),
         entry_strategy_allowlist=list(
             base_auto_trade.entry_strategy_allowlist
         ),

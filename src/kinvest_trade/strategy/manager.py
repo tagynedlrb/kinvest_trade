@@ -14,6 +14,7 @@ PRIORITY_ORDER = [
     StrategyID.VWAP_PULLBACK,
     StrategyID.VOLUME_BREAKOUT,
     StrategyID.RSI_MACD,
+    StrategyID.MOMENTUM,
 ]
 
 
@@ -36,12 +37,14 @@ class PriorityStrategyManager:
         from .rsi_macd import RSIMACDStrategy
         from .volume_breakout import VolumeBreakoutStrategy
         from .vwap_pullback import VWAPPullbackStrategy
+        from .momentum import MomentumContinuationStrategy
 
         self._auto_trade_config = auto_trade_config
         self._strategies: dict[StrategyID, object] = {
             StrategyID.VWAP_PULLBACK: VWAPPullbackStrategy(),
             StrategyID.VOLUME_BREAKOUT: VolumeBreakoutStrategy(),
             StrategyID.RSI_MACD: RSIMACDStrategy(),
+            StrategyID.MOMENTUM: MomentumContinuationStrategy(auto_trade_config),
         }
         self.position: Optional[Position] = None
 
@@ -109,6 +112,13 @@ class PriorityStrategyManager:
             ),
             snapshot,
         )
+        special_symbols = {
+            str(value).upper()
+            for attr in ("inverse_etf_symbols", "leveraged_etf_symbols")
+            for value in getattr(self._auto_trade_config, attr, [])
+        }
+        if symbol.upper() in special_symbols:
+            triggered = triggered - {StrategyID.MOMENTUM}
         if not triggered:
             watching_ids = [
                 strategy_id
@@ -157,6 +167,8 @@ class PriorityStrategyManager:
             return triggered
         config = self._auto_trade_config
         filtered = set(triggered)
+        momentum_ready = StrategyID.MOMENTUM in filtered
+        filtered.discard(StrategyID.MOMENTUM)
         if filtered == {StrategyID.VWAP_PULLBACK}:
             vwap = snapshot.vwap
             min_above_pct = float(
@@ -175,6 +187,8 @@ class PriorityStrategyManager:
             )
             if rsi is None or rsi > entry_threshold:
                 filtered.clear()
+        if not filtered and momentum_ready:
+            filtered.add(StrategyID.MOMENTUM)
         return frozenset(filtered)
 
     def _check_exit(

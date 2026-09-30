@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify domestic VPS execution once at 2026-10-01 09:05 KST
+
+[Timer]
+OnCalendar=2026-10-01 00:05:00 UTC
+AccuracySec=1s
+Persistent=false
+Unit=kinvest-paper-check-20261001.service
+
+[Install]
+WantedBy=timers.target

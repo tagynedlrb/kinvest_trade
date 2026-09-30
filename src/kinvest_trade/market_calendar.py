@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -27,17 +27,18 @@ _NYSE_HOLIDAYS_2026: frozenset[date] = frozenset(
 _KRX_HOLIDAYS_2026: frozenset[date] = frozenset(
     {
         date(2026, 1, 1),
-        date(2026, 1, 28),
-        date(2026, 1, 29),
-        date(2026, 1, 30),
-        date(2026, 3, 1),
+        date(2026, 2, 16),
+        date(2026, 2, 17),
+        date(2026, 2, 18),
+        date(2026, 3, 2),
+        date(2026, 5, 1),
         date(2026, 5, 5),
         date(2026, 5, 25),
-        date(2026, 6, 6),
+        date(2026, 6, 3),
         date(2026, 8, 17),
         date(2026, 9, 24),
         date(2026, 9, 25),
-        date(2026, 9, 28),
+        date(2026, 10, 5),
         date(2026, 10, 9),
         date(2026, 12, 25),
         date(2026, 12, 31),

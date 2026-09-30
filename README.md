@@ -516,10 +516,13 @@ python3 main.py liquidity-lab
 - 해외 차트 갱신에 실패하면 메모리 신호의 신선도를 연장하지 않는다. 해당 종목은
   이전 영구 스냅샷과 최신 시세로 청산을 계속 감시하고, 신규 매수는 차단한다.
 - 실제 해외 주문은 `activity_score`만으로 바로 넣지 않고, 선택된 후보가 전략 신호와 보조 필터를 함께 만족할 때만 진행한다.
-- 미장 v7은 `VWAP+RSI`, `VWAP+VOL+RSI`만 축소 모의 검증진입으로 허용한다.
-  거래량 2배 돌파 확인으로 `VOL`이 추가되면 허용목록에서 탈락하던 충돌을 해소했다.
-  단독 신호와 `VWAP+VOL`, `VOL+RSI`는 계속 차단하며 인버스는 별도 섀도 정책을 쓴다.
-- 국내 `VWAP`, `VOL`, `VWAP+VOL`과 해외 `VWAP+RSI`, `VWAP+VOL+RSI`는 각 시장의
+- 미장 v8은 `VWAP+RSI`, `VWAP+VOL+RSI`, `VWAP+VOL`, 명시적 모멘텀 대체 전략 `MOM`을
+  축소 모의 검증 대상으로 관리한다. 새 두 경로는 비용·슬리피지 차감 이동 여력도 확인한다.
+  기존 단독 신호와 `VOL+RSI` 차단을 다른 전략 이름으로 우회하지 않으며 인버스는 섀도다.
+  AAPL/MSFT/NVDA/AMZN은 동적 풀의 보완 감시 대상이며 기존 차트 슬롯 한도 안에서 평가한다.
+- 눌림목 거래량 하한 0.8배를 전역 돌파 선필터 1.2배가 덮어쓰지 않는다.
+  눌림목 추세·반등·RSI 조건과 돌파 거래량 2배 조건은 별도로 유지한다.
+- 국내 `VWAP`, `VOL`, `VWAP+VOL`, `VWAP+VOL+RSI`와 해외 네 허용 일반 전략은 각 시장의
   `entry_confirmation_strategy_flags`에 따라 모멘텀 진입식도 `ready`여야 한다.
   감시 상태, 최종 후보 선정,
   주문 제출 직전 모두 같은 검사를 반복하며 거래량·추세·모멘텀·추격매수
@@ -534,13 +537,16 @@ python3 main.py liquidity-lab
   큰 포지션 손실로 투입자본가중 성과가 임계값 이하면 차단되며, 해제 시에도
   두 지표가 모두 회복돼야 한다. 현재 미장 자본가중 임계값은 `-0.10%`,
   국장은 `-0.30%`로 시장별 파일이 각각 소유한다.
-- 현재 국장 `domestic_momentum_v10`은 `RSI`, `VWAP+VOL`을 정상 슬롯의 10%인
+- 현재 국장 `domestic_momentum_v11`은 `RSI`, `VWAP+VOL`, `VWAP+VOL+RSI`를 정상 슬롯의 10%인
   검증진입으로 고정하고 거래세 면제상품에 세션당 유효 2회·제출 4회까지 허용한다. 단, KRX 정규장
   마감 60분 전인 14:30 KST부터 신규 진입만 중지한다. 차단 기회는
-  `market_close_blocked` 보유시간 모의군에 남긴다. 미장 `overseas_momentum_v7`은
-  두 허용 복합전략을 합쳐 10%·유효 1회·제출 2회로 고정한다. 미장도 현지 정규장
+  `market_close_blocked` 보유시간 모의군에 남긴다. 미장 `overseas_momentum_v8`은
+  네 허용 일반 전략을 합쳐 10%·유효 1회·제출 2회로 고정한다. 미장도 현지 정규장
   마감 60분 전에는 신규 진입을 중지하고, 검증진입은 같은 세션 Nasdaq 수익률 0% 이상을 요구한다.
   `/lab_guard`의 `강제검증=`에서 현재 고정 대상을 확인한다.
+- 주문 경로 1주 왕복 진단은 `python -m kinvest_trade.paper_execution_check`를 사용하며
+  `--execute` 없이는 주문하지 않는다. VPS 전용이고 전략 성과와 별도 이벤트로 보존한다.
+  배포·예약 검증 근거는 `docs/NO_TRADE_AND_EXECUTION_REVIEW_2026-09-30.md`에 기록한다.
 - 해외 신규 진입은 전략 신호가 있어도 `volume_ratio`가 `overseas_min_strategy_volume_ratio`(기본 `0.8`)보다 낮으면 `overseas_volume_floor`로 대기한다.
 - `liquidity_lab`의 매수 수량은 기본적으로 슬롯 기반이다. `use_slot_sizing=true`이면 주문가능 금액에 `slot_entry_pct`를 곱한 예산 안에서 수량을 계산하고, 조회 실패 시에만 `*_test_order_qty` 고정 수량으로 폴백한다.
 - 다만 해외 mock 포지션이 이미 있고 손절/익절 기준에 먼저 걸린 보유분이 있으면, 신규 매수보다 기존 보유 청산을 우선한다.

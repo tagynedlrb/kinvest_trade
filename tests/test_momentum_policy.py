@@ -2,6 +2,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from kinvest_trade.config import load_app_config
 from kinvest_trade.indicators import compute_rsi
 from kinvest_trade.momentum_policy import (
@@ -810,6 +812,31 @@ def test_pullback_ready_with_low_volume() -> None:
     )
 
     assert result is True
+
+
+@pytest.mark.parametrize("market", ["domestic", "overseas"])
+@pytest.mark.parametrize("volume,ready", [(0.79, False), (0.8, True), (0.9, True), (1.19, True)])
+def test_market_pullback_floor_is_reachable_through_entry_prefilter(market, volume, ready):
+    config = getattr(load_app_config().market_policies, market).auto_trade
+    snapshot = _snapshot(
+        price=100.4, minute_ma_fast=100.0, minute_ma_slow=99.0,
+        rsi14=48.0, volume_ratio=volume, intraday_bar_return=0.002,
+    )
+    result = evaluate_entry_setup(config, snapshot)
+    assert result.ready is ready
+    assert result.reason == ("pullback_entry" if ready else "volume_low")
+
+
+@pytest.mark.parametrize("changes", [
+    {"daily_ma_fast": 98.0}, {"minute_ma_fast": 98.0},
+    {"intraday_bar_return": -0.002}, {"rsi14": 75.0},
+])
+def test_pullback_prefilter_fix_preserves_other_entry_requirements(changes):
+    snapshot = _snapshot(
+        price=100.4, minute_ma_fast=100.0, minute_ma_slow=99.0,
+        rsi14=48.0, volume_ratio=0.9, intraday_bar_return=0.002,
+    )
+    assert not evaluate_entry_setup(_build_config(), replace(snapshot, **changes)).ready
 
 
 def test_evaluate_entry_uses_prefilter_factor() -> None:

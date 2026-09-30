@@ -1,0 +1,128 @@
+{
+  "baseline_commit": "94096b8",
+  "since": "2026-09-01T00:00:00+00:00",
+  "episodes": 1602,
+  "counts": [
+    {
+      "market": "domestic",
+      "version": "baseline",
+      "reason": "formula_not_ready",
+      "count": 146
+    },
+    {
+      "market": "domestic",
+      "version": "baseline",
+      "reason": "session_market_or_product_gate",
+      "count": 17
+    },
+    {
+      "market": "domestic",
+      "version": "baseline",
+      "reason": "signal_not_buy",
+      "count": 4
+    },
+    {
+      "market": "domestic",
+      "version": "baseline",
+      "reason": "strategy_not_allowed",
+      "count": 628
+    },
+    {
+      "market": "domestic",
+      "version": "candidate",
+      "reason": "formula_not_ready",
+      "count": 152
+    },
+    {
+      "market": "domestic",
+      "version": "candidate",
+      "reason": "session_market_or_product_gate",
+      "count": 17
+    },
+    {
+      "market": "domestic",
+      "version": "candidate",
+      "reason": "signal_not_buy",
+      "count": 4
+    },
+    {
+      "market": "domestic",
+      "version": "candidate",
+      "reason": "strategy_not_allowed",
+      "count": 622
+    },
+    {
+      "market": "overseas",
+      "version": "baseline",
+      "reason": "formula_not_ready",
+      "count": 54
+    },
+    {
+      "market": "overseas",
+      "version": "baseline",
+      "reason": "signal_not_buy",
+      "count": 559
+    },
+    {
+      "market": "overseas",
+      "version": "baseline",
+      "reason": "strategy_not_allowed",
+      "count": 194
+    },
+    {
+      "market": "overseas",
+      "version": "candidate",
+      "reason": "eligible_signal",
+      "count": 1
+    },
+    {
+      "market": "overseas",
+      "version": "candidate",
+      "reason": "entry_edge_cost_insufficient",
+      "count": 4
+    },
+    {
+      "market": "overseas",
+      "version": "candidate",
+      "reason": "formula_not_ready",
+      "count": 119
+    },
+    {
+      "market": "overseas",
+      "version": "candidate",
+      "reason": "session_market_or_product_gate",
+      "count": 1
+    },
+    {
+      "market": "overseas",
+      "version": "candidate",
+      "reason": "signal_not_buy",
+      "count": 559
+    },
+    {
+      "market": "overseas",
+      "version": "candidate",
+      "reason": "strategy_not_allowed",
+      "count": 123
+    }
+  ],
+  "candidate_examples": [
+    {
+      "market": "overseas",
+      "symbol": "TRLV",
+      "opened_at": "2026-09-30T16:13:20.932426+00:00",
+      "strategy": "VWAP+VOL",
+      "volume_ratio": 7.02972887429004,
+      "atr_pct": 0.006584087660790847,
+      "benchmark_return_pct": 1.0672248273535478
+    }
+  ],
+  "outcomes": [],
+  "limitations": [
+    "Sampled episodes, not independent trades; no budget or fills replay.",
+    "Costs from recorded cohort plus 0.1% slippage assumption, not realized P&L.",
+    "Domestic replay uses ETF/ETN and upper-half benchmark range, not full hysteresis replay.",
+    "Missing outcomes and observation lag over 180 seconds are excluded.",
+    "Core symbols absent from the old pool have no historical sample; no profitability claim."
+  ]
+}

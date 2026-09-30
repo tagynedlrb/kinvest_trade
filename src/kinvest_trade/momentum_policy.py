@@ -95,7 +95,12 @@ def evaluate_entry_setup(
     if snapshot.rsi14 is not None and snapshot.rsi14 > effective_rsi_max:
         return EntrySetup(False, "entry_rsi_too_high", "SKIP", _note(snapshot))
     prefilter_factor = max(config.volume_spike_ratio_prefilter_factor, 0.0)
-    if snapshot.volume_ratio < config.volume_spike_ratio * prefilter_factor:
+    # A breakout prefilter must not make the separate pullback floor unreachable.
+    volume_floor = min(
+        config.volume_spike_ratio * prefilter_factor,
+        max(0.0, config.pullback_min_volume_ratio),
+    )
+    if snapshot.volume_ratio < volume_floor:
         return EntrySetup(False, "volume_low", "WAIT", _note(snapshot))
 
     if is_inverse or is_leveraged:

@@ -5983,7 +5983,7 @@ def test_market_policy_entry_allowlists_are_independent() -> None:
     assert service._entry_strategy_raw_block_reason(
         market="overseas",
         strategy_flag="VWAP+VOL",
-    ) == "strategy_not_allowed_for_market_policy"
+    ) == ""
     assert service._entry_strategy_raw_block_reason(
         market="overseas",
         strategy_flag="VWAP+RSI",
@@ -6025,7 +6025,8 @@ def test_market_policy_can_force_allowed_strategy_into_small_probe() -> None:
     [
         ("vps", 3.0, 0.6, 0, ""),
         ("prod", 3.0, 0.6, 0, "paper_environment_required"),
-        ("vps", 1.0, 0.6, 0, "strategy_confirmation_volume_low"),
+        ("vps", 1.0, 0.6, 0, ""),
+        ("vps", 0.7, 0.6, 0, "strategy_confirmation_volume_low"),
         ("vps", 3.0, -0.5, 0, "benchmark_floor_not_met"),
         ("vps", 3.0, 0.6, 1, "session_limit_reached"),
     ],
@@ -6080,6 +6081,91 @@ def test_overseas_consensus_reaches_probe_without_bypassing_gates(
         assert context["admitted"] is True
         assert context["slot_multiplier"] == 0.10
         assert service._strategy_guard_probe_qty(100, context) == 10
+
+
+@pytest.mark.parametrize("case,expected", [
+    ("valid", "BUY"), ("prod", "paper_environment_required"),
+    ("bear", "benchmark_floor_not_met"), ("stale", "entry_market_regime_stale"),
+    ("budget", "session_limit_reached"), ("cost", "entry_edge_cost_insufficient"),
+    ("risk", "entry_edge_risk_insufficient"), ("closing", "entry_too_close_to_regular_close"),
+    ("cooldown", "재진입대기"), ("thin_volume", "volume_low"),
+])
+def test_momentum_probe_uses_real_watch_path_and_all_entry_guards(case, expected):
+    service = _build_run_service()
+    service.config.market_policies = load_app_config().market_policies
+    service.market_policy_registry = None
+    service.config.credentials.env = "prod" if case == "prod" else "vps"
+    service._entry_time_block_reason = lambda **_kwargs: (
+        "entry_too_close_to_regular_close" if case == "closing" else ""
+    )
+    service._market_regime_context = lambda *_args, **_kwargs: {
+        "available": True, "observation_age_sec": 601 if case == "stale" else 0,
+        "return_pct": -0.5 if case == "bear" else 0.6,
+    }
+    service.repository.get_strategy_guard_probe_usage = lambda **_kwargs: {
+        "submission_attempts": 1 if case == "budget" else 0,
+        "effective_entries": 1 if case == "budget" else 0,
+    }
+    service._cooldown_remaining_minutes = lambda *_args: 5 if case == "cooldown" else 0
+    snapshot = _snapshot(
+        vwap=19.6, rsi14=52.0, volume_ratio=0.7 if case == "thin_volume" else 1.0,
+        atr_pct=0.001 if case == "cost" else 0.02 if case == "risk" else 0.006,
+    )
+    target = service._build_watch_target_status(
+        market="overseas", code="TEST", exchange_code="NASD", price=20.0,
+        activity_score=12.0, signal_snapshot=snapshot, held_position=None, holding_qty=0,
+    )
+    if expected == "BUY":
+        assert target.action_bias == "BUY"
+        assert target.strategy_flag == "MOM"
+        assert target.entry_by == "MOM"
+        manager = service._get_strategy_manager("TEST", "overseas")
+        manager.open_position(
+            symbol="TEST", entry_price=20.0,
+            triggered_by=service._decode_strategy_ids("MOM", "MOM"),
+        )
+        assert manager.position.flag == "MOM"
+        assert manager.evaluate("TEST", replace(snapshot, price=19.0), commit=False).signal == "SELL"
+    else:
+        assert target.action_bias != "BUY"
+        assert expected in target.note
+
+
+def test_momentum_fallback_does_not_relabel_existing_blocked_strategy():
+    service = _build_run_service()
+    service.config.market_policies = load_app_config().market_policies
+    service.market_policy_registry = None
+    snapshot = _snapshot(vwap=19.93, rsi14=52.0, volume_ratio=1.0, atr_pct=0.006)
+    result = service._get_strategy_manager("TEST", "overseas").evaluate("TEST", snapshot, commit=False)
+    assert result.signal == "BUY"
+    assert result.flag == "VWAP"
+    assert service._entry_strategy_raw_block_reason(market="overseas", strategy_flag=result.flag) == "strategy_not_allowed_for_market_policy"
+
+
+@pytest.mark.parametrize("symbol", ["SQQQ", "TQQQ", "SOXL"])
+def test_momentum_fallback_never_routes_inverse_or_leveraged_symbols(symbol):
+    service = _build_run_service()
+    service.config.market_policies = load_app_config().market_policies
+    service.market_policy_registry = None
+    result = service._get_strategy_manager(symbol, "overseas").evaluate(
+        symbol, _snapshot(vwap=19.6, rsi14=52.0, volume_ratio=1.0, atr_pct=0.006), commit=False,
+    )
+    assert result.signal == "HOLD"
+    assert not result.triggered_by
+
+
+def test_overseas_core_pool_is_additive_and_does_not_change_balance_scope():
+    service = _build_run_service()
+    service.config.market_policies = load_app_config().market_policies
+    service.market_policy_registry = None
+    service._manual_overseas_pool = None
+    service._dynamic_overseas_pool = [{"symbol": "AAPL", "exchange_code": "NASD"}]
+    symbols = [row.symbol for row in service._active_overseas_pool()]
+    assert symbols == ["AAPL", "MSFT", "NVDA", "AMZN"]
+    service._dynamic_overseas_pool = []
+    assert service._known_overseas_exchange_codes() == {"NASD", "NYSE", "AMEX"}
+    service._manual_overseas_pool = [{"symbol": "AMD", "exchange_code": "NASD"}]
+    assert [row.symbol for row in service._active_overseas_pool()] == ["AMD"]
 
 
 def test_domestic_forced_probe_excludes_transaction_tax_products() -> None:
@@ -7705,6 +7791,7 @@ def test_closed_market_cycle_reconciles_only_effective_virtual_action() -> None:
 def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
     service = _build_run_service()
     _configure_test_corporate_action_service(service)
+    service.config.market_policies.overseas.auto_trade.core_watch_symbols = []
     service._overseas_scan_scope = "full"
     service._dynamic_overseas_pool = [
         {"symbol": "CPRX", "exchange_code": "NASD"},
@@ -8888,7 +8975,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     assert len(blocked_rows) == 8
     assert len(policy_blocked_rows) == 8
     assert len(close_blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v10"
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v11"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
@@ -8964,7 +9051,7 @@ def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> Non
     assert len(rows) == 8
     assert len(matured) == 1
     assert matured[0]["horizon_minutes"] == 5
-    assert matured[0]["policy_id"] == "overseas_momentum_v7"
+    assert matured[0]["policy_id"] == "overseas_momentum_v8"
     assert matured[0]["round_trip_cost_pct"] == pytest.approx(0.0050206)
     assert matured[0]["estimated_net_pnl_pct"] == pytest.approx(0.0049794)
     assert matured[0]["context_json"]["cost_calculation_version"] == (
@@ -9501,7 +9588,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v10"
+    assert trade["policy_id"] == "domestic_momentum_v11"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:

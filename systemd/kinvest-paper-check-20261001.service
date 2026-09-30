@@ -1,0 +1,12 @@
+[Unit]
+Description=One-shot domestic VPS roundtrip verification for 2026-10-01
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/kinvest_trade
+Environment=PYTHONPATH=%h/kinvest_trade/src
+ExecStart=%h/kinvest_trade/.venv/bin/python -m kinvest_trade.paper_execution_check --market domestic --symbol 069500 --session-date 2026-10-01 --execute --manage-service --notify
+TimeoutStartSec=10min
+UMask=0077
+Restart=no

@@ -9,12 +9,14 @@ class StrategyID(IntEnum):
     VWAP_PULLBACK = 1
     VOLUME_BREAKOUT = 2
     RSI_MACD = 3
+    MOMENTUM = 4
 
 
 STRATEGY_LABEL: dict[StrategyID, str] = {
     StrategyID.VWAP_PULLBACK: "VWAP",
     StrategyID.VOLUME_BREAKOUT: "VOL",
     StrategyID.RSI_MACD: "RSI",
+    StrategyID.MOMENTUM: "MOM",
 }
 
 

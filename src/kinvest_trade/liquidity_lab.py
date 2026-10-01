@@ -344,16 +344,7 @@ class LiquidityLabService:
         self._session_owned_symbols_loaded_for_session: str = ""
         self._strategy_managers: dict[str, PriorityStrategyManager] = {}
         self._persisted_symbol_state: dict[tuple[str, str], dict] = {}
-        self._domestic_fluctuation_rank_disabled: bool = (
-            str(
-                getattr(
-                    getattr(self.config, "credentials", None),
-                    "env",
-                    "prod",
-                )
-            ).strip().lower()
-            != "prod"
-        )
+        self._domestic_fluctuation_rank_disabled: bool = False
         self._pending_trade_notifications: list[str] = []
         self._pending_trade_notification_started_at: datetime | None = None
         self._trade_notification_window_sec: int = 60
@@ -5115,8 +5106,15 @@ class LiquidityLabService:
 
     async def _flush_trade_notifications(self, *, force: bool = False) -> None:
         notifier = self._get_trade_notifier()
-        await notifier.flush_async(force=force)
-        self._sync_trade_notifier_legacy_state(notifier)
+        try:
+            await notifier.flush_async(force=force)
+        except Exception as exc:  # noqa: BLE001
+            self._save_event(
+                event_type="trade_notification_retry_pending",
+                detail={"error_type": type(exc).__name__, "queued_count": len(notifier.queued_lines)},
+            )
+        finally:
+            self._sync_trade_notifier_legacy_state(notifier)
 
     @staticmethod
     def _display_trade_action(action_raw: str, action_text: str, *, skip_count: int = 0) -> str:
@@ -5750,6 +5748,8 @@ class LiquidityLabService:
         }
         if self._domestic_foreign_underlying_entry_block_reason(name):
             return "foreign_underlying_requires_separate_benchmark"
+        if "커버드콜" in name or "COVERED CALL" in name:
+            return "covered_call_requires_separate_policy"
         if "인버스" in name or "INVERSE" in name:
             return (
                 "inverse_requires_regime_activation"
@@ -5789,10 +5789,15 @@ class LiquidityLabService:
 
     async def _refresh_domestic_dynamic_pool(self) -> None:
         ll_cfg = self.config.liquidity_lab
+        policy = self._get_market_policy("domestic").auto_trade
+        rank_n = min(30, max(
+            ll_cfg.domestic_dynamic_top_n,
+            int(getattr(policy, "dynamic_pool_rank_fetch_n", 0)),
+        ))
         try:
             vol_rows = await self.client.get_domestic_volume_rank(
                 market_code="J",
-                top_n=ll_cfg.domestic_dynamic_top_n,
+                top_n=rank_n,
                 min_price_krw=ll_cfg.domestic_dynamic_min_price_krw,
                 min_volume=ll_cfg.domestic_dynamic_min_volume,
             )
@@ -5809,16 +5814,20 @@ class LiquidityLabService:
                 except Exception as exc:  # noqa: BLE001
                     if "404" in str(exc):
                         self._domestic_fluctuation_rank_disabled = True
-                        _logger.warning(
-                            "domestic_fluctuation_rank_disabled error=%s",
-                            exc,
-                        )
-                        flu_rows = []
-                    else:
-                        raise
+                    flu_rows = []
+                    self._save_event(
+                        event_type="domestic_pool_source_degraded",
+                        market="domestic",
+                        detail={
+                            "source": "fluctuation",
+                            "error_type": type(exc).__name__,
+                            "volume_fallback_retained": True,
+                        },
+                    )
         except Exception as exc:  # noqa: BLE001
             _logger.warning("domestic_dynamic_scan_failed error=%s", exc)
             return
+        self._last_domestic_pool_refresh_at = datetime.now(timezone.utc)
 
         seen: set[str] = set()
         excluded_seen: set[str] = set()
@@ -5848,6 +5857,22 @@ class LiquidityLabService:
             if code and code not in seen:
                 seen.add(code)
                 codes.append(code)
+        core_codes = list(dict.fromkeys(
+            str(code).strip().upper()
+            for code in getattr(policy, "core_watch_symbols", [])
+            if str(code).strip()
+        ))
+        core_codes = [
+            code for code in core_codes
+            if not self._domestic_dynamic_product_exclusion_reason(
+                code, name_map.get(code, ""),
+            )
+        ]
+        merged_codes = list(dict.fromkeys([*core_codes, *codes]))
+        deferred_codes = merged_codes[rank_n:]
+        codes = merged_codes[:rank_n]
+        seen = set(codes)
+        name_map = {code: name for code, name in name_map.items() if code in seen}
         if not codes:
             self._dynamic_domestic_codes = []
             self._dynamic_domestic_names = {}
@@ -5880,6 +5905,13 @@ class LiquidityLabService:
             detail={
                 "pool_size": len(codes),
                 "top_names": top_names,
+                "codes": codes,
+                "core_watch_symbols": core_codes,
+                "volume_source_count": len(vol_rows),
+                "fluctuation_source_count": len(flu_rows),
+                "deferred_codes": deferred_codes,
+                "max_refresh_age_sec": getattr(policy, "dynamic_pool_refresh_max_age_sec", 0),
+                "selection_stage": "discovery_before_quote_and_product_checks",
                 "structured_excluded_count": len(structured_excluded),
                 "structured_excluded": structured_excluded,
             },
@@ -5889,7 +5921,7 @@ class LiquidityLabService:
         if notifier is not None and getattr(notifier, "enabled", True):
             try:
                 await notifier.send(
-                    f"🔄 [국내 동적 풀 갱신] {len(codes)}종목\n"
+                    f"[국내 후보 조회] {len(codes)}종목 (매수허용 수 아님)\n"
                     f"거래량 상위: {', '.join(top_names)}\n"
                     f"미승인 구조화상품 제외: {len(structured_excluded)}종목"
                 )
@@ -7289,6 +7321,7 @@ class LiquidityLabService:
         self._strategy_guard_blocked_keys()
         now = datetime.now(timezone.utc)
         await self._reconcile_broker_executions(now)
+        await self._flush_trade_notifications(force=True)
         await self._ensure_tv_diagnostics()
         now = datetime.now(timezone.utc)
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
@@ -8179,17 +8212,26 @@ class LiquidityLabService:
     async def scan_domestic(self) -> list[DomesticScanResult]:
         self._prepare_domestic_cycle_caches()
         config = self.config.liquidity_lab
+        policy = self._get_market_policy("domestic").auto_trade
+        tax_exempt_only = bool(getattr(policy, "dynamic_pool_tax_exempt_only", False))
         if getattr(config, "domestic_dynamic_scan", False):
             self._domestic_scan_cycle_count = getattr(self, "_domestic_scan_cycle_count", 0) + 1
+            max_age = int(getattr(policy, "dynamic_pool_refresh_max_age_sec", 0))
+            last_refresh = getattr(self, "_last_domestic_pool_refresh_at", None)
+            age_due = max_age > 0 and (
+                last_refresh is None
+                or (datetime.now(timezone.utc) - last_refresh).total_seconds() >= max_age
+            )
             if (
                 getattr(self, "_dynamic_domestic_codes", None) is None
+                or age_due
                 or self._domestic_scan_cycle_count >= max(1, config.domestic_dynamic_rescan_cycles)
             ):
                 self._domestic_scan_cycle_count = 0
                 await self._refresh_domestic_dynamic_pool()
         active_codes = (
             list(getattr(self, "_dynamic_domestic_codes", None))
-            if getattr(self, "_dynamic_domestic_codes", None)
+            if getattr(self, "_dynamic_domestic_codes", None) is not None
             else list(config.domestic_candidates)
         )
         active_inverse_symbols = self._active_inverse_symbols("domestic")
@@ -8245,6 +8287,15 @@ class LiquidityLabService:
                 else self._domestic_quote_speculative_reasons(candidate)
             )
             if (
+                candidate.stock_code not in monitored_codes
+                and tax_exempt_only
+                and not is_domestic_sell_tax_exempt(candidate.product_type)
+            ):
+                reasons.append(
+                    "taxable_product_not_eligible_for_probe"
+                    if candidate.product_type else "domestic_product_type_unconfirmed"
+                )
+            if (
                 candidate.current_price
                 < self.config.liquidity_lab.domestic_min_price_krw
                 and self._is_approved_domestic_inverse_product(candidate)
@@ -8295,6 +8346,20 @@ class LiquidityLabService:
                 quote_results.append(candidate)
             await asyncio.sleep(0.05)
         self._domestic_excluded = excluded
+        funnel = {
+            "discovered_count": len(active_codes),
+            "quote_eligible_count": len(quote_results),
+            "quote_failed_count": len(active_codes) - len(quote_results) - len(excluded),
+            "eligible_codes": [candidate.stock_code for candidate in quote_results],
+            "excluded": [{"code": item.code, "reasons": item.reasons} for item in excluded],
+            "tax_exempt_only": tax_exempt_only,
+            "entry_signal_and_risk_checks_pending": True,
+        }
+        if funnel != getattr(self, "_last_domestic_candidate_funnel", None):
+            self._save_event(
+                event_type="domestic_candidate_funnel", market="domestic", detail=funnel,
+            )
+            self._last_domestic_candidate_funnel = funnel
         if not quote_results:
             return []
 
@@ -11180,7 +11245,7 @@ class LiquidityLabService:
                 )
 
     async def _send_summary(self, report: LiquidityLabReport) -> None:
-        await self._flush_trade_notifications(force=False)
+        await self._flush_trade_notifications(force=True)
         action = self._build_action_summary(report)
         skip_count, skip_top_reasons = self._summarize_skipped_orders(report)
         if action["action_raw"] in {"WAIT", "VIRTUAL_BUY", "VIRTUAL_SELL"} and skip_count <= 0:

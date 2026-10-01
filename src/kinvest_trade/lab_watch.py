@@ -837,6 +837,13 @@ class WatchStateHelper:
                 block_reason = service._entry_strategy_block_reason(
                     market=market,
                     strategy_flag=strategy_result.flag,
+                    product_type=(
+                        getattr(
+                            getattr(service, "_domestic_quote_cache", {}).get(code),
+                            "product_type", "",
+                        )
+                        if market == "domestic" else None
+                    ),
                 )
                 if block_reason and (strategy_result.signal == "BUY" or signal_state == "BUY"):
                     return service._make_watch_target_status(
@@ -1009,6 +1016,13 @@ class WatchStateHelper:
             block_reason = service._entry_strategy_block_reason(
                 market=market,
                 strategy_flag=strategy_result.flag,
+                product_type=(
+                    getattr(
+                        getattr(service, "_domestic_quote_cache", {}).get(code),
+                        "product_type", "",
+                    )
+                    if market == "domestic" else None
+                ),
             )
             if block_reason:
                 return service._make_watch_target_status(

@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from kinvest_trade.lab_notify import TradeNotifier
@@ -10,6 +11,55 @@ class DummyNotifier:
 
     async def send(self, message: str) -> None:
         self.messages.append(message)
+
+
+def test_failed_send_preserves_queue_and_successful_retry_clears_it():
+    class Flaky(DummyNotifier):
+        async def send(self, message):
+            if not self.messages:
+                self.messages.append("failed")
+                raise TimeoutError("temporary")
+            return await super().send(message)
+
+    async def run_case():
+        sender = Flaky()
+        batch = TradeNotifier(sender)
+        batch.queue("confirmed fill")
+        with pytest.raises(TimeoutError):
+            await batch.flush_async(force=True)
+        assert batch.queued_lines == ["confirmed fill"]
+        await batch.flush_async(force=True)
+        assert not batch.queued_lines
+        assert "confirmed fill" in sender.messages[-1]
+    asyncio.run(run_case())
+
+
+def test_disabled_notifier_does_not_discard_pending_fills():
+    class Disabled:
+        async def send(self, message):
+            return False
+
+    async def run_case():
+        for sender in (None, Disabled()):
+            batch = TradeNotifier(sender)
+            batch.queue("fill")
+            await batch.flush_async(force=True)
+            assert batch.queued_lines == ["fill"]
+    asyncio.run(run_case())
+
+
+def test_new_lines_queued_during_send_survive_acknowledgement():
+    class Sender:
+        async def send(self, message):
+            batch.queue("second fill")
+            return True
+
+    async def run_case():
+        batch.queue("first fill")
+        await batch.flush_async(force=True)
+        assert batch.queued_lines == ["second fill"]
+    batch = TradeNotifier(Sender())
+    asyncio.run(run_case())
 
 
 def test_trade_notifier_defers_flush_inside_window() -> None:

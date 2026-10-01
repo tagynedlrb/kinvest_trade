@@ -1,5 +1,5 @@
 {
-  "policy_id": "domestic_momentum_v11",
+  "policy_id": "domestic_momentum_v12",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {
@@ -139,6 +139,10 @@
     "entry_strategy_allowlist": ["RSI", "VWAP+VOL", "VWAP+VOL+RSI", "INV"],
     "entry_min_minutes_to_regular_close": 60,
     "dynamic_pool_foreign_underlying_name_markers": ["미국", "NASDAQ", "S&P", "다우존스"],
+    "dynamic_pool_tax_exempt_only": true,
+    "dynamic_pool_rank_fetch_n": 30,
+    "dynamic_pool_refresh_max_age_sec": 600,
+    "core_watch_symbols": ["069500", "102110", "229200"],
     "virtual_settlement_stale_order_minutes": 5,
     "virtual_settlement_retry_cooldown_minutes": 15,
     "virtual_settlement_max_submissions_per_session": 3,

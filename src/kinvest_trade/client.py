@@ -79,7 +79,7 @@ class KisRestClient:
     )
     DOMESTIC_TIME_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
     DOMESTIC_RANKING_PATH = "/uapi/domestic-stock/v1/quotations/volume-rank"
-    DOMESTIC_FLUCTUATION_PATH = "/uapi/domestic-stock/v1/quotations/fluctuation-rank"
+    DOMESTIC_FLUCTUATION_PATH = "/uapi/domestic-stock/v1/ranking/fluctuation"
     DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     DOMESTIC_POSSIBLE_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
     DOMESTIC_ORDER_HISTORY_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
@@ -1099,7 +1099,7 @@ class KisRestClient:
                     "stock_code": code,
                     "name": str(row.get("hts_kor_isnm", "")),
                     "price": parse_kis_number(row.get("stck_prpr")),
-                    "change_rate": parse_kis_number(row.get("prdy_ctrt")),
+                    "change_rate": parse_kis_float(row.get("prdy_ctrt")),
                     "volume": parse_kis_number(row.get("acml_vol")),
                     "turnover_krw": parse_kis_number(row.get("acml_tr_pbmn")),
                 }
@@ -1114,20 +1114,26 @@ class KisRestClient:
         min_volume: int = 100_000,
         ascending: bool = False,
     ) -> list[dict]:
-        """국내 등락률 순위 (FHPST01720000). ascending=False 이면 상승률 순."""
+        """국내 등락률 순위 (FHPST01700000). ascending=False 이면 상승률 순."""
         payload = await self._request(
             "GET",
             self.DOMESTIC_FLUCTUATION_PATH,
-            "FHPST01720000",
+            "FHPST01700000",
             params={
                 "FID_COND_MRKT_DIV_CODE": market_code,
-                "FID_COND_SCR_DIV_CODE": "20172",
+                "FID_COND_SCR_DIV_CODE": "20170",
                 "FID_INPUT_ISCD": "0000",
                 "FID_RANK_SORT_CLS_CODE": "1" if ascending else "0",
+                "FID_INPUT_CNT_1": str(max(1, top_n)),
+                "FID_PRC_CLS_CODE": "0",
                 "FID_INPUT_PRICE_1": str(min_price_krw),
-                "FID_INPUT_PRICE_2": "0",
+                "FID_INPUT_PRICE_2": "",
                 "FID_VOL_CNT": str(min_volume),
-                "FID_INPUT_DATE_1": "",
+                "FID_TRGT_CLS_CODE": "0",
+                "FID_TRGT_EXLS_CLS_CODE": "0",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_RSFL_RATE1": "",
+                "FID_RSFL_RATE2": "",
             },
         )
         output = payload.get("output", []) or []
@@ -1143,7 +1149,7 @@ class KisRestClient:
                     "stock_code": code,
                     "name": str(row.get("hts_kor_isnm", "")),
                     "price": parse_kis_number(row.get("stck_prpr")),
-                    "change_rate": parse_kis_number(row.get("prdy_ctrt")),
+                    "change_rate": parse_kis_float(row.get("prdy_ctrt")),
                     "volume": parse_kis_number(row.get("acml_vol")),
                     "turnover_krw": parse_kis_number(row.get("acml_tr_pbmn")),
                 }

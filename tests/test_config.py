@@ -129,12 +129,18 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic = config.market_policies.domestic
     overseas = config.market_policies.overseas
 
-    assert domestic.policy_id == "domestic_momentum_v11"
+    assert domestic.policy_id == "domestic_momentum_v12"
     assert overseas.policy_id == "overseas_momentum_v8"
     assert domestic.auto_trade.entry_momentum_fallback_enabled is False
     assert overseas.auto_trade.entry_momentum_fallback_enabled is True
     assert overseas.auto_trade.entry_cost_guard_strategy_flags == ["VWAP+VOL", "MOM"]
-    assert domestic.auto_trade.core_watch_symbols == []
+    assert domestic.auto_trade.core_watch_symbols == ["069500", "102110", "229200"]
+    assert domestic.auto_trade.dynamic_pool_tax_exempt_only is True
+    assert domestic.auto_trade.dynamic_pool_rank_fetch_n == 30
+    assert domestic.auto_trade.dynamic_pool_refresh_max_age_sec == 600
+    assert overseas.auto_trade.dynamic_pool_tax_exempt_only is False
+    assert overseas.auto_trade.dynamic_pool_rank_fetch_n == 0
+    assert overseas.auto_trade.dynamic_pool_refresh_max_age_sec == 0
     assert overseas.auto_trade.core_watch_symbols == ["AAPL", "MSFT", "NVDA", "AMZN"]
     assert domestic.auto_trade.inverse_trailing_activation_net_pct == 0.005
     assert domestic.auto_trade.inverse_trailing_drawdown_pct == 0.003

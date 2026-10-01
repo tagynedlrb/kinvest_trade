@@ -64,6 +64,19 @@ class FakeGetUpdatesClient:
         )
 
 
+@pytest.mark.parametrize("payload", [{"ok": False, "description": "rejected"}, {}, []])
+def test_send_does_not_log_success_without_telegram_ack(tmp_path, monkeypatch, payload):
+    repo = SqliteRepository(tmp_path / "messages.db")
+    calls = []
+    monkeypatch.setattr(notifier_module.httpx, "AsyncClient", lambda **_: FakeAsyncClient(payload=payload, calls=calls))
+    notifier = TelegramNotifier(SimpleNamespace(telegram_enabled=True, telegram_bot_token="secret", telegram_chat_id="chat"), repository=repo)
+    with pytest.raises(TelegramApiError):
+        asyncio.run(notifier.send("confirmed fill"))
+    with repo._connect() as conn:
+        rows = conn.execute("SELECT success FROM telegram_message_log").fetchall()
+    assert len(rows) == 1 and not rows[0]["success"]
+
+
 def test_get_updates_separates_long_poll_read_timeout() -> None:
     calls: list[tuple[str, dict]] = []
     captured_timeouts: list[object] = []

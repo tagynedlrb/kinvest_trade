@@ -241,6 +241,9 @@ class AutoTradeConfig:
     entry_cost_guard_strategy_flags: list[str] = field(default_factory=list)
     entry_slippage_buffer_pct: float = 0.001
     core_watch_symbols: list[str] = field(default_factory=list)
+    dynamic_pool_tax_exempt_only: bool = False
+    dynamic_pool_rank_fetch_n: int = 0
+    dynamic_pool_refresh_max_age_sec: int = 0
     dynamic_pool_approved_leveraged_symbols: list[str] = field(
         default_factory=list
     )

@@ -145,6 +145,9 @@ class TelegramNotifier:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, dict) or body.get("ok") is not True:
+                    raise TelegramApiError("Telegram sendMessage did not acknowledge success")
         except Exception as exc:  # noqa: BLE001
             self._log_outbound(message, success=False, error=exc)
             raise self._redacted_error(exc) from None

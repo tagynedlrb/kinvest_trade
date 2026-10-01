@@ -6275,6 +6275,7 @@ def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
             return {"output": {"ODNO": "0000009911"}, **kwargs}
 
     service = _build_run_service()
+    service._entry_time_block_reason = lambda **_kwargs: ""
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
@@ -7398,6 +7399,8 @@ def _build_run_service() -> LiquidityLabService:
 def _set_fresh_positive_entry_regime(
     service: LiquidityLabService,
 ) -> None:
+    # Formula tests must not depend on whether pytest runs near market close.
+    service._entry_time_block_reason = lambda **_kwargs: ""
     service._market_regime_context = lambda *_args, **_kwargs: {
         "available": True,
         "market": "domestic",
@@ -7790,6 +7793,7 @@ def test_closed_market_cycle_reconciles_only_effective_virtual_action() -> None:
 
 def test_scan_excludes_effective_corporate_action_before_quote_fetch() -> None:
     service = _build_run_service()
+    service._entry_time_block_reason = lambda **_kwargs: ""
     _configure_test_corporate_action_service(service)
     service.config.market_policies.overseas.auto_trade.core_watch_symbols = []
     service._overseas_scan_scope = "full"
@@ -8702,6 +8706,7 @@ def test_overseas_entry_requires_fresh_same_session_market_regime() -> None:
 
 def test_entry_market_regime_gate_is_market_specific_and_exempts_inverse() -> None:
     service = _build_run_service()
+    service._entry_time_block_reason = lambda **_kwargs: ""
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
@@ -8740,6 +8745,7 @@ def test_entry_market_regime_gate_is_market_specific_and_exempts_inverse() -> No
 
 def test_domestic_ordinary_entry_requires_nonnegative_fresh_benchmark() -> None:
     service = _build_run_service()
+    service._entry_time_block_reason = lambda **_kwargs: ""
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
@@ -8975,7 +8981,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     assert len(blocked_rows) == 8
     assert len(policy_blocked_rows) == 8
     assert len(close_blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v11"
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v12"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
@@ -9519,6 +9525,7 @@ def test_domestic_inverse_etf_metadata_uses_nav_endpoint_and_short_cache() -> No
 
 def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal() -> None:
     service = _build_run_service()
+    service._entry_time_block_reason = lambda **_kwargs: ""
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
@@ -9588,7 +9595,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v11"
+    assert trade["policy_id"] == "domestic_momentum_v12"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
@@ -9721,6 +9728,7 @@ def test_refresh_domestic_dynamic_pool_excludes_unapproved_structured_products()
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
     )
     service.config.market_policies = loaded.market_policies
+    service.config.market_policies.domestic.auto_trade.core_watch_symbols = []
     service._domestic_fluctuation_rank_disabled = True
     service.notifier = None
 
@@ -16670,3 +16678,112 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     assert report.overseas_order["submitted"] is True
     assert len(service.notifier.messages) == 1
     assert service.notifier.messages[0].startswith("[KIS][LAB_SELL]")
+
+
+def test_domestic_product_filter_precedes_charts_and_preserves_held_exit_monitoring():
+    service = _build_run_service()
+    service.config = load_app_config()
+    service.config.liquidity_lab.domestic_dynamic_scan = False
+    service.config.liquidity_lab.domestic_candidates = ["ETF", "STOCK", "UNKNOWN", "HELD"]
+    service._dynamic_domestic_codes = None
+    service._active_inverse_symbols = lambda _market: []
+    service._held_domestic_codes = lambda: {"HELD"}
+    refined = []
+
+    async def balance():
+        return {}
+
+    async def quote(code):
+        return DomesticScanResult(stock_code=code, current_price=30000, best_ask=30000,
+            best_bid=29995, spread_pct=0.0002, minute_change_pct=0,
+            intraday_turnover_krw=100_000_000_000, volume_sum=10_000_000,
+            activity_score=100, product_type={"ETF": "ETF", "STOCK": "STOCK", "UNKNOWN": "", "HELD": "STOCK"}[code])
+
+    async def signal(code):
+        refined.append(code)
+        return await quote(code)
+
+    service._get_domestic_balance_for_cycle = balance
+    service._scan_single_domestic_quote = quote
+    service._scan_single_domestic = signal
+    result = asyncio.run(service.scan_domestic())
+    assert {row.stock_code for row in result} == {"ETF", "HELD"}
+    assert set(refined) == {"ETF", "HELD"}
+    exclusions = {row.code: row.reasons for row in service._domestic_excluded}
+    assert "taxable_product_not_eligible_for_probe" in exclusions["STOCK"]
+    assert "domestic_product_type_unconfirmed" in exclusions["UNKNOWN"]
+    detail = json.loads(service.repository.list_event_log(event_type="domestic_candidate_funnel")[0]["detail"])
+    assert detail["discovered_count"] == 4 and detail["quote_eligible_count"] == 2
+    assert detail["entry_signal_and_risk_checks_pending"] is True
+
+
+def test_domestic_pool_refresh_uses_elapsed_time_and_preserves_known_empty_pool():
+    service = _build_run_service()
+    service.config = load_app_config()
+    service._dynamic_domestic_codes = []
+    service._last_domestic_pool_refresh_at = datetime.now(timezone.utc) - timedelta(seconds=601)
+    service._domestic_scan_cycle_count = 0
+    service._active_inverse_symbols = lambda _market: []
+    service._held_domestic_codes = lambda: set()
+    calls = []
+
+    async def refresh():
+        calls.append("refresh")
+        service._last_domestic_pool_refresh_at = datetime.now(timezone.utc)
+
+    async def balance():
+        return {}
+
+    async def quote(_code):
+        raise AssertionError("Known empty discovery must not revive static stocks")
+
+    service._refresh_domestic_dynamic_pool = refresh
+    service._get_domestic_balance_for_cycle = balance
+    service._scan_single_domestic_quote = quote
+    assert asyncio.run(service.scan_domestic()) == []
+    assert asyncio.run(service.scan_domestic()) == []
+    assert calls == ["refresh"]
+
+
+def test_domestic_pool_retains_volume_fallback_and_bounded_core_coverage():
+    service = _build_run_service()
+    service.config = load_app_config()
+    service._domestic_fluctuation_rank_disabled = False
+    service.notifier = None
+    requested = []
+
+    async def volume(**kwargs):
+        requested.append(kwargs["top_n"])
+        return [{"stock_code": str(600000 + n), "name": "stock"} for n in range(35)]
+
+    async def fluctuation(**kwargs):
+        raise TimeoutError("temporary")
+
+    service.client = SimpleNamespace(get_domestic_volume_rank=volume, get_domestic_fluctuation_rank=fluctuation)
+    asyncio.run(service._refresh_domestic_dynamic_pool())
+    assert requested == [30]
+    assert len(service._dynamic_domestic_codes) == 30
+    assert service._dynamic_domestic_codes[:3] == ["069500", "102110", "229200"]
+    assert not service._domestic_fluctuation_rank_disabled
+    assert service.repository.list_event_log(event_type="domestic_pool_source_degraded")
+
+
+def test_trade_notification_failure_is_retained_without_aborting_trading():
+    service = _build_run_service()
+
+    async def fail(_message):
+        raise TimeoutError("temporary")
+
+    service.notifier = SimpleNamespace(send=fail)
+    service._queue_trade_notification("test fill")
+    asyncio.run(service._flush_trade_notifications(force=True))
+    assert service._pending_trade_notifications == ["test fill"]
+    assert service.repository.list_event_log(event_type="trade_notification_retry_pending")
+
+
+def test_domestic_discovery_excludes_covered_calls_without_excluding_plain_etfs():
+    service = _build_run_service()
+    reason = service._domestic_dynamic_product_exclusion_reason
+    assert reason("498400", "KODEX200타겟위클리커버드콜") == "covered_call_requires_separate_policy"
+    assert reason("498400", "INDEX COVERED CALL") == "covered_call_requires_separate_policy"
+    assert not reason("069500", "KODEX200")

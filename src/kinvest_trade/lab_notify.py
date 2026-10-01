@@ -91,12 +91,15 @@ class TradeNotifier:
             f"건수={batch_size}",
             *self._queue,
         ]
-        try:
-            if notifier is not None:
-                await notifier.send("\n".join(lines))
-        finally:
-            self._queue = []
-            self._window_start = None
+        if notifier is None:
+            return
+        acknowledged = await notifier.send("\n".join(lines))
+        if acknowledged is False:
+            return
+        # Keep failed batches for the next flush, including explicit disabled sends.
+        # Do not discard lines queued while the network request was in flight.
+        del self._queue[:batch_size]
+        self._window_start = datetime.now(timezone.utc) if self._queue else None
 
     @staticmethod
     def _coerce_window_seconds(value: int) -> int:

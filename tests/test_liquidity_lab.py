@@ -12168,6 +12168,52 @@ def test_overseas_final_watch_keeps_ready_signals_and_wait_penalty(ready, waitin
     assert funnel["ready_outside_watch"] == []
 
 
+@pytest.mark.parametrize("ready, waiting, shadow, expected", [
+    (True, 0, False, "D2"), (False, 30, False, "D2"),
+    (False, 0, False, "D1"), (True, 0, True, "D2"),
+])
+def test_domestic_final_watch_preserves_ready_signals_and_wait_penalty(ready, waiting, shadow, expected):
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 1
+    service._wait_cycles = {"domestic:D1": waiting}
+    service._domestic_minute_chart_cache = {"D1": [], "D2": []}
+    if shadow:
+        service.repository.open_entry_horizon_shadow_group(
+            opened_at=datetime.now(timezone.utc), market="domestic", symbol="D1",
+            exchange_code=None, entry_session_date="2026-10-02", policy_id="test",
+            cohort="near_breakout_wait", strategy_flag="VOL", entry_by="VOL",
+            block_reason="near_breakout", entry_price=10000, round_trip_cost_pct=0.001,
+            horizons_minutes=(120,),
+        )
+    ranked = [DomesticScanResult(code, 10000, 10010, 9990, 0.001, 0.01, 9_000_000_000, 100000, score)
+              for code, score in [("D1", 60), ("D2", 30)]]
+    loads, evaluations = [], []
+
+    async def signal(candidate):
+        loads.append(candidate.stock_code)
+        return _snapshot(price=10000)
+
+    def preview(**kw):
+        evaluations.append(kw["code"])
+        bias = "BUY" if ready and kw["code"] == "D2" else "WAIT"
+        return WatchTargetStatus(
+            market="domestic", code=kw["code"], exchange_code=None, price=kw["price"],
+            activity_score=kw["activity_score"], signal_score=1, action_bias=bias,
+            signal_state=bias, ma_summary="", note="test", signal_snapshot=kw["signal_snapshot"],
+        )
+
+    service._load_domestic_signal = signal
+    service._build_watch_target_status = preview
+    targets = asyncio.run(service._build_unified_watch_targets(
+        domestic_ranked=ranked, overseas_ranked=[], domestic_positions=[], overseas_positions=[],
+        krx_open=True, us_open=False,
+    ))
+    assert [target.code for target in targets] == [expected]
+    assert sorted(loads) == sorted(evaluations) == ["D1", "D2"]
+    assert service._last_domestic_watch_funnel["ready_outside_watch"] == []
+    assert service._last_domestic_watch_funnel["evaluated_count"] == 2
+
+
 def test_build_unified_watch_targets_keeps_active_inverse_inside_limit() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.unified_watch_top_n = 2

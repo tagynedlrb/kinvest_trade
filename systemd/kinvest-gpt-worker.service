@@ -1,0 +1,22 @@
+[Unit]
+Description=Kinvest consent-scoped GPT analysis worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/kinvest_trade
+ExecStart=%h/kinvest_trade/.venv/bin/python -m kinvest_trade.gpt_worker
+Restart=on-failure
+RestartSec=15
+KillMode=control-group
+TimeoutStopSec=15
+UMask=0077
+Nice=10
+MemoryMax=1G
+TasksMax=64
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

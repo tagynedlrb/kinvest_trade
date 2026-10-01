@@ -137,7 +137,7 @@ def _build_help_message() -> str:
     return "\n".join(lines)
 
 
-HELP_MESSAGE = _build_help_message()
+HELP_MESSAGE = _build_help_message() + "\n\nGPT 분석/수정안: /gpt_help"
 
 BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_start", "description": "거래 루프 시작"},
@@ -164,6 +164,12 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_paper_test", "description": "페이퍼 테스트(종목코드 필요)"},
     {"command": "lab_menu", "description": "카테고리별 명령 버튼 메뉴"},
     {"command": "lab_help", "description": "명령 목록 보기"},
+    {"command": "gpt", "description": "GPT 분석/수정안 작업 접수"},
+    {"command": "gpt_confirm", "description": "GPT 작업 실행 승인"},
+    {"command": "gpt_status", "description": "GPT 작업 상태"},
+    {"command": "gpt_result", "description": "GPT 작업 결과"},
+    {"command": "gpt_cancel", "description": "GPT 작업 취소"},
+    {"command": "gpt_help", "description": "GPT 명령 및 실행 범위"},
 ]
 
 ParsedCommand: TypeAlias = str | tuple[str, str | None]
@@ -896,6 +902,11 @@ class TelegramLiquidityLabController:
         if not text:
             return
         if not self.notifier.is_authorized_chat(chat_id):
+            return
+        from .telegram_gpt import COMMANDS as GPT_COMMANDS, handle_gpt_update
+
+        if text.split(maxsplit=1)[0] in GPT_COMMANDS:
+            await handle_gpt_update(self, update)
             return
         self._log_inbound_command(text)
 

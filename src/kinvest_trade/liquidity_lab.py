@@ -8379,22 +8379,7 @@ class LiquidityLabService:
         if not quote_results:
             return []
 
-        ll_cfg = self.config.liquidity_lab
-        threshold = getattr(ll_cfg, "max_wait_cycles_before_penalty", 15)
-        decay = getattr(ll_cfg, "wait_penalty_decay", 0.07)
-        wait_cycles = getattr(self, "_wait_cycles", None)
-        if wait_cycles is None:
-            wait_cycles = {}
-            self._wait_cycles = wait_cycles
-
-        def _domestic_effective_score(result: DomesticScanResult) -> float:
-            key = f"domestic:{result.stock_code.upper()}"
-            wait_count = wait_cycles.get(key, 0)
-            excess = max(0, wait_count - threshold)
-            penalty = max(0.2, 1.0 - excess * decay)
-            return result.activity_score * penalty
-
-        quote_results.sort(key=_domestic_effective_score, reverse=True)
+        quote_results.sort(key=self._domestic_effective_activity_score, reverse=True)
         refine_n = min(len(quote_results), max(config.unified_scan_top_n, 3))
         refined: list[DomesticScanResult] = []
         for candidate in quote_results[:refine_n]:
@@ -8448,7 +8433,14 @@ class LiquidityLabService:
 
         self._domestic_excluded = excluded
         remaining = quote_results[refine_n:]
-        return sorted(refined + remaining, key=_domestic_effective_score, reverse=True)
+        return sorted(refined + remaining, key=self._domestic_effective_activity_score, reverse=True)
+
+    def _domestic_effective_activity_score(self, result: DomesticScanResult) -> float:
+        config = self.config.liquidity_lab
+        count = getattr(self, "_wait_cycles", {}).get(f"domestic:{result.stock_code.upper()}", 0)
+        excess = max(0, count - getattr(config, "max_wait_cycles_before_penalty", 15))
+        penalty = max(0.2, 1.0 - excess * getattr(config, "wait_penalty_decay", 0.07))
+        return result.activity_score * penalty
 
     async def _scan_single_domestic_quote(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
@@ -9981,6 +9973,24 @@ class LiquidityLabService:
                 )
                 ranked_symbols.add(symbol)
 
+        domestic_previews: dict[str, WatchTargetStatus] = {}
+        domestic_snapshots: dict[str, MovingAverageSnapshot | None] = {}
+        held_domestic_codes = {position.stock_code for position in domestic_positions}
+        if krx_open:
+            # Preview only already refined candidates; do not expand minute-chart I/O.
+            cached_codes = getattr(self, "_domestic_minute_chart_cache", {})
+            for candidate in domestic_ranked:
+                code = candidate.stock_code
+                if code in held_domestic_codes or code not in cached_codes:
+                    continue
+                snapshot = await self._load_domestic_signal(candidate)
+                domestic_snapshots[code] = snapshot
+                if snapshot is not None:
+                    domestic_previews[code] = self._build_watch_target_status(
+                        market="domestic", code=code, exchange_code=None,
+                        price=float(candidate.current_price), activity_score=candidate.activity_score,
+                        signal_snapshot=snapshot, holding_qty=0,
+                    )
         overseas_previews: dict[str, WatchTargetStatus] = {}
         held_overseas = {position.symbol.upper() for position in overseas_positions}
         held_overseas.update(self._get_virtual_held_symbols())
@@ -9998,12 +10008,14 @@ class LiquidityLabService:
         unified.sort(
             key=lambda item: (
                 self._overseas_effective_activity_score(item.overseas)
-                if item.overseas is not None else item.activity_score
+                if item.overseas is not None else (
+                    self._domestic_effective_activity_score(item.domestic)
+                    if item.domestic is not None else item.activity_score
+                )
             ),
             reverse=True,
         )
 
-        held_domestic_codes = {position.stock_code for position in domestic_positions}
         held_overseas_codes = {
             position.symbol.upper()
             for position in overseas_positions
@@ -10065,9 +10077,12 @@ class LiquidityLabService:
         for item in unified:
             if remaining_slots <= 0:
                 break
-            preview = overseas_previews.get(item.code.upper()) if item.market == "overseas" else None
+            preview = (
+                domestic_previews.get(item.code) if item.market == "domestic"
+                else overseas_previews.get(item.code.upper()) if not krx_open else None
+            )
             pair = (item.market, item.code.upper())
-            if not krx_open and preview is not None and preview.action_bias == "BUY" and pair not in selected_keys:
+            if preview is not None and preview.action_bias == "BUY" and pair not in selected_keys:
                 selected.append(item)
                 selected_keys.add(pair)
                 remaining_slots -= 1
@@ -10110,21 +10125,27 @@ class LiquidityLabService:
         for item in selected:
             if item.market == "domestic" and item.domestic is not None:
                 candidate = item.domestic
-                signal_snapshot = await self._load_domestic_signal(candidate)
+                signal_snapshot = (
+                    domestic_snapshots[candidate.stock_code]
+                    if candidate.stock_code in domestic_snapshots
+                    else await self._load_domestic_signal(candidate)
+                )
                 if signal_snapshot is None:
                     await asyncio.sleep(0.05)
                     continue
                 held = domestic_held_map.get(candidate.stock_code)
-                watch_target = self._build_watch_target_status(
-                    market="domestic",
-                    code=candidate.stock_code,
-                    exchange_code=None,
-                    price=float(candidate.current_price),
-                    activity_score=candidate.activity_score,
-                    signal_snapshot=signal_snapshot,
-                    held_position=held,
-                    holding_qty=0 if held is None else held.quantity,
-                )
+                watch_target = domestic_previews.get(candidate.stock_code)
+                if watch_target is None:
+                    watch_target = self._build_watch_target_status(
+                        market="domestic",
+                        code=candidate.stock_code,
+                        exchange_code=None,
+                        price=float(candidate.current_price),
+                        activity_score=candidate.activity_score,
+                        signal_snapshot=signal_snapshot,
+                        held_position=held,
+                        holding_qty=0 if held is None else held.quantity,
+                    )
                 watch_targets.append(watch_target)
                 self._save_cycle_log_from_watch_target(
                     watch_target,
@@ -10234,6 +10255,26 @@ class LiquidityLabService:
         stale_keys = [key for key in wait_cycles if key not in active_keys]
         for key in stale_keys:
             del wait_cycles[key]
+        if krx_open:
+            selected_codes = {target.code for target in watch_targets if target.market == "domestic"}
+            ready_codes = {code for code, target in domestic_previews.items() if target.action_bias == "BUY"}
+            regime = self._market_regime_context("domestic")
+            funnel = {
+                "policy_id": self._get_market_policy("domestic").policy_id,
+                "quote_eligible_count": len(domestic_ranked),
+                "evaluated_count": len(domestic_previews),
+                "eligible_watch_buy_count": len(ready_codes),
+                "watch_selected_count": len(selected_codes),
+                "ready_outside_watch": sorted(ready_codes - selected_codes),
+                "decision_reasons": dict(Counter(target.note for target in domestic_previews.values())),
+                "benchmark_return_pct": regime.get("return_pct"),
+                "benchmark_available": bool(regime.get("available")),
+                "benchmark_session_date": regime.get("session_date"),
+                "broker_submission_checks_pending": True,
+            }
+            if funnel != getattr(self, "_last_domestic_watch_funnel", None):
+                self._save_event(event_type="domestic_watch_funnel", market="domestic", detail=funnel)
+                self._last_domestic_watch_funnel = funnel
         if us_open:
             selected_symbols = {target.code.upper() for target in watch_targets if target.market == "overseas"}
             ready = {symbol for symbol, target in overseas_previews.items() if target.action_bias == "BUY"}

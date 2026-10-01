@@ -136,6 +136,38 @@ Final full regression: **1063 passed in 140.11 seconds**; changed-file Ruff F/E9
 and `git diff --check` passed. Existing non-clock strategy tests were isolated
 from the wall-clock entry cutoff; dedicated close-buffer tests remain unchanged.
 
+## Postdeployment observation
+
+Code commit `3982676e675c` was pushed and the paper service restarted at 15:12:35
+KST. Runtime confirmed KR v12 / US v8, clean code tree and running mode. Its
+first complete decision cycle ran 15:12:53-15:21:18 (8m25s), reproducing 29
+discovered / 9 quote-eligible / 0 quote failures. KR's selected wait reason was
+`volume_low`; US was `us_open_but_mock_session_not_supported`. The entry-close
+buffer also remained enabled; no new strategy fill is claimed.
+
+At 15:21:25 KST the API ledger showed 172 terminal successes and one terminal
+domestic minute-chart timeout, logical request `a24d0fa720de4386b1d922e00d884ee4`.
+The chart request exhausted three read attempts. One EGW00201 response, a
+domestic order-history timeout and a US quote timeout recovered on retry.
+Therefore this is NOT an error-free API observation window. Initial health
+snapshots preceded these later failures. The service completed without a fatal
+runtime error; it must not turn missing/stale chart data into an authorized BUY.
+The unavailable/stale-signal regression subset passed 4 tests. Candidate quote
+eligibility and successful chart/signal acquisition remain separate stages.
+
+The first scan included both markets' cold caches and slow broker responses.
+Record its 8m25s latency as a remaining bottleneck; do not claim faster full
+cycles or instant notifications from this deployment. More aggressive retries
+are not justified by a broker rate-limit observation. Follow-up should measure
+warm-cycle latency and avoid non-orderable-market research delaying orderable
+market decisions, while preserving held-position exits and signal freshness.
+The short deployment probe timed out before the service cycle completed; an
+extended probe confirmed completion. Neither probe placed orders.
+
+Review #143 and `candidate_notification_deployment_verified` retain this
+postdeployment evidence. Reviews #140/#141/#143 still have `reviewed_at=NULL`;
+execution connectivity is not a substitute for the required profit sample.
+
 ## Primary references
 
 - [KIS official fluctuation API example](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/fluctuation/fluctuation.py):

@@ -137,7 +137,7 @@ def _build_help_message() -> str:
     return "\n".join(lines)
 
 
-HELP_MESSAGE = _build_help_message() + "\n\nGPT 분석/수정안: /gpt_help"
+HELP_MESSAGE = _build_help_message() + "\n\nGPT 분석·수정·배포·모의주문: /gpt_help"
 
 BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_start", "description": "거래 루프 시작"},
@@ -165,6 +165,10 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "lab_menu", "description": "카테고리별 명령 버튼 메뉴"},
     {"command": "lab_help", "description": "명령 목록 보기"},
     {"command": "gpt", "description": "GPT 분석/수정안 작업 접수"},
+    {"command": "gpt_edit", "description": "GPT 수정안 생성 및 격리 테스트"},
+    {"command": "gpt_diff", "description": "GPT 검증된 변경분 확인"},
+    {"command": "gpt_deploy", "description": "GPT 변경분 배포 승인 요청"},
+    {"command": "gpt_order", "description": "모의계좌 지정가 주문 승인 요청"},
     {"command": "gpt_confirm", "description": "GPT 작업 실행 승인"},
     {"command": "gpt_status", "description": "GPT 작업 상태"},
     {"command": "gpt_result", "description": "GPT 작업 결과"},
@@ -472,6 +476,10 @@ class TelegramLiquidityLabController:
     async def _scheduler_loop(self) -> None:
         while True:
             try:
+                if self._gpt_order_uncertain() and self.mode == "running":
+                    self.mode = "paused"
+                    self.last_error = "gpt_order_uncertain_manual_reconciliation_required"
+                    self._write_runtime_state()
                 await self._drain_finished_cycle()
                 await self._maybe_auto_cancel_stale_domestic_orders()
                 await self._maybe_auto_cancel_stale_overseas_orders()
@@ -1700,6 +1708,9 @@ class TelegramLiquidityLabController:
         return result.returncode == 0
 
     async def _handle_start_like_command(self, target_mode: str, verb: str) -> None:
+        if self._gpt_order_uncertain():
+            await self.notifier.send("[GPT] 응답 불확실 주문이 있어 자동매매 재개를 보류합니다. 브로커 주문내역 대조가 필요합니다.")
+            return
         if self.mode == "stopped":
             self.session_performance = SessionPerformance(started_at=datetime.now(timezone.utc))
             self.active_session_id = uuid.uuid4().hex[:12]
@@ -2051,6 +2062,9 @@ class TelegramLiquidityLabController:
         self.current_task = None
         self.current_task_started_at = None
         self._write_runtime_state()
+
+    def _gpt_order_uncertain(self) -> bool:
+        return (self.config.storage.runtime_state_path.parent / "gpt_bridge/uncertain_order.json").exists()
 
     def _lab_runtime_state_payload(self) -> dict:
         service = self.lab_service

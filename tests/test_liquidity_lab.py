@@ -44,6 +44,14 @@ def _stabilize_us_session_transition_distance(
     )
 
 
+@pytest.fixture
+def us_entry_before_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regime/probe tests must not accidentally exercise the close-time gate.
+    original = liquidity_lab_module.minutes_until_regular_session_close
+    monkeypatch.setattr(liquidity_lab_module, "minutes_until_regular_session_close",
+                        lambda market, now: 120 if market == "overseas" else original(market, now))
+
+
 def test_select_primary_target_reports_mock_daytime_limit() -> None:
     market, target, reason = LiquidityLabService._select_primary_target(
         krx_open=False,
@@ -8629,7 +8637,7 @@ def test_domestic_post_cb_reentry_gate_allows_one_recovery_then_stops_after_two_
     assert "market_regime" not in second_detail
 
 
-def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:
+def test_post_cb_session_loss_limit_does_not_block_inverse_entry(us_entry_before_close) -> None:
     service = _build_run_service()
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
@@ -8665,7 +8673,7 @@ def test_post_cb_session_loss_limit_does_not_block_inverse_entry() -> None:
     assert inverse_reason == ""
 
 
-def test_overseas_entry_requires_fresh_same_session_market_regime() -> None:
+def test_overseas_entry_requires_fresh_same_session_market_regime(us_entry_before_close) -> None:
     service = _build_run_service()
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
@@ -9599,7 +9607,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade["policy_id"] == "domestic_momentum_v12"
 
 
-def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark() -> None:
+def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark(us_entry_before_close) -> None:
     service = _build_run_service()
     loaded = load_app_config(
         Path(__file__).resolve().parents[1] / "config" / "fixed_config.json"
@@ -15889,7 +15897,7 @@ def test_overseas_buy_saves_buy_real_only_after_fill() -> None:
     assert manager.position.entry_time.isoformat() == rows[0]["logged_at"]
 
 
-def test_place_overseas_test_order_rechecks_post_cb_regime_before_submission() -> None:
+def test_place_overseas_test_order_rechecks_post_cb_regime_before_submission(us_entry_before_close) -> None:
     class FailingOverseasClient:
         async def get_overseas_possible_order(self, **kwargs):
             raise AssertionError("possible-order API should not be called")
@@ -16187,7 +16195,7 @@ def test_place_overseas_test_order_blocks_recent_underperforming_strategy_before
     assert rows[0]["action_reason"] == "buy:recent_strategy_underperformance"
 
 
-def test_overseas_strategy_guard_probe_is_small_paper_only_and_exposure_limited() -> None:
+def test_overseas_strategy_guard_probe_is_small_paper_only_and_exposure_limited(us_entry_before_close) -> None:
     class ProbeClient:
         def __init__(self) -> None:
             self.calls: list[dict] = []

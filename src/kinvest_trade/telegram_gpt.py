@@ -9,16 +9,21 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-COMMANDS = {"/gpt", "/gpt_confirm", "/gpt_status", "/gpt_result", "/gpt_cancel", "/gpt_help"}
+COMMANDS = {"/gpt", "/gpt_edit", "/gpt_diff", "/gpt_deploy", "/gpt_order",
+            "/gpt_confirm", "/gpt_status", "/gpt_result", "/gpt_cancel", "/gpt_help"}
 HELP = (
     "[GPT]\n"
     "/gpt <지시사항> - 분석/수정안 작업 접수\n"
+    "/gpt_edit <파일[,파일]> <지시> - 수정안 생성 및 격리 테스트\n"
+    "/gpt_diff <번호> [페이지] - 검증된 변경분 확인\n"
+    "/gpt_deploy <수정작업 번호> - 해당 변경분 배포 승인 요청\n"
+    "/gpt_order KR|US BUY|SELL 종목 수량 지정가 [NASD|NYSE|AMEX]\n"
     "/gpt_confirm <번호> - 비용 발생 작업 실행 승인 (10분 이내)\n"
     "/gpt_status [번호] - 상태 조회\n"
     "/gpt_result <번호> [페이지] - 결과 조회\n"
     "/gpt_cancel <번호> - 대기/실행 작업 취소\n"
     "기존 개인 대화의 본인만 사용 가능합니다.\n"
-    "현재 분석·수정안 작성 전용입니다. 운영 파일 수정, 주문, 배포는 실행하지 않습니다.\n"
+    "수정·배포·모의주문은 별도 승인 후 실행됩니다. 실계좌는 금지합니다.\n"
     "이 채팅과 별도의 Codex 작업이며 기존 로그인 계정 사용량이 소모됩니다."
 )
 
@@ -43,6 +48,7 @@ class GptJobStore:
         directory.chmod(0o700)
         self.path = directory / "jobs.sqlite3"
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""CREATE TABLE IF NOT EXISTS jobs (
                 id INTEGER PRIMARY KEY, update_id INTEGER UNIQUE NOT NULL,
                 owner TEXT NOT NULL, prompt TEXT NOT NULL,
@@ -53,6 +59,12 @@ class GptJobStore:
                 base_commit TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}',
                 notified_at REAL, notice_attempts INTEGER NOT NULL DEFAULT 0
             )""")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+            for name, definition in {"kind": "TEXT NOT NULL DEFAULT 'analysis'",
+                                     "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+                                     "side_effect_started_at": "REAL"}.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -65,7 +77,10 @@ class GptJobStore:
         finally:
             conn.close()
 
-    def propose(self, update_id: int, owner: str, prompt: str, *, now: float | None = None) -> dict:
+    def propose(self, update_id: int, owner: str, prompt: str, *, now: float | None = None,
+                kind: str = "analysis", payload: dict | None = None) -> dict:
+        if kind not in {"analysis", "edit", "deploy", "order"}:
+            raise ValueError("invalid_job_kind")
         now = time.time() if now is None else now
         if not prompt.strip() or len(prompt) > 6000:
             raise ValueError("지시사항은 1~6000자로 입력해주세요.")
@@ -81,7 +96,8 @@ class GptJobStore:
             pending = conn.execute("SELECT count(*) FROM jobs WHERE status IN ('proposed','queued','running')").fetchone()[0]
             if recent >= 6 or pending >= 3:
                 raise ValueError("작업 한도에 도달했습니다. 시간당 6개, 동시 대기 포함 3개입니다.")
-            cursor = conn.execute("INSERT INTO jobs(update_id,owner,prompt,created_at) VALUES(?,?,?,?)", (update_id, owner, prompt, now))
+            cursor = conn.execute("INSERT INTO jobs(update_id,owner,prompt,created_at,kind,payload_json) VALUES(?,?,?,?,?,?)",
+                                  (update_id, owner, prompt, now, kind, json.dumps(payload or {})))
             return dict(conn.execute("SELECT * FROM jobs WHERE id=?", (cursor.lastrowid,)).fetchone())
 
     def get(self, owner: str, job_id: int | None = None) -> dict | None:
@@ -92,7 +108,7 @@ class GptJobStore:
     def confirm(self, owner: str, job_id: int, *, now: float | None = None) -> bool:
         now = time.time() if now is None else now
         with self.connect() as conn:
-            cursor = conn.execute("UPDATE jobs SET status='queued',confirmed_at=? WHERE id=? AND owner=? AND status='proposed' AND created_at>=?", (now, job_id, owner, now - 600))
+            cursor = conn.execute("UPDATE jobs SET status='queued',confirmed_at=? WHERE id=? AND owner=? AND status='proposed' AND created_at>=? AND (kind!='order' OR created_at>=?)", (now, job_id, owner, now - 600, now - 60))
             return cursor.rowcount == 1
 
     def cancel(self, owner: str, job_id: int) -> bool:
@@ -100,7 +116,7 @@ class GptJobStore:
             cursor = conn.execute("""UPDATE jobs SET cancel_requested=1,
                 status=CASE WHEN status='running' THEN status ELSE 'cancelled' END,
                 finished_at=CASE WHEN status='running' THEN finished_at ELSE ? END
-                WHERE id=? AND owner=? AND status IN ('proposed','queued','running')""", (time.time(), job_id, owner))
+                WHERE id=? AND owner=? AND status IN ('proposed','queued','running') AND side_effect_started_at IS NULL""", (time.time(), job_id, owner))
             return cursor.rowcount == 1
 
     def recover(self) -> None:
@@ -125,6 +141,12 @@ class GptJobStore:
             conn.execute("""UPDATE jobs SET status=CASE WHEN cancel_requested=1 THEN 'cancelled' ELSE ? END,
                 finished_at=?,result=?,error=?,base_commit=?,usage_json=? WHERE id=? AND status='running'""",
                 (status, time.time(), result[:20000], error[:200], base_commit, json.dumps(usage or {}), job_id))
+
+    def begin_side_effect(self, job_id: int) -> None:
+        with self.connect() as conn:
+            changed = conn.execute("UPDATE jobs SET side_effect_started_at=? WHERE id=? AND status='running' AND cancel_requested=0 AND side_effect_started_at IS NULL", (time.time(), job_id))
+            if changed.rowcount != 1:
+                raise ValueError("cancelled_or_already_executed")
 
     def pending_notices(self, owner: str) -> list[dict]:
         with self.connect() as conn:
@@ -151,7 +173,11 @@ def authorized_message(message: dict, owner: str, *, now: float | None = None) -
 
 
 def format_job(job: dict, *, include_result: bool = False, page: int = 1) -> str:
-    text = f"[GPT #{job['id']}] {job['status']}\n분석/수정안 전용 · 운영 변경 없음"
+    labels = {"analysis": "분석 전용", "edit": "수정안·격리 테스트 (배포 별도 승인)",
+              "deploy": "Git 업데이트·운영 배포", "order": "모의계좌 지정가 주문"}
+    text = f"[GPT #{job['id']}] {job['status']}\n{labels[job.get('kind', 'analysis')]}"
+    if job.get("side_effect_started_at"):
+        text += "\n실행 단계 진입: 자동 재시도·작업 취소 불가 (주문 취소와 별개)"
     if job.get("error"):
         text += "\n오류=" + job["error"]
     if include_result and job.get("result"):
@@ -187,19 +213,24 @@ async def handle_gpt_update(controller, update: dict) -> bool:
         return True
     store = GptJobStore(bridge_root(project))
     try:
-        if token == "/gpt":
+        if token in {"/gpt", "/gpt_edit", "/gpt_deploy", "/gpt_order"}:
             update_id = update.get("update_id")
             if not isinstance(update_id, int):
                 return True
-            job = store.propose(update_id, owner, argument.strip())
+            kind, payload, description = "analysis", {}, "분석 전용, 운영 변경 없음."
+            if token != "/gpt":
+                from .gpt_operations import propose_operation
+                kind, payload, description = propose_operation(project, settings, store, owner, token, argument, controller.config)
+            job = store.propose(update_id, owner, argument.strip(), kind=kind, payload=payload)
             scope = ("승인된 거래·시장·정책·작업 이력 요약과 지시문" if settings.get("share_project_context") is True
                      else "직접 입력한 지시문만")
-            answer = (f"[GPT #{job['id']}] {job['status']}\n분석/수정안 전용, 운영 코드·주문·배포 변경 없음.\n"
-                      f"{scope}을 OpenAI Codex로 전달합니다. 기존 로그인 사용량이 소모됩니다.\n"
+            disclosure = (f"{scope} 및 지정한 소스를 OpenAI Codex로 전달합니다. 기존 로그인 사용량이 소모됩니다.\n"
+                          if kind in {"analysis", "edit"} else "모델 호출 없이 서버에서 실행합니다.\n")
+            answer = (f"[GPT #{job['id']}] {job['status']}\n{description}\n" + disclosure +
                       f"실행 승인: /gpt_confirm {job['id']}\n취소: /gpt_cancel {job['id']}")
         else:
             values = argument.split()
-            if len(values) > (2 if token == "/gpt_result" else 1):
+            if len(values) > (2 if token in {"/gpt_result", "/gpt_diff"} else 1):
                 raise ValueError("명령 인자를 확인해주세요.")
             page = 1
             if len(values) == 2:
@@ -220,6 +251,9 @@ async def handle_gpt_update(controller, update: dict) -> bool:
                     raise ValueError("취소할 대기/실행 작업이 없습니다.")
             job = store.get(owner, job_id)
             answer = format_job(job, include_result=token == "/gpt_result", page=page) if job else "[GPT] 작업이 없습니다."
+            if token == "/gpt_diff":
+                from .gpt_operations import diff_page
+                answer = diff_page(project, job, page)
             if token == "/gpt_status":
                 try:
                     heartbeat = json.loads((bridge_root(project) / "heartbeat.json").read_text())

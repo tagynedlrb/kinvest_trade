@@ -4832,6 +4832,7 @@ def test_handle_cb_reset_also_clears_order_reject_breaker() -> None:
 
 def test_handle_start_like_command_resume_resets_circuit_breaker() -> None:
     controller = TelegramLiquidityLabController.__new__(TelegramLiquidityLabController)
+    controller._gpt_order_uncertain = lambda: False
     controller.mode = "paused"
     controller.active_session_id = "sess-1"
     controller.session_performance = SessionPerformance(

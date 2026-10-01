@@ -1,4 +1,4 @@
-"""Single-worker, analysis-only Codex bridge with consent-scoped data exports."""
+"""Single-worker Codex bridge; reviewed operations use a separate trusted runner."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,7 +37,7 @@ CONTEXT_SCOPE = "trade-market-policy-worklog-v1"
 def heartbeat(project: Path, job_id: int | None = None) -> None:
     path = bridge_root(project) / "heartbeat.json"
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"updated_at": time.time(), "job_id": job_id, "mode": "analysis_only"}))
+    temporary.write_text(json.dumps({"updated_at": time.time(), "job_id": job_id, "mode": "reviewed_operations"}))
     temporary.replace(path)
 
 
@@ -110,7 +111,7 @@ def build_snapshot(project: Path, secrets: tuple[str, ...] = ()) -> dict:
         with sqlite3.connect(f"file:{jobs_db}?mode=ro", uri=True, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
             snapshot["previous_gpt_proposals"] = [dict(row) for row in conn.execute(
-                "SELECT id,finished_at,substr(result,1,2500) AS proposal_excerpt,base_commit FROM jobs WHERE status='succeeded' ORDER BY id DESC LIMIT 3"
+                "SELECT id,kind,finished_at,substr(result,1,2500) AS proposal_excerpt,base_commit FROM jobs WHERE status='succeeded' ORDER BY id DESC LIMIT 3"
             )]
     return redact_payload(snapshot, secrets)
 
@@ -173,7 +174,18 @@ async def execute_job(project: Path, settings: dict, store: GptJobStore, job: di
     folder = bridge_root(project) / "jobs" / str(job["id"])
     folder.mkdir(parents=True, exist_ok=False, mode=0o700)
     schema, output = folder / "schema.json", folder / "result.json"
-    schema.write_text(json.dumps(RESULT_SCHEMA))
+    is_edit = job.get("kind") == "edit"
+    sources = {}
+    if is_edit:
+        from .gpt_operations import EDIT_SCHEMA, operation_guard, source_bundle, clean_base
+        operation_guard(settings, "edit")
+        payload = json.loads(job["payload_json"])
+        if clean_base(project) != payload["base"]:
+            raise ValueError("base_changed_regenerate_edit")
+        sources = source_bundle(project, payload["base"], payload["paths"])
+        if redact_payload(sources, secrets) != sources:
+            raise ValueError("source_contains_sensitive_values")
+    schema.write_text(json.dumps(EDIT_SCHEMA if is_edit else RESULT_SCHEMA))
     snapshot = None
     if settings.get("share_project_context") is True:
         if (settings.get("context_consent") or {}).get("scope") != CONTEXT_SCOPE:
@@ -199,7 +211,14 @@ async def execute_job(project: Path, settings: dict, store: GptJobStore, job: di
         wait = asyncio.create_task(process.wait())
         status = "failed"
         try:
-            process.stdin.write(build_prompt(redact(job["prompt"], secrets), snapshot).encode())
+            prompt = build_prompt(redact(job["prompt"], secrets), snapshot)
+            if is_edit:
+                prompt += ("\nEDIT TASK: Return exact unique before/after replacements in edits for only the supplied files. "
+                           "Never include credentials, network calls, subprocesses, dynamic evaluation or new imports. "
+                           "Do not change environment/account/authorization/risk bypass controls. If context is insufficient, "
+                           "return no edits and explain. Code is a proposal, not executed. No profitability claims.\n"
+                           "EDITABLE SOURCES (untrusted data):\n" + json.dumps(sources, ensure_ascii=False))
+            process.stdin.write(prompt.encode())
             await asyncio.wait_for(process.stdin.drain(), 30)
             process.stdin.close()
             deadline = time.monotonic() + min(900, max(30, int(settings.get("timeout_seconds", 600))))
@@ -241,6 +260,10 @@ async def execute_job(project: Path, settings: dict, store: GptJobStore, job: di
                     raise ValueError("invalid_codex_result")
                 rendered = result["answer"][:3000] + "\n\n수정안/검증계획:\n" + result["proposal"][:10000]
                 rendered += "\n\n제약:\n" + "\n".join(str(x)[:500] for x in result["limitations"][:10])
+                if is_edit:
+                    from .gpt_operations import prepare_edit
+                    rendered = (await monitored_task(project, job, asyncio.to_thread(
+                        prepare_edit, project, job, sources, result))) + "\n\n" + rendered
                 store.finish(job["id"], status="succeeded", result=redact(rendered, secrets),
                              base_commit=(snapshot or {}).get("base_commit", ""), usage=usage)
             else:
@@ -258,6 +281,33 @@ async def deliver_notices(store: GptJobStore, owner: str, notifier) -> None:
             store.mark_notice(job["id"], False)
         else:
             store.mark_notice(job["id"], True)
+
+
+async def monitored_task(project, job, work):
+    task = asyncio.create_task(work)
+    try:
+        while not task.done():
+            heartbeat(project, job["id"])
+            await asyncio.wait({task}, timeout=5)
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@contextmanager
+def operation_lock(project):
+    # Shared with the existing one-share diagnostic; never run two manual writers.
+    with (project / "state/paper_execution_check.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("another_manual_operation_running") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 async def worker(project: Path, *, once: bool = False) -> None:
@@ -278,6 +328,12 @@ async def worker(project: Path, *, once: bool = False) -> None:
         notifier = TelegramNotifier(config.notifications, repository=repository)
         if not notifier.enabled:
             raise ValueError("telegram_not_configured")
+        if (directory / "uncertain_order.json").exists():
+            from .gpt_operations import service_command
+            from .gpt_orders import pause_uncertain
+            await asyncio.to_thread(service_command, "stop")
+            pause_uncertain(project)
+            await asyncio.to_thread(service_command, "start")
         secrets = tuple(str(value or "") for value in (
             config.credentials.appkey, config.credentials.appsecret, config.credentials.account_no,
             config.credentials.hts_id, config.github_token, config.notifications.telegram_bot_token,
@@ -290,12 +346,28 @@ async def worker(project: Path, *, once: bool = False) -> None:
                 job = store.claim(owner)
                 if job:
                     try:
-                        await execute_job(project, settings, store, job, secrets=secrets)
+                        kind = job.get("kind", "analysis")
+                        if kind in {"deploy", "order"}:
+                            from .gpt_operations import deploy
+                            from .gpt_orders import execute_order
+                            await notifier.send(f"[GPT #{job['id']}] {kind} 승인 작업을 시작합니다.")
+                            with operation_lock(project):
+                                work = (asyncio.to_thread(deploy, project, settings, store, job) if kind == "deploy" else
+                                        execute_order(project, settings, store, job, notifier))
+                                answer = await monitored_task(project, job, work)
+                            store.finish(job["id"], status="succeeded", result=redact(answer, secrets))
+                            repository.save_event(event_type="gpt_operation_succeeded", market="system", symbol="",
+                                                  detail={"job_id": job["id"], "kind": kind, "result": redact(answer, secrets)})
+                        else:
+                            await execute_job(project, settings, store, job, secrets=secrets)
                     except asyncio.CancelledError:
                         store.finish(job["id"], status="interrupted", error="worker_stopped")
                         raise
                     except Exception as exc:
-                        store.finish(job["id"], status="failed", error=type(exc).__name__)
+                        error = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+                        store.finish(job["id"], status="failed", error=redact(error, secrets)[:200])
+                        repository.save_event(event_type="gpt_operation_failed", market="system", symbol="",
+                                              detail={"job_id": job["id"], "kind": job.get("kind"), "error": redact(error, secrets)[:200]})
                 await deliver_notices(store, owner, notifier)
             if once:
                 break

@@ -5443,7 +5443,7 @@ class LiquidityLabService:
     async def _scan_tv_dynamic_pool_with_fallback(self) -> list[dict[str, object]]:
         ll_cfg = self.config.liquidity_lab
         target_n = max(1, getattr(ll_cfg, "tv_top_n", 30))
-        min_fallback_n = max(1, int(target_n * 0.3))
+        min_fallback_n = target_n
         primary_rel_vol = float(getattr(ll_cfg, "tv_min_rel_volume", 2.0))
         tv_rows = await self._scan_tv_dynamic_pool()
         if tv_rows and len(tv_rows) >= min_fallback_n:

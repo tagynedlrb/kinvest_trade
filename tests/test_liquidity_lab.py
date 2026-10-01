@@ -10578,6 +10578,27 @@ def test_refresh_overseas_dynamic_pool_falls_back_to_static_candidates_when_tv_e
     assert service._awaiting_relist is False
 
 
+@pytest.mark.parametrize("primary_count", [9, 29, 30])
+def test_tv_scan_fills_target_instead_of_stopping_at_thirty_percent(primary_count):
+    service = _build_run_service()
+    service.config.liquidity_lab.tv_top_n = 30
+    service.config.liquidity_lab.tv_min_rel_volume = 1.8
+    calls = []
+    policy = service._get_market_policy("overseas")
+    before = policy.parameter_fingerprint
+
+    async def scan(*, min_rel_volume=None):
+        calls.append(min_rel_volume)
+        count = primary_count if min_rel_volume is None else 30
+        return [{"symbol": f"S{i}", "exchange_code": "NASD"} for i in range(count)]
+
+    service._scan_tv_dynamic_pool = scan
+    rows = asyncio.run(service._scan_tv_dynamic_pool_with_fallback())
+    assert len(rows) == 30
+    assert len(calls) == (1 if primary_count == 30 else 2)
+    assert policy.parameter_fingerprint == before
+
+
 def test_tv_scan_uses_coverage_fallback_without_relaxing_entry_policy() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.tv_top_n = 10
@@ -10610,7 +10631,7 @@ def test_tv_scan_uses_coverage_fallback_without_relaxing_entry_policy() -> None:
     ]
     assert service._last_tv_scan_used_fallback is True
     assert service._last_tv_scan_diagnostics["selected_source"] == "coverage"
-    assert service._last_tv_scan_diagnostics["minimum_target_count"] == 3
+    assert service._last_tv_scan_diagnostics["minimum_target_count"] == 10
     assert service._last_tv_scan_diagnostics["selected_count"] == 4
 
 

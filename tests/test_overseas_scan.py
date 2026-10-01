@@ -954,7 +954,7 @@ def test_refresh_overseas_dynamic_pool_relaxes_relative_volume_when_results_are_
     finally:
         liquidity_lab_module.scan_top_volume_surge = original
 
-    assert calls == [2.0, 1.2]
+    assert calls == [2.0, 1.2, 2.0 / 3.0]
     assert len(service._dynamic_overseas_pool) == 9
     detail = service._tv_scan_event_detail(service._dynamic_overseas_pool)
     assert detail["primary_threshold"] == 2.0
@@ -962,7 +962,9 @@ def test_refresh_overseas_dynamic_pool_relaxes_relative_volume_when_results_are_
     assert detail["fallback_attempted"] is True
     assert detail["fallback_threshold"] == 1.2
     assert detail["fallback_count"] == 9
-    assert detail["minimum_target_count"] == 9
+    assert detail["minimum_target_count"] == 30
+    assert detail["coverage_fallback_attempted"] is True
+    assert detail["coverage_fallback_count"] == 9
     assert detail["selected_count"] == 9
     assert detail["selected_source"] == "fallback"
     assert detail["fallback_used"] is True

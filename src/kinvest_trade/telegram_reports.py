@@ -18,6 +18,7 @@ from .market_policy import (
 from .market_sessions import (
     NEW_YORK,
     determine_loop_interval_sec,
+    get_domestic_session_for_env,
     minutes_until_regular_session_close,
     minutes_until_next_tradeable_session,
     us_holiday_date_for_kis_session,
@@ -216,6 +217,17 @@ class ReportHelper:
             f"{controller._estimated_pnl_suffix(now)}",
             f"감시수={watch_count_text}",
         ]
+        env = controller.config.credentials.env
+        krx_session = "closed" if krx_holiday else get_domestic_session_for_env(now, env)
+        nxt_session = "closed" if krx_holiday else get_domestic_session_for_env(now, env, exchange_code="NXT")
+        lines.append(f"국내계좌세션=KRX {krx_session} / NXT {nxt_session}")
+        if env == "vps":
+            us_hours = "22:30~익일05:00" if now.astimezone(NEW_YORK).dst() else "23:30~익일06:00"
+            lines.append(f"모의 주문시간(KST)=국내 09:00~15:30 / 미국 {us_hours}")
+            lines.append("모의 제한=국내 시간외·NXT / 미국 정규장 외 주문불가")
+        else:
+            lines.append("국내 자동매매=KRX 정규장만 / 시간외·NXT 미활성")
+            lines.append("실전 KRX 애프터=16~20시(ETP 제외·전용주문) / 미장 07~09시=사전신청 필요·미활성")
         if stopped_market_warning:
             lines.append(stopped_market_warning)
         signal_cache_status = controller._build_signal_cache_status_line(last_report)
@@ -1334,7 +1346,6 @@ class ReportHelper:
 
     async def send_portfolio_message(self) -> None:
         controller = self.controller
-        from . import telegram_control as _tc
 
         live_real_positions = None
         live_virtual_prices: dict[tuple[str, str], float] = {}

@@ -7747,13 +7747,13 @@ def test_closed_market_cycle_reconciles_only_effective_virtual_action() -> None:
     service._observe_inverse_regime = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
 
     original_krx = liquidity_lab_module.is_krx_regular_session
-    original_us = liquidity_lab_module.is_us_regular_session
+    original_us = liquidity_lab_module.is_us_market_session
     original_orderable = (
         liquidity_lab_module.is_us_orderable_session_for_env
     )
     original_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda _now: False
-    liquidity_lab_module.is_us_regular_session = lambda _now: False
+    liquidity_lab_module.is_us_market_session = lambda _now: False
     liquidity_lab_module.is_us_orderable_session_for_env = (
         lambda _now, _env: False
     )
@@ -7764,7 +7764,7 @@ def test_closed_market_cycle_reconciles_only_effective_virtual_action() -> None:
         second = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_krx
-        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_market_session = original_us
         liquidity_lab_module.is_us_orderable_session_for_env = (
             original_orderable
         )
@@ -13277,18 +13277,18 @@ def test_run_does_not_crash_when_circuit_breaker_has_halted_trading() -> None:
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: True
-    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_market_session = lambda now: False
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "closed"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = (
             original_is_us_orderable_session_for_env
         )
@@ -13360,18 +13360,18 @@ def test_run_reports_overseas_position_cap_reached_when_slots_full() -> None:
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = (
             original_is_us_orderable_session_for_env
         )
@@ -13486,18 +13486,18 @@ def test_run_reports_overseas_order_reject_halted_when_breaker_tripped() -> None
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = (
             original_is_us_orderable_session_for_env
         )
@@ -13600,18 +13600,18 @@ def test_run_reports_total_position_cap_reached_when_combined_slots_full() -> No
     service._build_unified_watch_targets = fake_build_unified_watch_targets  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = (
             original_is_us_orderable_session_for_env
         )
@@ -13810,12 +13810,12 @@ def test_non_orderable_monitor_scope_blocks_new_virtual_entry_but_keeps_scan() -
     service._send_summary = noop  # type: ignore[method-assign]
 
     original_krx = liquidity_lab_module.is_krx_regular_session
-    original_us = liquidity_lab_module.is_us_regular_session
+    original_us = liquidity_lab_module.is_us_market_session
     original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
     original_session = liquidity_lab_module.get_us_trading_session
     original_transition = liquidity_lab_module.seconds_until_us_session_transition
     liquidity_lab_module.is_krx_regular_session = lambda _now: False
-    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_market_session = lambda _now: True
     liquidity_lab_module.is_us_orderable_session_for_env = (
         lambda _now, _env: False
     )
@@ -13825,7 +13825,7 @@ def test_non_orderable_monitor_scope_blocks_new_virtual_entry_but_keeps_scan() -
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_krx
-        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_market_session = original_us
         liquidity_lab_module.is_us_orderable_session_for_env = original_orderable
         liquidity_lab_module.get_us_trading_session = original_session
         liquidity_lab_module.seconds_until_us_session_transition = original_transition
@@ -13901,14 +13901,14 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     original_is_nyse_holiday = liquidity_lab_module.is_nyse_holiday
     original_helper_orderable = lab_overseas_orders_module.is_us_orderable_session_for_env
     original_helper_holiday = lab_overseas_orders_module.is_nyse_holiday
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
     liquidity_lab_module.is_nyse_holiday = lambda *_args: False
@@ -13920,7 +13920,7 @@ def test_overseas_buy_records_virtual_trade_when_session_not_orderable() -> None
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
         liquidity_lab_module.is_nyse_holiday = original_is_nyse_holiday
@@ -13996,18 +13996,18 @@ def test_overseas_sell_still_attempted_when_session_not_orderable() -> None:
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
@@ -14082,18 +14082,18 @@ def test_run_executes_both_markets_when_both_open() -> None:
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: True
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
@@ -14169,18 +14169,18 @@ def test_run_executes_domestic_buy_for_multiple_targets() -> None:
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: True
-    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_market_session = lambda now: False
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "closed"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
@@ -14242,18 +14242,18 @@ def test_run_executes_overseas_when_only_us_open() -> None:
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
@@ -15013,18 +15013,18 @@ def test_register_exit_cooldown_streak_resets_after_a_win() -> None:
 def test_overseas_buy_stays_skipped_when_market_closed() -> None:
     service = _build_run_service()
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_market_session = lambda now: False
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "closed"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 
@@ -15061,8 +15061,8 @@ def test_closed_market_cycle_bootstraps_strategy_guard_state(
     original_is_krx_regular_session = (
         liquidity_lab_module.is_krx_regular_session
     )
-    original_is_us_regular_session = (
-        liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = (
+        liquidity_lab_module.is_us_market_session
     )
     original_is_us_orderable_session_for_env = (
         liquidity_lab_module.is_us_orderable_session_for_env
@@ -15071,7 +15071,7 @@ def test_closed_market_cycle_bootstraps_strategy_guard_state(
         liquidity_lab_module.get_us_trading_session
     )
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: False
+    liquidity_lab_module.is_us_market_session = lambda now: False
     liquidity_lab_module.is_us_orderable_session_for_env = (
         lambda now, env: False
     )
@@ -15082,8 +15082,8 @@ def test_closed_market_cycle_bootstraps_strategy_guard_state(
         liquidity_lab_module.is_krx_regular_session = (
             original_is_krx_regular_session
         )
-        liquidity_lab_module.is_us_regular_session = (
-            original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = (
+            original_is_us_market_session
         )
         liquidity_lab_module.is_us_orderable_session_for_env = (
             original_is_us_orderable_session_for_env
@@ -15118,12 +15118,12 @@ def test_run_skips_full_vps_scan_near_us_session_transition() -> None:
     service.scan_overseas = forbidden_scan  # type: ignore[method-assign]
 
     original_krx = liquidity_lab_module.is_krx_regular_session
-    original_us = liquidity_lab_module.is_us_regular_session
+    original_us = liquidity_lab_module.is_us_market_session
     original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
     original_session = liquidity_lab_module.get_us_trading_session
     original_transition = liquidity_lab_module.seconds_until_us_session_transition
     liquidity_lab_module.is_krx_regular_session = lambda _now: False
-    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_market_session = lambda _now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda _now, _env: False
     liquidity_lab_module.get_us_trading_session = lambda _now: "aftermarket"
     liquidity_lab_module.seconds_until_us_session_transition = lambda _now: 12
@@ -15132,7 +15132,7 @@ def test_run_skips_full_vps_scan_near_us_session_transition() -> None:
         repeated_report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_krx
-        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_market_session = original_us
         liquidity_lab_module.is_us_orderable_session_for_env = original_orderable
         liquidity_lab_module.get_us_trading_session = original_session
         liquidity_lab_module.seconds_until_us_session_transition = original_transition
@@ -15200,18 +15200,18 @@ def test_run_discards_us_decisions_when_session_changes_during_scan() -> None:
 
     sessions = iter(["regular", "aftermarket"])
     original_krx = liquidity_lab_module.is_krx_regular_session
-    original_us = liquidity_lab_module.is_us_regular_session
+    original_us = liquidity_lab_module.is_us_market_session
     original_orderable = liquidity_lab_module.is_us_orderable_session_for_env
     original_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda _now: False
-    liquidity_lab_module.is_us_regular_session = lambda _now: True
+    liquidity_lab_module.is_us_market_session = lambda _now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda _now, _env: True
     liquidity_lab_module.get_us_trading_session = lambda _now: next(sessions)
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_krx
-        liquidity_lab_module.is_us_regular_session = original_us
+        liquidity_lab_module.is_us_market_session = original_us
         liquidity_lab_module.is_us_orderable_session_for_env = original_orderable
         liquidity_lab_module.get_us_trading_session = original_session
 
@@ -15240,13 +15240,13 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
     seen_krx_dates = []
     seen_nyse_dates = []
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     original_is_krx_holiday = liquidity_lab_module.is_krx_holiday
     original_is_nyse_holiday = liquidity_lab_module.is_nyse_holiday
     liquidity_lab_module.is_krx_regular_session = lambda now: True
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
 
@@ -15264,7 +15264,7 @@ def test_run_marks_us_holiday_as_closed_when_skip_enabled() -> None:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
         liquidity_lab_module.is_krx_holiday = original_is_krx_holiday
@@ -16533,14 +16533,14 @@ def test_session_blocked_real_sell_does_not_record_virtual_sell() -> None:
     service._send_summary = fake_send_summary  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_helper_is_us_orderable_session_for_env = (
         lab_overseas_orders_module.is_us_orderable_session_for_env
     )
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: False
     lab_overseas_orders_module.is_us_orderable_session_for_env = lambda now, env: False
     liquidity_lab_module.get_us_trading_session = lambda now: "daytime"
@@ -16549,7 +16549,7 @@ def test_session_blocked_real_sell_does_not_record_virtual_sell() -> None:
         second = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         lab_overseas_orders_module.is_us_orderable_session_for_env = (
             original_helper_is_us_orderable_session_for_env
@@ -16652,18 +16652,18 @@ def test_full_cycle_sends_exactly_one_notification_per_real_sell_trade() -> None
     service._place_overseas_sell_order = fake_place_overseas_sell_order  # type: ignore[method-assign]
 
     original_is_krx_regular_session = liquidity_lab_module.is_krx_regular_session
-    original_is_us_regular_session = liquidity_lab_module.is_us_regular_session
+    original_is_us_market_session = liquidity_lab_module.is_us_market_session
     original_is_us_orderable_session_for_env = liquidity_lab_module.is_us_orderable_session_for_env
     original_get_us_trading_session = liquidity_lab_module.get_us_trading_session
     liquidity_lab_module.is_krx_regular_session = lambda now: False
-    liquidity_lab_module.is_us_regular_session = lambda now: True
+    liquidity_lab_module.is_us_market_session = lambda now: True
     liquidity_lab_module.is_us_orderable_session_for_env = lambda now, env: True
     liquidity_lab_module.get_us_trading_session = lambda now: "regular"
     try:
         report = asyncio.run(service.run())
     finally:
         liquidity_lab_module.is_krx_regular_session = original_is_krx_regular_session
-        liquidity_lab_module.is_us_regular_session = original_is_us_regular_session
+        liquidity_lab_module.is_us_market_session = original_is_us_market_session
         liquidity_lab_module.is_us_orderable_session_for_env = original_is_us_orderable_session_for_env
         liquidity_lab_module.get_us_trading_session = original_get_us_trading_session
 

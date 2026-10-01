@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -203,3 +204,44 @@ def test_unsold_diagnostic_position_blocks_service_restart(tmp_path, monkeypatch
     assert not result["safe_to_resume"]
     assert result["reason"] == "diagnostic_sell_fill_unconfirmed"
     assert broker.qty == 1
+
+
+@pytest.mark.parametrize("market,quote", [
+    ("domestic", {"best_ask": 109005, "best_bid": 109000}),
+    ("overseas", {"last_price": 500}),
+])
+def test_notional_rejection_is_not_a_bad_quote_and_does_not_consume_attempt(
+    tmp_path, monkeypatch, market, quote
+):
+    check, broker, repo = make_check(tmp_path, monkeypatch, market)
+    method = "get_orderbook" if market == "domestic" else "get_overseas_price"
+    monkeypatch.setattr(broker, method, AsyncMock(return_value=quote))
+    result = asyncio.run(check.run())
+    assert result["reason"] == "diagnostic_notional_out_of_bounds"
+    assert result["safe_to_resume"] and not broker.orders
+    assert not repo.list_event_log(event_type="paper_execution_check_started")
+    assert repo.list_event_log(event_type="paper_execution_check_quote_checked")
+    # A price increase beyond the entry cap must not prevent liquidation.
+    assert float(asyncio.run(check.price("sell"))) > 0
+
+
+@pytest.mark.parametrize("ask,bid", [(float("nan"), 1), (100, float("inf")), (100, 101), (0, 0), (1000.5, 1000)])
+def test_invalid_domestic_quotes_never_submit(tmp_path, monkeypatch, ask, bid):
+    check, broker, _ = make_check(tmp_path, monkeypatch, "domestic")
+    monkeypatch.setattr(broker, "get_orderbook", AsyncMock(return_value={"best_ask": ask, "best_bid": bid}))
+    result = asyncio.run(check.run())
+    assert result["reason"] == "diagnostic_quote_out_of_bounds"
+    assert not broker.orders
+
+
+@pytest.mark.parametrize("clock", ["10:00:00", "18:00:00", "06:00:00"])
+def test_paper_us_guard_requires_actual_regular_session(tmp_path, monkeypatch, clock):
+    from kinvest_trade.market_sessions import is_us_regular_session
+    check, broker, _ = make_check(tmp_path, monkeypatch, "overseas")
+    now = datetime.fromisoformat(f"2026-10-01T{clock}+09:00")
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(now=lambda _: now))
+    monkeypatch.setattr(module, "is_us_regular_session", is_us_regular_session)
+    check.session_date = now.astimezone(module.NEW_YORK).date().isoformat()
+    result = asyncio.run(check.run())
+    assert result["reason"] == "regular_trading_session_required"
+    assert not broker.orders

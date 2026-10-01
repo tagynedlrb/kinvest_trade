@@ -14,7 +14,7 @@ from typing import Any, Callable
 import httpx
 
 from .config import KisCredentials
-from .market_sessions import get_us_trading_session, is_us_daytime_session
+from .market_sessions import get_us_trading_session
 
 _logger = logging.getLogger(__name__)
 
@@ -1968,7 +1968,12 @@ class KisRestClient:
     ) -> dict[str, Any]:
         exchange_upper = self.overseas_order_exchange_code(exchange_code)
         us_session = get_us_trading_session(now_utc)
-        if exchange_upper in {"NASD", "NYSE", "AMEX"} and is_us_daytime_session(now_utc):
+        if exchange_upper in {"NASD", "NYSE", "AMEX"} and us_session == "closed":
+            raise KisApiError(
+                "US session is closed for this route; extended aftermarket "
+                "07:00-09:00 KST requires separately confirmed account enrollment."
+            )
+        if exchange_upper in {"NASD", "NYSE", "AMEX"} and us_session == "daytime":
             if self.credentials.env != "prod":
                 raise KisApiError(
                     "KIS mock does not support US daytime trading "
@@ -2020,8 +2025,19 @@ class KisRestClient:
         still depends on `DRY_RUN` and `LIVE_TRADING_ENABLED`.
         """
 
+        exchange_code = exchange_code.upper()
+        if self.credentials.env != "prod" and (
+            exchange_code != "KRX"
+            or order_division in {"05", "06", "07", "27", "28", "29"}
+            or order_division in {str(code) for code in range(41, 48)}
+        ):
+            raise KisApiError(
+                "KIS mock supports KRX regular orders only, not NXT or after-hours orders."
+            )
         cano, product_code = self.account_parts()
         side_upper = side.upper()
+        if side_upper not in {"BUY", "SELL"}:
+            raise KisApiError("domestic order side must be buy or sell")
         if self.credentials.env == "prod":
             tr_id = "TTTC0012U" if side_upper == "BUY" else "TTTC0011U"
         else:

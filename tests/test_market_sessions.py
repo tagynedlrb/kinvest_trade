@@ -1,13 +1,18 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from kinvest_trade.market_sessions import (
     determine_loop_interval_sec,
+    get_domestic_trading_session,
+    get_domestic_session_for_env,
     get_us_trading_session,
     is_krx_execution_reconcile_window,
     is_krx_regular_session,
     is_us_execution_reconcile_window,
     is_us_orderable_session_for_env,
     is_us_regular_session,
+    is_us_market_session,
     minutes_until_regular_session_close,
     minutes_until_next_tradeable_session,
     seconds_until_us_session_transition,
@@ -27,8 +32,10 @@ def test_us_regular_session_true() -> None:
     assert is_us_regular_session(datetime(2026, 6, 25, 14, 0, tzinfo=timezone.utc))
 
 
-def test_us_regular_session_true_during_kis_premarket() -> None:
-    assert is_us_regular_session(datetime(2026, 6, 25, 8, 13, tzinfo=timezone.utc))
+def test_us_premarket_is_watchable_but_not_regular() -> None:
+    now = datetime(2026, 6, 25, 8, 13, tzinfo=timezone.utc)
+    assert not is_us_regular_session(now)
+    assert is_us_market_session(now)
 
 
 def test_us_session_classified_as_daytime_during_kis_daytime() -> None:
@@ -229,3 +236,91 @@ def test_determine_loop_interval_stays_slow_near_nyse_holiday_open() -> None:
 def test_determine_loop_interval_returns_120_on_many_errors() -> None:
     now = datetime(2026, 6, 25, 1, 0, tzinfo=timezone.utc)
     assert determine_loop_interval_sec(now, "prod", 6) == 120
+
+
+@pytest.mark.parametrize("clock,venue,expected", [
+    ("08:00:00", "NXT", "premarket"),
+    ("08:49:59", "NXT", "premarket"),
+    ("08:50:00", "NXT", "closed"),
+    ("09:00:29", "NXT", "closed"),
+    ("09:00:30", "NXT", "regular"),
+    ("15:20:00", "NXT", "closed"),
+    ("15:39:59", "NXT", "closed"),
+    ("15:40:00", "NXT", "aftermarket"),
+    ("20:00:00", "NXT", "closed"),
+    ("08:30:00", "KRX", "pre_close_price"),
+    ("08:40:00", "KRX", "closed"),
+    ("09:00:00", "KRX", "regular"),
+    ("15:29:59", "KRX", "regular"),
+    ("15:30:00", "KRX", "closed"),
+    ("15:40:00", "KRX", "after_close_price"),
+    ("16:00:00", "KRX", "aftermarket"),
+    ("19:59:59", "KRX", "aftermarket"),
+    ("20:00:00", "KRX", "closed"),
+])
+def test_domestic_broker_clock_and_mock_support(clock, venue, expected):
+    now = datetime.fromisoformat(f"2026-10-01T{clock}+09:00")
+    assert get_domestic_trading_session(now, exchange_code=venue) == expected
+    assert get_domestic_session_for_env(now, "prod", exchange_code=venue) == expected
+    mock_session = "regular" if venue == "KRX" and expected == "regular" else "closed"
+    assert get_domestic_session_for_env(now, "vps", exchange_code=venue) == mock_session
+
+
+def test_krx_aftermarket_effective_date_and_weekends():
+    before = datetime.fromisoformat("2026-09-11T17:00:00+09:00")
+    after = datetime.fromisoformat("2026-09-14T17:00:00+09:00")
+    weekend = datetime.fromisoformat("2026-10-03T10:00:00+09:00")
+    assert get_domestic_trading_session(before) == "single_price"
+    assert get_domestic_trading_session(after) == "aftermarket"
+    for venue in ("KRX", "NXT", "UNKNOWN"):
+        assert get_domestic_session_for_env(weekend, "prod", exchange_code=venue) == "closed"
+
+
+def test_exact_krx_close_stops_new_orders_but_keeps_reconciliation():
+    now = datetime.fromisoformat("2026-10-01T15:30:00+09:00")
+    assert not is_krx_regular_session(now)
+    assert is_krx_execution_reconcile_window(now)
+
+
+@pytest.mark.parametrize("date,clock,expected", [
+    ("2026-10-01", "10:00:00", "daytime"),
+    ("2026-10-01", "17:00:00", "premarket"),
+    ("2026-10-01", "22:30:00", "regular"),
+    ("2026-10-02", "04:59:59", "regular"),
+    ("2026-10-02", "05:00:00", "aftermarket"),
+    ("2026-10-02", "07:00:00", "closed"),
+    ("2026-11-02", "17:00:00", "daytime"),
+    ("2026-11-02", "18:00:00", "premarket"),
+    ("2026-11-02", "22:30:00", "premarket"),
+    ("2026-11-02", "23:30:00", "regular"),
+    ("2026-11-03", "05:00:00", "regular"),
+    ("2026-11-03", "06:00:00", "aftermarket"),
+    ("2026-11-03", "07:00:00", "closed"),
+])
+def test_us_live_paper_session_matrix(date, clock, expected):
+    now = datetime.fromisoformat(f"{date}T{clock}+09:00")
+    assert get_us_trading_session(now) == expected
+    assert is_us_orderable_session_for_env(now, "prod") == (expected != "closed")
+    assert is_us_orderable_session_for_env(now, "vps") == (expected == "regular")
+    assert is_us_regular_session(now) == (expected == "regular")
+    assert not is_us_orderable_session_for_env(now, "unknown")
+
+
+@pytest.mark.parametrize("start,end", [
+    ("2026-03-07T12:00:00+00:00", "2026-03-09T13:30:00+00:00"),
+    ("2026-10-31T12:00:00+00:00", "2026-11-02T14:30:00+00:00"),
+])
+def test_next_paper_open_uses_dst_at_future_session(monkeypatch, start, end):
+    from kinvest_trade import market_calendar
+    monkeypatch.setattr(market_calendar, "is_krx_holiday", lambda _: True)
+    monkeypatch.setattr(market_calendar, "is_nyse_holiday", lambda _: False)
+    now, opening = datetime.fromisoformat(start), datetime.fromisoformat(end)
+    assert minutes_until_next_tradeable_session(now, "vps") == int((opening - now).total_seconds() / 60)
+
+
+def test_extended_aftermarket_requires_opt_in_and_uses_prior_session_date():
+    now = datetime.fromisoformat("2026-10-02T08:00:00+09:00")
+    assert get_us_trading_session(now) == "closed"
+    assert get_us_trading_session(now, include_extended_aftermarket=True) == "aftermarket_extended"
+    assert not is_us_orderable_session_for_env(now, "prod")
+    assert us_holiday_date_for_kis_session(now).isoformat() == "2026-10-01"

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 NEW_YORK = ZoneInfo("America/New_York")
+KRX_AFTERMARKET_START_DATE = date(2026, 9, 14)
 
 
 def _is_weekday(local_dt: datetime) -> bool:
@@ -18,7 +19,53 @@ def is_krx_regular_session(now_utc: datetime | None = None) -> bool:
         return False
     session_start = time(9, 0)
     session_end = time(15, 30)
-    return session_start <= current.time() <= session_end
+    return session_start <= current.time() < session_end
+
+
+def get_domestic_trading_session(
+    now_utc: datetime | None = None, *, exchange_code: str = "KRX"
+) -> str:
+    """Broker execution clock, not order/product eligibility or opening acceptance.
+
+    Holiday checks remain with callers, as for get_us_trading_session.
+    KIS introduced the separate KRX aftermarket on 2026-09-14.
+    """
+    current = (now_utc or datetime.now(timezone.utc)).astimezone(KST)
+    if not _is_weekday(current):
+        return "closed"
+    clock = current.time()
+    if exchange_code == "NXT":
+        if time(8) <= clock < time(8, 50):
+            return "premarket"
+        if time(9, 0, 30) <= clock < time(15, 20):
+            return "regular"
+        if time(15, 40) <= clock < time(20):
+            return "aftermarket"
+    elif exchange_code == "KRX":
+        if time(8, 30) <= clock < time(8, 40):
+            return "pre_close_price"
+        if time(9) <= clock < time(15, 30):
+            return "regular"
+        if time(15, 40) <= clock < time(16):
+            return "after_close_price"
+        if current.date() >= KRX_AFTERMARKET_START_DATE:
+            if time(16) <= clock < time(20):
+                return "aftermarket"
+        elif time(16) <= clock < time(18):
+            return "single_price"
+    return "closed"
+
+
+def get_domestic_session_for_env(
+    now_utc: datetime | None, env: str, *, exchange_code: str = "KRX"
+) -> str:
+    """Account-supported clock; order types and instrument eligibility still apply."""
+    session = get_domestic_trading_session(now_utc, exchange_code=exchange_code)
+    if env == "prod":
+        return session
+    if env == "vps" and exchange_code == "KRX" and session == "regular":
+        return session
+    return "closed"
 
 
 def _is_new_york_dst(now_utc: datetime | None = None) -> bool:
@@ -65,6 +112,10 @@ def get_us_trading_session(
 
 
 def is_us_regular_session(now_utc: datetime | None = None) -> bool:
+    return get_us_trading_session(now_utc) == "regular"
+
+
+def is_us_market_session(now_utc: datetime | None = None) -> bool:
     return get_us_trading_session(now_utc) != "closed"
 
 
@@ -76,7 +127,7 @@ def is_us_orderable_session_for_env(now_utc: datetime | None, env: str) -> bool:
     session = get_us_trading_session(now_utc)
     if env == "prod":
         return session in {"daytime", "premarket", "regular", "aftermarket"}
-    return session == "regular"
+    return env == "vps" and session == "regular"
 
 
 def minutes_until_regular_session_close(
@@ -142,7 +193,7 @@ def us_holiday_date_for_kis_session(now_utc: datetime) -> date:
     """Return the US holiday date that matches KIS's KST-based US session."""
 
     current = now_utc.astimezone(KST)
-    if current.time() < time(7, 0):
+    if current.time() < time(10, 0):
         return now_utc.astimezone(NEW_YORK).date()
     return current.date()
 
@@ -182,7 +233,7 @@ def is_krx_execution_reconcile_window(
         return False
     session_end = datetime.combine(current.date(), time(15, 30), tzinfo=KST)
     grace_end = session_end + timedelta(minutes=max(0, post_close_grace_minutes))
-    return session_end < current <= grace_end
+    return session_end <= current <= grace_end
 
 
 def is_us_execution_reconcile_window(
@@ -254,28 +305,19 @@ def minutes_until_next_tradeable_session(
             krx_candidates.append(candidate_utc)
             break
 
-    is_dst = _is_new_york_dst(now_utc)
-    if env == "prod":
-        us_start_hour = 10
-        us_start_minute = 0
-    else:
-        us_start_hour = 22 if is_dst else 23
-        us_start_minute = 30
     us_candidates: list[datetime] = []
-    for delta in range(0, 4):
+    for delta in range(0, 8):
         candidate_date = today_kst + timedelta(days=delta)
-        candidate_dt = datetime(
-            candidate_date.year,
-            candidate_date.month,
-            candidate_date.day,
-            us_start_hour,
-            us_start_minute,
-            0,
-            tzinfo=KST,
+        # Resolve DST at the prospective opening, not on the current weekend.
+        candidate_dt = datetime.combine(
+            candidate_date,
+            time(10) if env == "prod" else time(9, 30),
+            tzinfo=KST if env == "prod" else NEW_YORK,
         )
         candidate_utc = candidate_dt.astimezone(timezone.utc)
         if (
             candidate_utc > now_utc
+            and env in {"prod", "vps"}
             and candidate_date.weekday() < 5
             and not is_nyse_holiday(candidate_date)
         ):

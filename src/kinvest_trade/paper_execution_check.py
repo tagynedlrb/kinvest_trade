@@ -113,21 +113,32 @@ class PaperExecutionCheck:
         if self.market == "overseas":
             quote = await self.client.get_overseas_price(self.symbol, self.exchange)
             last = float(quote.get("last_price") or 0)
-            if not math.isfinite(last) or not 5 <= last <= 500:
-                raise ValueError("diagnostic_notional_out_of_bounds")
+            if not math.isfinite(last) or last <= 0:
+                raise ValueError("diagnostic_quote_out_of_bounds")
             factor = Decimal("1.002") if side == "buy" else Decimal("0.998")
-            return str(
-                (Decimal(str(last)) * factor).quantize(
-                    Decimal("0.01"), rounding=ROUND_UP
-                )
+            price = (Decimal(str(last)) * factor).quantize(
+                Decimal("0.01"), rounding=ROUND_UP
             )
+            self.record(
+                "quote_checked",
+                {"side": side, "last": last, "limit_price": str(price), "entry_cap": 500},
+            )
+            if side == "buy" and not Decimal("5") <= price <= Decimal("500"):
+                raise ValueError("diagnostic_notional_out_of_bounds")
+            return str(price)
         quote = await self.client.get_orderbook(self.symbol)
         ask, bid = float(quote.get("best_ask") or 0), float(quote.get("best_bid") or 0)
         if (
             not all(math.isfinite(v) for v in (ask, bid))
-            or not 0 < bid <= ask <= 100_000
+            or not 0 < bid <= ask
+            or not all(v.is_integer() for v in (ask, bid))
         ):
             raise ValueError("diagnostic_quote_out_of_bounds")
+        self.record(
+            "quote_checked", {"side": side, "ask": ask, "bid": bid, "entry_cap": 100_000}
+        )
+        if side == "buy" and not 1_000 <= ask <= 100_000:
+            raise ValueError("diagnostic_notional_out_of_bounds")
         if (ask - bid) / ask > 0.003:
             raise ValueError("diagnostic_spread_too_wide")
         return int(ask if side == "buy" else bid)
@@ -263,6 +274,9 @@ class PaperExecutionCheck:
                     raise ValueError("diagnostic_already_attempted")
             if await self.quantity() or await self.history():
                 raise ValueError("diagnostic_symbol_not_clean")
+            # Reject an unsuitable candidate before consuming the one-shot key.
+            # submit() still obtains a fresh quote immediately before each POST.
+            await self.price("buy")
             self.record("started", self.result)
             buy = await self.settle(await self.submit("buy"))
             if buy["filled_qty"] == 0:

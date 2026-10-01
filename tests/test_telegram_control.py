@@ -958,6 +958,8 @@ def test_build_status_message_marks_mock_us_extended_session_not_orderable(monke
     message = controller._build_status_message()
 
     assert "시장상태=US premarket (모의 주문불가·감시만)" in message
+    assert "모의 주문시간(KST)=국내 09:00~15:30 / 미국" in message
+    assert "국내 시간외·NXT / 미국 정규장 외 주문불가" in message
 
 
 def test_build_status_message_prioritizes_open_us_market_over_krx_holiday(monkeypatch) -> None:

@@ -34,7 +34,7 @@ from .market_sessions import (
     is_krx_regular_session,
     is_us_execution_reconcile_window,
     is_us_orderable_session_for_env,
-    is_us_regular_session,
+    is_us_market_session,
     minutes_until_regular_session_close,
     seconds_until_us_session_transition,
     us_holiday_date_for_kis_session,
@@ -7294,7 +7294,7 @@ class LiquidityLabService:
         krx_holiday, nyse_holiday = await self._apply_holiday_overrides(now)
         await self._maybe_send_overseas_relist_alert(now, nyse_holiday=nyse_holiday)
         krx_open = is_krx_regular_session(now) and not krx_holiday
-        us_open = is_us_regular_session(now) and not nyse_holiday
+        us_open = is_us_market_session(now) and not nyse_holiday
         us_session = get_us_trading_session(now)
         us_orderable_in_profile = is_us_orderable_session_for_env(
             now,
@@ -7526,7 +7526,7 @@ class LiquidityLabService:
 
         decision_now = datetime.now(timezone.utc)
         fresh_krx_open = is_krx_regular_session(decision_now) and not krx_holiday
-        fresh_us_open = is_us_regular_session(decision_now) and not nyse_holiday
+        fresh_us_open = is_us_market_session(decision_now) and not nyse_holiday
         fresh_us_session = get_us_trading_session(decision_now)
         fresh_us_orderable = is_us_orderable_session_for_env(
             decision_now,

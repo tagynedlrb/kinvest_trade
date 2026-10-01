@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import uuid
-from collections import deque
+from collections import Counter, deque
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -5437,6 +5437,7 @@ class LiquidityLabService:
             min_market_cap=float(getattr(ll_cfg, "tv_min_market_cap", 3e8)),
             max_market_cap=float(getattr(ll_cfg, "tv_max_market_cap", 2e12)),
             max_change_pct=float(getattr(ll_cfg, "tv_max_change_pct", 20.0)),
+            positive_change_fraction=0.5,
         )
 
     async def _scan_tv_dynamic_pool_with_fallback(self) -> list[dict[str, object]]:
@@ -5529,6 +5530,11 @@ class LiquidityLabService:
         diagnostics = dict(getattr(self, "_last_tv_scan_diagnostics", {}) or {})
         return {
             "pool_size": len(tv_rows),
+            "positive_change_fraction": 0.5,
+            "positive_change_count": sum(
+                (self._parse_optional_float(row.get("scanner_change_pct")) or 0) > 0
+                for row in tv_rows
+            ),
             "symbols": [str(row.get("symbol") or "") for row in tv_rows],
             "threshold": float(
                 getattr(self.config.liquidity_lab, "tv_min_rel_volume", 2.0)
@@ -8652,6 +8658,10 @@ class LiquidityLabService:
             try:
                 scan_result = await self._scan_single_overseas(candidate)
             except Exception as exc:  # noqa: BLE001
+                excluded.append(ExcludedCandidate(
+                    market="overseas", code=symbol, reasons=["quote_fetch_failed"],
+                    snapshot={"exchange_code": candidate.exchange_code, "error_type": type(exc).__name__},
+                ))
                 if self._is_inverse_symbol("overseas", symbol):
                     self._record_inverse_observation(
                         event_type="inverse_quote_failed",
@@ -8716,22 +8726,7 @@ class LiquidityLabService:
                     updated_map.clear()
             return [], held_symbols
 
-        ll_cfg = self.config.liquidity_lab
-        threshold = getattr(ll_cfg, "max_wait_cycles_before_penalty", 15)
-        decay = getattr(ll_cfg, "wait_penalty_decay", 0.07)
-        wait_cycles = getattr(self, "_wait_cycles", None)
-        if wait_cycles is None:
-            wait_cycles = {}
-            self._wait_cycles = wait_cycles
-
-        def _effective_score(result: OverseasScanResult) -> float:
-            key = f"overseas:{result.symbol.upper()}"
-            wait_count = wait_cycles.get(key, 0)
-            excess = max(0, wait_count - threshold)
-            penalty = max(0.2, 1.0 - excess * decay)
-            return result.activity_score * penalty
-
-        quote_results.sort(key=_effective_score, reverse=True)
+        quote_results.sort(key=self._overseas_effective_activity_score, reverse=True)
         # held_symbols is already assigned above (before pool scan).
         top_n = max(1, config.overseas_scan_top_n)
 
@@ -9930,6 +9925,13 @@ class LiquidityLabService:
         )
         return reason
 
+    def _overseas_effective_activity_score(self, candidate: OverseasScanResult) -> float:
+        config = self.config.liquidity_lab
+        count = getattr(self, "_wait_cycles", {}).get(f"overseas:{candidate.symbol.upper()}", 0)
+        excess = max(0, count - getattr(config, "max_wait_cycles_before_penalty", 15))
+        penalty = max(0.2, 1.0 - excess * getattr(config, "wait_penalty_decay", 0.07))
+        return candidate.activity_score * penalty
+
     async def _build_unified_watch_targets(
         self,
         *,
@@ -9979,7 +9981,27 @@ class LiquidityLabService:
                 )
                 ranked_symbols.add(symbol)
 
-        unified.sort(key=lambda item: item.activity_score, reverse=True)
+        overseas_previews: dict[str, WatchTargetStatus] = {}
+        held_overseas = {position.symbol.upper() for position in overseas_positions}
+        held_overseas.update(self._get_virtual_held_symbols())
+        if us_open:
+            for candidate in overseas_ranked:
+                symbol = candidate.symbol.upper()
+                snapshot = self._signal_cache.get(symbol)
+                if symbol in held_overseas or snapshot is None:
+                    continue
+                overseas_previews[symbol] = self._build_watch_target_status(
+                    market="overseas", code=symbol, exchange_code=candidate.exchange_code,
+                    price=candidate.last_price, activity_score=candidate.activity_score,
+                    signal_snapshot=snapshot, holding_qty=0,
+                )
+        unified.sort(
+            key=lambda item: (
+                self._overseas_effective_activity_score(item.overseas)
+                if item.overseas is not None else item.activity_score
+            ),
+            reverse=True,
+        )
 
         held_domestic_codes = {position.stock_code for position in domestic_positions}
         held_overseas_codes = {
@@ -10038,6 +10060,17 @@ class LiquidityLabService:
             selected.append(item)
             selected_keys.add(pair)
             remaining_slots = max(0, remaining_slots - 1)
+
+        # A shadow experiment must not displace an already eligible natural entry.
+        for item in unified:
+            if remaining_slots <= 0:
+                break
+            preview = overseas_previews.get(item.code.upper()) if item.market == "overseas" else None
+            pair = (item.market, item.code.upper())
+            if not krx_open and preview is not None and preview.action_bias == "BUY" and pair not in selected_keys:
+                selected.append(item)
+                selected_keys.add(pair)
+                remaining_slots -= 1
 
         for item in unified:
             if remaining_slots <= 0:
@@ -10169,16 +10202,18 @@ class LiquidityLabService:
                         pnl_pct=None,
                     )
                     continue
-                watch_target = self._build_watch_target_status(
-                    market="overseas",
-                    code=candidate.symbol,
-                    exchange_code=candidate.exchange_code,
-                    price=candidate.last_price,
-                    activity_score=candidate.activity_score,
-                    signal_snapshot=signal_snapshot,
-                    held_position=held,
-                    holding_qty=holding_qty,
-                )
+                watch_target = overseas_previews.get(symbol) if holding_qty == 0 and held is None else None
+                if watch_target is None:
+                    watch_target = self._build_watch_target_status(
+                        market="overseas",
+                        code=candidate.symbol,
+                        exchange_code=candidate.exchange_code,
+                        price=candidate.last_price,
+                        activity_score=candidate.activity_score,
+                        signal_snapshot=signal_snapshot,
+                        held_position=held,
+                        holding_qty=holding_qty,
+                    )
                 watch_targets.append(watch_target)
                 self._save_cycle_log_from_watch_target(
                     watch_target,
@@ -10199,6 +10234,30 @@ class LiquidityLabService:
         stale_keys = [key for key in wait_cycles if key not in active_keys]
         for key in stale_keys:
             del wait_cycles[key]
+        if us_open:
+            selected_symbols = {target.code.upper() for target in watch_targets if target.market == "overseas"}
+            ready = {symbol for symbol, target in overseas_previews.items() if target.action_bias == "BUY"}
+            regime = self._market_regime_context("overseas")
+            funnel = {
+                "policy_id": self._get_market_policy("overseas").policy_id,
+                "candidate_count": getattr(self, "_last_overseas_scan_candidate_count", len(overseas_ranked)),
+                "quote_eligible_count": len(overseas_ranked),
+                "evaluated_count": len(overseas_previews),
+                "eligible_watch_buy_count": len(ready),
+                "watch_selected_count": len(selected_symbols),
+                "ready_outside_watch": sorted(ready - selected_symbols),
+                "decision_reasons": dict(Counter(target.note for target in overseas_previews.values())),
+                "quote_exclusion_reasons": dict(Counter(
+                    reason for item in getattr(self, "_overseas_excluded", []) for reason in item.reasons
+                )),
+                "benchmark_return_pct": regime.get("return_pct"),
+                "benchmark_available": bool(regime.get("available")),
+                "benchmark_session_date": regime.get("session_date"),
+                "broker_submission_checks_pending": True,
+            }
+            if funnel != getattr(self, "_last_overseas_candidate_funnel", None):
+                self._save_event(event_type="overseas_candidate_funnel", market="overseas", detail=funnel)
+                self._last_overseas_candidate_funnel = funnel
         return watch_targets
 
     async def _build_overseas_watch_targets(

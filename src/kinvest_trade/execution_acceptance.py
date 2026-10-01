@@ -63,7 +63,7 @@ def load_arm(repository, session_date):
     return _decode(row[0]) if row else None
 
 
-def arm(config, repository, runtime, session_date, policy_id, evaluation_id, now):
+def arm(config, repository, runtime, session_date, policy_id, evaluation_id, now, *, refresh_deployment=False):
     _paper_guard(config)
     day = date.fromisoformat(session_date)
     if day < now.astimezone(KST).date() or is_krx_holiday(day):
@@ -97,9 +97,17 @@ def arm(config, repository, runtime, session_date, policy_id, evaluation_id, now
     }
     existing = load_arm(repository, session_date)
     if existing:
-        if any(existing.get(k) != v for k, v in manifest.items()):
+        changed = {k for k, v in manifest.items() if existing.get(k) != v}
+        if not changed:
+            return existing
+        if not (
+            refresh_deployment
+            and changed == {"deployment_commit"}
+            and now < datetime.combine(day, time(9), KST)
+        ):
             raise ValueError("existing_verification_identity_mismatch")
-        return existing
+        manifest["supersedes_verification_id"] = existing["verification_id"]
+        manifest["refresh_reason"] = "explicit_preopen_deployment_refresh_same_policy_account"
     close = datetime.combine(day, time(15, 30), KST)
     if now >= close - timedelta(
         minutes=policy.auto_trade.entry_min_minutes_to_regular_close
@@ -539,10 +547,13 @@ async def main():
     )
     parser.add_argument("--session-date", required=True)
     parser.add_argument("--arm", action="store_true")
+    parser.add_argument("--refresh-deployment", action="store_true")
     parser.add_argument("--policy-id", default="domestic_momentum_v12")
     parser.add_argument("--evaluation-id", type=int, default=143)
     parser.add_argument("--notify", action="store_true")
     args = parser.parse_args()
+    if args.refresh_deployment and not args.arm:
+        parser.error("--refresh-deployment requires --arm")
     config = load_app_config()
     repository = SqliteRepository(config.storage.db_path)
     path = config.storage.runtime_state_path
@@ -559,6 +570,7 @@ async def main():
                 args.policy_id,
                 args.evaluation_id,
                 now,
+                refresh_deployment=args.refresh_deployment,
             )
             repository.merge_policy_evaluation_outcome(
                 args.evaluation_id, {"execution_acceptance_plan": manifest}

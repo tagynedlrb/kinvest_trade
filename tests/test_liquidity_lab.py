@@ -9058,7 +9058,7 @@ def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> Non
     assert len(rows) == 8
     assert len(matured) == 1
     assert matured[0]["horizon_minutes"] == 5
-    assert matured[0]["policy_id"] == "overseas_momentum_v8"
+    assert matured[0]["policy_id"] == "overseas_momentum_v9"
     assert matured[0]["round_trip_cost_pct"] == pytest.approx(0.0050206)
     assert matured[0]["estimated_net_pnl_pct"] == pytest.approx(0.0049794)
     assert matured[0]["context_json"]["cost_calculation_version"] == (
@@ -10328,6 +10328,13 @@ def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() 
         service = _build_run_service()
         service._cycle_count = 200
 
+        service.repository.save_event(
+            event_type="overseas_candidate_funnel", market="overseas",
+            detail={"candidate_count": 34, "evaluated_count": 25,
+                    "eligible_watch_buy_count": 0, "benchmark_return_pct": -0.4,
+                    "benchmark_session_date": "2026-10-01"},
+        )
+
         for _ in range(50):
             service._record_cycle_trade_frequency(
                 domestic_orders=[{"skipped": True, "reason": "no_action"}],
@@ -10340,6 +10347,9 @@ def test_record_cycle_trade_frequency_sends_low_frequency_alert_with_cooldown() 
         assert "매매 빈도 낮음" in service.notifier.messages[0]
         assert "시장=미장" in service.notifier.messages[0]
         assert "미실행:해외 동시보유 한도 도달(정상) 50회" in service.notifier.messages[0]
+        assert "최근 후보=34 / 정밀평가=25 / 매수후보=0" in service.notifier.messages[0]
+        assert "(주문/체결 아님)" in service.notifier.messages[0]
+        assert "시장지수 등락=-0.4%" in service.notifier.messages[0]
         assert service._last_low_trade_frequency_alert_cycle == 200
 
         service._cycle_count = 300
@@ -12095,6 +12105,48 @@ def test_build_unified_watch_targets_merges_domestic_and_overseas() -> None:
     ]
 
 
+@pytest.mark.parametrize("ready, waiting, shadow, expected", [(True, 0, False, "O2"), (False, 30, False, "O2"), (False, 0, False, "O1"), (True, 0, True, "O2")])
+def test_overseas_final_watch_keeps_ready_signals_and_wait_penalty(ready, waiting, shadow, expected):
+    service = _build_run_service()
+    service.config.liquidity_lab.unified_watch_top_n = 1
+    service._wait_cycles = {"overseas:O1": waiting}
+    if shadow:
+        service.repository.open_entry_horizon_shadow_group(
+            opened_at=datetime.now(timezone.utc), market="overseas", symbol="O1",
+            exchange_code="NASD", entry_session_date="2026-10-01", policy_id="test",
+            cohort="near_breakout_wait", strategy_flag="VOL", entry_by="VOL",
+            block_reason="near_breakout", entry_price=50, round_trip_cost_pct=0.005,
+            horizons_minutes=(120,),
+        )
+    ranked = [
+        OverseasScanResult("O1", "NASD", 50, 49.9, 50.1, 0.001, 1, 100000, 0, 1350, 60),
+        OverseasScanResult("O2", "NASD", 40, 39.9, 40.1, 0.001, 1, 100000, 0, 1350, 30),
+    ]
+    service._signal_cache = {r.symbol: _snapshot(price=r.last_price) for r in ranked}
+    evaluations = []
+
+    def preview(**kw):
+        evaluations.append(kw["code"])
+        bias = "BUY" if ready and kw["code"] == "O2" else "WAIT"
+        return WatchTargetStatus(
+            market="overseas", code=kw["code"], exchange_code="NASD", price=kw["price"],
+            activity_score=kw["activity_score"], signal_score=1, action_bias=bias,
+            signal_state=bias, ma_summary="", note="test", signal_snapshot=kw["signal_snapshot"],
+        )
+
+    service._build_watch_target_status = preview
+    targets = asyncio.run(service._build_unified_watch_targets(
+        domestic_ranked=[], overseas_ranked=ranked, domestic_positions=[], overseas_positions=[],
+        krx_open=False, us_open=True,
+    ))
+    assert [t.code for t in targets] == [expected]
+    assert sorted(evaluations) == ["O1", "O2"]
+    funnel = service._last_overseas_candidate_funnel
+    assert funnel["evaluated_count"] == 2
+    assert funnel["watch_selected_count"] == 1
+    assert funnel["ready_outside_watch"] == []
+
+
 def test_build_unified_watch_targets_keeps_active_inverse_inside_limit() -> None:
     service = _build_run_service()
     service.config.liquidity_lab.unified_watch_top_n = 2
@@ -12204,7 +12256,7 @@ def test_build_unified_watch_targets_keeps_overseas_horizon_shadow_inside_limit(
         ),
     ]
     service._signal_cache = {
-        candidate.symbol: _snapshot(price=candidate.last_price)
+        candidate.symbol: _snapshot(price=candidate.last_price, volume_ratio=0.0)
         for candidate in overseas_ranked
     }
 

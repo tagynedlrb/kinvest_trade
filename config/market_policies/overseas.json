@@ -1,5 +1,5 @@
 {
-  "policy_id": "overseas_momentum_v8",
+  "policy_id": "overseas_momentum_v9",
   "engine": "momentum_v1",
   "inverse_require_symbol_benchmark": true,
   "inverse_benchmarks": {

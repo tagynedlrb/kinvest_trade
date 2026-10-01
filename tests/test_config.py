@@ -130,7 +130,7 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     overseas = config.market_policies.overseas
 
     assert domestic.policy_id == "domestic_momentum_v12"
-    assert overseas.policy_id == "overseas_momentum_v8"
+    assert overseas.policy_id == "overseas_momentum_v9"
     assert domestic.auto_trade.entry_momentum_fallback_enabled is False
     assert overseas.auto_trade.entry_momentum_fallback_enabled is True
     assert overseas.auto_trade.entry_cost_guard_strategy_flags == ["VWAP+VOL", "MOM"]

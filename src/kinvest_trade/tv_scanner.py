@@ -8,6 +8,7 @@ scanning stays on the KIS ranking endpoints added in #39.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import httpx
@@ -87,7 +88,10 @@ async def scan_top_volume_surge(
     min_market_cap: float = 3e8,
     max_market_cap: float = 2e12,
     max_change_pct: float = 20.0,
+    positive_change_fraction: float = 0.0,
 ) -> list[dict[str, object]]:
+    if not math.isfinite(positive_change_fraction) or not 0 <= positive_change_fraction <= 1:
+        raise ValueError("positive_change_fraction must be between zero and one")
     payload = {
         "filter": [
             {
@@ -176,8 +180,21 @@ async def scan_top_volume_surge(
                     "scanner_market_cap": data[5] if len(data) > 5 else None,
                 }
             )
-            if len(results) >= top_n:
+            if positive_change_fraction == 0 and len(results) >= top_n:
                 break
+        if positive_change_fraction > 0:
+            positive = []
+            for row in results:
+                try:
+                    change = float(row.get("scanner_change_pct"))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(change) and 0 < change <= max_change_pct:
+                    positive.append(row)
+            # Reserve discovery capacity for longs without excluding rebound candidates.
+            reserved = positive[:math.ceil(top_n * positive_change_fraction)]
+            reserved_symbols = {row["symbol"] for row in reserved}
+            results = (reserved + [row for row in results if row["symbol"] not in reserved_symbols])[:top_n]
         logger.info("[TV] scan_complete count=%s", len(results))
         return results
     except Exception as exc:  # noqa: BLE001

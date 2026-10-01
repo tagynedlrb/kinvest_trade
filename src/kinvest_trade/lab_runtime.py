@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable
@@ -8,7 +9,7 @@ from typing import TYPE_CHECKING, Callable
 from .config import AppConfig
 from .market_policy import get_market_auto_trade_config
 from .message_format import format_market_korean, format_reason_korean
-from .time_utils import ensure_timezone
+from .time_utils import ensure_timezone, parse_datetime
 
 if TYPE_CHECKING:
     from .liquidity_lab import WatchTargetStatus
@@ -302,6 +303,27 @@ class LabRuntimeManager:
             for reason, count in list((maintenance_reasons or {}).items())[:2]
         )
         market_label = "국장" if market == "domestic" else "미장"
+        diagnostics: list[str] = []
+        reader = getattr(self._repository, "list_event_log", None)
+        if market == "overseas" and callable(reader):
+            rows = reader(event_type="overseas_candidate_funnel", limit=1)
+            if rows:
+                observed = parse_datetime(rows[0].get("logged_at"))
+                try:
+                    funnel = json.loads(rows[0].get("detail") or "{}")
+                except (TypeError, ValueError):
+                    funnel = {}
+                if isinstance(funnel, dict) and observed and 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 900:
+                    diagnostics.append(
+                        f"최근 후보={funnel.get('candidate_count', 0)} / "
+                        f"정밀평가={funnel.get('evaluated_count', 0)} / "
+                        f"매수후보={funnel.get('eligible_watch_buy_count', 0)} "
+                        "(주문/체결 아님)"
+                    )
+                    diagnostics.append(
+                        f"시장지수 등락={funnel.get('benchmark_return_pct')}% / "
+                        f"관측일={funnel.get('benchmark_session_date')}"
+                    )
         loop.create_task(
             notifier.send(
                 "\n".join(
@@ -312,6 +334,7 @@ class LabRuntimeManager:
                         f"주문접수={trade_count}건 비율={trade_ratio * 100:.1f}%",
                         f"진입차단={top_reason_text or '-'}",
                         f"보유/정산관측={maintenance_reason_text or '-'}",
+                        *diagnostics,
                         "확인=/lab_status /lab_report compare 2026-07-10",
                     ]
                 )

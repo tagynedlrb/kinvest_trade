@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+import pytest
 
 from kinvest_trade.tv_scanner import check_connectivity, scan_top_volume_surge
 
@@ -123,3 +124,47 @@ def test_scan_top_volume_surge_ignores_bare_name_column_without_exchange() -> No
             return await scan_top_volume_surge(client, top_n=5)
 
     assert asyncio.run(run_case()) == []
+
+
+@pytest.mark.parametrize("fraction, expected", [(0.0, ["D1", "D2", "D3", "U1"]), (0.5, ["U1", "U2", "D1", "D2"])])
+def test_scan_reserves_bounded_positive_discovery_slots(fraction, expected):
+    rows = [_row("NASDAQ:" + name) for name in ["D1", "D2", "D3", "U1", "U2", "U3"]]
+    for row in rows[:3]:
+        row["d"][4] = -10.0
+
+    async def run_case():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": rows})
+        )) as client:
+            return await scan_top_volume_surge(client, top_n=4, positive_change_fraction=fraction)
+
+    result = asyncio.run(run_case())
+    assert [r["symbol"] for r in result] == expected
+    assert len(result) == 4
+
+
+def test_scan_positive_slots_fall_back_without_dropping_universe():
+    rows = [_row("NASDAQ:" + name) for name in ["D1", "D2", "U1", "BAD"]]
+    rows[0]["d"][4] = -1
+    rows[1]["d"][4] = None
+    rows[3]["d"][4] = "nan"
+
+    async def run_case():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": rows})
+        )) as client:
+            return await scan_top_volume_surge(client, top_n=4, positive_change_fraction=0.5)
+
+    result = asyncio.run(run_case())
+    assert [r["symbol"] for r in result] == ["U1", "D1", "D2", "BAD"]
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 1.1, float("nan")])
+def test_scan_rejects_invalid_discovery_fraction_before_network(fraction):
+    async def run_case():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: pytest.fail("invalid fraction must not reach network")
+        )) as client:
+            with pytest.raises(ValueError, match="positive_change_fraction"):
+                await scan_top_volume_surge(client, positive_change_fraction=fraction)
+    asyncio.run(run_case())

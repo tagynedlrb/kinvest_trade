@@ -70,6 +70,33 @@ def observe(c, now=None):
     return inspect(c.config, c.repository, c.runtime, c.manifest, when)
 
 
+def test_preopen_deployment_refresh_preserves_arm_history(case):
+    c = case
+    c.runtime["deployment"]["git_commit"] = "new-commit"
+    before_open = c.now - timedelta(days=1)
+    args = (c.config, c.repository, c.runtime, "2026-10-02", "domestic_momentum_v12", c.evaluation_id, before_open)
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        arm(*args)
+    new = arm(*args, refresh_deployment=True)
+    assert new["supersedes_verification_id"] == c.manifest["verification_id"]
+    assert new["policy_parameter_fingerprint"] == c.manifest["policy_parameter_fingerprint"]
+    assert load_arm(c.repository, "2026-10-02")["verification_id"] == new["verification_id"]
+    with sqlite3.connect(c.repository.db_path) as db:
+        assert db.execute("SELECT count(*) FROM event_log WHERE event_type='domestic_execution_acceptance_armed'").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("change_policy", [False, True])
+def test_refresh_cannot_hide_mid_session_deployment_or_changed_policy(case, change_policy):
+    c = case
+    c.runtime["deployment"]["git_commit"] = "new-commit"
+    now = c.now
+    if change_policy:
+        c.config.market_policies.domestic.auto_trade.stop_loss_pct += 0.001
+        now -= timedelta(days=1)
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        arm(c.config, c.repository, c.runtime, "2026-10-02", "domestic_momentum_v12", c.evaluation_id, now, refresh_deployment=True)
+
+
 def seed_order(
     c,
     *,

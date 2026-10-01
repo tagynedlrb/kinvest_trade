@@ -27,6 +27,7 @@ def compute_pct_returns(values: list[float]) -> list[float]:
 
 
 def compute_sma(values: list[float], window: int) -> float | None:
+    """Return the mean of the first window values, or None if fewer are available."""
     if len(values) < window:
         return None
     return sum(values[:window]) / window

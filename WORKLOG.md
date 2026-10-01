@@ -1,3 +1,10 @@
+## Telegram approved deployment #4
+
+- Source job: 3; base: b350c5e91c78cbf9edb2866192bc9a5e01d8f705; manifest: 961d1c00bce120d7c2db302d29117fc5039ca018341a8bb04972ecc4472f9e4b
+- Files: src/kinvest_trade/indicators.py
+- Isolated full pytest passed; profitability NOT validated.
+- Approval, test output and deployment outcome: private state/gpt_bridge/jobs.sqlite3.
+
 # WORKLOG
 
 ## [2026-10-02 KST] 텔레그램 수정·배포·모의 주문 명시 승인 및 실행 경로 확장

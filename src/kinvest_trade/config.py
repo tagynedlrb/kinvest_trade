@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -9,6 +10,18 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+
+
+def account_fingerprint(credentials: object) -> str:
+    account_no = str(getattr(credentials, "account_no", "") or "").strip()
+    if not account_no:
+        return ""
+    payload = "\0".join((
+        str(getattr(credentials, "profile_name", "") or ""),
+        account_no,
+        str(getattr(credentials, "account_product_code", "") or "").strip(),
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(slots=True)

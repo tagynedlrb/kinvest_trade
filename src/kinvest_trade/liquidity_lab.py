@@ -19,7 +19,7 @@ from .auto_trade_math import (
     is_domestic_sell_tax_exempt,
 )
 from .client import KisApiError, KisRestClient, parse_kis_number
-from .config import AppConfig, CorporateActionDefinition, OverseasCandidateConfig
+from .config import AppConfig, CorporateActionDefinition, OverseasCandidateConfig, account_fingerprint
 from .execution_reconciler import BrokerExecutionReconciler
 from .inverse_policy import (
     INVERSE_BENCHMARK_ALIGNMENT_VERSION,
@@ -4513,8 +4513,16 @@ class LiquidityLabService:
         broker_order_no = self._extract_broker_order_no(payload)
         created_at = datetime.now(timezone.utc).isoformat()
         event_payload = dict(payload or {})
-        if execution_context is not None:
-            event_payload["execution_context"] = execution_context
+        context = dict(execution_context or {})
+        policy = self._get_market_policy(market)
+        credentials = getattr(self.config, "credentials", None)
+        context.update(
+            policy_id=policy.policy_id,
+            policy_parameter_fingerprint=policy.parameter_fingerprint,
+            account_fingerprint=account_fingerprint(credentials),
+            environment=str(getattr(credentials, "env", "") or ""),
+        )
+        event_payload["execution_context"] = context
         if replacement_for_order_no:
             event_payload["replacement_for_order_no"] = replacement_for_order_no
         broker_event_id = repository.save_broker_order_event(
@@ -4542,7 +4550,6 @@ class LiquidityLabService:
             or not broker_order_no
         ):
             return None
-        context = execution_context or {}
         return repository.save_broker_order_execution(
             broker_event_id=broker_event_id,
             created_at=created_at,
@@ -5225,6 +5232,9 @@ class LiquidityLabService:
             return "none"
         if us_orderable_in_profile:
             return "full"
+        if krx_open:
+            # Keep held/pending/shadow monitoring, but defer non-orderable research.
+            return "monitored"
 
         auto = self._get_market_policy("overseas").auto_trade
         full_scan_interval_sec = max(

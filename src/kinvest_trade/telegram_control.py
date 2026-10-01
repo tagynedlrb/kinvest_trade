@@ -3,7 +3,6 @@ from __future__ import annotations
 import atexit
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -17,7 +16,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from .client import KisRestClient, parse_kis_number
-from .config import AppConfig
+from .config import AppConfig, account_fingerprint
 from .git_uploader import upload_log
 from .liquidity_lab import LiquidityLabReport, LiquidityLabService, VirtualTradeManager
 from .market_calendar import is_krx_holiday, is_nyse_holiday
@@ -2543,18 +2542,7 @@ class TelegramLiquidityLabController:
         return f"{masked}-{product_code}" if product_code else masked
 
     def _account_fingerprint(self) -> str:
-        credentials = self.config.credentials
-        account_no = str(getattr(credentials, "account_no", "") or "").strip()
-        if not account_no:
-            return ""
-        payload = "\0".join(
-            (
-                str(getattr(credentials, "profile_name", "") or ""),
-                account_no,
-                str(getattr(credentials, "account_product_code", "") or "").strip(),
-            )
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        return account_fingerprint(self.config.credentials)
 
     def _write_runtime_state(self) -> None:
         path = self.config.storage.runtime_state_path

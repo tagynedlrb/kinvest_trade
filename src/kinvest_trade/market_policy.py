@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from typing import Literal
 
 from .config import AppConfig, AutoTradeConfig, MarketPolicyDefinition
@@ -263,6 +265,18 @@ class MomentumMarketPolicy:
         if self.definition is not None:
             return self.definition.policy_id
         return f"{self.market}_momentum_v1"
+
+    @property
+    def parameter_fingerprint(self) -> str:
+        parameters = (
+            asdict(self.auto_trade) if is_dataclass(self.auto_trade)
+            else vars(self.auto_trade) if self.auto_trade is not None else {}
+        )
+        payload = json.dumps(
+            {"policy_id": self.policy_id, "parameters": parameters},
+            sort_keys=True, separators=(",", ":"), default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @property
     def inverse_require_symbol_benchmark(self) -> bool:

@@ -2568,6 +2568,23 @@ class SqliteRepository:
             )
             return int(cursor.lastrowid)
 
+    def merge_policy_evaluation_outcome(self, evaluation_id: int, evidence: dict) -> None:
+        """Attach operational evidence without completing a profitability review."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT outcome_json FROM policy_evaluation_log WHERE id = ?",
+                (int(evaluation_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("policy_evaluation_not_found")
+            outcome = json.loads(row["outcome_json"] or "{}")
+            outcome.update(evidence)
+            conn.execute(
+                "UPDATE policy_evaluation_log SET outcome_json = ? WHERE id = ?",
+                (json.dumps(outcome, ensure_ascii=False, default=str), int(evaluation_id)),
+            )
+
     def update_policy_evaluation_validation_spec(
         self,
         evaluation_id: int,

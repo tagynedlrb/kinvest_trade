@@ -1,0 +1,12 @@
+[Unit]
+Description=One-session KR policy acceptance checkpoints, no orders from verifier
+
+[Timer]
+OnCalendar=2026-10-01 23:55:00 UTC
+OnCalendar=2026-10-02 00..06:*:00 UTC
+AccuracySec=2s
+Persistent=true
+Unit=kinvest-domestic-acceptance-20261002.service
+
+[Install]
+WantedBy=timers.target

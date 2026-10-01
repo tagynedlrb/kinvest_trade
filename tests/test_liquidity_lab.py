@@ -6309,9 +6309,10 @@ def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
         vwap=9_950.0,
         rsi14=29.0,
         volume_ratio=1.5,
+        macd_golden=True,
     )
     candidate = DomesticScanResult(
-        stock_code="005930",
+        stock_code="229200",
         current_price=10_000,
         best_ask=10_010,
         best_bid=9_990,
@@ -6320,24 +6321,21 @@ def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
         intraday_turnover_krw=100_000_000_000,
         volume_sum=500_000,
         activity_score=11.0,
-        stock_name="삼성전자",
+        stock_name="KODEX 코스닥150",
         product_type="ETF",
     )
-    watch_target = WatchTargetStatus(
+    service._domestic_quote_cache = {candidate.stock_code: candidate}
+    watch_target = service._build_watch_target_status(
         market="domestic",
-        code="005930",
+        code=candidate.stock_code,
         exchange_code=None,
         price=10_000.0,
         activity_score=11.0,
-        signal_score=40.0,
-        action_bias="BUY",
-        signal_state="BUY",
-        ma_summary="20d>60d 5>20",
-        note="[RSI] strategy_buy_signal",
         signal_snapshot=snapshot,
-        strategy_flag="RSI",
-        entry_by="RSI",
     )
+    assert watch_target.action_bias == "BUY", watch_target.note
+    assert watch_target.strategy_flag == "RSI"
+    assert service._select_domestic_buy_targets([candidate], [watch_target]) == [candidate]
 
     result = asyncio.run(
         service._place_domestic_test_order(
@@ -6362,6 +6360,9 @@ def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
     execution = service.repository.list_broker_order_executions(limit=1)[0]
     assert execution["requested_qty"] == 10
     assert execution["context_json"]["strategy_guard_probe"]["admitted"] is True
+    assert execution["context_json"]["policy_id"] == "domestic_momentum_v12"
+    assert execution["context_json"]["policy_parameter_fingerprint"] == service._get_market_policy("domestic").parameter_fingerprint
+    assert execution["context_json"]["environment"] == "vps"
 
 
 def test_strategy_guard_blocks_when_capital_weighted_loss_breaches_threshold(
@@ -13675,7 +13676,7 @@ def test_overseas_full_scan_cadence_is_market_and_profile_specific() -> None:
             us_open=True,
             us_orderable_in_profile=False,
         )
-        == "full"
+        == "monitored"
     )
 
     service._last_non_orderable_full_scan_at = now
@@ -13695,7 +13696,7 @@ def test_overseas_full_scan_cadence_is_market_and_profile_specific() -> None:
             us_open=True,
             us_orderable_in_profile=False,
         )
-        == "full"
+        == "monitored"
     )
     assert (
         service._overseas_scan_scope_for_cycle(

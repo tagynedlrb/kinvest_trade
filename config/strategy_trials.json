@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "experiment_id": "telegram5_snapshot_comparison_v1",
+  "source_job_id": 5,
+  "markets": {
+    "domestic": {
+      "version": "kr_snapshot_trials_v1",
+      "capital": 100000,
+      "currency": "KRW",
+      "slippage_bps": 5,
+      "max_spread_pct": 0.003,
+      "max_quote_age_sec": 180,
+      "max_gap_sec": 300,
+      "max_hold_minutes": 60,
+      "min_close_minutes": 65,
+      "stop_atr": 1.0,
+      "target_atr": 2.5,
+      "min_net_reward_risk": 1.25,
+      "range_benchmark_abs_pct": 0.5,
+      "trend_benchmark_min_pct": 0.2,
+      "reversion_distance_atr": 1.5,
+      "reversion_min_volume_ratio": 0.8,
+      "trend_min_volume_ratio": 1.1,
+      "min_sessions": 20,
+      "min_closed_trades": 30
+    },
+    "overseas": {
+      "version": "us_snapshot_trials_v1",
+      "capital": 500,
+      "currency": "USD",
+      "slippage_bps": 5,
+      "max_spread_pct": 0.003,
+      "max_quote_age_sec": 180,
+      "max_gap_sec": 300,
+      "max_hold_minutes": 60,
+      "min_close_minutes": 65,
+      "stop_atr": 1.0,
+      "target_atr": 2.5,
+      "min_net_reward_risk": 1.25,
+      "range_benchmark_abs_pct": 0.5,
+      "trend_benchmark_min_pct": 0.2,
+      "reversion_distance_atr": 1.5,
+      "reversion_min_volume_ratio": 0.8,
+      "trend_min_volume_ratio": 1.1,
+      "min_sessions": 20,
+      "min_closed_trades": 30
+    }
+  }
+}

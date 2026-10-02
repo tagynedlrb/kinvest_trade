@@ -31,6 +31,7 @@ from .message_format import (
     format_usd,
 )
 from .time_utils import KST, ensure_timezone, format_kst_korean, parse_datetime
+from .strategy_trials import StrategyTrials, trial_db_path
 from .trade_analysis import (
     compare_before_after,
     summarize_entry_horizon_shadow_performance,
@@ -1594,6 +1595,7 @@ class ReportHelper:
             "사용법=/lab_report wait-forward 72\n"
             "사용법=/lab_report exit-forward 168\n"
             "사용법=/lab_report horizon 30\n"
+            "사용법=/lab_report trials [KR|US]\n"
             "사용법=/lab_report regime 30"
         )
         if not args:
@@ -1606,6 +1608,13 @@ class ReportHelper:
                 ]
             )
         report_kind = args[0].lower()
+        if report_kind == "trials" and len(args) <= 2:
+            aliases = {"KR": "domestic", "US": "overseas"}
+            if len(args) == 2 and args[1].upper() not in aliases:
+                return usage
+            return StrategyTrials(trial_db_path(controller.repository.db_path)).report(
+                aliases[args[1].upper()] if len(args) == 2 else None
+            )
         if report_kind == "compare" and len(args) == 2:
             cutoff_date = args[1]
             try:

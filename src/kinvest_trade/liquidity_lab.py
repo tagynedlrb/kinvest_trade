@@ -76,6 +76,7 @@ from .sector_context import (
     build_overseas_sector_context,
 )
 from .strategy import PriorityStrategyManager, STRATEGY_LABEL, StrategyID
+from .strategy_trials import StrategyTrials, trial_db_path
 from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
@@ -268,6 +269,12 @@ class LiquidityLabService:
         self.client = client
         self.repository = repository
         self.notifier = notifier
+        self._trial_quote_times: dict[tuple[str, str], datetime] = {}
+        self.strategy_trials: StrategyTrials | None = None
+        try:
+            self.strategy_trials = StrategyTrials(trial_db_path(repository.db_path))
+        except Exception:  # noqa: BLE001
+            _logger.exception("strategy_trial_initialization_failed")
         self.virtual_trades = VirtualTradeManager(repository)
         self.position_tracker = UnifiedPositionTracker(repository, self.virtual_trades)
         self.cb = CircuitBreakerManager(
@@ -2386,6 +2393,116 @@ class LiquidityLabService:
             for row in rows
             if str(row.get("symbol") or "").strip()
         }
+
+    async def _fetch_strategy_trial_quote(self, market: str, symbol: str, exchange: str) -> SimpleNamespace:
+        if market == "domestic":
+            price = await self.client.get_current_price(symbol, self.config.trading.market_code)
+            book = await self.client.get_orderbook(symbol, self.config.trading.market_code)
+            quote = SimpleNamespace(
+                current_price=parse_kis_number(price.get("current_price")),
+                best_bid=parse_kis_number(book.get("best_bid")),
+                best_ask=parse_kis_number(book.get("best_ask")),
+                product_type=str(price.get("product_type") or ""),
+            )
+        else:
+            price = await self.client.get_overseas_price(symbol, exchange)
+            quote = SimpleNamespace(
+                last_price=parse_kis_number(price.get("last_price")),
+                bid=parse_kis_number(price.get("bid")), ask=parse_kis_number(price.get("ask")),
+                exchange_code=exchange,
+            )
+        self._trial_quote_times[(market, symbol)] = datetime.now(timezone.utc)
+        return quote
+
+    async def _observe_strategy_trials(self, report: LiquidityLabReport) -> None:
+        trials = getattr(self, "strategy_trials", None)
+        if trials is None:
+            return
+        for market in ("domestic", "overseas"):
+            try:
+                current = datetime.now(timezone.utc)
+                regular = (
+                    report.krx_market_open if market == "domestic"
+                    else report.us_market_session == "regular" and report.us_orderable_in_profile
+                )
+                quotes = {
+                    (q.stock_code if market == "domestic" else q.symbol).upper(): q
+                    for q in (report.domestic_ranked if market == "domestic" else report.overseas_ranked)
+                }
+                targets = {t.code.upper(): t for t in report.watch_targets if t.market == market}
+                open_symbols = trials.open_symbols(market)
+                # At most three trial slots. Quote-only maintenance follows actual order handling.
+                if regular:
+                    for symbol, exchange in open_symbols.items():
+                        if symbol in quotes:
+                            continue
+                        try:
+                            quotes[symbol] = await asyncio.wait_for(
+                                self._fetch_strategy_trial_quote(market, symbol, exchange), timeout=5
+                            )
+                        except Exception:  # noqa: BLE001
+                            _logger.warning("strategy_trial_quote_missing market=%s symbol=%s", market, symbol)
+                current = datetime.now(timezone.utc)
+                # Recheck the session after maintenance reads; never fill a late quote after close.
+                regular = regular and (
+                    is_krx_regular_session(current) if market == "domestic"
+                    else get_us_trading_session(current) == "regular"
+                )
+                policy = self._get_market_policy(market)
+                auto = policy.auto_trade
+                run_id = trials.register(
+                    market, policy_id=policy.policy_id, policy_fingerprint=policy.parameter_fingerprint,
+                    commission=float(auto.domestic_commission_rate if market == "domestic" else auto.overseas_commission_rate),
+                    sell_tax=float(auto.domestic_sell_tax_rate) if market == "domestic" else 0.0,
+                    sec_fee=float(auto.sec_fee_rate) if market == "overseas" else 0.0,
+                    now=current,
+                )
+                regime = self._market_regime_context(market, now=current)
+                halted = self._is_trading_halted(market) or self._is_order_reject_halted(market=market, side="buy")
+                samples = []
+                for symbol in sorted(set(targets) | set(open_symbols)):
+                    target, quote = targets.get(symbol), quotes.get(symbol)
+                    quote_at = self._trial_quote_times.get((market, symbol))
+                    if quote is None or quote_at is None:
+                        continue
+                    snapshot = target.signal_snapshot if target else None
+                    signal_at = (
+                        getattr(self, "_signal_cache_updated_at", {}).get(symbol)
+                        if market == "overseas" else quote_at
+                    )
+                    samples.append({
+                        "symbol": symbol, "exchange_code": getattr(quote, "exchange_code", ""),
+                        "price": float(quote.current_price if market == "domestic" else quote.last_price),
+                        "bid": float(quote.best_bid if market == "domestic" else quote.bid),
+                        "ask": float(quote.best_ask if market == "domestic" else quote.ask),
+                        "quote_at": quote_at.isoformat(),
+                        "signal_at": signal_at.isoformat() if signal_at else "",
+                        "snapshot": asdict(snapshot) if snapshot else {},
+                        "baseline_buy": bool(target and target.action_bias.upper() == "BUY"),
+                        "baseline_reason": target.decision_reason or target.note if target else "monitor_only",
+                        "eligible": not halted and not self._is_inverse_symbol(market, symbol)
+                            and not self._is_leveraged_symbol(market, symbol),
+                        "tax_exempt": is_domestic_sell_tax_exempt(getattr(quote, "product_type", "")),
+                        "regime": regime,
+                    })
+                counts = trials.observe(
+                    run_id, session=self._market_session_date(market, current), now=current,
+                    samples=samples, regular_open=regular,
+                    remaining=minutes_until_regular_session_close(market, current),
+                    regime=regime,
+                )
+                if any(counts.get(key) for key in ("signals", "opened", "closed", "invalid")):
+                    self._save_event(event_type="strategy_trial_progress", market=market,
+                                     detail={"run_id": run_id, "source_job_id": 5, **counts})
+                session = self._market_session_date(market, current)
+                report_key = (f"{run_id}:{current.strftime('%Y%m%d%H')}:open" if regular
+                              else f"{run_id}:{session}:closed:{int(regime.get('is_final') or 0)}")
+                if (regular or trials.has_session_observations(run_id, session)) and trials.report_due(report_key):
+                    if await self.notifier.send(trials.report(market)):
+                        trials.mark_report_sent(report_key, current)
+            except Exception:  # noqa: BLE001
+                # Research failure must not interrupt reconciliation or protected exits.
+                _logger.exception("strategy_trial_observation_failed market=%s", market)
 
     def _active_inverse_symbols(
         self,
@@ -8047,6 +8164,7 @@ class LiquidityLabService:
             overseas_scan_scope=overseas_scan_scope,
         )
         await self._send_summary(report)
+        await self._observe_strategy_trials(report)
         return report
 
     async def _get_domestic_balance_for_cycle(self) -> dict | None:
@@ -8445,6 +8563,9 @@ class LiquidityLabService:
     async def _scan_single_domestic_quote(self, stock_code: str) -> DomesticScanResult:
         current = await self.client.get_current_price(stock_code, self.config.trading.market_code)
         orderbook = await self.client.get_orderbook(stock_code, self.config.trading.market_code)
+        if not hasattr(self, "_trial_quote_times"):
+            self._trial_quote_times = {}
+        self._trial_quote_times[("domestic", stock_code.upper())] = datetime.now(timezone.utc)
         stock_name = self._get_domestic_stock_name(stock_code, current, orderbook)
         intraday_turnover = int(current.get("turnover_krw", 0) or 0)
         acml_vol = int(current.get("volume", 0) or 0)
@@ -9078,6 +9199,9 @@ class LiquidityLabService:
         candidate: OverseasCandidateConfig,
     ) -> OverseasScanResult:
         quote = await self.client.get_overseas_price(candidate.symbol, candidate.exchange_code)
+        if not hasattr(self, "_trial_quote_times"):
+            self._trial_quote_times = {}
+        self._trial_quote_times[("overseas", candidate.symbol.upper())] = datetime.now(timezone.utc)
         last_price = self._parse_float(quote.get("last_price"))
         bid = self._parse_float(quote.get("bid"))
         ask = self._parse_float(quote.get("ask"))

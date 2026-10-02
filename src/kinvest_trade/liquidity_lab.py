@@ -2407,8 +2407,8 @@ class LiquidityLabService:
         else:
             price = await self.client.get_overseas_price(symbol, exchange)
             quote = SimpleNamespace(
-                last_price=parse_kis_number(price.get("last_price")),
-                bid=parse_kis_number(price.get("bid")), ask=parse_kis_number(price.get("ask")),
+                last_price=self._parse_float(price.get("last_price")),
+                bid=self._parse_float(price.get("bid")), ask=self._parse_float(price.get("ask")),
                 exchange_code=exchange,
             )
         self._trial_quote_times[(market, symbol)] = datetime.now(timezone.utc)

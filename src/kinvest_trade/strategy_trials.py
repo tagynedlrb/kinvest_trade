@@ -48,6 +48,14 @@ class StrategyTrials:
         self.db_path = Path(db_path)
         self.config = config if config is not None else json.loads(CONFIG_PATH.read_text())
         self.implementation_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        source_root = Path(__file__).parent
+        feed_sources = ["liquidity_lab.py", "technical_signals.py", "momentum_policy.py"]
+        feed_sources += [str(p.relative_to(source_root))
+                         for p in sorted((source_root / "strategy").glob("*.py"))]
+        self.feed_hash = hashlib.sha256(b"".join(
+            name.encode() + b"\0" + (source_root / name).read_bytes()
+            for name in feed_sources
+        )).hexdigest()
         if self.config.get("schema_version") != 1:
             raise ValueError("unsupported strategy trial configuration")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +107,7 @@ class StrategyTrials:
             "source_job_id": self.config["source_job_id"],
             "engine": ENGINE_VERSION, "arms": ARMS, "market": market,
             "implementation_sha256": self.implementation_hash,
+            "feed_implementation_sha256": self.feed_hash,
             "policy_id": policy_id, "policy_fingerprint": policy_fingerprint,
             "commission": commission, "sell_tax": sell_tax, "sec_fee": sec_fee,
             "settings": self.config["markets"][market],

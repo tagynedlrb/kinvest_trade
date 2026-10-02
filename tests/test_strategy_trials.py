@@ -162,6 +162,8 @@ def test_versions_markets_and_configs_are_independent(trials):
     assert register(trials, market="domestic") != run
     other = register(trials, fingerprint="changed")
     assert other != run
+    trials.feed_hash = "changed_quote_or_signal_code"
+    assert register(trials) not in {run, other}
     observe(trials, run)
     observe(trials, other, 1)
     assert len(trades(trials)) == 1
@@ -317,7 +319,7 @@ def test_trial_maintenance_quote_does_not_mutate_trading_caches(market):
             return {"best_bid": "99", "best_ask": "101"}
 
         async def get_overseas_price(self, *args):
-            return {"last_price": "100", "bid": "99", "ask": "101"}
+            return {"last_price": "100.01", "bid": "99.99", "ask": "100.02"}
 
     service = LiquidityLabService.__new__(LiquidityLabService)
     service.client = Client()
@@ -327,6 +329,11 @@ def test_trial_maintenance_quote_does_not_mutate_trading_caches(market):
     service._vol_history = {}
     result = asyncio.run(service._fetch_strategy_trial_quote(market, "TEST", "NASD"))
     assert (market, "TEST") in service._trial_quote_times
-    assert (result.best_bid if market == "domestic" else result.bid) == 99
+    if market == "domestic":
+        assert result.best_bid == 99
+    else:
+        assert result.last_price == 100.01
+        assert result.bid == 99.99
+        assert result.ask == 100.02
     assert not service._domestic_quote_cache
     assert not service._vol_history

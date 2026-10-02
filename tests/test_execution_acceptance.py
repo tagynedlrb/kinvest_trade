@@ -41,7 +41,7 @@ def case(tmp_path):
         "deployment": {
             "git_commit": "test-commit",
             "git_dirty": False,
-            "domestic_policy_id": "domestic_momentum_v12",
+            "domestic_policy_id": "domestic_momentum_v13",
         },
         "telegram_control": {"mode": "running", "last_completed_at": now.isoformat()},
     }
@@ -50,7 +50,7 @@ def case(tmp_path):
         repository,
         runtime,
         "2026-10-02",
-        "domestic_momentum_v12",
+        "domestic_momentum_v13",
         evaluation_id,
         now - timedelta(days=1),
     )
@@ -74,7 +74,7 @@ def test_preopen_deployment_refresh_preserves_arm_history(case):
     c = case
     c.runtime["deployment"]["git_commit"] = "new-commit"
     before_open = c.now - timedelta(days=1)
-    args = (c.config, c.repository, c.runtime, "2026-10-02", "domestic_momentum_v12", c.evaluation_id, before_open)
+    args = (c.config, c.repository, c.runtime, "2026-10-02", "domestic_momentum_v13", c.evaluation_id, before_open)
     with pytest.raises(ValueError, match="identity_mismatch"):
         arm(*args)
     new = arm(*args, refresh_deployment=True)
@@ -94,7 +94,7 @@ def test_refresh_cannot_hide_mid_session_deployment_or_changed_policy(case, chan
         c.config.market_policies.domestic.auto_trade.stop_loss_pct += 0.001
         now -= timedelta(days=1)
     with pytest.raises(ValueError, match="identity_mismatch"):
-        arm(c.config, c.repository, c.runtime, "2026-10-02", "domestic_momentum_v12", c.evaluation_id, now, refresh_deployment=True)
+        arm(c.config, c.repository, c.runtime, "2026-10-02", "domestic_momentum_v13", c.evaluation_id, now, refresh_deployment=True)
 
 
 def seed_order(
@@ -215,7 +215,7 @@ def test_arm_is_idempotent_and_has_finite_deadlines(case):
         c.repository,
         c.runtime,
         "2026-10-02",
-        "domestic_momentum_v12",
+        "domestic_momentum_v13",
         c.evaluation_id,
         c.now - timedelta(days=1),
     )

@@ -141,6 +141,7 @@
         "max_ret_3m": 0.04
     },
     "risk": {
+        "paper_experiment_disable_circuit_breakers": true,
         "daily_loss_limit_pct": 0.02,
         "max_consecutive_losses": 3,
         "circuit_breaker_cooldown_minutes": 30,

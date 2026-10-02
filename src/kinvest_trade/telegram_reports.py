@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from .client import parse_kis_number
+from .config import paper_experiment_breakers_disabled
 from .inverse_policy import INVERSE_BENCHMARK_ALIGNMENT_VERSION
 from .liquidity_lab import VirtualTradeManager
 from .market_policy import (
@@ -1790,6 +1791,16 @@ class ReportHelper:
     def build_guard_message(self) -> str:
         controller = self.controller
         now = datetime.now(timezone.utc)
+        if paper_experiment_breakers_disabled(controller.config):
+            return "\n".join([
+                "[KIS][모의 실험: 서킷브레이커 해제]",
+                f"시각={format_kst_korean(now)}",
+                "범위=국장/미장, 별도 지시까지 지속(재시작 유지)",
+                "해제=연속손실·일손실·주문거부횟수·전략성과·CB재진입·종목휴식·지수반전잠금",
+                "유지=중복주문/미체결확인·잔고/수량·정규장·시세검증·개별거래청산·API속도제한",
+                "손실·거부 이력은 삭제하지 않으며 실계좌에는 적용되지 않습니다.",
+                "전략별 비교=/lab_report trials KR 또는 US",
+            ])
         config = getattr(controller.config, "liquidity_lab", object())
         enabled = bool(getattr(config, "strategy_guard_enabled", False))
         guard_markets = {

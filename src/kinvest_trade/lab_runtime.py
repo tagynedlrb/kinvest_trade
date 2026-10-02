@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable
 
-from .config import AppConfig
+from .config import AppConfig, paper_experiment_breakers_disabled
 from .market_policy import get_market_auto_trade_config
 from .message_format import format_market_korean, format_reason_korean
 from .time_utils import ensure_timezone, parse_datetime
@@ -544,6 +544,8 @@ class LabRuntimeManager:
         )
 
     def cooldown_remaining_minutes(self, market: str, symbol: str) -> float:
+        if paper_experiment_breakers_disabled(self._config):
+            return 0.0
         cooldown_until = self.exit_cooldown.get(f"{market}:{symbol.strip().upper()}")
         if cooldown_until is None:
             return 0.0

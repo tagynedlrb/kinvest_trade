@@ -6368,7 +6368,7 @@ def test_domestic_strategy_guard_probe_scales_and_records_live_order() -> None:
     execution = service.repository.list_broker_order_executions(limit=1)[0]
     assert execution["requested_qty"] == 10
     assert execution["context_json"]["strategy_guard_probe"]["admitted"] is True
-    assert execution["context_json"]["policy_id"] == "domestic_momentum_v12"
+    assert execution["context_json"]["policy_id"] == "domestic_momentum_v13"
     assert execution["context_json"]["policy_parameter_fingerprint"] == service._get_market_policy("domestic").parameter_fingerprint
     assert execution["context_json"]["environment"] == "vps"
 
@@ -8990,7 +8990,7 @@ def test_domestic_entry_horizon_shadows_record_live_and_blocked_cost_cohorts() -
     assert len(blocked_rows) == 8
     assert len(policy_blocked_rows) == 8
     assert len(close_blocked_rows) == 8
-    assert live_rows[0]["policy_id"] == "domestic_momentum_v12"
+    assert live_rows[0]["policy_id"] == "domestic_momentum_v13"
     assert live_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0003)
     assert blocked_rows[0]["round_trip_cost_pct"] == pytest.approx(0.0023)
     assert live_rows[0]["context_json"]["product_type"] == "ETF"
@@ -9066,7 +9066,7 @@ def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> Non
     assert len(rows) == 8
     assert len(matured) == 1
     assert matured[0]["horizon_minutes"] == 5
-    assert matured[0]["policy_id"] == "overseas_momentum_v9"
+    assert matured[0]["policy_id"] == "overseas_momentum_v10"
     assert matured[0]["round_trip_cost_pct"] == pytest.approx(0.0050206)
     assert matured[0]["estimated_net_pnl_pct"] == pytest.approx(0.0049794)
     assert matured[0]["context_json"]["cost_calculation_version"] == (
@@ -9604,7 +9604,7 @@ def test_domestic_dedicated_inverse_formula_opens_shadow_without_generic_signal(
     assert trade is not None
     assert trade["entry_reason"] == "inverse_regime_trend_breakout_entry"
     assert trade["strategy_flag"] == "INV"
-    assert trade["policy_id"] == "domestic_momentum_v12"
+    assert trade["policy_id"] == "domestic_momentum_v13"
 
 
 def test_overseas_dedicated_inverse_formula_uses_exact_sqqq_benchmark(us_entry_before_close) -> None:

@@ -289,6 +289,16 @@ class RiskConfig:
     order_reject_cooldown_minutes: int = 30
     stale_exit_replace_minutes: int = 15
     repeated_skip_notify_cooldown_minutes: int = 30
+    paper_experiment_disable_circuit_breakers: bool = False
+
+
+def paper_experiment_breakers_disabled(config: object) -> bool:
+    credentials = getattr(config, "credentials", None)
+    return (
+        getattr(getattr(config, "risk", None), "paper_experiment_disable_circuit_breakers", False) is True
+        and getattr(credentials, "env", "") == "vps"
+        and getattr(credentials, "live_trading_enabled", True) is False
+    )
 
 
 @dataclass(slots=True)
@@ -1413,6 +1423,9 @@ def load_app_config(settings_path: str | Path | None = None) -> AppConfig:
             max_ret_3m=float(strategy_raw["max_ret_3m"]),
         ),
         risk=RiskConfig(
+            paper_experiment_disable_circuit_breakers=(
+                risk_raw.get("paper_experiment_disable_circuit_breakers") is True
+            ),
             daily_loss_limit_pct=float(risk_raw["daily_loss_limit_pct"]),
             max_consecutive_losses=int(risk_raw["max_consecutive_losses"]),
             circuit_breaker_cooldown_minutes=int(

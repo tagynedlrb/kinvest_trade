@@ -18,10 +18,11 @@ def trials(tmp_path):
     return StrategyTrials(tmp_path / "trials.sqlite3")
 
 
-def register(trials, market="overseas", fingerprint="baseline", commission=.00015):
+def register(trials, market="overseas", fingerprint="baseline", commission=.00015, breakers_disabled=False):
     return trials.register(market, policy_id="test_v1", policy_fingerprint=fingerprint,
                            commission=commission, sell_tax=.002 if market == "domestic" else 0,
-                           sec_fee=.0000206 if market == "overseas" else 0, now=NOW)
+                           sec_fee=.0000206 if market == "overseas" else 0, now=NOW,
+                           breakers_disabled=breakers_disabled)
 
 
 def sample(now=NOW, price=100.0, **kwargs):
@@ -82,6 +83,7 @@ def test_same_quote_cannot_fill_pending(trials):
 
 
 def test_cost_guard_records_reason_not_fake_signal(trials):
+    trials.config["markets"]["overseas"]["enforce_expected_reward_risk"] = True
     run = register(trials, commission=.02)
     observe(trials, run)
     assert not trades(trials)
@@ -245,7 +247,7 @@ def test_telegram_report_route(trials):
     engine = StrategyTrials(trial_db_path(main_db))
     register(engine)
     helper = ReportHelper(SimpleNamespace(repository=SimpleNamespace(db_path=main_db)))
-    assert "us_snapshot_trials_v1" in helper.build_report_message("trials US")
+    assert "us_independent_trials_v2" in helper.build_report_message("trials US")
     assert "domestic: 초기화 대기" not in helper.build_report_message("trials US")
     assert "사용법" in helper.build_report_message("trials unknown")
 
@@ -272,6 +274,7 @@ def test_service_observer_does_not_submit_broker_orders(trials, monkeypatch):
     monkeypatch.setattr(module, "get_us_trading_session", lambda now: "regular")
     monkeypatch.setattr(module, "minutes_until_regular_session_close", lambda market, now: 120)
     service = module.LiquidityLabService.__new__(module.LiquidityLabService)
+    service.config = SimpleNamespace()
     service.strategy_trials = trials
     service.notifier = Notifier()
     service.client = object()  # No order API, or indeed any API, is available here.
@@ -337,3 +340,85 @@ def test_trial_maintenance_quote_does_not_mutate_trading_caches(market):
         assert result.ask == 100.02
     assert not service._domestic_quote_cache
     assert not service._vol_history
+
+
+def test_missing_us_book_uses_explicit_proxy_without_falsifying_input(trials):
+    run = register(trials, commission=.0025, breakers_disabled=True)
+    raw = sample(bid=0, ask=0)
+    observe(trials, run, rows=[raw])
+    assert raw["bid"] == raw["ask"] == 0
+    assert trades(trials)[0]["status"] == "PENDING"
+    observe(trials, run, 1, [sample(NOW + timedelta(minutes=1), bid=0, ask=0)])
+    row = trades(trials)[0]
+    assert row["entry_price"] == pytest.approx(100 * 1.001 * 1.0005)
+    assert json.loads(row["terms_json"])["entry_quote_model"] == "last_trade_proxy"
+    observe(trials, run, 2, [sample(NOW + timedelta(minutes=2), price=103, bid=0, ask=0)])
+    trials.report("overseas")
+    with trials.connect() as db:
+        payload = json.loads(db.execute("SELECT payload_json FROM observations ORDER BY id LIMIT 1").fetchone()[0])
+        assert payload["raw_bid"] == payload["raw_ask"] == 0
+        assert payload["quote_at"] == raw["quote_at"]
+        evaluation = json.loads(db.execute("SELECT summary_json FROM evaluations WHERE arm=?", (ARMS[0],)).fetchone()[0])
+    assert evaluation["proxy_trades"] == 1
+    assert evaluation["stress_net_pnl"] < evaluation["net_pnl"]
+    assert not evaluation["candidate_for_review"]
+
+
+def test_proxy_never_repairs_one_sided_crossed_or_stale_quotes(trials):
+    cfg = trials.config["markets"]["overseas"]
+    for bad in (sample(bid=0), sample(ask=0), sample(bid=110, ask=100)):
+        assert StrategyTrials.execution_sample(bad, cfg)["quote_model"] == "observed_bid_ask"
+    old = sample(NOW - timedelta(hours=1), bid=0, ask=0)
+    proxy = StrategyTrials.execution_sample(old, cfg)
+    assert not StrategyTrials._quote_ok(proxy, NOW, cfg)
+
+
+def test_all_component_arms_trade_independently_on_same_observations(trials):
+    run = register(trials, breakers_disabled=True)
+    signals = {arm: True for arm in ARMS[3:]}
+    assert observe(trials, run, rows=[sample(component_signals=signals)])["signals"] == 5
+    assert observe(trials, run, 1, [sample(NOW + timedelta(minutes=1), component_signals=signals)])["opened"] == 5
+    rows = trades(trials)
+    assert len({row["arm"] for row in rows}) == 5
+    assert len({(row["entry_price"], row["qty"]) for row in rows}) == 1
+    assert all(row["entry_price"] * row["qty"] < 500 for row in rows)
+
+
+def test_existing_component_formulas_are_not_priority_competitors():
+    from types import SimpleNamespace
+    from kinvest_trade.strategy_trials import independent_entry_signals
+    snapshot = SimpleNamespace(price=100, vwap=100, rsi14=45, volume_ratio=3,
+                               breakout_distance_pct=0, macd_golden=True, macd_dead=False,
+                               macd_line=.2, macd_signal=.1)
+    signals = independent_entry_signals(snapshot, "TEST", None)
+    assert signals["component_vwap_v1"]
+    assert signals["component_vol_v1"]
+    assert signals["component_rsi_v1"]
+    assert signals[ARMS[0]]
+    assert not signals["component_mom_v1"]
+
+
+def test_gap_does_not_halt_session_but_exposure_needs_observed_liquidation(trials):
+    run = register(trials, breakers_disabled=True)
+    observe(trials, run)
+    observe(trials, run, 1)
+    observe(trials, run, 8, [])
+    assert trades(trials)[0]["status"] == "OPEN"
+    assert trades(trials)[0]["reason"] == "observation_gap"
+    current = NOW + timedelta(minutes=9)
+    observe(trials, run, 9, [sample(current, price=98), sample(current, symbol="OTHER")])
+    rows = trades(trials)
+    assert rows[0]["status"] == "INVALID"
+    assert rows[0]["net_pnl"] < 0
+    assert rows[1]["status"] == "PENDING"
+    assert json.loads(rows[1]["terms_json"])["capital"] < 500
+
+
+def test_research_keeps_negative_after_cost_samples_instead_of_censoring_them(trials):
+    run = register(trials, commission=.02, breakers_disabled=True)
+    observe(trials, run)
+    observe(trials, run, 1)
+    observe(trials, run, 2, [sample(NOW + timedelta(minutes=2), price=103)])
+    assert trades(trials)[0]["status"] == "CLOSED"
+    assert trades(trials)[0]["net_pnl"] < 0
+    assert "비용2배가정" in trials.report()

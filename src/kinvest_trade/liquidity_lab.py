@@ -19,7 +19,8 @@ from .auto_trade_math import (
     is_domestic_sell_tax_exempt,
 )
 from .client import KisApiError, KisRestClient, parse_kis_number
-from .config import AppConfig, CorporateActionDefinition, OverseasCandidateConfig, account_fingerprint
+from .config import (AppConfig, CorporateActionDefinition, OverseasCandidateConfig,
+                     account_fingerprint, paper_experiment_breakers_disabled)
 from .execution_reconciler import BrokerExecutionReconciler
 from .inverse_policy import (
     INVERSE_BENCHMARK_ALIGNMENT_VERSION,
@@ -76,7 +77,7 @@ from .sector_context import (
     build_overseas_sector_context,
 )
 from .strategy import PriorityStrategyManager, STRATEGY_LABEL, StrategyID
-from .strategy_trials import StrategyTrials, trial_db_path
+from .strategy_trials import StrategyTrials, independent_entry_signals, trial_db_path
 from .technical_signals import (
     MovingAverageSnapshot,
     build_moving_average_snapshot,
@@ -2431,7 +2432,7 @@ class LiquidityLabService:
                 }
                 targets = {t.code.upper(): t for t in report.watch_targets if t.market == market}
                 open_symbols = trials.open_symbols(market)
-                # At most three trial slots. Quote-only maintenance follows actual order handling.
+                # Bounded per-arm slots. Quote maintenance follows actual order handling.
                 if regular:
                     for symbol, exchange in open_symbols.items():
                         if symbol in quotes:
@@ -2455,6 +2456,7 @@ class LiquidityLabService:
                     commission=float(auto.domestic_commission_rate if market == "domestic" else auto.overseas_commission_rate),
                     sell_tax=float(auto.domestic_sell_tax_rate) if market == "domestic" else 0.0,
                     sec_fee=float(auto.sec_fee_rate) if market == "overseas" else 0.0,
+                    breakers_disabled=paper_experiment_breakers_disabled(self.config),
                     now=current,
                 )
                 regime = self._market_regime_context(market, now=current)
@@ -2466,6 +2468,7 @@ class LiquidityLabService:
                     if quote is None or quote_at is None:
                         continue
                     snapshot = target.signal_snapshot if target else None
+                    independent_signals = independent_entry_signals(snapshot, symbol, auto) if isinstance(snapshot, MovingAverageSnapshot) else {}
                     signal_at = (
                         getattr(self, "_signal_cache_updated_at", {}).get(symbol)
                         if market == "overseas" else quote_at
@@ -2478,7 +2481,8 @@ class LiquidityLabService:
                         "quote_at": quote_at.isoformat(),
                         "signal_at": signal_at.isoformat() if signal_at else "",
                         "snapshot": asdict(snapshot) if snapshot else {},
-                        "baseline_buy": bool(target and target.action_bias.upper() == "BUY"),
+                        "baseline_buy": independent_signals.get("baseline_signal_v1", bool(target and target.action_bias.upper() == "BUY")),
+                        "component_signals": independent_signals,
                         "baseline_reason": target.decision_reason or target.note if target else "monitor_only",
                         "eligible": not halted and not self._is_inverse_symbol(market, symbol)
                             and not self._is_leveraged_symbol(market, symbol),
@@ -3159,6 +3163,8 @@ class LiquidityLabService:
             return 3
 
     def _strategy_guard_blocked_keys(self) -> set[tuple[str, str]]:
+        if paper_experiment_breakers_disabled(self.config):
+            return set()
         config = getattr(self.config, "liquidity_lab", object())
         if not bool(getattr(config, "strategy_guard_enabled", False)):
             return set()
@@ -3596,6 +3602,8 @@ class LiquidityLabService:
         market: str,
         strategy_flag: str,
     ) -> str:
+        if paper_experiment_breakers_disabled(getattr(self, "config", None)):
+            return ""
         strategy = str(strategy_flag or "").strip().upper()
         market_key = str(market or "").strip().lower()
         if not strategy:
@@ -4107,6 +4115,8 @@ class LiquidityLabService:
         regime: dict | None = None,
         now: datetime | None = None,
     ) -> tuple[str, dict]:
+        if paper_experiment_breakers_disabled(self.config):
+            return "", {"enabled": False, "reason": "paper_experiment_override"}
         market_key = normalize_market_name(market)
         definition = self._get_market_policy(market_key).definition
         stop_value = getattr(
@@ -4259,6 +4269,8 @@ class LiquidityLabService:
         *,
         now: datetime | None = None,
     ) -> tuple[str, dict]:
+        if paper_experiment_breakers_disabled(self.config):
+            return "", {"enabled": False, "reason": "paper_experiment_override"}
         market_key = normalize_market_name(market)
         policy = self._get_market_policy(market_key)
         definition = policy.definition
@@ -4636,6 +4648,7 @@ class LiquidityLabService:
         context.update(
             policy_id=policy.policy_id,
             policy_parameter_fingerprint=policy.parameter_fingerprint,
+            paper_circuit_breakers_disabled=paper_experiment_breakers_disabled(self.config),
             account_fingerprint=account_fingerprint(credentials),
             environment=str(getattr(credentials, "env", "") or ""),
         )

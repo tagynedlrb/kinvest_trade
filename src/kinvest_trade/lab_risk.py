@@ -6,7 +6,7 @@ import logging
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 
-from .config import AppConfig
+from .config import AppConfig, paper_experiment_breakers_disabled
 from .market_sessions import KST
 from .time_utils import ensure_timezone
 
@@ -134,11 +134,11 @@ class CircuitBreakerManager:
 
     @property
     def halted_at(self) -> datetime | None:
-        return self._halted_at
+        return None if paper_experiment_breakers_disabled(self._config) else self._halted_at
 
     @property
     def daily_halted_at(self) -> datetime | None:
-        return self._daily_halted_at
+        return None if paper_experiment_breakers_disabled(self._config) else self._daily_halted_at
 
     @property
     def last_cb_released_at(self) -> datetime | None:
@@ -146,13 +146,17 @@ class CircuitBreakerManager:
 
     @property
     def overseas_cb_active(self) -> bool:
-        return self._overseas_cb_active
+        return False if paper_experiment_breakers_disabled(self._config) else self._overseas_cb_active
 
     @property
     def is_active(self) -> bool:
+        if paper_experiment_breakers_disabled(self._config):
+            return False
         return bool(self._halted_at_by_market) or self._halted_at is not None or self._daily_halted_at is not None
 
     def is_halted(self, market: str | None = None) -> bool:
+        if paper_experiment_breakers_disabled(self._config):
+            return False
         self._maybe_reset_daily()
         risk = getattr(self._config, "risk", None)
         if risk is None:
@@ -170,11 +174,15 @@ class CircuitBreakerManager:
         return self._check_daily(risk)
 
     def is_daily_halted(self, now: datetime | None = None) -> bool:
+        if paper_experiment_breakers_disabled(self._config):
+            return False
         self._maybe_reset_daily(now)
         risk = getattr(self._config, "risk", None)
         return False if risk is None else self._check_daily(risk, now=now)
 
     def overseas_allowed(self) -> bool:
+        if paper_experiment_breakers_disabled(self._config):
+            return True
         released_at = self._last_cb_released_at
         if released_at is None:
             return True
@@ -226,6 +234,12 @@ class CircuitBreakerManager:
 
     def record_order_rejection(self, *, market: str, side: str, error: str = "") -> bool:
         """Record a rejected order attempt; returns True if this call trips the breaker."""
+        if paper_experiment_breakers_disabled(self._config):
+            now = datetime.now(timezone.utc)
+            history = self._order_reject_history.setdefault(self._reject_key(market, side), [])
+            history.append(now)
+            history[:] = [ts for ts in history if now - ensure_timezone(ts) <= timedelta(minutes=15)]
+            return False
         risk = getattr(self._config, "risk", None)
         threshold = int(getattr(risk, "order_reject_threshold", 0) or 0) if risk else 0
         if threshold <= 0:
@@ -255,6 +269,8 @@ class CircuitBreakerManager:
         return True
 
     def is_order_reject_halted(self, *, market: str, side: str) -> bool:
+        if paper_experiment_breakers_disabled(self._config):
+            return False
         key = self._reject_key(market, side)
         halted_at = self._order_reject_halted_at.get(key)
         if halted_at is None:
@@ -287,7 +303,8 @@ class CircuitBreakerManager:
 
     def order_reject_status(self) -> dict[str, dict[str, object]]:
         return {
-            key: {"count": len(history), "halted": key in self._order_reject_halted_at}
+            key: {"count": len(history), "halted": key in self._order_reject_halted_at
+                  and not paper_experiment_breakers_disabled(self._config)}
             for key, history in self._order_reject_history.items()
             if history
         }

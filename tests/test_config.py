@@ -8,6 +8,7 @@ from kinvest_trade.config import (
     _normalize_kis_env,
     _split_account_fields,
     load_app_config,
+    paper_experiment_breakers_disabled,
 )
 
 
@@ -118,6 +119,19 @@ def test_load_app_config_includes_circuit_breaker_cooldown(monkeypatch) -> None:
     assert config.risk.account_risk_day_rollover_hour_kst == 7
 
 
+@pytest.mark.parametrize("env,live,expected", [("vps", "false", True), ("prod", "false", False), ("vps", "true", False)])
+def test_persisted_paper_experiment_switch_is_paper_only(monkeypatch, env, live, expected):
+    monkeypatch.setenv("KIS_ENV", env)
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", live)
+    for profile in ("VPS", "PROD"):
+        monkeypatch.setenv(f"KIS_{profile}_APPKEY", "test-key")
+        monkeypatch.setenv(f"KIS_{profile}_APPSECRET", "test-secret")
+        monkeypatch.setenv(f"KIS_{profile}_ACCOUNT_NO", "8765432101")
+    loaded = load_app_config()
+    assert loaded.risk.paper_experiment_disable_circuit_breakers is True
+    assert paper_experiment_breakers_disabled(loaded) is expected
+
+
 def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> None:
     monkeypatch.setenv("KIS_ENV", "vps")
     monkeypatch.setenv("KIS_VPS_APPKEY", "paper-key")
@@ -129,8 +143,8 @@ def test_market_policies_clone_baseline_and_remain_independent(monkeypatch) -> N
     domestic = config.market_policies.domestic
     overseas = config.market_policies.overseas
 
-    assert domestic.policy_id == "domestic_momentum_v12"
-    assert overseas.policy_id == "overseas_momentum_v9"
+    assert domestic.policy_id == "domestic_momentum_v13"
+    assert overseas.policy_id == "overseas_momentum_v10"
     assert domestic.auto_trade.entry_momentum_fallback_enabled is False
     assert overseas.auto_trade.entry_momentum_fallback_enabled is True
     assert overseas.auto_trade.entry_cost_guard_strategy_flags == ["VWAP+VOL", "MOM"]
@@ -551,6 +565,7 @@ def test_fixed_config_risk_section_contains_only_live_keys() -> None:
 
     risk = payload["risk"]
     assert set(risk) == {
+        "paper_experiment_disable_circuit_breakers",
         "daily_loss_limit_pct",
         "max_consecutive_losses",
         "circuit_breaker_cooldown_minutes",

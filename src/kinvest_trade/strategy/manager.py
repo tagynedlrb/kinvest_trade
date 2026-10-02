@@ -48,6 +48,11 @@ class PriorityStrategyManager:
         }
         self.position: Optional[Position] = None
 
+    def entry_component_signals(self, snapshot: MovingAverageSnapshot) -> dict[StrategyID, StrategySignal]:
+        """Evaluate each entry independently, without account holdings or priority routing."""
+        return {strategy_id: strategy.evaluate(snapshot, None)
+                for strategy_id, strategy in self._strategies.items()}
+
     def evaluate(
         self,
         symbol: str,

@@ -2412,7 +2412,7 @@ class LiquidityLabService:
                 bid=self._parse_float(price.get("bid")), ask=self._parse_float(price.get("ask")),
                 exchange_code=exchange,
             )
-        self._trial_quote_times[(market, symbol)] = datetime.now(timezone.utc)
+        quote.received_at = datetime.now(timezone.utc)
         return quote
 
     async def _observe_strategy_trials(self, report: LiquidityLabReport) -> None:
@@ -2432,15 +2432,30 @@ class LiquidityLabService:
                 }
                 targets = {t.code.upper(): t for t in report.watch_targets if t.market == market}
                 open_symbols = trials.open_symbols(market)
-                # Bounded per-arm slots. Quote maintenance follows actual order handling.
+                quote_times = dict(self._trial_quote_times)
+                signal_times = {
+                    symbol: (getattr(self, "_signal_cache_updated_at", {}).get(symbol)
+                             if market == "overseas" else quote_times.get((market, symbol)))
+                    for symbol in targets
+                }
+                # Refresh stale held quotes too, without making the original signal younger.
                 if regular:
-                    for symbol, exchange in open_symbols.items():
-                        if symbol in quotes:
+                    deadline = asyncio.get_running_loop().time() + 15
+                    oldest_first = sorted(open_symbols, key=lambda s: quote_times.get((market, s)) or datetime.min.replace(tzinfo=timezone.utc))
+                    for symbol in oldest_first:
+                        exchange = open_symbols[symbol]
+                        quote_at = quote_times.get((market, symbol))
+                        age = (datetime.now(timezone.utc) - quote_at).total_seconds() if quote_at else math.inf
+                        if symbol in quotes and 0 <= age <= trials.config["markets"][market]["max_quote_age_sec"]:
                             continue
+                        budget = deadline - asyncio.get_running_loop().time()
+                        if budget <= 0:
+                            break
                         try:
                             quotes[symbol] = await asyncio.wait_for(
-                                self._fetch_strategy_trial_quote(market, symbol, exchange), timeout=5
+                                self._fetch_strategy_trial_quote(market, symbol, exchange), timeout=min(5, budget)
                             )
+                            quote_times[(market, symbol)] = quotes[symbol].received_at
                         except Exception:  # noqa: BLE001
                             _logger.warning("strategy_trial_quote_missing market=%s symbol=%s", market, symbol)
                 current = datetime.now(timezone.utc)
@@ -2464,15 +2479,12 @@ class LiquidityLabService:
                 samples = []
                 for symbol in sorted(set(targets) | set(open_symbols)):
                     target, quote = targets.get(symbol), quotes.get(symbol)
-                    quote_at = self._trial_quote_times.get((market, symbol))
+                    quote_at = quote_times.get((market, symbol))
                     if quote is None or quote_at is None:
                         continue
                     snapshot = target.signal_snapshot if target else None
                     independent_signals = independent_entry_signals(snapshot, symbol, auto) if isinstance(snapshot, MovingAverageSnapshot) else {}
-                    signal_at = (
-                        getattr(self, "_signal_cache_updated_at", {}).get(symbol)
-                        if market == "overseas" else quote_at
-                    )
+                    signal_at = signal_times.get(symbol)
                     samples.append({
                         "symbol": symbol, "exchange_code": getattr(quote, "exchange_code", ""),
                         "price": float(quote.current_price if market == "domestic" else quote.last_price),

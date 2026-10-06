@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
-  "experiment_id": "independent_strategy_comparison_v2",
+  "experiment_id": "paired_cost_comparison_v3",
   "source_job_id": 5,
   "markets": {
     "domestic": {
-      "version": "kr_independent_trials_v2",
+      "version": "kr_paired_cost_trials_v3",
+      "paired_cost_variants": true,
       "enforce_expected_reward_risk": false,
       "missing_quote_half_spread_bps": 0,
       "capital": 100000,
@@ -27,7 +28,8 @@
       "min_closed_trades": 30
     },
     "overseas": {
-      "version": "us_independent_trials_v2",
+      "version": "us_paired_cost_trials_v3",
+      "paired_cost_variants": true,
       "enforce_expected_reward_risk": false,
       "missing_quote_half_spread_bps": 10,
       "capital": 500,

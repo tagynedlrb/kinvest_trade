@@ -15,7 +15,10 @@ SESSION = "2026-10-02"
 
 @pytest.fixture
 def trials(tmp_path):
-    return StrategyTrials(tmp_path / "trials.sqlite3")
+    config = json.loads(CONFIG_PATH.read_text())
+    for settings in config["markets"].values():
+        settings["paired_cost_variants"] = False
+    return StrategyTrials(tmp_path / "trials.sqlite3", config=config)
 
 
 def register(trials, market="overseas", fingerprint="baseline", commission=.00015, breakers_disabled=False):
@@ -247,7 +250,7 @@ def test_telegram_report_route(trials):
     engine = StrategyTrials(trial_db_path(main_db))
     register(engine)
     helper = ReportHelper(SimpleNamespace(repository=SimpleNamespace(db_path=main_db)))
-    assert "us_independent_trials_v2" in helper.build_report_message("trials US")
+    assert "us_paired_cost_trials_v3" in helper.build_report_message("trials US")
     assert "domestic: 초기화 대기" not in helper.build_report_message("trials US")
     assert "사용법" in helper.build_report_message("trials unknown")
 
@@ -331,7 +334,8 @@ def test_trial_maintenance_quote_does_not_mutate_trading_caches(market):
     service._domestic_quote_cache = {}
     service._vol_history = {}
     result = asyncio.run(service._fetch_strategy_trial_quote(market, "TEST", "NASD"))
-    assert (market, "TEST") in service._trial_quote_times
+    assert result.received_at.tzinfo is not None
+    assert not service._trial_quote_times
     if market == "domestic":
         assert result.best_bid == 99
     else:
@@ -422,3 +426,161 @@ def test_research_keeps_negative_after_cost_samples_instead_of_censoring_them(tr
     assert trades(trials)[0]["status"] == "CLOSED"
     assert trades(trials)[0]["net_pnl"] < 0
     assert "비용2배가정" in trials.report()
+
+
+def test_deployment_config_runs_seven_matched_cost_variants(tmp_path):
+    engine = StrategyTrials(tmp_path / "paired.sqlite3")
+    run = register(engine)
+    with engine.connect() as db:
+        spec = json.loads(db.execute("SELECT spec_json FROM runs WHERE id=?", (run,)).fetchone()[0])
+    assert len(spec["arms"]) == 14
+    assert len(set(spec["arms"])) == 14
+    assert len(engine.report("overseas")) < 3800
+    assert "E:mom" in engine.report("overseas")
+    assert "자동수정·승격 없음" in engine.report("overseas")
+
+
+def test_cost_variant_leaves_unprofitable_control_samples_visible(trials):
+    from kinvest_trade.strategy_trials import COST_SUFFIX
+    trials.config["markets"]["overseas"]["paired_cost_variants"] = True
+    run = register(trials, commission=.0025, breakers_disabled=True)
+    row = sample()
+    row["snapshot"]["atr"] = .2
+    observe(trials, run, rows=[row])
+    assert [r["arm"] for r in trades(trials)] == [ARMS[0]]
+    with trials.connect() as db:
+        decisions = json.loads(db.execute("SELECT decisions_json FROM observations").fetchone()[0])
+    assert decisions[ARMS[0] + COST_SUFFIX] == "cost_reward_or_capital"
+    assert decisions[ARMS[0]] == "signal"
+
+
+def test_matched_variant_keeps_target_and_uses_executable_stop(trials):
+    trials.config["markets"]["overseas"]["paired_cost_variants"] = True
+    run = register(trials, commission=.0025)
+    row = sample()
+    row["snapshot"]["atr"] = 2
+    assert observe(trials, run, rows=[row])["signals"] == 2
+    terms = [json.loads(r["terms_json"]) for r in trades(trials)]
+    assert terms[0]["target"] == terms[1]["target"] == 105
+    assert terms[1]["stop"] == pytest.approx(99.99 * .9995 - 2)
+    assert terms[1]["stop"] < terms[0]["stop"]
+    assert observe(trials, run, 1)["opened"] == 2
+    assert len({(r["qty"], r["entry_price"]) for r in trades(trials)}) == 1
+
+
+def test_pending_entry_cannot_fill_after_original_stop_has_failed(trials):
+    run = register(trials)
+    observe(trials, run)
+    result = observe(trials, run, 1, [sample(NOW + timedelta(minutes=1), price=98)])
+    assert result.get("opened", 0) == 0
+    assert trades(trials)[0]["status"] == "EXPIRED"
+    assert trades(trials)[0]["reason"] == "setup_invalid_before_fill"
+
+
+def test_cost_variant_rechecks_economics_at_next_quote(trials):
+    trials.config["markets"]["overseas"]["paired_cost_variants"] = True
+    run = register(trials, commission=.0025)
+    row = sample()
+    row["snapshot"]["atr"] = 2
+    observe(trials, run, rows=[row])
+    observe(trials, run, 1, [sample(NOW + timedelta(minutes=1), price=103)])
+    assert [r["status"] for r in trades(trials)] == ["OPEN", "EXPIRED"]
+    assert json.loads(trades(trials)[1]["terms_json"])["target"] == 105
+
+
+def test_cost_exit_diagnostics_are_persisted_with_market_and_session(trials):
+    run = register(trials, commission=.02)
+    observe(trials, run)
+    observe(trials, run, 1)
+    observe(trials, run, 2, [sample(NOW + timedelta(minutes=2), price=103)])
+    trials.report("overseas")
+    with trials.connect() as db:
+        summary = json.loads(db.execute("SELECT summary_json FROM evaluations WHERE arm=?", (ARMS[0],)).fetchone()[0])
+    d = summary["diagnostics"]
+    assert d["gross_pnl"] - d["fees"] == pytest.approx(summary["net_pnl"])
+    assert d["target_net_nonpositive"] == 1
+    assert d["median_hold_minutes"] == 1
+    assert d["exit_reasons"] == {"target": 1}
+    assert d["sessions"][SESSION]["closed"] == 1
+    assert d["entry_regimes"]["sideways|normal|normal"]["closed"] == 1
+    assert summary["observation_health"]["stale_quotes"] == 0
+    assert summary["observation_health"]["cycle_gaps_over_limit"] == 0
+
+
+def test_report_keeps_data_gaps_visible_without_counting_overnight(trials):
+    run = register(trials)
+    observe(trials, run, rows=[sample(baseline_buy=False)])
+    observe(trials, run, 8, [sample(baseline_buy=False)])
+    observe(trials, run, 1440, [sample(NOW + timedelta(days=1), baseline_buy=False)], session="2026-10-03")
+    assert "오래된호가=1 감시공백>300초=1" in trials.report("overseas")
+
+
+def test_stale_ranked_held_quote_refresh_does_not_rejuvenate_signal(monkeypatch):
+    import asyncio
+    from dataclasses import make_dataclass
+    from types import SimpleNamespace
+    import kinvest_trade.liquidity_lab as module
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    class Engine:
+        config = {"markets": {m: {"max_quote_age_sec": 180} for m in ("domestic", "overseas")}}
+        observed = {}
+
+        def open_symbols(self, market):
+            return {"TEST": ""} if market == "domestic" else {}
+
+        def register(self, market, **kwargs):
+            return market
+
+        def observe(self, run, **kwargs):
+            self.observed[run] = kwargs
+            return {}
+
+        def report_due(self, key):
+            return False
+
+        def has_session_observations(self, *args):
+            return False
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr(module, "is_krx_regular_session", lambda now: True)
+    monkeypatch.setattr(module, "minutes_until_regular_session_close", lambda *args: 120)
+    service = module.LiquidityLabService.__new__(module.LiquidityLabService)
+    service.config = SimpleNamespace()
+    service.strategy_trials = Engine()
+    old = NOW - timedelta(minutes=4)
+    service._trial_quote_times = {("domestic", "TEST"): old}
+    auto = SimpleNamespace(domestic_commission_rate=.00015, overseas_commission_rate=.0025,
+                           domestic_sell_tax_rate=.002, sec_fee=.0000206)
+    service._get_market_policy = lambda market: SimpleNamespace(auto_trade=auto, policy_id="test", parameter_fingerprint="test")
+    service._market_regime_context = lambda *args, **kwargs: {}
+    service._market_session_date = lambda *args: SESSION
+    service._is_trading_halted = lambda *args: False
+    service._is_order_reject_halted = lambda **kwargs: False
+    service._is_inverse_symbol = lambda *args: False
+    service._is_leveraged_symbol = lambda *args: False
+    fetched = []
+
+    async def fetch(*args):
+        fetched.append(args)
+        return SimpleNamespace(current_price=100, best_bid=99, best_ask=101, received_at=NOW)
+
+    service._fetch_strategy_trial_quote = fetch
+    snapshot = make_dataclass("Snapshot", [(k, float) for k in sample()["snapshot"]])(**sample()["snapshot"])
+    target = SimpleNamespace(market="domestic", code="TEST", signal_snapshot=snapshot,
+                             action_bias="BUY", decision_reason="", note="test")
+    quote = SimpleNamespace(stock_code="TEST", current_price=50, best_bid=49, best_ask=51)
+    report = SimpleNamespace(krx_market_open=True, us_market_session="closed", us_orderable_in_profile=False,
+                             domestic_ranked=[quote], overseas_ranked=[], watch_targets=[target])
+    asyncio.run(service._observe_strategy_trials(report))
+    row = service.strategy_trials.observed["domestic"]["samples"][0]
+    assert fetched == [("domestic", "TEST", "")]
+    assert row["price"] == 100
+    assert row["quote_at"] == NOW.isoformat()
+    assert row["signal_at"] == old.isoformat()
+    assert service._trial_quote_times[("domestic", "TEST")] == old
+    assert quote.current_price == 50

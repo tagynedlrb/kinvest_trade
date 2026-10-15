@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-REGIME_CALCULATION_VERSION = "true_range_v2"
+REGIME_CALCULATION_VERSION = "true_range_v3_final_comparison"
 DOMESTIC_FUTURES_FINAL_TIME = time(15, 50)
 
 _MARKET_CONFIG = {
@@ -254,10 +254,13 @@ def build_regime_records(
             and len(previous_ranges) >= 5
             else None
         )
-        trend = classify_trend(return_pct)
-        activity = classify_activity(volume_ratio)
-        volatility = classify_volatility(range_ratio)
         session_date = item["date"]
+        final = is_session_final(market_key, session_date, now_utc)
+        trend = classify_trend(return_pct)
+        # Cumulative intraday volume/range is not comparable to a full-day baseline.
+        # Keep the raw ratios, but wait for the close to classify activity/volatility.
+        activity = classify_activity(volume_ratio) if final else "unknown"
+        volatility = classify_volatility(range_ratio) if final else "unknown"
         records.append(
             {
                 "market": market_key,
@@ -266,7 +269,7 @@ def build_regime_records(
                 "benchmark_name": config["benchmark_name"],
                 "source": config["source"],
                 "captured_at": now_utc.astimezone(timezone.utc).isoformat(),
-                "is_final": int(is_session_final(market_key, session_date, now_utc)),
+                "is_final": int(final),
                 "open_price": item["open_price"],
                 "high_price": item["high_price"],
                 "low_price": item["low_price"],

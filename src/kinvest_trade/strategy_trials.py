@@ -12,21 +12,35 @@ from pathlib import Path
 
 from .time_utils import parse_datetime
 from .strategy import PriorityStrategyManager, STRATEGY_LABEL
+from .market_regime import classify_trend
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "strategy_trials.json"
 ARMS = ("baseline_signal_v1", "rolling_vwap_recovery_v1", "trend_pullback_v1",
         "component_vwap_v1", "component_vol_v1", "component_rsi_v1", "component_mom_v1")
-ENGINE_VERSION = "paired_cost_execution_v3"
+ENGINE_VERSION = "paired_horizon_execution_v4"
 COST_SUFFIX = "_cost_v1"
+SHORT_HOLD_ARM = "baseline_short_hold_v1_cost_v1"
 
 
 def base_arm(arm: str) -> str:
+    if arm == SHORT_HOLD_ARM:
+        return ARMS[0]
     return arm.removesuffix(COST_SUFFIX)
 
 
+def paired_control_arm(arm: str) -> str:
+    return ARMS[0] + COST_SUFFIX if arm == SHORT_HOLD_ARM else base_arm(arm)
+
+
 def configured_arms(cfg: dict) -> tuple[str, ...]:
-    return ARMS + tuple(arm + COST_SUFFIX for arm in ARMS) if cfg.get("paired_cost_variants") else ARMS
+    arms = ARMS + tuple(arm + COST_SUFFIX for arm in ARMS) if cfg.get("paired_cost_variants") else ARMS
+    short_hold = number(cfg.get("short_hold_minutes"))
+    if short_hold:
+        if not cfg.get("paired_cost_variants") or not 0 < short_hold < cfg["max_hold_minutes"]:
+            raise ValueError("short hold trial requires a longer paired cost control")
+        arms += (SHORT_HOLD_ARM,)
+    return arms
 
 
 def independent_entry_signals(snapshot, symbol: str, auto_trade) -> dict[str, bool]:
@@ -69,7 +83,7 @@ class StrategyTrials:
         self.config = config if config is not None else json.loads(CONFIG_PATH.read_text())
         self.implementation_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         source_root = Path(__file__).parent
-        feed_sources = ["liquidity_lab.py", "technical_signals.py", "momentum_policy.py"]
+        feed_sources = ["liquidity_lab.py", "technical_signals.py", "momentum_policy.py", "market_regime.py"]
         feed_sources += [str(p.relative_to(source_root))
                          for p in sorted((source_root / "strategy").glob("*.py"))]
         self.feed_hash = hashlib.sha256(b"".join(
@@ -404,9 +418,11 @@ class StrategyTrials:
                             "SELECT COALESCE(SUM(net_pnl),0) FROM trades WHERE run_id=? AND arm=? AND status IN ('CLOSED','INVALID')",
                             (run_id, arm)).fetchone()[0]
                         capital = min(cfg["capital"], max(0, cfg["capital"] + realized))
-                        terms = {"settings": cfg, "stop": stop, "target": target, "capital": capital,
+                        arm_settings = ({**cfg, "max_hold_minutes": cfg["short_hold_minutes"]}
+                                        if arm == SHORT_HOLD_ARM else cfg)
+                        terms = {"settings": arm_settings, "stop": stop, "target": target, "capital": capital,
                                  "cost_aware": cost_aware, "validate_executable_stop": True,
-                                 "paired_control": base_arm(arm), "signal_atr": atr,
+                                 "paired_control": paired_control_arm(arm), "signal_atr": atr,
                                  "breakers_disabled": spec.get("paper_circuit_breakers_disabled", False),
                                  "commission": spec["commission"], "sell_cost": sell_cost,
                                  "regime": sample.get("regime"), "source": ENGINE_VERSION}
@@ -429,28 +445,38 @@ class StrategyTrials:
     @staticmethod
     def diagnostics(rows) -> dict:
         closed = [r for r in rows if r["status"] == "CLOSED"]
-        gross = fees = 0.0
-        target_losses = 0
+        gross = fees = entry_notional = 0.0
+        target_losses = legacy_intraday_labels = 0
         regimes, sessions = {}, {}
         for row in closed:
             terms = json.loads(row["terms_json"])
             gross += (row["exit_price"] - row["entry_price"]) * row["qty"]
             fees += (row["entry_price"] * terms["commission"] + row["exit_price"] * terms["sell_cost"]) * row["qty"]
+            entry_notional += row["entry_price"] * row["qty"]
             target_losses += terms["target"] * (1 - terms["sell_cost"]) <= row["entry_price"] * (1 + terms["commission"])
-            regime_key = (terms.get("regime") or {}).get("regime_key", "unknown")
+            regime = terms.get("regime") or {}
+            regime_key = regime.get("regime_key", "unknown")
+            if regime.get("calculation_version") == "true_range_v2" and not regime.get("is_final"):
+                legacy_intraday_labels += 1
+                regime_key = f"{classify_trend(regime.get('return_pct'))}|unknown|unknown"
             for mapping, key in ((regimes, regime_key), (sessions, row["session_date"])):
                 group = mapping.setdefault(key, {"closed": 0, "net_pnl": 0.0})
                 group["closed"] += 1
                 group["net_pnl"] += row["net_pnl"]
-        return {"gross_pnl": gross, "fees": fees,
+        net = sum(r["net_pnl"] for r in closed)
+        return {"gross_pnl": gross, "fees": fees, "entry_notional": entry_notional,
+                "mean_net_pnl": net / len(closed) if closed else None,
+                "net_per_entry_notional_bps": net / entry_notional * 10000 if entry_notional else None,
                 "target_net_nonpositive": target_losses,
+                "legacy_intraday_classifications_ignored": legacy_intraday_labels,
                 "median_hold_minutes": statistics.median(r["hold_minutes"] for r in closed) if closed else None,
                 "exit_reasons": dict(Counter(r["reason"] for r in closed)),
                 "entry_regimes": regimes, "sessions": sessions}
 
     def report(self, market: str | None = None) -> str:
         lines = ["[전략 비교 모의군] 브로커 주문 아님 / 현금 기준=0",
-                 "동일 후보·각1슬롯·비용차감 / 계좌보유와 독립 진입신호"]
+                 "동일 후보·각1슬롯·비용차감 / 계좌보유와 독립 진입신호",
+                 "총손실 감소≠우월성; 건당/매수금액당 손익도 비교. 장중 활동·변동성은 미확정"]
         with closing(self.connect()) as db, db:
             for market_key in ([market] if market else ["domestic", "overseas"]):
                 run = db.execute("SELECT * FROM runs WHERE market=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (market_key,)).fetchone()
@@ -462,6 +488,8 @@ class StrategyTrials:
                 paired = bool(cfg.get("paired_cost_variants"))
                 if paired:
                     lines.append("C=기존진입 / E=비용검증·청산호가기준손절; 자동수정·승격 없음")
+                    if SHORT_HOLD_ARM in spec["arms"]:
+                        lines.append(f"S=E:baseline_signal과 동일 진입·최대{cfg['short_hold_minutes']}분 (대조{cfg['max_hold_minutes']}분)")
                     lines.append(f"검토최소={cfg['min_sessions']}청산세션/{cfg['min_closed_trades']}왕복·비용스트레스후양수")
                 observed = db.execute("SELECT COUNT(*),COUNT(DISTINCT session_date),MAX(observed_at) FROM observations WHERE run_id=?", (run["id"],)).fetchone()
                 stale_quotes = db.execute(
@@ -508,8 +536,10 @@ class StrategyTrials:
                         proxy_count += proxy
                         spread_stress = (row["entry_price"] + row["exit_price"]) * row["qty"] * cfg.get("missing_quote_half_spread_bps", 0) / 10000 if proxy else 0
                         stress_net -= fees + slip + spread_stress
+                    measured = sorted((r for r in rows if r["status"] in {"CLOSED", "INVALID"}
+                                       and r["net_pnl"] is not None), key=lambda r: (r["exit_at"] or "", r["id"]))
                     equity, peak, drawdown = cfg["capital"], cfg["capital"], 0.0
-                    for row in closed:
+                    for row in measured:
                         equity += row["net_pnl"]
                         peak = max(peak, equity)
                         drawdown = max(drawdown, peak - equity)
@@ -522,31 +552,49 @@ class StrategyTrials:
                     enough = sessions >= cfg["min_sessions"] and len(closed) >= cfg["min_closed_trades"]
                     baseline_net = db.execute("SELECT COALESCE(SUM(net_pnl),0) FROM trades WHERE run_id=? AND arm=? AND status='CLOSED'",
                                               (run["id"], ARMS[0])).fetchone()[0]
-                    control_net = db.execute("SELECT COALESCE(SUM(net_pnl),0) FROM trades WHERE run_id=? AND arm=? AND status='CLOSED'",
-                                             (run["id"], base_arm(arm))).fetchone()[0]
+                    control_rows = db.execute("SELECT * FROM trades WHERE run_id=? AND arm=? ORDER BY id",
+                                              (run["id"], paired_control_arm(arm))).fetchall()
+                    control_net = sum(r["net_pnl"] for r in control_rows if r["status"] == "CLOSED")
+                    diagnostics = self.diagnostics(rows)
+                    control_diagnostics = self.diagnostics(control_rows)
+                    rate = diagnostics["net_per_entry_notional_bps"]
+                    control_rate = control_diagnostics["net_per_entry_notional_bps"]
+                    normalized_improvement = (rate > control_rate
+                                              if rate is not None and control_rate is not None else None)
                     candidate = (enough and not states["INVALID"] and not states["OPEN"] and not states["PENDING"]
                                  and net > max(0, baseline_net) and stress_net > 0
-                                 and (not arm.endswith(COST_SUFFIX) or net > control_net))
+                                 and (not arm.endswith(COST_SUFFIX) or
+                                      (net > control_net and normalized_improvement is True)))
                     verdict = ("개선검토후보·자동승격없음" if candidate else
                                "열위/미검증·승격금지" if enough else "표본/관측부족·승격금지")
                     invalid_net = sum(r["net_pnl"] or 0 for r in rows if r["status"] == "INVALID")
                     evaluation = {"status": verdict, "closed": len(closed), "closed_sessions": sessions,
                                   "net_pnl": net, "stress_net_pnl": stress_net, "baseline_net_pnl": baseline_net,
                                   "invalid": states["INVALID"], "invalid_liquidation_pnl": invalid_net,
+                                  "measured_settlement_pnl": net + invalid_net,
+                                  "measured_settlement_drawdown": drawdown,
+                                  "unpriced_invalid": sum(r["status"] == "INVALID" and r["net_pnl"] is None for r in rows),
                                   "proxy_trades": proxy_count, "currency": cfg["currency"],
                                   "capital": cfg["capital"], "sample_threshold_met": enough,
                                   "candidate_for_review": candidate, "automatic_promotion": False,
                                   "selection_bias": "current_scanner_universe", "observation_count": observed[0],
-                                  "paired_control_arm": base_arm(arm), "paired_control_net_pnl": control_net,
+                                  "paired_control_arm": paired_control_arm(arm), "paired_control_net_pnl": control_net,
+                                  "paired_control_diagnostics": control_diagnostics,
+                                  "paired_normalized_improvement": normalized_improvement,
+                                  "comparison_caveat": "independent_slots_not_matched_trades; overlapping_signals_not_independent_samples",
                                   "observation_health": health,
-                                  "diagnostics": self.diagnostics(rows)}
+                                  "diagnostics": diagnostics}
                     db.execute("INSERT INTO evaluations VALUES (?,?,?,?)",
                                (run["id"], arm, datetime.now(timezone.utc).isoformat(), encode(evaluation)))
                     if paired:
                         label = base_arm(arm).replace("_v1", "").replace("component_", "")
-                        group = "E" if arm.endswith(COST_SUFFIX) else "C"
+                        group = "S" if arm == SHORT_HOLD_ARM else "E" if arm.endswith(COST_SUFFIX) else "C"
                         lines.append(f"{group}:{label} 완료{len(closed)} 보유{states['OPEN']} 대기{states['PENDING']} 만료{states['EXPIRED']} 누락{states['INVALID']}")
-                        lines.append(f" Net{net:+.2f} 비용2배{stress_net:+.2f} 미실현{unrealized:+.2f} {cfg['currency']} 승{sum(r['net_pnl'] > 0 for r in closed)}/{len(closed)} {'검토후보' if candidate else '미검증'}")
+                        avg = f"{diagnostics['mean_net_pnl']:+.2f}" if closed else "-"
+                        bps = f"{diagnostics['net_per_entry_notional_bps']:+.1f}" if closed else "-"
+                        lines.append(f" Net{net:+.2f} 건당{avg} 매수금액당{bps}bp 비용2배{stress_net:+.2f} {cfg['currency']} 승{sum(r['net_pnl'] > 0 for r in closed)}/{len(closed)} {'검토후보' if candidate else '미검증'}")
+                        if states["INVALID"] or states["OPEN"]:
+                            lines.append(f" 누락정리{invalid_net:+.2f} 미가격{evaluation['unpriced_invalid']} 미실현{unrealized:+.2f} 정리합계{net + invalid_net:+.2f}")
                         continue
                     lines.append(f"{arm}: 신호{len(rows)} 완료{len(closed)} 대기{states['PENDING']} 보유{states['OPEN']} 만료{states['EXPIRED']} 누락{states['INVALID']}")
                     lines.append(f"  Net={net:+.2f} 미실현추정={unrealized:+.2f} {cfg['currency']} 승={sum(r['net_pnl'] > 0 for r in closed)}/{len(closed)} {verdict}")
@@ -554,14 +602,11 @@ class StrategyTrials:
                         lines.append(f"  관측누락 정리손익={invalid_net:+.2f} (유효표본 아님, 자본에 반영)")
                     if closed:
                         mean_hold = sum(r["hold_minutes"] for r in closed) / len(closed)
-                        lines.append(f"  자본수익={net / cfg['capital'] * 100:+.3f}% 청산기준MDD={drawdown:.2f} 평균보유={mean_hold:.1f}분")
+                        lines.append(f"  유효표본자본수익={net / cfg['capital'] * 100:+.3f}% 누락정리포함MDD={drawdown:.2f} 평균보유={mean_hold:.1f}분")
                         lines.append(f"  비용2배가정Net={stress_net:+.2f} 현재가대용={proxy_count}/{len(closed)}")
-                    regimes: dict[str, list[float]] = {}
-                    for row in closed:
-                        key = (json.loads(row["terms_json"]).get("regime") or {}).get("regime_key", "unknown")
-                        regimes.setdefault(key, []).append(row["net_pnl"])
-                    for key, values in sorted(regimes.items(), key=lambda item: (-len(item[1]), item[0]))[:3]:
-                        lines.append(f"  진입환경 {key}: n={len(values)} Net={sum(values):+.2f}")
+                    regimes = diagnostics["entry_regimes"]
+                    for key, group in sorted(regimes.items(), key=lambda item: (-item[1]["closed"], item[0]))[:3]:
+                        lines.append(f"  진입환경 {key}: n={group['closed']} Net={group['net_pnl']:+.2f}")
                     if len(regimes) > 3:
                         lines.append(f"  기타 {len(regimes) - 3}개 환경은 실험 DB에 보존")
                 reasons: Counter = Counter()

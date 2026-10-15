@@ -2480,9 +2480,17 @@ def test_lab_report_exit_forward_command_reports_confirmed_exit_paths(
     assert "동일 거래비용은 재차감하지 않음" in message
 
 
-def test_lab_report_horizon_command_reports_domestic_shadow_cohort(tmp_path) -> None:
+def test_lab_report_horizon_command_reports_domestic_shadow_cohort(tmp_path, monkeypatch) -> None:
+    import kinvest_trade.trade_analysis as analysis
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 28, 6, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(analysis, "datetime", Clock)
     repository = SqliteRepository(tmp_path / "telegram_horizon_report.db")
-    opened_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    opened_at = Clock.now() - timedelta(hours=1)
     assert repository.open_entry_horizon_shadow_group(
         opened_at=opened_at,
         market="domestic",
@@ -2503,6 +2511,7 @@ def test_lab_report_horizon_command_reports_domestic_shadow_cohort(tmp_path) -> 
         group_id="telegram-horizon",
         horizon_minutes=5,
         status="MATURED",
+        observed_at=opened_at + timedelta(minutes=5),
         exit_price=101.0,
     )
     notifier = DummyNotifier()

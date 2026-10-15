@@ -167,6 +167,25 @@ def test_build_regime_records_excludes_open_us_day_from_final_status() -> None:
     assert records[1]["is_final"] == 0
 
 
+@pytest.mark.parametrize("market,hour", [("domestic", 1), ("overseas", 14)])
+def test_intraday_ratios_are_not_full_day_activity_or_volatility(market, hour):
+    factory = _domestic_row if market == "domestic" else _overseas_row
+    dates = ["20260720", "20260721", "20260722", "20260723", "20260724", "20260727", "20260728"]
+    rows = [factory(day, 100, volume=10 if day == dates[-1] else 100) for day in dates]
+    current = datetime(2026, 7, 28, hour, tzinfo=timezone.utc)
+    record = build_regime_records(market, rows, captured_at=current)[-1]
+    assert record["volume_ratio_20"] == pytest.approx(.1)
+    assert record["range_ratio_20"] == pytest.approx(1)
+    assert record["trend_regime"] == "sideways"
+    assert record["activity_regime"] == "unknown"
+    assert record["volatility_regime"] == "unknown"
+    assert record["regime_key"] == "sideways|unknown|unknown"
+    final = build_regime_records(market, rows, captured_at=current + timedelta(days=1))[-1]
+    assert final["is_final"] == 1
+    assert final["activity_regime"] == "quiet"
+    assert final["volatility_regime"] == "normal"
+
+
 def test_build_domestic_futures_benchmark_record_uses_front_contract_summary() -> None:
     record = build_domestic_futures_benchmark_record(
         {

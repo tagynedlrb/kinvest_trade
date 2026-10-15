@@ -9073,6 +9073,33 @@ def test_overseas_entry_horizon_shadows_track_near_breakout_after_costs() -> Non
         "overseas_fee_v1"
     )
     assert matured[0]["context_json"]["currency"] == "USD"
+    assert matured[0]["context_json"]["execution_profile"] == service.config.credentials.env
+    assert matured[0]["context_json"]["entry_session_orderable"] is True
+
+
+def test_overseas_horizon_does_not_open_or_mature_vps_after_hours():
+    service = _build_run_service()
+    service.config = load_app_config(Path(__file__).resolve().parents[1] / "config" / "fixed_config.json")
+    service.config = replace(service.config, credentials=replace(service.config.credentials, env="vps"))
+    target = WatchTargetStatus(
+        market="overseas", code="AAA", exchange_code="NASD", price=100,
+        activity_score=10, signal_score=2, action_bias="BUY", signal_state="BUY_READY",
+        ma_summary="up", note="strategy_buy_signal", signal_snapshot=_snapshot(price=100),
+        strategy_flag="VOL", entry_by="VOL")
+    pre = datetime(2026, 8, 28, 10, tzinfo=timezone.utc)
+    assert service._observe_overseas_entry_horizon_shadows([target], now=pre)["opened"] == 0
+    opened = datetime(2026, 8, 28, 19, 58, tzinfo=timezone.utc)
+    service.repository.open_entry_horizon_shadow_group(
+        opened_at=opened, market="overseas", symbol="AAA", exchange_code="NASD",
+        entry_session_date="2026-08-28", policy_id="test", cohort="live_signal",
+        strategy_flag="VOL", entry_by="VOL", block_reason="", entry_price=100,
+        round_trip_cost_pct=.005, horizons_minutes=(5,), group_id="closing")
+    first = service._observe_overseas_entry_horizon_shadows([replace(target, price=110)], now=opened + timedelta(minutes=5))
+    assert first["opened"] == first["matured"] == 0
+    assert first["open"] == 1
+    later = service._observe_overseas_entry_horizon_shadows([target], now=opened + timedelta(minutes=16))
+    assert later["expired"] == 1
+    assert later["matured"] == 0
 
 
 def test_overseas_horizon_cohort_tracks_primary_wait_bottlenecks_only() -> None:

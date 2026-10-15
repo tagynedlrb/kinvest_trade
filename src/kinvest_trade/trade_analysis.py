@@ -151,6 +151,26 @@ def _trimmed_average(values: list[float], fraction: float = 0.10) -> float:
     return statistics.fmean(trimmed)
 
 
+def _horizon_session_verified(row: dict) -> bool:
+    try:
+        context = json.loads(row.get("context_json") or "{}")
+        profile = context.get("execution_profile", "vps")
+        times = [datetime.fromisoformat(str(row.get(key) or ""))
+                 for key in ("opened_at", "target_at", "observed_at")]
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if profile not in {"vps", "prod"} or any(t.tzinfo is None for t in times):
+        return False
+    if not times[0] < times[1] <= times[2] or (times[2] - times[1]).total_seconds() > 600:
+        return False
+    domestic = row.get("market") == "domestic"
+    zone = ZoneInfo("Asia/Seoul" if domestic else "America/New_York")
+    session = str(row.get("entry_session_date") or "")
+    return all(t.astimezone(zone).date().isoformat() == session and
+               (is_krx_regular_session(t) if domestic else is_us_orderable_session_for_env(t, profile))
+               for t in times)
+
+
 def summarize_entry_horizon_shadow_performance(
     db_path: Path | str,
     *,
@@ -169,6 +189,7 @@ def summarize_entry_horizon_shadow_performance(
             "[진입 보유시간 모의군]",
             f"시장={market_key or '전체'} 범위={'전체' if days <= 0 else f'최근 {days}일'}",
             "판정=거래비용 차감 Net, 후보조건 n>=20·3세션·평균/절사/중앙·세션중앙 양수·양수세션 2/3 이상",
+            "진입·목표·관측 시각의 주문가능 세션 확인 필수; 과거 프로필 미기록은 모의 기준",
         ]
         if not _has_table(conn, "entry_horizon_shadows"):
             result.append("  모의군원장=미생성")
@@ -232,7 +253,10 @@ def summarize_entry_horizon_shadow_performance(
                 for row in group_rows
                 if str(row.get("status") or "").upper() == "MATURED"
                 and row.get("estimated_net_pnl_pct") is not None
+                and _horizon_session_verified(row)
             ]
+            excluded = sum(str(row.get("status") or "").upper() == "MATURED"
+                           and not _horizon_session_verified(row) for row in group_rows)
             values = [
                 float(row["estimated_net_pnl_pct"])
                 for row in matured_rows
@@ -254,7 +278,7 @@ def summarize_entry_horizon_shadow_performance(
             if not values:
                 result.append(
                     f"  {label:<12} {horizon:>3}m n=0 "
-                    f"만료={expired} 대기={pending} 판정=관찰계속"
+                    f"만료={expired} 대기={pending} 장외/시간미확인제외={excluded} 판정=관찰계속"
                 )
                 continue
             average = statistics.fmean(values)
@@ -304,7 +328,7 @@ def summarize_entry_horizon_shadow_performance(
                 f"절사={trimmed * 100:+.3f}% 중앙={median * 100:+.3f}% "
                 f"세션양수={positive_sessions}/{len(sessions)} "
                 f"세션중앙={session_median * 100:+.3f}% "
-                f"만료={expired} 대기={pending} 판정={decision}"
+                f"만료={expired} 대기={pending} 장외/시간미확인제외={excluded} 판정={decision}"
             )
         return "\n".join(result)
     finally:

@@ -51,6 +51,7 @@ def test_entry_horizon_shadow_report_uses_robust_cost_aware_thresholds(
             group_id=group_id,
             horizon_minutes=5,
             status="MATURED",
+            observed_at=opened_at + timedelta(days=index % 3, minutes=index + 5),
             exit_price=101.0,
         )
         if index < 10:
@@ -58,6 +59,7 @@ def test_entry_horizon_shadow_report_uses_robust_cost_aware_thresholds(
                 group_id=group_id,
                 horizon_minutes=10,
                 status="MATURED",
+                observed_at=opened_at + timedelta(days=index % 3, minutes=index + 10),
                 exit_price=99.5,
             )
         else:
@@ -119,6 +121,7 @@ def test_entry_horizon_report_rejects_one_positive_session_concentration(
                 group_id=group_id,
                 horizon_minutes=45,
                 status="MATURED",
+                observed_at=opened_at + timedelta(days=session_index, minutes=index + 45),
                 exit_price=exit_price,
             )
             index += 1
@@ -135,6 +138,25 @@ def test_entry_horizon_report_rejects_one_positive_session_concentration(
     assert "세션양수=1/3" in line
     assert "세션중앙=-0.130%" in line
     assert "판정=관찰계속" in line
+
+
+def test_horizon_report_excludes_unorderable_or_unverified_samples(tmp_path):
+    repository = SqliteRepository(tmp_path / "sessions.db")
+    for label, hour, observed in (("pre", 10, 5), ("regular", 15, 5), ("unknown", 15, None),
+                                  ("late", 15, 20), ("early", 15, -1)):
+        opened = datetime(2026, 8, 24, hour, tzinfo=timezone.utc)
+        repository.open_entry_horizon_shadow_group(
+            opened_at=opened, market="overseas", symbol=label, exchange_code="NASD",
+            entry_session_date="2026-08-24", policy_id="test", cohort="live_signal",
+            strategy_flag="VOL", entry_by="VOL", block_reason="", entry_price=100,
+            round_trip_cost_pct=.005, horizons_minutes=(5,), group_id=label)
+        repository.finalize_entry_horizon_shadow(
+            group_id=label, horizon_minutes=5, status="MATURED", exit_price=110,
+            observed_at=opened + timedelta(minutes=observed) if observed is not None else None)
+    report = summarize_entry_horizon_shadow_performance(repository.db_path, days=0, market="overseas")
+    assert "n=1" in report
+    assert "장외/시간미확인제외=4" in report
+    assert len(repository.list_entry_horizon_shadows(market="overseas")) == 5
 
 
 def test_compare_before_after_splits_sell_real_by_kst_cutoff(

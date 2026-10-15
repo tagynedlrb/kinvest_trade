@@ -93,7 +93,7 @@ _DEFAULT_OVERSEAS_EXCHANGE_CODES = ("NASD", "NYSE", "AMEX")
 _MIN_VPS_US_FULL_SCAN_WINDOW_SEC = 120
 _EXECUTION_RECONCILE_POST_CLOSE_GRACE_MIN = 30
 _VIRTUAL_SELL_SETTLEMENT_ROLE = "virtual_sell_settlement"
-_ENTRY_HORIZON_SHADOW_VERSION = "fixed_horizon_v1"
+_ENTRY_HORIZON_SHADOW_VERSION = "fixed_horizon_v2_orderable_session"
 _ENTRY_HORIZON_MINUTES = (5, 10, 15, 30, 45, 60, 90, 120)
 _DEDICATED_INVERSE_ENTRY_FORMULAS = frozenset(
     {
@@ -2183,10 +2183,12 @@ class LiquidityLabService:
             return {"matured": 0, "expired": 0, "open": 0, "opened": 0}
         current = ensure_timezone(now or datetime.now(timezone.utc))
         session_date = self._market_session_date(market_key, current)
+        orderable = (is_krx_regular_session(current) if market_key == "domestic"
+                     else is_us_orderable_session_for_env(current, self.config.credentials.env))
         prices = {
             target.code.strip().upper(): float(target.price)
             for target in watch_targets
-            if target.market == market_key and float(target.price or 0.0) > 0
+            if orderable and target.market == market_key and float(target.price or 0.0) > 0
         }
         counts = observer(
             market=market_key,
@@ -2196,7 +2198,7 @@ class LiquidityLabService:
             max_lag_minutes=10,
         )
         counts["opened"] = 0
-        if not allow_new:
+        if not allow_new or not orderable:
             return counts
 
         policy = self._get_market_policy(market_key)
@@ -2300,6 +2302,8 @@ class LiquidityLabService:
                 ),
                 context={
                     "calculation_version": _ENTRY_HORIZON_SHADOW_VERSION,
+                    "execution_profile": self.config.credentials.env,
+                    "entry_session_orderable": True,
                     "cost_calculation_version": cost_calculation_version,
                     "currency": currency,
                     "product_type": product_type,

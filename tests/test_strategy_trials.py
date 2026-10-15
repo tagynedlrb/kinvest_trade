@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kinvest_trade.strategy_trials import ARMS, CONFIG_PATH, StrategyTrials, trial_db_path
+from kinvest_trade.strategy_trials import ARMS, CONFIG_PATH, COST_SUFFIX, SHORT_HOLD_ARM, StrategyTrials, trial_db_path
 
 
 NOW = datetime(2026, 10, 2, 14, 0, tzinfo=timezone.utc)
@@ -18,6 +18,7 @@ def trials(tmp_path):
     config = json.loads(CONFIG_PATH.read_text())
     for settings in config["markets"].values():
         settings["paired_cost_variants"] = False
+        settings.pop("short_hold_minutes", None)
     return StrategyTrials(tmp_path / "trials.sqlite3", config=config)
 
 
@@ -250,7 +251,7 @@ def test_telegram_report_route(trials):
     engine = StrategyTrials(trial_db_path(main_db))
     register(engine)
     helper = ReportHelper(SimpleNamespace(repository=SimpleNamespace(db_path=main_db)))
-    assert "us_paired_cost_trials_v3" in helper.build_report_message("trials US")
+    assert "us_paired_cost_trials_v4" in helper.build_report_message("trials US")
     assert "domestic: 초기화 대기" not in helper.build_report_message("trials US")
     assert "사용법" in helper.build_report_message("trials unknown")
 
@@ -505,6 +506,100 @@ def test_cost_exit_diagnostics_are_persisted_with_market_and_session(trials):
     assert d["entry_regimes"]["sideways|normal|normal"]["closed"] == 1
     assert summary["observation_health"]["stale_quotes"] == 0
     assert summary["observation_health"]["cycle_gaps_over_limit"] == 0
+    row = trades(trials)[0]
+    assert d["mean_net_pnl"] == pytest.approx(row["net_pnl"])
+    assert d["entry_notional"] == pytest.approx(row["entry_price"] * row["qty"])
+    assert d["net_per_entry_notional_bps"] == pytest.approx(row["net_pnl"] / d["entry_notional"] * 10000)
+
+
+def test_short_hold_is_market_specific_and_has_unchanged_entry_terms(trials):
+    cfg = trials.config["markets"]["overseas"]
+    cfg.update(paired_cost_variants=True, short_hold_minutes=15)
+    run = register(trials, commission=.0025, breakers_disabled=True)
+    row = sample()
+    row["snapshot"]["atr"] = 2
+    assert observe(trials, run, rows=[row])["signals"] == 3
+    terms = {r["arm"]: json.loads(r["terms_json"]) for r in trades(trials)}
+    control = terms[ARMS[0] + COST_SUFFIX]
+    short = terms[SHORT_HOLD_ARM]
+    for key in ("stop", "target", "capital", "commission", "sell_cost", "cost_aware"):
+        assert short[key] == control[key]
+    assert short["settings"]["max_hold_minutes"] == 15
+    assert control["settings"]["max_hold_minutes"] == 60
+    assert cfg["max_hold_minutes"] == 60
+    assert short["paired_control"] == ARMS[0] + COST_SUFFIX
+    observe(trials, run, 1)
+    for minute in range(2, 17):
+        observe(trials, run, minute)
+    rows = {r["arm"]: r for r in trades(trials)}
+    assert rows[SHORT_HOLD_ARM]["status"] == "CLOSED"
+    assert rows[SHORT_HOLD_ARM]["reason"] == "time"
+    assert rows[SHORT_HOLD_ARM]["hold_minutes"] == 15
+    assert rows[ARMS[0] + COST_SUFFIX]["status"] == "OPEN"
+    assert "S:baseline_signal" in trials.report("overseas")
+    with trials.connect() as db:
+        evaluation = json.loads(db.execute("SELECT summary_json FROM evaluations WHERE arm=?", (SHORT_HOLD_ARM,)).fetchone()[0])
+    assert evaluation["paired_control_arm"] == ARMS[0] + COST_SUFFIX
+    assert evaluation["paired_normalized_improvement"] is None
+    assert not evaluation["candidate_for_review"]
+
+
+def test_deployment_short_hold_enabled_only_in_domestic_market(tmp_path):
+    engine = StrategyTrials(tmp_path / "markets.sqlite3")
+    for market, expected in (("domestic", 15), ("overseas", 14)):
+        run = register(engine, market=market)
+        with engine.connect() as db:
+            spec = json.loads(db.execute("SELECT spec_json FROM runs WHERE id=?", (run,)).fetchone()[0])
+        assert len(spec["arms"]) == expected
+        assert (SHORT_HOLD_ARM in spec["arms"]) == (market == "domestic")
+        report = engine.report(market)
+        assert len(report) < 3800
+        assert "E:mom" in report
+
+
+@pytest.mark.parametrize("hold", [-1, 60, 120])
+def test_invalid_short_hold_experiment_is_rejected(trials, hold):
+    trials.config["markets"]["overseas"].update(paired_cost_variants=True, short_hold_minutes=hold)
+    with pytest.raises(ValueError, match="short hold trial"):
+        register(trials)
+
+
+def test_paired_report_does_not_hide_observed_invalid_losses(trials):
+    trials.config["markets"]["overseas"]["paired_cost_variants"] = True
+    run = register(trials, breakers_disabled=True)
+    observe(trials, run)
+    observe(trials, run, 1)
+    observe(trials, run, 8, [sample(NOW + timedelta(minutes=8), price=98)])
+    report = trials.report("overseas")
+    assert "누락정리" in report
+    assert "미가격0" in report
+    with trials.connect() as db:
+        summary = json.loads(db.execute("SELECT summary_json FROM evaluations WHERE arm=?", (ARMS[0],)).fetchone()[0])
+    assert summary["closed"] == 0
+    assert summary["diagnostics"]["mean_net_pnl"] is None
+    assert summary["invalid_liquidation_pnl"] < 0
+    assert summary["measured_settlement_pnl"] == summary["invalid_liquidation_pnl"]
+    assert summary["measured_settlement_drawdown"] == pytest.approx(-summary["measured_settlement_pnl"])
+    assert not summary["candidate_for_review"]
+
+
+def test_diagnostics_distinguishes_less_trading_from_better_returns():
+    terms = json.dumps({"commission": 0, "sell_cost": 0, "target": 110})
+    row = {"status": "CLOSED", "entry_price": 100, "exit_price": 99, "qty": 1,
+           "net_pnl": -1, "terms_json": terms, "hold_minutes": 1,
+           "session_date": SESSION, "reason": "stop"}
+    control = StrategyTrials.diagnostics([row] * 10)
+    variant = StrategyTrials.diagnostics([{**row, "exit_price": 98, "net_pnl": -2}])
+    assert variant["gross_pnl"] > control["gross_pnl"]
+    assert variant["mean_net_pnl"] < control["mean_net_pnl"]
+    assert variant["net_per_entry_notional_bps"] < control["net_per_entry_notional_bps"]
+    row["terms_json"] = json.dumps({"commission": 0, "sell_cost": 0, "target": 110,
+                                    "regime": {"calculation_version": "true_range_v2", "is_final": 0,
+                                               "return_pct": .5, "regime_key": "up|quiet|calm"}})
+    corrected = StrategyTrials.diagnostics([row])
+    assert corrected["legacy_intraday_classifications_ignored"] == 1
+    assert set(corrected["entry_regimes"]) == {"up|unknown|unknown"}
+    assert json.loads(row["terms_json"])["regime"]["regime_key"] == "up|quiet|calm"
 
 
 def test_report_keeps_data_gaps_visible_without_counting_overnight(trials):
